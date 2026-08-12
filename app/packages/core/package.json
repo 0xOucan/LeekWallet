@@ -1,0 +1,11 @@
+{
+  "name": "@leekwallet/core",
+  "version": "0.1.0",
+  "description": "Transport-agnostic protocol codec and device client for LeekWallet",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/framing.test.ts"
+  }
+}
