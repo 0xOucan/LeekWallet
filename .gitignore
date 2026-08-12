@@ -1,0 +1,7 @@
+.pio
+
+# Host test harness artifacts
+sim/build/
+
+# Third-party prebuilt image, downloaded not built
+ESP32_GENERIC_S3-*.bin

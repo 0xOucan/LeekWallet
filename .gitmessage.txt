@@ -1,0 +1,14 @@
+# Subject: imperative verb, capitalized, no trailing period, <= 50 chars
+#
+# Verbs: Add Drop Fix Make Start Stop Optimize Document
+#        Refactor Reformat Rearrange Redraw Reword Revise Refresh
+#
+# Blank line, then body wrapped at 72 characters. Explain why, not what.
+#
+# No bracket tags, no "feat:"/"fix:" prefixes, no ticket IDs in the subject.
+#
+# Trailers:
+#   Co-authored-by: Name <email>
+#   See: [Description](URL)
+#
+# See: https://github.com/joelparkerhenderson/git-commit-message

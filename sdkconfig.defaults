@@ -1,0 +1,93 @@
+# ============================================================================
+# LeekWallet sdkconfig.defaults
+# ============================================================================
+# ESP32-S3 Mini: 4MB flash, no PSRAM, USB-Serial-JTAG console
+# ============================================================================
+
+# ============================================================================
+# FLASH CONFIGURATION - CRITICAL
+# ============================================================================
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHMODE="dio"
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHFREQ="80m"
+
+# ============================================================================
+# PARTITION TABLE - Custom for NVS wallet storage
+# ============================================================================
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# ============================================================================
+# NVS - Non-Volatile Storage for wallet data
+# ============================================================================
+CONFIG_NVS_ENCRYPTION=n
+
+# ============================================================================
+# MBEDTLS - Required for AES-256-CBC encryption
+# ============================================================================
+CONFIG_MBEDTLS_AES_C=y
+CONFIG_MBEDTLS_CIPHER_MODE_CBC=y
+CONFIG_MBEDTLS_SHA256_C=y
+CONFIG_MBEDTLS_SHA512_C=y
+
+# ============================================================================
+# CPU CONFIGURATION
+# ============================================================================
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160
+
+# ============================================================================
+# CONSOLE - USE USB-SERIAL-JTAG (native USB on ESP32-S3 Mini)
+# ============================================================================
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_UART_DEFAULT=n
+CONFIG_ESP_CONSOLE_USB_CDC=n
+
+# ============================================================================
+# LOGGING
+# ============================================================================
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+CONFIG_LOG_MAXIMUM_LEVEL=4
+
+# ============================================================================
+# FREERTOS
+# ============================================================================
+CONFIG_FREERTOS_HZ=1000
+
+# ============================================================================
+# WIFI - Enabled for testing
+# ============================================================================
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+
+# ============================================================================
+# BLUETOOTH - Enabled for BLE testing (ESP32-S3 with NimBLE)
+# ============================================================================
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+
+# ============================================================================
+# USB - TinyUSB for USB HID
+# ============================================================================
+CONFIG_TINYUSB_ENABLED=y
+CONFIG_TINYUSB_HID_ENABLED=y
+CONFIG_TINYUSB_DESC_HID_STRING="LeekWallet HID"
+
+# ============================================================================
+# PSRAM - Not available on ESP32-S3 Mini
+# ============================================================================
+CONFIG_SPIRAM=n
+CONFIG_ESP32S3_SPIRAM_SUPPORT=n
+
+# ============================================================================
+# WATCHDOG
+# ============================================================================
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
