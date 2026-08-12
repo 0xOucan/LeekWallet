@@ -36,6 +36,7 @@
 #include "oled.h"
 #include "button.h"
 #include "ui.h"
+#include "protocol.h"
 
 static const char *TAG = "leekwallet";
 
@@ -85,6 +86,9 @@ void app_main(void)
 
     /* Initialize UI framework */
     ui_init();
+
+    /* Protocol endpoint over the same USB cable used for flashing */
+    protocol_start();
 
     /* Start UI task */
     BaseType_t task_ret = xTaskCreate(

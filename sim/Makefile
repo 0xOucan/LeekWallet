@@ -12,11 +12,14 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
 $(BUILD)/test_mnemonic_entry: test_mnemonic_entry.c host_stubs.c ../src/mnemonic-entry.c $(CRYPTO_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+$(BUILD)/test_cbor: test_cbor.c ../src/cbor.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD)/test_vault_kdf: test_vault_kdf.c ../components/leek-wallet/vault-kdf.c \

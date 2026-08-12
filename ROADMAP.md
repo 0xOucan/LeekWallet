@@ -255,7 +255,8 @@ Write the protocol spec first and both sides build against it simultaneously.
 | T49 | WalletConnect project ID: bundled default plus a user override in settings | T32 | app works out of the box and can be pointed at your own project |
 | T24 | viem `toAccount()` adapter | T21 | signs against a testnet using the mock |
 | T25 | Firmware: BLE GATT service + protocol dispatcher | T20 | echoes a ping from a phone |
-| T25b | Firmware: TinyUSB CDC transport behind the same dispatcher (desktop path) | T20, T25 | identical ping over cable |
+| ~~T25b~~ ✅ | Firmware protocol endpoint over USB-Serial-JTAG, sync-marked so it shares the console port. `scripts/probe-device.py` talks to it | T20 | ping/getFeatures/getStatus answered on hardware; key commands correctly refused |
+| T25c | Session layer on the device (X25519 + passkey), then the key commands behind it | T25b | getAddress works only after a confirmed session |
 | T26 | Conformance suite against mock, BLE firmware, USB firmware | T23, T25, T25b | all three identical — this is what keeps the two transports honest |
 
 T23 is the highest-leverage item in the plan: it decouples Track D from all firmware work.
