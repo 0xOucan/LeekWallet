@@ -1,0 +1,249 @@
+# LeekWallet Wire Protocol v1 (draft)
+
+One command set over two transports (BLE GATT, USB CDC-ACM). The firmware dispatcher and the
+`@leekwallet/core` TypeScript client are both written against this document, so it needs to be
+settled before either side starts.
+
+---
+
+## 1. Threat model — read this before designing anything on top
+
+Three distinct attackers, and the protocol only defends against two of them.
+
+| Attacker | Defended by | Effective? |
+|---|---|---|
+| Passive radio eavesdropper | Session encryption (§3) | Yes |
+| Active MITM between host and device | Passkey-confirmed key exchange (§3) | Yes |
+| **Compromised host application** | **Nothing in this protocol** | **No** |
+
+The third one is the important one. If the phone or PC is compromised, the attacker is *inside*
+the app, above the encryption layer. They see every keystroke before it is encrypted and can
+substitute any payload they like.
+
+So the protocol's job is not to make the host trustworthy. It is to ensure that **anything the
+host cannot be trusted with is decided on the device, in front of the user's eyes.** That gives
+one hard rule which the whole command set is organised around:
+
+> **Rule 1.** Every operation that moves funds or reveals a secret requires physical
+> confirmation on the device, against data rendered by the device from its own parsed state —
+> never from a string supplied by the host.
+
+The host is a keyboard and a screen. It is never an authority.
+
+---
+
+## 2. Framing
+
+```
+┌────────┬────────┬──────────────────────┐
+│ len:u16│ type:u8│ payload (CBOR)       │
+└────────┴────────┴──────────────────────┘
+   big-endian, len covers type + payload
+```
+
+CBOR over JSON: compact enough for a 244-byte BLE MTU, binary-safe for hashes and signatures,
+and it has a strict canonical form — which matters, because a permissive parser on a signing
+device is an attack surface.
+
+| type | meaning |
+|---|---|
+| `0x01` | Request (plaintext, pre-session only) |
+| `0x02` | Response (plaintext, pre-session only) |
+| `0x11` | Request (encrypted) |
+| `0x12` | Response (encrypted) |
+| `0x13` | Event (encrypted, device→host, unsolicited) |
+| `0x7F` | Error |
+
+**BLE chunking.** GATT writes cap at MTU−3. Frames are split into chunks with a 1-byte header:
+bit 7 = "more follows", bits 0-6 = sequence. The receiver reassembles before parsing. USB CDC
+uses the same frames without chunking. Everything above this layer is transport-blind.
+
+**Limits.** Max frame 4 KB. The device rejects anything larger without buffering it — a signing
+device must never let the host dictate an allocation size.
+
+---
+
+## 3. Session establishment
+
+Runs once per connection, before any encrypted command.
+
+```
+host                                            device
+ ──── 0x01 Hello {version, hostPubkey} ───────────▶
+ ◀─── 0x02 HelloAck {version, devicePubkey, deviceId}
+      both sides: X25519 ECDH → HKDF-SHA256 → k_h2d, k_d2h
+ ◀─── device displays a 6-digit passkey on its OLED
+ ──── user reads it off the screen, types it into the app
+ ──── 0x11 Confirm {passkey}  (encrypted) ─────────▶
+ ◀─── 0x12 ConfirmAck {sessionId}
+```
+
+The passkey is derived from the ECDH shared secret, not randomly generated. A MITM negotiating
+two separate sessions produces two *different* shared secrets, so the passkey it can show will
+not match the one the device displays — the user comparing screen to app is what actually
+detects the attack. This is the standard numeric-comparison pattern and it is the only reason
+the channel means anything.
+
+Payload encryption is **ChaCha20-Poly1305** with a per-direction 96-bit nonce that is a
+monotonic counter. Counters never reset within a session; a reused nonce is a session abort. The
+ESP32-S3's AES accelerator would make AES-GCM tempting, but ChaCha20 is constant-time in
+software everywhere, which matters more on the host side than raw throughput does at our sizes.
+
+**What this buys and what it does not:** an eavesdropper learns nothing and a MITM is detected.
+A compromised host is entirely unaffected — see §1.
+
+---
+
+## 4. Commands
+
+Permission tiers mirror the existing `RPC_PERM_*` model in the pixiecolibri sibling project.
+
+| Command | Tier | Device confirmation |
+|---|---|---|
+| `ping` | always | — |
+| `getFeatures` | always | — |
+| `getStatus` | always | — |
+| `unlock` | always | PIN entered **on device** |
+| `lock` | always | — |
+| `listWallets` | unlocked | — |
+| `selectWallet` | unlocked | — |
+| `setPassphrase` | unlocked | **yes — fingerprint confirm (§5)** |
+| `clearPassphrase` | unlocked | — |
+| `getFingerprint` | keys | — |
+| `getAddress` | keys | optional `display: true` |
+| `getPublicKey` | keys | — |
+| `signMessage` | keys | **yes** |
+| `signTypedData` | keys | **yes** |
+| `signTransaction` | keys | **yes** |
+| `signHash` | keys | **yes**, and refused unless blind signing is enabled on-device |
+
+**Deliberately absent:** there is no host-invokable `wipe`, no `getMnemonic`, and no way to set
+or change the PIN over the wire. Those are device-only, permanently. A protocol that can erase
+your wallet is a protocol that a malicious host can erase your wallet with.
+
+`unlock` does not carry a PIN. It asks the device to prompt; the user types on the device; the
+response says whether it worked. The PIN never crosses the wire in any form.
+
+### Signing
+
+The host sends structured fields, never a pre-serialised blob:
+
+```
+signTransaction {
+  path:     "m/44'/60'/0'/0/0",
+  chainId:  1,
+  nonce:    42,
+  to:       h'...20 bytes',
+  value:    h'...',
+  data:     h'...',
+  maxFeePerGas: h'...', maxPriorityFeePerGas: h'...', gasLimit: h'...'
+}
+```
+
+The device re-serialises and re-hashes these itself, renders what it computed, and signs only
+what it rendered. It must never sign a hash the host handed it (that is `signHash`, which exists
+for compatibility and is off by default). This is Rule 1 in concrete form: the bytes displayed
+and the bytes signed have a single source, and it is not the host.
+
+---
+
+## 5. Passphrase entry — the "app as secure keyboard"
+
+Typing a passphrase on four buttons is punishing, so the app can act as the keyboard. This is
+worth doing, and it is what Trezor Suite does. But the security accounting has to be honest.
+
+```
+setPassphrase { passphrase: "..." }        (encrypted, §3)
+  ▼
+device derives seed, computes fingerprint + first address
+  ▼
+device displays:   XFP 3A7B1C22
+                   0x71C7…8976
+  ▼
+user confirms on the device → passphrase becomes active for the session
+```
+
+**What this protects against:** the radio, and a MITM. Not the host. A compromised app sees the
+passphrase as it is typed, before encryption touches it. Host entry is therefore *strictly
+weaker* than on-device entry, and the UI must say so rather than implying the encryption makes
+it equivalent.
+
+That said, the tradeoff is reasonable for the stated use case — a cold-storage device used
+occasionally from a machine you control — provided three things hold:
+
+1. **The app uses its own in-app keyboard for this field, never the system IME.** This is not
+   optional on Android. Third-party keyboards (Gboard, SwiftKey) sync typed text to the cloud
+   and keep learned-word caches. A passphrase typed into a system IME should be considered
+   disclosed. Disable autocorrect, clipboard, and screenshots on that view.
+2. **The passphrase is never persisted host-side.** Not in local storage, not in a "remember
+   this wallet" convenience, not in a crash log.
+3. **The fingerprint is confirmed on the device screen.** Which brings us to the real problem.
+
+### Why the fingerprint check matters, and its one limitation
+
+A mistyped passphrase does not error. It derives a different, perfectly valid, empty wallet.
+Users conclude their funds are gone. So the device shows the master fingerprint (XFP) and first
+address before the passphrase is used for anything.
+
+Be precise about what that check catches:
+
+- **On every use after the first:** it catches both typos *and* a malicious host substituting a
+  passphrase, because you recognise your own fingerprint. This is a genuine tamper detector.
+- **On first use:** it catches nothing, because you have no reference to compare against.
+
+Therefore: **record the fingerprint when the passphrase is created**, on the device screen, and
+write it down with the seed backup. Without that reference the check is decorative on the one
+occasion it would matter most. Coldcard's XFP-on-screen convention exists for exactly this
+reason and we should follow it.
+
+Derivation is plain BIP39 — `PBKDF2-HMAC-SHA512(mnemonic, "mnemonic" + passphrase, 2048)` — and
+is verified against the spec's known-answer vectors in `sim/test_passphrase.c`. Any seed and
+passphrase produce the same wallet here as on Trezor, Ledger, Coldcard or Sparrow.
+
+### Session lifetime
+
+The passphrase lives in RAM only and is cleared on: device lock, PIN re-entry, wallet switch,
+transport disconnect, and inactivity timeout. The status bar must always show which wallet is
+active, because "am I in the passphrase wallet or the base wallet?" is the question users get
+wrong and lose money over.
+
+---
+
+## 6. Errors
+
+```
+0x7F { code: u16, message: "short ascii" }
+```
+
+| code | meaning |
+|---|---|
+| `0x0001` | Malformed frame |
+| `0x0002` | Unsupported version |
+| `0x0100` | Not unlocked |
+| `0x0101` | Wrong permission tier |
+| `0x0200` | User rejected on device |
+| `0x0201` | Timed out waiting for the user |
+| `0x0300` | No wallet selected |
+| `0x0400` | Session required / nonce reuse |
+
+Messages are for developers. Never render a device-supplied string to the user as if it were a
+security statement — that is a phishing vector.
+
+---
+
+## 7. Versioning
+
+`Hello` carries a major version. Mismatch is a hard failure with an upgrade prompt, not a
+best-effort downgrade. Silent negotiation to a weaker protocol is a downgrade attack.
+
+---
+
+## Open questions
+
+- **Does the passkey confirm survive BLE re-pairing**, or is it re-run per connection? Per
+  connection is safer and costs the user one screen glance.
+- **Should `getAddress` without `display: true` exist at all?** It is convenient for populating
+  a UI, and it is also how an attacker gets an address list without the user noticing. Leaning
+  toward keeping it but rate-limiting it.
+- **Do we need a pre-session `getFeatures`** for app compatibility checks before pairing? Likely
+  yes, and it must expose nothing user-specific.

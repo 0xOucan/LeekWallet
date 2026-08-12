@@ -1,0 +1,279 @@
+# LeekWallet Code Audit
+
+Scope: `src/` (3,367 lines) and `components/colibri-wallet/` (1,253 lines) as of this audit.
+`components/trezor-crypto/` is upstream Trezor code and was reviewed only where LeekWallet calls into it.
+
+Findings are ordered by severity. Each one names the file and line so it can be turned into a
+regression test in `sim/` before it is fixed.
+
+**Status:** S3, S4, S6, S8b and S8c are **fixed** and covered by tests. S2 is **fixed** (entry
+side; the KDF behind it is still S1). S1, S5, S7 and the rest of S8 stand.
+
+---
+
+## S1 — Seed is recoverable from a flash dump in seconds
+
+**Where:** `components/colibri-wallet/colibri-wallet.c:112` (`derive_key_from_password`),
+`sdkconfig.defaults` (`CONFIG_NVS_ENCRYPTION=n`, no flash encryption, no secure boot),
+`src/ui.c:449` (PIN length is pinned to 4 digits — see S2).
+
+**Chain:**
+
+1. The AES-256 key that protects every mnemonic is `SHA256(SHA256(pin))`. No salt, no KDF,
+   two hash invocations.
+2. The UI can only ever produce a 4-digit PIN, so the key space is 10,000 candidates.
+3. `CONFIG_NVS_ENCRYPTION=n` and flash encryption is not enabled, so
+   `esptool.py read_flash` over the USB port dumps the NVS partition verbatim.
+4. `pwd_hash` (`SHA256³(pin)`) is stored alongside the ciphertext, giving the attacker a free
+   oracle to confirm the guess without touching AES.
+
+Ten thousand double-SHA256 evaluations is microseconds. Physical access to the device — or to
+a discarded one — is full seed recovery. The 3-attempt wipe counter is irrelevant because the
+attack never goes through the firmware.
+
+**Fix direction:** all three layers need to move.
+- Replace `derive_key_from_password` with PBKDF2-HMAC-SHA512 or scrypt, salted from a
+  per-device random value, tuned to ~500 ms on the S3.
+- Enable flash encryption + secure boot v2 (QEMU emulates eFuses, so this is testable before
+  burning anything irreversible — see `sim/README.md`).
+- Allow real PIN lengths (S2). A 4-digit PIN behind a proper KDF is still only 10⁴; the KDF
+  buys time, the length buys entropy.
+
+Note that `pwd_hash` and the encryption key are both unsalted functions of the same PIN, so they
+are linked. Derive them from independent salts.
+
+---
+
+## S2 — ~~The PIN is always exactly 4 digits~~ FIXED
+
+**Where:** `src/ui.c:467-501` (setup), `src/ui.c:572-599` (unlock).
+
+Both handlers add the selected digit on ACCEPT and then immediately act on
+`if (pin_cursor >= PIN_MIN_LENGTH)`. `PIN_MIN_LENGTH` is 4 (`src/pin.h:14`). There is no
+separate submit action, so the fourth digit *is* the submit:
+
+- Setup commits the first entry to `pin_first_entry` and jumps to confirm mode at 4 digits.
+- Unlock calls `pin_verify()` at 4 digits.
+
+`PIN_MAX_LENGTH` (8) is unreachable. The renderer draws eight slots (`PIN_DISPLAY_LEN`, `ui.c:177`),
+which tells the user a longer PIN is possible, and README.md advertises "4-8 digit PIN".
+
+Setup and unlock are consistent with each other, so the device is not bricked — but the entropy
+ceiling is 10⁴ and that feeds directly into S1.
+
+**Fixed.** The selector now cycles 0-9 plus an `OK` option that appears once the PIN reaches
+`PIN_MIN_LENGTH`. ACCEPT appends; submitting is a separate, deliberate act, so 4-8 digits are all
+reachable and each attempt is charged once, on intent. Note this raises the *ceiling* to 10⁸ but
+the KDF underneath is still `SHA256²` — S1 is what makes that entropy worth anything.
+
+---
+
+## S3 — ~~110 of 2048 BIP39 words cannot be typed~~ FIXED
+
+**Where:** `src/ui.c:1196-1202`.
+
+```c
+if (entry_prefix_len >= 3 && mnemonic_find_word(entry_prefix) >= 0) {
+    should_accept = true;
+    match = entry_prefix;      /* commit the exact word */
+}
+```
+
+Any 3+ character prefix that is *itself* a BIP39 word is committed immediately. But 110 BIP39
+words have a shorter BIP39 word as a proper prefix, and those 110 can never be reached:
+
+| you type  | device commits |
+|-----------|----------------|
+| `address` | `add`          |
+| `actress` | `act`          |
+| `airport` | `air`          |
+| `alley`   | `all`          |
+| `canyon`  | `can`          |
+
+Reproduced natively — see `sim/test_mnemonic_entry.c`, which replays the exact accept logic
+against the real wordlist:
+
+```
+words that commit the WRONG word: 110 / 2048
+12-word seeds that cannot be imported: 48.4%
+```
+
+For 24-word seeds it is ~73%. Since `wallet_validate_mnemonic()` then fails the checksum, the
+screen silently resets to word 1 (`ui.c:1251`) with no explanation. A user restoring a real
+backup hits a coin-flip chance of an unrecoverable-looking loop.
+
+**Fixed.** The logic moved to `src/mnemonic-entry.c` (no ESP-IDF deps, so the host suite drives
+it directly). Auto-commit now fires only when exactly one word still matches; when the prefix is
+itself a word but others extend it, an explicit `OK` option appears in the selector. The selector
+is also built from `mnemonic_word_completion_mask()`, so dead-end letters are never offered.
+
+`sim/test_mnemonic_entry.c` now types all 2048 words keystroke-by-keystroke:
+**0 wrong, 0 unreachable**, worst case 49 button presses (`surprise`). That press count is the
+new UX cost and is worth revisiting — a two-axis selector or coarse letter jumps would cut it.
+
+**Related, currently benign:** the 4+ character uniqueness test at `ui.c:1204-1212` probes
+uniqueness by appending the single letter `'a'`. That is not a uniqueness test in general — it
+only checks one of 26 branches. I verified it happens to produce zero false accepts on the
+English wordlist, so it is correct today by luck rather than construction. Replace it with a
+real completion count and add the exhaustive test as a regression guard.
+
+---
+
+## S4 — ~~Power-cycling during the wipe grants unlimited PIN attempts~~ FIXED
+
+**Where:** `src/pin.c:61-67` and `src/pin.c:209-224`.
+
+`pin_verify()` compares first, then decrements, then persists. Two windows fall out:
+
+*Free attempts.* Yanking power after the comparison but before `nvs_set_u8` leaves the counter
+at its old value. The attacker gets an unbounded supply of guesses at one reboot each.
+
+*Wipe evasion.* When the counter reaches 0, `pin_verify` persists 0 and returns false; the
+*UI* is what actually wipes (`ui.c:592-597`). Cut power in between and the device reboots with
+`attempts == 0` in NVS. `pin_init()` then hits:
+
+```c
+if (err == ESP_OK && attempts > 0 && attempts <= PIN_MAX_ATTEMPTS) {
+    remaining_attempts = attempts;
+} else {
+    remaining_attempts = PIN_MAX_ATTEMPTS;   /* 0 is treated as "unset" */
+}
+```
+
+A persisted 0 is indistinguishable from a missing key, so the counter resets to 3 with the
+wallet fully intact. Repeat for 10,000/3 reboots.
+
+**Fixed.** `pin_verify()` now spends and commits the attempt *before* comparing, and refunds it
+only on verified success — an interrupted guess is a spent guess. `pin_init()` distinguishes a
+stored `0` from an absent key, and `screen_boot_on_button` resumes an interrupted wipe before
+offering any further attempts.
+
+Still worth adding: a crash-injecting fake NVS (T0.1) so this is a test rather than an argument.
+
+---
+
+## S5 — Seeds and PINs linger in `.bss` after use
+
+**Where:** `src/ui.c:227` (`mnemonic_buffer[256]`), `src/ui.c:240` (`entry_words`),
+`src/ui.c:1229` (`full_mnemonic[300]`), `src/pin.c:28` (`current_pin`).
+
+`wallet_lock()` is careful — it zeroes the mnemonic, passphrase, encryption key, and node
+(`colibri-wallet.c:485-488`). The UI layer above it is not. The plaintext mnemonic sits in the
+static `mnemonic_buffer` from the moment it is displayed until the next screen overwrites it,
+across lock, across `pin_lock()`, and across `pin_wipe()` + `wallet_wipe()`. The import path
+leaves the same data in `entry_words` and in the `full_mnemonic` stack frame.
+
+This turns any memory-disclosure bug, crash dump, or JTAG pause into a seed disclosure, and it
+means "Wipe Device" leaves the seed in RAM until reboot.
+
+**Fix direction:** `memzero()` these on screen exit — the `screen_t` struct already has an
+unused `.exit` hook (every screen passes `NULL`), which is exactly the seam for it.
+`pin_wipe()` and the settings wipe path should zero the UI buffers too.
+
+---
+
+## S6 — ~~Seed generation may run with degraded entropy~~ FIXED
+
+**Where:** `src/rand_esp32.c:11`, `sdkconfig.defaults`.
+
+`random32()` forwards to `esp_random()`. Per the ESP-IDF documentation, the S3 hardware RNG is
+only guaranteed to produce true random numbers while an RF subsystem (Wi-Fi or Bluetooth) is
+enabled; otherwise entropy depends on the SAR ADC or RC fast clock being active. LeekWallet
+generates mnemonics from the main menu with Wi-Fi and BLE both off by default — the RF stacks
+are opt-in toggles buried in Settings.
+
+I have not measured the actual output quality on this silicon, so I am flagging this as
+"unverified and load-bearing" rather than "broken": for a wallet, seed entropy is the one thing
+that must not be probabilistic.
+
+**Fixed, and promoted from "measure someday" to top priority** by precedent: Coldcard shipped
+exactly this bug. A build configuration error in firmware 4.0.1 (2021) made seed generation fall
+back from the hardware RNG to a weak software source, cutting 128 bits to 40-72. It went
+unnoticed for five years and was mass-drained in 2026. Our exposure had the identical shape —
+one function, silently degrading, nothing watching the output.
+
+`src/entropy.c` now gates all key material:
+
+- `bootloader_random_enable()` wraps generation whenever RF is inactive; `ui.c` reports RF
+  transitions via `entropy_set_rf_active()` so the ADC is never contended.
+- NIST SP 800-90B style health tests (repetition count, proportion, distinct-value floor for
+  seed-sized buffers) run on every output.
+- **Fails closed.** `random_buffer()` — the function `mnemonic_generate()` calls — aborts rather
+  than returning material that failed its tests. There is deliberately no fallback path.
+- `entropy_dump_for_analysis()` emits raw RNG over serial for offline dieharder/STS runs.
+
+`sim/test_entropy.c` covers stuck-at-zero, stuck-at-value, mid-buffer stalls, heavy bias, and
+low-variety seeds, with 700 false-positive trials on healthy input.
+
+**Building it found a real bug in my own test design:** NIST's Adaptive Proportion Test counts
+occurrences of the window's *first* sample, which suits a continuous stream but not one-shot
+validation — a source emitting 53% one value passed cleanly because the window happened to start
+with a different byte. Replaced with a histogram-max test over the window, which is strictly
+stronger and catches bias on the first buffer.
+
+**Still outstanding:** the health tests catch a catastrophically broken RNG, not a subtly biased
+one. Certifying quality needs a large offline sample through dieharder on real hardware. The dump
+function exists for exactly that, and it has not been run yet.
+
+---
+
+## S7 — Wipe is incomplete and leaves the device in an inconsistent state
+
+**Where:** `src/pin.c:252-267`, `src/ui.c:1560-1566`, `src/ui.c:592-597`.
+
+`pin_wipe()` calls `nvs_erase_all()` on a handle opened for the `leek_pin` namespace only. It
+does not touch the `colibri` namespace where the encrypted mnemonics live — `wallet_wipe()` is
+a separate call the UI has to remember to make. It does in both current call sites, but they
+are not atomic: a power cut between them leaves ciphertext with no PIN, or a PIN with no
+wallet. Neither the settings wipe nor the failed-PIN wipe asks for confirmation, so a
+mis-navigation in a 3-item menu destroys the wallet outright.
+
+**Fix direction:** one `device_wipe()` entry point that erases both namespaces and is
+idempotent on reboot (set a "wipe in progress" flag first, clear it last, resume on boot).
+Add a confirmation screen showing what is about to be destroyed.
+
+---
+
+## S8 — Correctness and robustness defects
+
+| # | Where | Issue |
+|---|-------|-------|
+| a | `src/ui.c:764-775` | `screen_wallet_info_render` slices `eth_address.hex` at fixed offsets 0/16/30. When `enter` failed it writes short strings like `"Path failed"` into the same field, and lines 2-3 then render from zeroed padding. In bounds (the struct is memset at `ui.c:705`) but the user sees a truncated error over a blank address — indistinguishable from a real address at a glance. Use a separate error field. |
+| b | `src/pin.c:191` | ~~PIN hash compared with `memcmp`~~ **fixed** — constant-time compare. |
+| c | `src/pin.c:309` | ~~`pin_get_current(pin, 0)` writes `pin[-1]`~~ **fixed** — guarded. |
+| d | `src/ui.c:1115` | 24-word import: the entry module now takes `target_words` and handles 24 correctly, but no UI exposes the choice yet, so it is still effectively 12-only. Remaining work is one selector screen (T3). |
+| e | `src/ui.c:1557` | "Change PIN" is a live menu item that logs `not yet implemented` and silently does nothing. `pin_change()` exists in `pin.c:269`. |
+| f | `src/ui.c:857` | `screen_wallet_create_on_button` calls `ui_render()` re-entrantly from inside a button handler to paint "Generating...", then the caller invalidates again. Works, but the screen contract now has two render paths. |
+| g | `src/ui.c:1272-1274` | Wi-Fi AP ships a hardcoded WPA2 password (`leek1234`) and the AP is reachable while the wallet is unlocked. It is a test feature; make it unavailable in release builds rather than a menu item. |
+| h | `colibri-wallet.c:129` | AES-CBC with zero padding and no MAC. Recovery relies on the plaintext being a NUL-terminated string, and nothing detects tampering with the ciphertext. Move to AES-GCM (already vendored under `components/trezor-crypto/aes/aesgcm.c`). |
+| i | `src/ui.c:1630-1636` | The QR screen maps ACCEPT/DOWN to "reveal seed phrase". An undocumented shortcut from an address display to the secret, one button press plus PIN. At minimum label it. |
+| j | `src/button.c:71` | `xQueueSend(..., 0)` drops button events when the 8-slot queue is full. Silent input loss during a slow render (PBKDF2 takes ~800 ms and blocks the UI task). Consider blocking briefly, or draining stale input after long operations. |
+
+---
+
+## Note on the target hardware
+
+`platformio.ini:20` and `partitions.csv` are built for **4 MB flash, no PSRAM**
+(`CONFIG_SPIRAM=n`). An **N16R8** module is 16 MB flash with 8 MB PSRAM. If the board is
+changing, then `board_build.flash_size`, the partition table (currently a 3 MB app in a 4 MB
+layout), and the PSRAM config all need to move together — and note that PSRAM is
+[currently broken under QEMU](https://github.com/espressif/qemu/issues/129), so keep
+`CONFIG_SPIRAM=n` for the emulated test target regardless.
+
+There is also no `docs/leekwallet-logo.png` in the tree, so the README header image is broken.
+
+---
+
+## Suggested fix order
+
+S3 and S2 are the ones a user hits on day one. S1 and S4 are the ones that matter once the
+device holds real value. S5 is cheap and should ride along with any of them.
+
+1. **S3** — import is 50/50 broken today, and the fix is contained to one function.
+2. **S2** — unblocks any real PIN entropy; touches two handlers.
+3. **S4** — ordering change in `pin_verify` plus a sentinel in `pin_init`.
+4. **S1** — KDF swap is easy; flash encryption + secure boot is a day of QEMU work.
+5. **S5**, **S7** — wire up the unused `.exit` hook, unify wipe.
+7. **S8** — batch as cleanup.
+
+Every one of these is testable on the host without hardware. See `sim/README.md`.
