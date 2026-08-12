@@ -12,6 +12,7 @@
 #include "esp_log.h"
 
 #include "oled.h"
+#include "button.h"
 #include "pin.h"
 #include "leek-wallet.h"
 #include "mnemonic-entry.h"
@@ -19,6 +20,7 @@
 #include "memzero.h"
 #include "entropy.h"
 #include "esp_timer.h"
+#include "esp_random.h"
 
 /* For WiFi/BLE/USB testing - conditionally included */
 #ifdef CONFIG_ESP_WIFI_ENABLED
@@ -95,6 +97,14 @@ static void screen_settings_on_button(button_id_t btn);
 static void screen_entropy_enter(void);
 static void screen_entropy_render(void);
 static void screen_entropy_on_button(button_id_t btn);
+
+static void screen_wipe_confirm_enter(void);
+static void screen_wipe_confirm_render(void);
+static void screen_wipe_confirm_on_button(button_id_t btn);
+
+static void screen_mnemonic_verify_enter(void);
+static void screen_mnemonic_verify_render(void);
+static void screen_mnemonic_verify_on_button(button_id_t btn);
 
 static void screen_qr_code_enter(void);
 static void screen_qr_code_render(void);
@@ -175,6 +185,20 @@ static const screen_t screen_entropy = {
     .enter = screen_entropy_enter,
     .render = screen_entropy_render,
     .on_button = screen_entropy_on_button,
+    .exit = NULL
+};
+
+static const screen_t screen_wipe_confirm = {
+    .enter = screen_wipe_confirm_enter,
+    .render = screen_wipe_confirm_render,
+    .on_button = screen_wipe_confirm_on_button,
+    .exit = NULL
+};
+
+static const screen_t screen_mnemonic_verify = {
+    .enter = screen_mnemonic_verify_enter,
+    .render = screen_mnemonic_verify_render,
+    .on_button = screen_mnemonic_verify_on_button,
     .exit = NULL
 };
 
@@ -357,10 +381,14 @@ static bool ensure_wallet_unlocked(void)
         WalletError err = wallet_unlock(pin, strlen(pin));
         if (err != WALLET_OK) {
             ESP_LOGE(TAG, "Failed to unlock wallet: %d", err);
+            button_drain();
             return false;
         }
     }
 
+    /* Key derivation blocks for around a second; drop anything pressed while
+     * the screen was frozen. */
+    button_drain();
     return true;
 }
 
@@ -1152,9 +1180,11 @@ static void screen_mnemonic_display_on_button(button_id_t btn)
 
         case BUTTON_DOWN:
         case BUTTON_ACCEPT:
-            /* Next page or done */
+            /* Next page, or on the last page move to verification */
             if (mnemonic_page < total_pages - 1) {
                 mnemonic_page++;
+            } else if (mnemonic_word_count > 0) {
+                ui_set_screen(SCREEN_MNEMONIC_VERIFY);
             } else {
                 ui_set_screen(SCREEN_WALLET_INFO);
             }
@@ -1591,12 +1621,8 @@ static void screen_settings_on_button(button_id_t btn)
                 case 3: /* Change PIN */
                     ESP_LOGI(TAG, "Change PIN not yet implemented");
                     break;
-                case 4: /* Wipe Device */
-                    pin_wipe();
-                    wallet_wipe();
-                    wallet_init();
-                    ESP_LOGI(TAG, "Device wiped");
-                    ui_set_screen(SCREEN_PIN_SETUP);
+                case 4: /* Wipe Device - confirm first */
+                    ui_set_screen(SCREEN_WIPE_CONFIRM);
                     break;
                 case 5: /* Back */
                     ui_set_screen(SCREEN_MAIN_MENU);
@@ -1771,6 +1797,233 @@ static void screen_entropy_on_button(button_id_t btn)
 }
 
 /* ============================================================================
+ * Wipe Confirmation Screen
+ *
+ * Wiping was previously immediate from a three-item menu, and a live test
+ * destroyed a wallet by selecting it while scrolling. Destructive and
+ * irreversible actions get a stop.
+ * ============================================================================ */
+
+/* Deliberately awkward: hold-to-confirm rather than a single press, so the
+ * gesture cannot be reached by the same reflex that selected the menu item. */
+#define WIPE_CONFIRM_PRESSES 3
+
+static int wipe_confirm_count = 0;
+
+static void screen_wipe_confirm_enter(void)
+{
+    ESP_LOGI(TAG, "Wipe confirmation screen");
+    wipe_confirm_count = 0;
+}
+
+static void screen_wipe_confirm_render(void)
+{
+    oled_clear();
+    oled_draw_string_centered(0, "!! WIPE DEVICE !!");
+
+    WalletStatus status = wallet_get_status();
+    char line[22];
+    snprintf(line, sizeof(line), "Erases %d wallet%s",
+             status.wallet_count, status.wallet_count == 1 ? "" : "s");
+    oled_draw_string_centered(2, line);
+    oled_draw_string_centered(3, "and the PIN.");
+    oled_draw_string_centered(4, "No undo.");
+
+    int left = WIPE_CONFIRM_PRESSES - wipe_confirm_count;
+    char msg[32];
+    snprintf(msg, sizeof(msg), "Press OK %u more", (unsigned)(left < 0 ? 0 : left));
+    oled_draw_string_centered(6, msg);
+
+    oled_draw_string(7, 0, "BACK        WIPE");
+}
+
+static void screen_wipe_confirm_on_button(button_id_t btn)
+{
+    if (btn == BUTTON_ACCEPT) {
+        if (++wipe_confirm_count >= WIPE_CONFIRM_PRESSES) {
+            ESP_LOGW(TAG, "Wipe confirmed by user");
+            pin_wipe();
+            wallet_wipe();
+            wallet_init();
+            memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
+            mnemonic_word_count = 0;
+            mnemonic_entry_clear(&entry);
+            entropy_reset_user_pool();
+            ESP_LOGW(TAG, "Device wiped");
+            ui_set_screen(SCREEN_PIN_SETUP);
+            return;
+        }
+    } else {
+        /* Anything else aborts. */
+        ui_set_screen(SCREEN_SETTINGS);
+        return;
+    }
+
+    ui_invalidate();
+}
+
+/* ============================================================================
+ * Mnemonic Verification Screen
+ *
+ * After showing a new seed, ask for a few words back. This is the standard
+ * hardware-wallet flow and it exists because "I wrote it down" and "I wrote it
+ * down correctly" are different claims, and the difference is only discovered
+ * when the backup is needed.
+ *
+ * Reuses the predictive entry from mnemonic-entry.c, so verification feels the
+ * same as import and exercises the same code path.
+ * ============================================================================ */
+
+#define VERIFY_CHALLENGES 3
+
+static int  verify_indices[VERIFY_CHALLENGES];
+static int  verify_current = 0;
+static int  verify_failures = 0;
+static bool verify_last_wrong = false;
+
+static void verify_pick_challenges(void)
+{
+    /* Distinct word positions, drawn from the hardware RNG rather than a
+     * counter so the challenge cannot be anticipated. */
+    for (int i = 0; i < VERIFY_CHALLENGES; i++) {
+        bool unique;
+        int candidate;
+        do {
+            unique = true;
+            candidate = (int)(esp_random() % (uint32_t)mnemonic_word_count);
+            for (int j = 0; j < i; j++) {
+                if (verify_indices[j] == candidate) { unique = false; break; }
+            }
+        } while (!unique);
+        verify_indices[i] = candidate;
+    }
+}
+
+static void screen_mnemonic_verify_enter(void)
+{
+    ESP_LOGI(TAG, "Mnemonic verification screen");
+
+    if (mnemonic_word_count == 0) {
+        ui_set_screen(SCREEN_WALLET_INFO);
+        return;
+    }
+
+    verify_pick_challenges();
+    verify_current = 0;
+    verify_failures = 0;
+    verify_last_wrong = false;
+    mnemonic_entry_reset(&entry, 12);
+}
+
+static void screen_mnemonic_verify_render(void)
+{
+    oled_clear();
+
+    char header[22];
+    snprintf(header, sizeof(header), "Verify %d/%d",
+             verify_current + 1, VERIFY_CHALLENGES);
+    oled_draw_string_centered(0, header);
+
+    char prompt[22];
+    int word_no = verify_indices[verify_current] + 1;
+    snprintf(prompt, sizeof(prompt), "Enter word #%d",
+             (word_no < 1 || word_no > 24) ? 1 : word_no);
+    oled_draw_string_centered(1, prompt);
+
+    char option = mnemonic_entry_option(&entry);
+    char typed[MNEMONIC_ENTRY_WORD_LEN + 6];
+    if (option == MNEMONIC_ENTRY_COMMIT) {
+        snprintf(typed, sizeof(typed), "%s[OK]", entry.prefix);
+    } else {
+        snprintf(typed, sizeof(typed), "%s%c", entry.prefix, option);
+    }
+    oled_draw_string(3, 0, "Type:");
+    oled_draw_string(3, 36, typed);
+
+    if (verify_last_wrong) {
+        oled_draw_string(5, 0, "Wrong - try again");
+    } else {
+        const char *suggestion = mnemonic_entry_suggestion(&entry);
+        if (suggestion) {
+            oled_draw_string(5, 0, "Match:");
+            oled_draw_string(5, 42, suggestion);
+        }
+    }
+
+    oled_draw_string(7, 0, "UP DN  DEL  SEL");
+}
+
+static void screen_mnemonic_verify_on_button(button_id_t btn)
+{
+    verify_last_wrong = false;
+
+    switch (btn) {
+        case BUTTON_UP:   mnemonic_entry_scroll(&entry, 1);  break;
+        case BUTTON_DOWN: mnemonic_entry_scroll(&entry, -1); break;
+
+        case BUTTON_CANCEL:
+            if (!mnemonic_entry_back(&entry)) {
+                /* Backing out of verification returns to the seed, not onward -
+                 * the user may need to read it again. */
+                ui_set_screen(SCREEN_MNEMONIC_DISPLAY);
+            }
+            break;
+
+        case BUTTON_ACCEPT: {
+            if (mnemonic_entry_accept(&entry) == MNEMONIC_ENTRY_CONTINUE) {
+                break;
+            }
+
+            /* A word was committed - compare it against the real one. */
+            char expected[MNEMONIC_ENTRY_WORD_LEN];
+            if (!get_mnemonic_word(mnemonic_buffer, verify_indices[verify_current],
+                                   expected, sizeof(expected))) {
+                ui_set_screen(SCREEN_WALLET_INFO);
+                return;
+            }
+
+            bool correct = (strcmp(entry.words[0], expected) == 0);
+            memzero(expected, sizeof(expected));
+            mnemonic_entry_reset(&entry, 12);
+
+            if (!correct) {
+                verify_failures++;
+                verify_last_wrong = true;
+                ESP_LOGW(TAG, "Verification failed for word #%d (attempt %d)",
+                         verify_indices[verify_current] + 1, verify_failures);
+
+                /* Three misses means the backup is probably wrong, not the
+                 * typing. Send them back to read the phrase again. */
+                if (verify_failures >= 3) {
+                    ESP_LOGW(TAG, "Too many misses; showing the phrase again");
+                    verify_failures = 0;
+                    ui_set_screen(SCREEN_MNEMONIC_DISPLAY);
+                }
+                break;
+            }
+
+            verify_current++;
+            if (verify_current >= VERIFY_CHALLENGES) {
+                ESP_LOGI(TAG, "Seed phrase verified");
+                /* The seed has served its purpose on screen; do not leave it
+                 * sitting in .bss (AUDIT.md S5). */
+                memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
+                mnemonic_word_count = 0;
+                mnemonic_entry_clear(&entry);
+                ui_set_screen(SCREEN_WALLET_INFO);
+                return;
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    ui_invalidate();
+}
+
+/* ============================================================================
  * Public API
  * ============================================================================ */
 
@@ -1789,6 +2042,8 @@ void ui_init(void)
     screens[SCREEN_SETTINGS] = &screen_settings;
     screens[SCREEN_QR_CODE] = &screen_qr_code;
     screens[SCREEN_ENTROPY] = &screen_entropy;
+    screens[SCREEN_WIPE_CONFIRM] = &screen_wipe_confirm;
+    screens[SCREEN_MNEMONIC_VERIFY] = &screen_mnemonic_verify;
 
     current_screen = SCREEN_BOOT;
     needs_render = true;

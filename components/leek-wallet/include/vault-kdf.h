@@ -57,7 +57,7 @@ typedef enum {
  * depth: with flash encryption enabled (T11) an attacker cannot obtain the
  * ciphertext to attack in the first place.
  */
-#define VAULT_KDF_V2_ITERATIONS 4500
+#define VAULT_KDF_V2_ITERATIONS 2250
 
 /**
  * Derive the storage encryption key.

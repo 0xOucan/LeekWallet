@@ -129,6 +129,13 @@ QueueHandle_t button_get_queue(void)
     return button_queue;
 }
 
+void button_drain(void)
+{
+    if (button_queue) {
+        xQueueReset(button_queue);
+    }
+}
+
 const char *button_get_name(button_id_t id)
 {
     switch (id) {

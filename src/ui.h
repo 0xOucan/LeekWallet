@@ -27,6 +27,7 @@ typedef enum {
     SCREEN_WIPE_CONFIRM,
     SCREEN_QR_CODE,
     SCREEN_ENTROPY,
+    SCREEN_MNEMONIC_VERIFY,
     SCREEN_COUNT
 } screen_id_t;
 

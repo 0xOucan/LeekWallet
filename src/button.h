@@ -45,6 +45,17 @@ typedef struct {
 esp_err_t button_init(void);
 
 /**
+ * Discard any queued button events.
+ *
+ * Long operations block the UI task for seconds - key derivation is ~1 s and
+ * BIP39 seed derivation another ~800 ms - and presses made during that window
+ * queue up and then replay all at once, walking the user through several
+ * screens they never saw. Call this after any blocking operation so input
+ * resumes from what the user is actually looking at.
+ */
+void button_drain(void);
+
+/**
  * Get the button event queue handle
  * Use xQueueReceive() to wait for button events
  * @return Queue handle, or NULL if not initialized

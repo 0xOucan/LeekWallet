@@ -235,7 +235,7 @@ function exists for exactly that, and it has not been run yet.
 
 ---
 
-## S7 — Wipe is incomplete and leaves the device in an inconsistent state
+## S7 — ~~Wipe is incomplete and unconfirmed~~ PARTIALLY FIXED
 
 **Where:** `src/pin.c:252-267`, `src/ui.c:1560-1566`, `src/ui.c:592-597`.
 
@@ -246,9 +246,17 @@ are not atomic: a power cut between them leaves ciphertext with no PIN, or a PIN
 wallet. Neither the settings wipe nor the failed-PIN wipe asks for confirmation, so a
 mis-navigation in a 3-item menu destroys the wallet outright.
 
-**Fix direction:** one `device_wipe()` entry point that erases both namespaces and is
-idempotent on reboot (set a "wipe in progress" flag first, clear it last, resume on boot).
-Add a confirmation screen showing what is about to be destroyed.
+**Confirmation is fixed; atomicity is not.**
+
+A live hardware test destroyed a wallet by selecting "Wipe Device" while scrolling a three-item
+menu. `SCREEN_WIPE_CONFIRM` had been declared in the enum but never implemented, so the menu
+item wiped instantly. It now shows what is about to be destroyed and requires three deliberate
+OK presses; anything else aborts. The wipe also clears the UI-layer seed buffers, which the old
+path did not.
+
+Still open: `pin_wipe()` and `wallet_wipe()` remain two non-atomic calls. A power cut between
+them leaves ciphertext with no PIN, or a PIN with no wallet. That needs a single `device_wipe()`
+with a resume-on-boot flag.
 
 ---
 
