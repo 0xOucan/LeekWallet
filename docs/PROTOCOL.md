@@ -294,6 +294,57 @@ Two things to plan for:
   confirms every request on its own screen, which is what makes the untrusted
   host survivable.
 
+## 6bis. Blind signing, and what actually prevents it
+
+A common misreading: that a companion app which decodes and explains a
+transaction removes blind signing. It does not. It is closer to the opposite.
+
+**Blind signing means the device signs bytes it cannot itself decode and
+display.** Whether the host drew a beautiful summary is irrelevant — that
+summary is produced by the machine you are trying not to trust. A gorgeous
+"Sending 1 ETH to vitalik.eth" over a device screen showing a bare hash *is*
+blind signing, with better lighting.
+
+Three things prevent it, all of them on the device:
+
+1. The host sends **structured fields, never a pre-hashed blob** (section 4).
+2. The device **re-serialises and re-hashes** those fields itself, renders what
+   it computed, and signs only that.
+3. `signHash` — sign whatever 32 bytes I hand you — is **refused unless blind
+   signing is explicitly enabled on-device**, and it is off by default.
+
+### We will hit the same wall Ledger did
+
+Ledger's blind-signing toggle exists because their EVM app cannot decode
+arbitrary contract calls. Ours is a 128x64 display with a small parser; the same
+limit applies, sooner. Native transfers and common ERC-20 calls are decodable.
+An arbitrary dapp interaction is not.
+
+Being honest about that is the design. Where the device cannot decode calldata
+it must **refuse by default** and say so, rather than quietly showing a hash and
+accepting a confirmation that means nothing. The user who genuinely needs it can
+turn blind signing on, once, having read what it costs.
+
+The decodable set should grow deliberately — native transfer, ERC-20
+`transfer`/`approve`, EIP-712 typed data — and everything outside it should be a
+refusal, not a shrug. Tracked as T50.
+
+### Session model: unlock once, confirm every time
+
+Ledger's flow is unlock with the PIN, then sign repeatedly without re-entering
+it, pressing to approve each transaction. We match that, deliberately:
+
+| | Required |
+|---|---|
+| Unlocking the device | PIN, on the device |
+| Each signature | **Physical confirmation, no PIN** |
+| After auto-lock | PIN again |
+
+Asking for a PIN per signature sounds stricter and is not. It trains PIN entry
+into muscle memory, which is the habit that makes shoulder-surfing and fake
+prompts work. The per-signature control is the button press against
+device-rendered data; the PIN establishes the session.
+
 ## 6c. Transaction interpretation is advisory
 
 The companion app should decode calldata and explain it in plain language, the
