@@ -1,0 +1,57 @@
+/* LeekWallet design tokens — see docs/DESIGN.md.
+ *
+ * Every colour, space and size in the app comes from here. A component that
+ * hardcodes a colour is a bug: the palette has to move as one piece or the
+ * light/dark pair drifts out of contrast. */
+
+:root {
+  --bg:        #F4F5F2;
+  --surface:   #FFFFFF;
+  --border:    #D8DCD6;
+  --text:      #1A1D1A;
+  --muted:     #5E665F;
+  --accent:    #3F6E31;
+  --accent-fg: #FFFFFF;
+  --danger:    #A33329;
+  --warn:      #8A6510;
+  --ok:        #3F6E31;
+
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-6: 24px; --space-8: 32px; --space-12: 48px;
+
+  --radius: 2px;
+
+  --font-ui:   "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-xs: 12px; --text-sm: 14px; --text-base: 16px;
+  --text-lg: 20px; --text-xl: 28px;
+
+  --motion: 160ms;
+}
+
+/* Dark applies on an explicit choice, and on system preference when no choice
+ * has been made. Both branches are needed: the media query alone ignores the
+ * in-app toggle, and the attribute alone ignores the OS. */
+:root[data-theme="dark"] {
+  --bg: #0F1210; --surface: #171B18; --border: #2A302B;
+  --text: #E8EDE9; --muted: #909A91;
+  --accent: #7ABF6A; --accent-fg: #0F1210;
+  --danger: #E5796A; --warn: #D9A441; --ok: #7ABF6A;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F1210; --surface: #171B18; --border: #2A302B;
+    --text: #E8EDE9; --muted: #909A91;
+    --accent: #7ABF6A; --accent-fg: #0F1210;
+    --danger: #E5796A; --warn: #D9A441; --ok: #7ABF6A;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

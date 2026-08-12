@@ -52,15 +52,45 @@ a serial implementation for desktop and a `btleplug` implementation for
 Android, and the protocol above it is identical on both. Adding the second
 transport to either platform later is configuration, not rework.
 
+## Running it
+
+```bash
+corepack enable pnpm
+cd app
+pnpm install
+pnpm dev          # http://localhost:1420
+```
+
+The shell runs in a plain browser against the mock device, so the whole
+interface can be exercised with no hardware and no Rust toolchain. `pnpm build`
+produces the static bundle Tauri wraps.
+
+The mock is configured with 250 ms of latency on purpose. A mock that answers
+instantly hides every place the UI forgot to show that it is waiting, and a
+hardware wallet spends real seconds deriving keys.
+
+### Theme
+
+Light, dark, and system, cycled from the status bar and remembered. System is a
+distinct state rather than an initial guess — a user who toggles once must be
+able to get back to following their OS.
+
 ## Status
 
-Implemented: frame encoding/decoding with incremental buffering, BLE chunking
-and reassembly, hostile-length rejection. Tests cover byte-at-a-time delivery,
-coalesced frames, and dropped chunks.
+Implemented:
 
-Next: CBOR command codec (T21), the mock device (T23), then the Tauri shell
-(T27b) and viem adapter (T24). The mock is the priority — it lets the UI be
-built and demoed with no hardware attached.
+- **Framing** — length-prefixed frames, incremental decoding, BLE chunking and
+  reassembly, hostile lengths rejected before allocating.
+- **CBOR** — the protocol subset only, verified against RFC 8949 appendix A.
+  Tags, floats, indefinite lengths and 64-bit arguments are refused rather than
+  tolerated.
+- **Mock device** — session handshake, permission tiers, on-device
+  confirmations, user rejection, modelled latency.
+- **Shell** — connection state, passkey comparison, ten derived addresses,
+  a signing preview, and a device log. Driven entirely by the mock.
+
+Next: the Rust transports (T22) so the same shell talks to real hardware over
+USB, then the viem adapter (T24) and WalletConnect (T32).
 
 See [../docs/PROTOCOL.md](../docs/PROTOCOL.md) for the wire format and
 [../docs/DESIGN.md](../docs/DESIGN.md) for the visual language.

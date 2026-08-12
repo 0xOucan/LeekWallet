@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LeekWallet</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="statusbar">
+        <span class="statusbar__dot" id="dot" data-state="disconnected"></span>
+        <span id="conn">Disconnected</span>
+        <span class="statusbar__spacer"></span>
+        <span class="muted" id="wallet"></span>
+        <button class="ghost" id="theme" aria-label="Toggle theme">◐</button>
+      </header>
+
+      <main>
+        <div class="notice notice--danger">
+          Testnets only. This is a proof of concept and has not been audited
+          independently — see AUDIT.md before using real funds.
+        </div>
+
+        <div class="panel">
+          <h1>Device</h1>
+          <p id="devicehint">
+            No device connected. The mock implements the same wire protocol as
+            the firmware, so the interface can be exercised without hardware.
+          </p>
+          <div class="row">
+            <button class="primary" id="connect">Connect mock device</button>
+            <button id="unlock" disabled>Unlock</button>
+            <button id="disconnect" disabled>Disconnect</button>
+          </div>
+          <div id="pairing" hidden style="margin-top: var(--space-4)">
+            <dl class="kv">
+              <dt>Passkey</dt>
+              <dd id="passkey"></dd>
+            </dl>
+            <p>Compare this with the code on the device screen before continuing.</p>
+          </div>
+        </div>
+
+        <div class="panel" id="addrpanel" hidden>
+          <h2>Addresses</h2>
+          <p>
+            Pick the address to sign with. The device signs whichever path is
+            requested — what it shows on its own screen is the authority.
+          </p>
+          <div class="addr-list" id="addrs"></div>
+        </div>
+
+        <div class="panel" id="signpanel" hidden>
+          <h2>Sign a transaction</h2>
+          <p>
+            This preview is drawn by this app and cannot be trusted. Verify the
+            fields on the device before approving.
+          </p>
+          <dl class="kv">
+            <dt>From</dt><dd id="sfrom">—</dd>
+            <dt>To</dt><dd id="sto">0x71c7…</dd>
+            <dt>Value</dt><dd>0.5 ETH</dd>
+            <dt>Chain</dt><dd>1 (Ethereum)</dd>
+          </dl>
+          <div class="row" style="margin-top: var(--space-4)">
+            <button class="primary" id="sign">Request signature</button>
+            <button class="danger" id="signreject">Simulate rejection</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Device log</h2>
+          <div class="log" id="log">Nothing yet.</div>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

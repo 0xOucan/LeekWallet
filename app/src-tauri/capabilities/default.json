@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Everything the companion window may invoke. Tauri denies by default, so this list is the whole surface: adding a capability here is a deliberate act, which is the property we chose Tauri for.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

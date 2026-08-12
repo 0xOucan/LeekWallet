@@ -1,0 +1,124 @@
+@import "./tokens.css";
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: 1.5;
+}
+
+/* ------------------------------------------------------------------ layout */
+
+.app { display: flex; flex-direction: column; min-height: 100vh; }
+
+.statusbar {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  position: sticky; top: 0; z-index: 10;
+}
+
+.statusbar__dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted); flex: none;
+}
+.statusbar__dot[data-state="connected"] { background: var(--ok); }
+.statusbar__dot[data-state="connecting"] { background: var(--warn); }
+.statusbar__dot[data-state="error"] { background: var(--danger); }
+
+.statusbar__spacer { flex: 1; }
+
+main { flex: 1; width: 100%; max-width: 640px; margin: 0 auto; padding: var(--space-6) var(--space-4); }
+@media (min-width: 1024px) { main { max-width: 960px; } }
+
+h1 { font-size: var(--text-lg); font-weight: 500; margin: 0 0 var(--space-4); }
+h2 { font-size: var(--text-base); font-weight: 500; margin: 0 0 var(--space-3); }
+p  { margin: 0 0 var(--space-3); color: var(--muted); font-size: var(--text-sm); }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+/* ----------------------------------------------------------------- buttons */
+
+button {
+  font: inherit; font-size: var(--text-sm);
+  height: 36px; padding: 0 var(--space-4);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface); color: var(--text);
+  cursor: pointer;
+  transition: background var(--motion) ease-out, border-color var(--motion) ease-out;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+button.ghost { background: transparent; border-color: transparent; }
+button.danger { color: var(--danger); border-color: var(--danger); }
+
+.row { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center; }
+
+/* --------------------------------------------------------------- addresses */
+
+/* Mono, chunked and never truncated where it must be verified. Proportional
+ * fonts make l/1 and 0/O ambiguous, which matters when the string is the
+ * difference between your funds and someone else's. */
+.addr {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  word-break: break-all;
+  letter-spacing: 0.02em;
+}
+
+.addr-list { display: flex; flex-direction: column; gap: var(--space-1); }
+
+.addr-item {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left; height: auto; width: 100%;
+}
+.addr-item[aria-selected="true"] { border-color: var(--accent); background: var(--bg); }
+.addr-item__index {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  color: var(--muted); min-width: 3ch;
+}
+
+/* ------------------------------------------------------- states & notices */
+
+.muted { color: var(--muted); }
+.state { padding: var(--space-8) var(--space-4); text-align: center; color: var(--muted); }
+
+.notice {
+  border-left: 2px solid var(--warn);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-4);
+  font-size: var(--text-sm);
+  background: var(--surface);
+}
+.notice--danger { border-left-color: var(--danger); }
+
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2) var(--space-4); font-size: var(--text-sm); }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; font-family: var(--font-mono); word-break: break-all; }
+
+.log {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  color: var(--muted); white-space: pre-wrap;
+  max-height: 160px; overflow-y: auto;
+}
