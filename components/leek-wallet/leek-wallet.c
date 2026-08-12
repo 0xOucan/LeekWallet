@@ -1,9 +1,18 @@
 /**
- * Colibri Wallet Implementation
- * BIP39/BIP32 HD wallet for ESP32-C3
+ * LeekWallet HD Wallet Core
+ *
+ * BIP39/BIP32/BIP44 hierarchical deterministic wallet with encrypted mnemonic
+ * storage in NVS.
+ *
+ * Originally named after the Colibri hardware wallet, whose JSON-RPC method
+ * naming and general shape inspired this design. No code was taken from it:
+ * upstream Colibri is AGPL-3.0 C++ built on Arduino and ArduinoJson, while this
+ * is an independent C implementation for ESP-IDF. The name was dropped to make
+ * that boundary unambiguous, and because the two have diverged - see
+ * docs/VAULT.md.
  */
 
-#include "colibri-wallet.h"
+#include "leek-wallet.h"
 #include "bip39.h"
 #include "bip32.h"
 #include "curves.h"

@@ -13,7 +13,7 @@
 
 #include "oled.h"
 #include "pin.h"
-#include "colibri-wallet.h"
+#include "leek-wallet.h"
 #include "mnemonic-entry.h"
 #include "bip39.h"
 #include "memzero.h"

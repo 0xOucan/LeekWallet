@@ -385,7 +385,7 @@ See [ROADMAP.md](ROADMAP.md) for the detailed, parallelizable task breakdown.
 ## Acknowledgments
 
 - **Trezor** - For the open-source [trezor-crypto](https://github.com/trezor/trezor-crypto) library
-- **Colibri** - For the HD wallet foundation
+- **Colibri** - For the design inspiration behind the RPC surface (no code used; see [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md))
 - **The Maya People** - For the inspiration of the *Lek* and their enduring wisdom
 - **ricmoo** - For the [QRCode](https://github.com/ricmoo/QRCode) library
 
@@ -405,7 +405,18 @@ See [ROADMAP.md](ROADMAP.md) for the detailed, parallelizable task breakdown.
 
 ## License
 
-This project is open source under the [MIT License](LICENSE).
+LeekWallet is licensed under the [Apache License 2.0](LICENSE).
+
+It bundles third-party components under their own (MIT) licenses — notably
+[trezor-crypto](https://github.com/trezor/trezor-firmware) for BIP32/BIP39/
+secp256k1 and [ricmoo/QRCode](https://github.com/ricmoo/QRCode) for QR
+generation. Full inventory and attribution in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) and [NOTICE](NOTICE).
+
+**Note for contributors:** the [Colibri](https://github.com/xtools-at/colibri)
+hardware wallet inspired this project's RPC surface, but it is AGPL-3.0 and no
+code from it is used here. Copying Colibri code into this repository would make
+the whole project AGPL. See THIRD-PARTY-LICENSES.md.
 
 ---
 

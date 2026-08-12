@@ -30,7 +30,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "colibri-wallet.h"
+#include "leek-wallet.h"
 
 #include "oled.h"
 #include "button.h"

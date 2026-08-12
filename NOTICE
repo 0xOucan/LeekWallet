@@ -1,0 +1,21 @@
+LeekWallet
+Copyright 2026 0xoucan
+
+This product includes software developed as part of the LeekWallet project,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product bundles third-party software under separate licenses. See
+THIRD-PARTY-LICENSES.md for the full inventory and license texts.
+
+  - trezor-crypto (MIT)
+      Copyright (c) 2013 Tomas Dzetkulic
+      Copyright (c) 2013 Pavol Rusnak
+      components/trezor-crypto/
+
+  - chacha20poly1305 (MIT)
+      Copyright (c) 2016 Will Glozer
+      components/trezor-crypto/chacha20poly1305/
+
+  - QRCode (MIT)
+      Copyright (c) 2017 Richard Moore
+      src/qrcode.c, src/qrcode.h
