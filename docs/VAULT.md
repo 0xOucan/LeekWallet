@@ -94,6 +94,29 @@ This is also why backup verification is tracked per wallet and why the wipe
 screen counts unverified ones. Thirty seeds is thirty chances to have written
 one down wrong.
 
+### Passphrase input on four buttons
+
+Fifty-two letters plus digits and symbols in one linear cycle would be
+unusable. Instead the selector carries *mode entries* alongside the characters,
+the same trick that makes `OK` work in the PIN and mnemonic screens:
+
+```
+  a b c ... z  [A]  [123]  [DEL]  [OK]
+                ^     ^
+         case toggle  symbol set
+```
+
+UP/DOWN move through the ring, ACCEPT applies whatever is highlighted. Picking
+`[A]` flips the letter set to uppercase in place — no separate shift button, no
+navigating 52 entries, and the four physical buttons keep their meaning
+everywhere in the UI. CANCEL stays "delete last character", so the modes cost
+nothing in navigation.
+
+Worst case is roughly 15 presses per character. That is slow, and deliberately
+so: this is the credential that is typed rarely and protects everything. Users
+who want speed have the companion app ([PROTOCOL.md section 5](PROTOCOL.md)),
+with the security trade stated plainly.
+
 ### Do not record which seeds have a passphrase
 
 Tempting design: mark a seed as "PIN only" or "PIN + passphrase", so the device

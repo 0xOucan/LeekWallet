@@ -1407,6 +1407,20 @@ WalletError wallet_select_wallet(uint8_t index) {
     // Invalidate seed cache (new mnemonic = new seed)
     invalidate_seed_cache();
 
+    /* Clear the passphrase too.
+     *
+     * Carrying it across a switch derives seed N + the previous passphrase,
+     * which is a real wallet nobody asked for and which looks empty. The user
+     * concludes seed N has no funds while their actual seed-N wallet sits
+     * elsewhere, unshown. Same failure as a mistyped passphrase, arrived at
+     * without typing anything. A passphrase belongs to the seed it was entered
+     * for, and does not survive leaving it. */
+    if (state.has_passphrase) {
+        ESP_LOGI(TAG, "Clearing passphrase on wallet switch");
+    }
+    memzero(state.passphrase, sizeof(state.passphrase));
+    state.has_passphrase = false;
+
     // Clear current mnemonic
     memzero(state.mnemonic, sizeof(state.mnemonic));
     memzero(&state.node, sizeof(state.node));

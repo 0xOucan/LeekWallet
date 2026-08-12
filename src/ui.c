@@ -315,6 +315,12 @@ static int menu_selection = 0;
  * ============================================================================ */
 
 static EthAddress eth_address;
+
+/* Which address of the active wallet is shown: m/44'/60'/0'/0/<index>.
+ * Ten is arbitrary but covers ordinary use; the derivation itself is unbounded
+ * and the limit exists only to keep UP/DOWN a short cycle. */
+#define ADDRESS_INDEX_COUNT 10
+static uint32_t address_index = 0;
 static char mnemonic_buffer[256];
 static int mnemonic_word_count = 0;
 static int mnemonic_page = 0;  /* Current page (3 words per page) */
@@ -838,8 +844,9 @@ static void screen_wallet_info_enter(void)
         }
     }
 
-    /* Select default ETH path: m/44'/60'/0'/0/0 */
+    /* m/44'/60'/0'/0/<address_index> */
     HDPath eth_path = HDPATH_ETH_DEFAULT;
+    eth_path.address_index = address_index;
     WalletError err = wallet_select_path(&eth_path);
     if (err != WALLET_OK) {
         ESP_LOGE(TAG, "Failed to select path: %d", err);
@@ -861,8 +868,9 @@ static void screen_wallet_info_render(void)
 
     WalletStatus status = wallet_get_status();
     char title[22];
-    snprintf(title, sizeof(title), "Wallet %d/%d",
-             status.active_wallet_index, status.wallet_count);
+    snprintf(title, sizeof(title), "W%u/%u  addr %u",
+             (unsigned)status.active_wallet_index, (unsigned)status.wallet_count,
+             (unsigned)address_index);
     oled_draw_string_centered(0, title);
 
     if (status.wallet_count == 0) {
@@ -887,12 +895,44 @@ static void screen_wallet_info_render(void)
         oled_draw_string_centered(4, line3);
     }
 
-    oled_draw_string(7, 0, "BCK           QR");
+    oled_draw_string(7, 0, "UP DN BCK   QR");
+}
+
+/* Re-derive the displayed address for the current index. */
+static void wallet_info_refresh_address(void)
+{
+    memset(&eth_address, 0, sizeof(eth_address));
+
+    HDPath eth_path = HDPATH_ETH_DEFAULT;
+    eth_path.address_index = address_index;
+
+    if (wallet_select_path(&eth_path) != WALLET_OK ||
+        wallet_get_eth_address(&eth_address) != WALLET_OK) {
+        ESP_LOGE(TAG, "Failed to derive address %u", (unsigned)address_index);
+        strcpy(eth_address.hex, "Derive failed");
+    }
 }
 
 static void screen_wallet_info_on_button(button_id_t btn)
 {
+    WalletStatus status = wallet_get_status();
+
     switch (btn) {
+        case BUTTON_UP:
+            if (status.wallet_count > 0) {
+                address_index = (address_index + 1) % ADDRESS_INDEX_COUNT;
+                wallet_info_refresh_address();
+            }
+            break;
+
+        case BUTTON_DOWN:
+            if (status.wallet_count > 0) {
+                address_index = (address_index + ADDRESS_INDEX_COUNT - 1)
+                                % ADDRESS_INDEX_COUNT;
+                wallet_info_refresh_address();
+            }
+            break;
+
         case BUTTON_CANCEL:
             ui_set_screen(SCREEN_MAIN_MENU);
             break;
@@ -1082,6 +1122,7 @@ static void screen_wallet_select_on_button(button_id_t btn)
         case BUTTON_ACCEPT:
             if (status.wallet_count > 0) {
                 wallet_select_wallet(wallet_list_selection + 1);
+                address_index = 0;   /* a different seed, start from its first address */
                 ESP_LOGI(TAG, "Selected wallet %d", wallet_list_selection + 1);
                 ui_set_screen(SCREEN_WALLET_INFO);
             }
