@@ -1,7 +1,13 @@
 # LeekWallet Partition Table (16MB Flash)
-# The board reports 16MB; a 4MB table left 12MB unused.
+#
+# nvs holds the vault: encrypted mnemonics, IVs, the KDF salt and counters.
+# 24 KB is roughly 630 usable NVS entries, and 30 wallets need about 300, so
+# MAX_WALLETS fits with headroom to spare.
+#
+# Resizing nvs invalidates existing contents - do not change it on a device
+# holding a wallet without migrating first.
+#
 # Name,   Type, SubType, Offset,   Size,    Flags
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
 factory,  app,  factory, 0x10000,  0x400000,
-storage,  data, nvs,     0x410000, 0x100000,

@@ -48,7 +48,7 @@ Your cryptocurrency keys are like the warm tortillas of the digital age - they m
 | Feature | Description |
 |---------|-------------|
 | **HD Wallet** | BIP39/BIP32/BIP44 hierarchical deterministic wallet |
-| **Multi-Wallet** | Store up to 30 wallets securely |
+| **Multi-Wallet** | Up to 30 independent seed phrases, each encrypted separately |
 | **PIN Protection** | 4-8 digit PIN, 3-attempt wipe, counter hardened against power-cut attacks |
 | **Vault** | Per-device salted PBKDF2-HMAC-SHA512, ~1 s on hardware, domain-separated key and verifier |
 | **Seed Phrases** | 12 or 24-word mnemonic generation and import |
@@ -56,6 +56,24 @@ Your cryptocurrency keys are like the warm tortillas of the digital age - they m
 | **Air-Gapped** | No internet required for key operations |
 | **WiFi Testing** | AP mode for connectivity verification |
 | **BLE Support** | NimBLE stack for future integrations |
+
+### Capacity
+
+| | Limit | Set by |
+|---|---|---|
+| Seed phrases stored | **30** | `MAX_WALLETS`, bounded by the 24 KB NVS partition |
+| Words per phrase | 12 or 24 | BIP39 |
+| Addresses per phrase | **2³¹ accounts x 2³¹ indices** | BIP44; the derivation is unbounded because addresses are computed, not stored |
+| Addresses reachable in the UI | **1** (`m/44'/60'/0'/0/0`) | no account/index selector yet — see T43 |
+
+Each phrase is encrypted under its own IV with the vault key, so wallets are
+independent: the 30 slots are 30 separate seeds, not 30 addresses.
+
+The gap worth knowing: the device *can* derive any BIP44 path
+(`wallet_select_path()` takes a full five-level path), but the UI only ever
+asks for index 0. Reaching the rest needs either an on-device selector or the
+companion app, both of which are roadmap items rather than limitations of the
+crypto.
 
 ### Hardware
 
