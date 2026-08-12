@@ -12,12 +12,25 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
 $(BUILD)/test_mnemonic_entry: test_mnemonic_entry.c host_stubs.c ../src/mnemonic-entry.c $(CRYPTO_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
+
+$(BUILD)/test_session: test_session.c host_stubs.c ../src/session.c \
+                       $(CRYPTO)/ed25519-donna/curve25519-donna-scalarmult-base.c \
+                       $(CRYPTO)/ed25519-donna/curve25519-donna-32bit.c \
+                       $(CRYPTO)/ed25519-donna/curve25519-donna-helpers.c \
+                       $(CRYPTO)/ed25519-donna/ed25519-donna-32bit-tables.c \
+                       $(CRYPTO)/chacha20poly1305/chacha20poly1305.c \
+                       $(CRYPTO)/chacha20poly1305/chacha_merged.c \
+                       $(CRYPTO)/chacha20poly1305/poly1305-donna.c \
+                       $(CRYPTO)/chacha20poly1305/rfc7539.c \
+                       $(CRYPTO)/hmac.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c \
+                       $(CRYPTO)/rand.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -o $@ $^
 
 $(BUILD)/test_cbor: test_cbor.c ../src/cbor.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
