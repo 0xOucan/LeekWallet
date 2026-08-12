@@ -5,7 +5,7 @@
 CC      ?= gcc
 CRYPTO  := ../components/trezor-crypto
 CFLAGS  := -O1 -g -Wall -Wextra -Wno-unused-parameter \
-           -I$(CRYPTO) -I../src -I. -Ishim \
+           -I$(CRYPTO) -I../src -I../components/leek-wallet/include -I. -Ishim \
            -DUSE_BIP39_CACHE=0 -DUSE_BIP32_CACHE=0 -DUSE_ETHEREUM=1 -DUSE_KECCAK=1
 BUILD   := build
 
@@ -19,7 +19,7 @@ all: $(addprefix $(BUILD)/,$(TESTS))
 $(BUILD)/test_mnemonic_entry: test_mnemonic_entry.c host_stubs.c ../src/mnemonic-entry.c $(CRYPTO_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
-$(BUILD)/test_vault_kdf: test_vault_kdf.c ../src/vault-kdf.c \
+$(BUILD)/test_vault_kdf: test_vault_kdf.c ../components/leek-wallet/vault-kdf.c \
                          $(CRYPTO)/sha2.c $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c \
                          $(CRYPTO)/memzero.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^

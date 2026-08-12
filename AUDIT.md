@@ -31,9 +31,21 @@ Ten thousand double-SHA256 evaluations is microseconds. Physical access to the d
 a discarded one — is full seed recovery. The 3-attempt wipe counter is irrelevant because the
 attack never goes through the firmware.
 
-**Fix direction:** all three layers need to move.
-- Replace `derive_key_from_password` with PBKDF2-HMAC-SHA512 or scrypt, salted from a
-  per-device random value, tuned to ~500 ms on the S3.
+**Partially fixed.** The key derivation layer is done: `components/leek-wallet/vault-kdf.c`
+derives both the storage key and the verifier from PBKDF2-HMAC-SHA512 over a per-device random
+salt under separate domain strings, so the stored verifier is no longer an oracle for the
+encryption key. `wallet_set_password()` creates v2 vaults; `wallet_unlock()` migrates legacy ones
+on the first successful unlock, one wallet at a time, with the version marker flipped last and
+an alternate-key fallback so an interrupted migration resumes instead of bricking the vault.
+
+**Still open, and still disqualifying without them:**
+- Iteration count (12000) is a placeholder — 7 ms on a desktop, needs tuning to ~500 ms on the
+  S3 (T9c).
+- Storage is still unauthenticated AES-CBC; AES-GCM is T14.
+- **Flash encryption and secure boot are not enabled** (T11). Until they are, an attacker can
+  still dump NVS — the KDF raises the cost from instant to days, but does not stop the read.
+
+**Remaining fix direction:**
 - Enable flash encryption + secure boot v2 (QEMU emulates eFuses, so this is testable before
   burning anything irreversible — see `sim/README.md`).
 - Allow real PIN lengths (S2). A 4-digit PIN behind a proper KDF is still only 10⁴; the KDF
