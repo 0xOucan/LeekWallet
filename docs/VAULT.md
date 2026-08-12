@@ -27,6 +27,42 @@ This is also where the DIY argument holds its shape rather than overreaching. We
 pretending to beat a secure element at physical resistance. We are closing the gap on the attack
 that actually happens, while being verifiable on the attacks where silicon does not help.
 
+## Unlock model
+
+Three credentials, with distinct jobs. Keeping them distinct is what stops the design drifting
+into "any secret opens anything".
+
+| Credential | Opens the vault | Required to sign | Stored on device |
+|---|---|---|---|
+| **PIN** | Yes — the daily path | **Yes, always** | Salted hash only |
+| **Passphrase** | No | Yes, *if configured* | **Never, not even encrypted** |
+| **Seed phrase** | Recovery only — see below | **No** | Encrypted under the PIN-derived key |
+
+**Signing requires PIN, plus passphrase if the user set one.** Never the seed phrase. A device
+that asks for your seed phrase in order to send a transaction has trained you into the exact
+habit every phishing attack depends on. The seed is for restoring, and nothing else.
+
+**Passphrase is optional.** PIN-only is a complete, supported configuration and should be the
+default. A user who wants one wallet and one PIN gets exactly that; the passphrase exists for
+people who want a second hidden wallet or an off-device factor.
+
+**The seed phrase is a recovery path, and it restores rather than unlocks.** If the PIN is
+forgotten, re-entering the seed does not open the existing vault in place — it wipes and
+re-imports, then requires a new PIN to be set. Two reasons this is better than unlocking in
+place:
+
+1. One vault with two doors means two locks to get right, and the second one is rarely the one
+   that gets audited. Restore-and-reinitialise keeps a single authenticated path into a live
+   vault.
+2. It costs nothing in practice. Anyone holding your seed phrase already controls the funds and
+   has no reason to want your device. So a seed-phrase route into the device grants an attacker
+   nothing they did not already have — which is also why it is safe to offer at all.
+
+The passphrase is unaffected by any of this: it is not stored, so restoring from seed cannot
+reveal a passphrase wallet. Recovering a passphrase wallet requires the seed *and* the
+passphrase, from the user's memory or their own backup. That is the property that kept passphrase
+users whole through the Coldcard incident, and it must not be softened for convenience.
+
 ## Three layers
 
 ### 1. A real KDF (replaces `SHA256²`)
