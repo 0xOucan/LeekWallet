@@ -104,15 +104,23 @@ export class MockDevice implements Transport {
       return this.error(ErrorCode.MalformedFrame, "undecodable CBOR");
     }
 
-    if (typeof request !== "object" || request === null || Array.isArray(request)) {
+    // Uint8Array is also `typeof "object"`, so exclude it explicitly or the
+    // map access below is unsound.
+    if (
+      typeof request !== "object" ||
+      request === null ||
+      Array.isArray(request) ||
+      request instanceof Uint8Array
+    ) {
       return this.error(ErrorCode.MalformedFrame, "request must be a map");
     }
 
-    const method = request["method"];
+    const map = request as Record<string, CborValue>;
+    const method = map["method"];
     if (typeof method !== "string") {
       return this.error(ErrorCode.MalformedFrame, "missing method");
     }
-    const params = (request["params"] ?? {}) as Record<string, CborValue>;
+    const params = (map["params"] ?? {}) as Record<string, CborValue>;
 
     // Session must be established before anything encrypted.
     const preSession = method === "hello" || method === "getFeatures";
