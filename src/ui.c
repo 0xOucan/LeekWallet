@@ -1261,11 +1261,15 @@ static void screen_mnemonic_entry_render(void)
     /* Prefix typed so far, plus the highlighted selector option. The selector
      * only offers letters that can still lead to a real BIP39 word, and offers
      * "OK" once the prefix is a complete word. */
+    /* Name the word OK would accept. "pos[OK]" tells the user nothing;
+     * "OK: position" lets them catch a wrong turn before committing it. */
     char option = mnemonic_entry_option(&entry);
-    char prefix_display[MNEMONIC_ENTRY_WORD_LEN + 6];
+    char prefix_display[MNEMONIC_ENTRY_WORD_LEN + 8];
 
     if (option == MNEMONIC_ENTRY_COMMIT) {
-        snprintf(prefix_display, sizeof(prefix_display), "%s[OK]", entry.prefix);
+        const char *target = mnemonic_entry_suggestion(&entry);
+        snprintf(prefix_display, sizeof(prefix_display), "OK:%s",
+                 target ? target : entry.prefix);
     } else {
         snprintf(prefix_display, sizeof(prefix_display), "%s%c", entry.prefix, option);
     }
@@ -1993,9 +1997,10 @@ static void screen_mnemonic_verify_render(void)
     oled_draw_string_centered(1, prompt);
 
     char option = mnemonic_entry_option(&entry);
-    char typed[MNEMONIC_ENTRY_WORD_LEN + 6];
+    char typed[MNEMONIC_ENTRY_WORD_LEN + 8];
     if (option == MNEMONIC_ENTRY_COMMIT) {
-        snprintf(typed, sizeof(typed), "%s[OK]", entry.prefix);
+        const char *target = mnemonic_entry_suggestion(&entry);
+        snprintf(typed, sizeof(typed), "OK:%s", target ? target : entry.prefix);
     } else {
         snprintf(typed, sizeof(typed), "%s%c", entry.prefix, option);
     }

@@ -120,14 +120,26 @@ For 24-word seeds it is ~73%. Since `wallet_validate_mnemonic()` then fails the 
 screen silently resets to word 1 (`ui.c:1251`) with no explanation. A user restoring a real
 backup hits a coin-flip chance of an unrecoverable-looking loop.
 
-**Fixed.** The logic moved to `src/mnemonic-entry.c` (no ESP-IDF deps, so the host suite drives
+**Fixed twice.** The logic moved to `src/mnemonic-entry.c` (no ESP-IDF deps, so the host suite drives
 it directly). Auto-commit now fires only when exactly one word still matches; when the prefix is
 itself a word but others extend it, an explicit `OK` option appears in the selector. The selector
 is also built from `mnemonic_word_completion_mask()`, so dead-end letters are never offered.
 
 `sim/test_mnemonic_entry.c` now types all 2048 words keystroke-by-keystroke:
 **0 wrong, 0 unreachable**, worst case 49 button presses (`surprise`). That press count is the
-new UX cost and is worth revisiting — a two-axis selector or coarse letter jumps would cut it.
+new UX cost and is worth revisiting — a two-axis selector or coarse letter jumps would cut it
+(T44).
+
+**The second fix came from hardware testing.** Auto-committing on a unique match still lost a
+word: the selector offers only viable letters, so neighbours are arbitrary, and after `po` the
+letter `p` sits directly beside `s`. A user aiming for `post` who over-scrolled by one landed
+on `pop`, which uniquely matches `popular` and committed instantly with no prompt and no
+obvious undo. The mistake then surfaced twelve words later as a checksum failure naming no word.
+
+Nothing auto-commits now. A unique match surfaces `OK` pre-highlighted and captioned with the
+word it would accept (`OK:post`), so confirming costs one press and a wrong turn costs one
+CANCEL. Reachability is unchanged; the entry is one press per word slower and no longer silently
+wrong.
 
 **Related, currently benign:** the 4+ character uniqueness test at `ui.c:1204-1212` probes
 uniqueness by appending the single letter `'a'`. That is not a uniqueness test in general — it

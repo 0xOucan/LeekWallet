@@ -56,7 +56,15 @@ static void rebuild_options(MnemonicEntry *e)
         }
     }
 
-    if (e->prefix_len > 0 && mnemonic_find_word(e->prefix) >= 0) {
+    /* Offer COMMIT when the prefix can resolve to a word: either it is one
+     * already, or exactly one word still matches it. */
+    bool exact = (e->prefix_len > 0 && mnemonic_find_word(e->prefix) >= 0);
+    bool unique = (e->prefix_len > 0 &&
+                   count_matches(e->prefix, e->prefix_len, 2, NULL) == 1);
+
+    int commit_slot = -1;
+    if (exact || unique) {
+        commit_slot = e->option_count;
         e->options[e->option_count++] = MNEMONIC_ENTRY_COMMIT;
     }
 
@@ -66,7 +74,15 @@ static void rebuild_options(MnemonicEntry *e)
         e->options[e->option_count++] = MNEMONIC_ENTRY_COMMIT;
     }
 
-    /* Keep the highlight on the same option across a rebuild when possible. */
+    /* When only one word can still match, put the highlight on COMMIT so
+     * confirming is a single press. The word is not committed for the user -
+     * see mnemonic_entry_accept() for why. */
+    if (unique && commit_slot >= 0) {
+        e->option_index = commit_slot;
+        return;
+    }
+
+    /* Otherwise keep the highlight on the same option across a rebuild. */
     e->option_index = 0;
     if (previous != '\0') {
         for (int i = 0; i < e->option_count; i++) {
@@ -141,8 +157,13 @@ MnemonicEntryResult mnemonic_entry_accept(MnemonicEntry *e)
 
     char option = mnemonic_entry_option(e);
 
-    /* Explicit commit: only valid when the prefix is a complete word. */
+    /* Explicit commit: the unique remaining word, or the prefix itself. */
     if (option == MNEMONIC_ENTRY_COMMIT) {
+        const char *only = NULL;
+        if (e->prefix_len > 0 &&
+            count_matches(e->prefix, e->prefix_len, 2, &only) == 1 && only) {
+            return commit_word(e, only);
+        }
         if (e->prefix_len > 0 && mnemonic_find_word(e->prefix) >= 0) {
             return commit_word(e, e->prefix);
         }
@@ -156,13 +177,21 @@ MnemonicEntryResult mnemonic_entry_accept(MnemonicEntry *e)
     e->prefix[e->prefix_len++] = option;
     e->prefix[e->prefix_len] = '\0';
 
-    /* Auto-commit only when the prefix is unambiguous. Committing on "is a
-     * valid word" alone is what made 110 words unreachable. */
-    const char *only = NULL;
-    if (count_matches(e->prefix, e->prefix_len, 2, &only) == 1 && only) {
-        return commit_word(e, only);
-    }
-
+    /*
+     * Nothing commits without the user confirming it.
+     *
+     * Auto-committing on a unique match reads well and fails badly. The
+     * selector only offers viable letters, so neighbours are arbitrary: after
+     * "po" the options are e,i,l,n,o,p,r,s,t,v,w, and 'p' sits directly beside
+     * 's'. Over-scrolling by one while aiming for "post" lands on "pop", which
+     * uniquely matches "popular" and was committed instantly with no prompt.
+     * The user then discovers the mistake twelve words later as a checksum
+     * failure that names no word.
+     *
+     * So a unique match surfaces COMMIT pre-highlighted instead. Confirming
+     * costs one press, and a wrong turn costs one CANCEL rather than a silent
+     * wrong seed.
+     */
     rebuild_options(e);
     return MNEMONIC_ENTRY_CONTINUE;
 }
