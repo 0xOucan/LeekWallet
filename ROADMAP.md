@@ -149,6 +149,7 @@ to say this at the moment of creation, not in a manual.
 | T39 | **Wallet fingerprint display** — show master XFP + first address after a passphrase is applied, before any funds view | T38 | fingerprint matches Trezor for the same seed+passphrase |
 | T40 | Host-side passphrase entry over the protocol, marked as the lower-security path | T20, T38 | mock device round-trips it |
 | ~~T41~~ ✅ | Interop vectors: BIP39 known-answer seeds with and without passphrase | — | `sim/test_passphrase.c`, both spec vectors match byte-for-byte |
+| T45 | Per-seed accounts: expose `m/44'/60'/account'/0/0` so one seed covers multiple identities, which is the model that should be the default rather than 30 stored seeds | T43 | account selector on the wallet screen |
 | T42 | Session model: when the passphrase clears (on lock, on timeout, on wallet switch) and how the UI shows which wallet is active | T38 | no path silently reuses a stale passphrase |
 
 T41 is worth doing first and independently — it is a pure host test with no UI, it proves the

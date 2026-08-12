@@ -63,6 +63,61 @@ reveal a passphrase wallet. Recovering a passphrase wallet requires the seed *an
 passphrase, from the user's memory or their own backup. That is the property that kept passphrase
 users whole through the Coldcard incident, and it must not be softened for convenience.
 
+## Multi-seed model
+
+Most hardware wallets store exactly one seed and derive everything from it.
+LeekWallet stores up to 30, which is a deliberate divergence worth being
+explicit about.
+
+```
+Vault (one PIN)
+├── seed 1 ──┬── no passphrase  → wallet A → m/44'/60'/0'/0/0, /1, /2 ...
+│            └── passphrase "x" → wallet B (unrelated to A)
+├── seed 2 ──── ...
+└── seed 30 ─── ...
+```
+
+Three independent axes: which seed, which passphrase, which derivation path.
+Only the first is stored.
+
+**What multiple seeds buy:** importing wallets that already exist elsewhere,
+keeping genuinely separate identities with separate backups, and sharing one
+device across people.
+
+**What they cost:** N seeds means N backups. One seed with multiple BIP44
+accounts (`m/44'/60'/account'/...`) covers most "separate wallets" needs with a
+single thing to protect, which is exactly why the single-seed convention exists.
+The 30 slots are a capability, not a recommendation — the default path should
+stay one seed and many accounts.
+
+This is also why backup verification is tracked per wallet and why the wipe
+screen counts unverified ones. Thirty seeds is thirty chances to have written
+one down wrong.
+
+### Do not record which seeds have a passphrase
+
+Tempting design: mark a seed as "PIN only" or "PIN + passphrase", so the device
+can prompt correctly and warn when a passphrase is missing.
+
+**That destroys plausible deniability, and deniability is most of what a
+passphrase is for.** If the device knows wallet 3 requires a passphrase, then
+anyone who compels you to unlock learns that a hidden wallet exists. The secret
+stops being "is there another wallet" and becomes "what is the passphrase",
+which is a question that can be asked under pressure.
+
+Trezor's model stores nothing: any passphrase, including none, silently produces
+a valid-looking wallet. There is no record to seize and nothing that
+distinguishes a real hidden wallet from a typo. We follow the same rule:
+
+- Passphrase is offered at unlock, always, for every seed.
+- No flag, counter, or hint is persisted about whether one was ever used.
+- Entering the wrong passphrase yields a different empty wallet, not an error.
+
+The cost is that the device cannot tell you that you mistyped, which is exactly
+the trap described below — and precisely why the fingerprint display is not
+optional. Deniability is what makes the fingerprint necessary, not a substitute
+for it.
+
 ## Three layers
 
 ### 1. A real KDF (replaces `SHA256²`)
