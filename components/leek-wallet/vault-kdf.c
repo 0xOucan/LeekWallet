@@ -21,11 +21,28 @@
 static const char DOMAIN_ENC[] = "leek-enc-v2";
 static const char DOMAIN_VER[] = "leek-ver-v2";
 
+/* Largest domain string build_salt() may be handed. Enforced at compile time so
+ * adding a longer separator is a build error rather than a stack overflow in
+ * the middle of key derivation. */
+#define MAX_DOMAIN_LEN 16
+_Static_assert(sizeof(DOMAIN_ENC) - 1 <= MAX_DOMAIN_LEN, "DOMAIN_ENC too long");
+_Static_assert(sizeof(DOMAIN_VER) - 1 <= MAX_DOMAIN_LEN, "DOMAIN_VER too long");
+
 /* PBKDF2 salt = device salt || domain separator. */
 static void build_salt(const uint8_t salt[VAULT_SALT_SIZE], const char *domain,
-                       uint8_t *out, size_t *out_len)
+                       uint8_t *out, size_t out_size, size_t *out_len)
 {
     size_t dlen = strlen(domain);
+
+    /* Belt and braces alongside the static asserts: a truncated salt would
+     * silently change every derived key, so clamp rather than overflow. */
+    if (dlen > MAX_DOMAIN_LEN) {
+        dlen = MAX_DOMAIN_LEN;
+    }
+    if (VAULT_SALT_SIZE + dlen > out_size) {
+        dlen = out_size - VAULT_SALT_SIZE;
+    }
+
     memcpy(out, salt, VAULT_SALT_SIZE);
     memcpy(out + VAULT_SALT_SIZE, domain, dlen);
     *out_len = VAULT_SALT_SIZE + dlen;
@@ -37,9 +54,9 @@ static void derive_v2(const char *pin, size_t pin_len,
                       const char *domain,
                       uint8_t out32[32])
 {
-    uint8_t full_salt[VAULT_SALT_SIZE + 16];
+    uint8_t full_salt[VAULT_SALT_SIZE + MAX_DOMAIN_LEN];
     size_t  full_salt_len = 0;
-    build_salt(salt, domain, full_salt, &full_salt_len);
+    build_salt(salt, domain, full_salt, sizeof(full_salt), &full_salt_len);
 
     uint8_t out64[64];
     pbkdf2_hmac_sha512((const uint8_t *)pin, (int)pin_len,

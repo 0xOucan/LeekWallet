@@ -345,6 +345,51 @@ into muscle memory, which is the habit that makes shoulder-surfing and fake
 prompts work. The per-signature control is the button press against
 device-rendered data; the PIN establishes the session.
 
+## 6d. Chains and tokens
+
+**Chain-agnostic within EVM is nearly free; across coin families it is not.**
+Worth separating the two, because they cost very different amounts.
+
+*EVM chains* differ only by `chainId`, which is already a signed field under
+EIP-155. Supporting Base, Arbitrum, Optimism, Polygon, BSC and anything else is
+a matter of the app knowing RPC endpoints — the firmware barely changes.
+
+*Other families* — Bitcoin, Solana, Cardano — mean different curves, address
+encodings and signing schemes. trezor-crypto already carries secp256k1 and
+ed25519, so it is achievable, but each is a real project rather than a
+configuration flag. EVM first, deliberately.
+
+**The device must display the chain.** The same address exists on every EVM
+chain and a signature valid on one is not on another; a host that quietly swaps
+chain 1 for chain 56 changes what a signature authorises. Unknown chain IDs are
+shown as raw numbers rather than guessed at — "chain 8453" is honest, a wrong
+name is worse than none.
+
+### Token lists belong in the app, and are advisory
+
+The [Uniswap token list](https://tokenlists.org) format is the standard, and
+CoinGecko publishes per-chain lists in it. That is the right source, and it
+belongs in the companion app: the device cannot hold thousands of entries, and
+would gain nothing by trying.
+
+The trap is what the device then displays. A token list maps a contract address
+to a symbol, so if the device renders "1000 USDC" from a host-supplied symbol, a
+compromised host relabels a worthless contract as USDC and the confirmation
+screen becomes the attack.
+
+So:
+
+- **The device shows the contract address** for any token transfer, alongside
+  whatever symbol it can verify itself.
+- The device carries a **small built-in list of well-known token contracts per
+  supported chain** — the handful worth hardcoding — and labels only those.
+  Everything else is displayed as an address.
+- Host-supplied symbols never reach the device. The app may show them; the app
+  is a preview.
+
+A short verified list the device owns beats a long list it has to trust.
+Tracked as T51.
+
 ## 6c. Transaction interpretation is advisory
 
 The companion app should decode calldata and explain it in plain language, the

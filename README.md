@@ -328,7 +328,18 @@ passphrase** and users who supplied their own dice entropy. Passphrase support h
 standard-compliant and verified against the spec's known-answer vectors
 (`sim/test_passphrase.c`).
 
-### ⚠️ Do not put real funds on this yet
+### ⚠️ Testnets only — verify it yourself before trusting it with anything
+
+LeekWallet is a proof of concept under active development. **Use testnets.**
+
+Nothing here stops you from using it with real funds — it is your device, your
+keys, and the code is all here to read. But the only sensible order is: read the
+audit below, build the firmware yourself, run the test suite, verify the seed
+derivation against a wallet you already trust, and move a token amount first.
+Anyone recommending otherwise about software this young, including us, should be
+ignored.
+
+Concretely, the outstanding items that make this a testnet device today:
 
 LeekWallet is a work in progress and has **not** been independently audited. A self-audit
 ([AUDIT.md](AUDIT.md)) found defects that are disqualifying for a device holding value:
@@ -345,7 +356,9 @@ LeekWallet is a work in progress and has **not** been independently audited. A s
 - **There is no on-device transaction confirmation yet**, so the "what you see is what you sign"
   property that makes a hardware wallet meaningful does not exist. (ROADMAP T12)
 
-Use testnets and throwaway seeds. Progress against these is tracked in [ROADMAP.md](ROADMAP.md).
+Progress against these is tracked in [ROADMAP.md](ROADMAP.md). The blocking one is flash
+encryption: until it lands, anyone holding the device can read the encrypted vault off the chip
+and attack the PIN offline, and no amount of care elsewhere compensates for that.
 
 ---
 

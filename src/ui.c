@@ -21,6 +21,8 @@
 #include "entropy.h"
 #include "esp_timer.h"
 #include "esp_random.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
 /* For WiFi/BLE/USB testing - conditionally included */
 #ifdef CONFIG_ESP_WIFI_ENABLED
@@ -411,6 +413,38 @@ static const uint32_t LOCK_TIMEOUT_CHOICES[] = { 60, 300, 600, 1800 };
 
 static int      lock_timeout_choice = 1;   /* default 5 minutes */
 static int64_t  last_activity_us = 0;
+
+/* Settings are persisted separately from the vault: they are not secret, and
+ * they must survive a wipe of neither more nor less than the wallet does. */
+#define UI_NVS_NAMESPACE "leek_ui"
+#define UI_KEY_LOCK_TIMEOUT "lock_to"
+
+static void lock_timeout_load(void)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(UI_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return;   /* never saved; keep the default */
+    }
+
+    uint8_t stored = 0;
+    if (nvs_get_u8(nvs, UI_KEY_LOCK_TIMEOUT, &stored) == ESP_OK &&
+        stored < LOCK_TIMEOUT_COUNT) {
+        lock_timeout_choice = (int)stored;
+    }
+    nvs_close(nvs);
+}
+
+static void lock_timeout_save(void)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(UI_NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        ESP_LOGW(TAG, "Could not persist the auto-lock setting");
+        return;
+    }
+    nvs_set_u8(nvs, UI_KEY_LOCK_TIMEOUT, (uint8_t)lock_timeout_choice);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
 
 static const char *lock_timeout_label(int choice)
 {
@@ -1795,6 +1829,7 @@ static void screen_settings_on_button(button_id_t btn)
                     break;
                 case 3: /* Auto-lock - cycle the timeout */
                     lock_timeout_choice = (lock_timeout_choice + 1) % (int)LOCK_TIMEOUT_COUNT;
+                    lock_timeout_save();
                     ESP_LOGI(TAG, "Auto-lock set to %s",
                              lock_timeout_label(lock_timeout_choice));
                     break;
@@ -2254,7 +2289,10 @@ void ui_init(void)
     current_screen = SCREEN_BOOT;
     needs_render = true;
 
-    ESP_LOGI(TAG, "UI initialized");
+    lock_timeout_load();
+
+    ESP_LOGI(TAG, "UI initialized (auto-lock %s)",
+             lock_timeout_label(lock_timeout_choice));
 }
 
 void ui_set_screen(screen_id_t screen)
