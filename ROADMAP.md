@@ -248,7 +248,9 @@ Write the protocol spec first and both sides build against it simultaneously.
 | ~~T20~~ ✅ | **Protocol spec** → [docs/PROTOCOL.md](docs/PROTOCOL.md): framing, session/passkey, command set, passphrase-as-keyboard, errors | — | drafted; open questions listed at the end |
 | T21 | `@leekwallet/core` TS package — codec + session state machine, zero platform deps | T20 | unit tests pass against a mock transport |
 | T22 | `Transport` trait + Rust impls: serial for desktop, BLE for Android, one Tauri command surface over both | T21 | identical command results on each platform |
-| T23 | **Mock device** in TS implementing the full protocol | T20 | apps develop with no hardware attached |
+| ~~T23~~ ✅ | **Mock device** implementing the protocol: session, permission tiers, confirmations, rejection, latency | T20 | 10 test groups green; UI can be built with no hardware |
+| T48 | Transaction interpretation in the app (Rabby-style), with unlimited-approval warnings and local selector DB. Advisory only — see [PROTOCOL.md 6c](docs/PROTOCOL.md) | T24 | ERC-20 transfer and approve decoded and labelled as a preview |
+| T49 | WalletConnect project ID: bundled default plus a user override in settings | T32 | app works out of the box and can be pointed at your own project |
 | T24 | viem `toAccount()` adapter | T21 | signs against a testnet using the mock |
 | T25 | Firmware: BLE GATT service + protocol dispatcher | T20 | echoes a ping from a phone |
 | T25b | Firmware: TinyUSB CDC transport behind the same dispatcher (desktop path) | T20, T25 | identical ping over cable |

@@ -294,6 +294,31 @@ Two things to plan for:
   confirms every request on its own screen, which is what makes the untrusted
   host survivable.
 
+## 6c. Transaction interpretation is advisory
+
+The companion app should decode calldata and explain it in plain language, the
+way Rabby does — "Approve unlimited USDC to 0x1f98…" beats a hex blob, and most
+users cannot read the blob at all.
+
+**But that explanation is produced by the host, and the host is not trusted.**
+A compromised app can render a friendly, entirely false summary. So:
+
+- The app's interpretation is a **convenience preview** and must be visibly
+  labelled as one.
+- The device shows the fields that decide the outcome — source path, recipient,
+  value, chain — and those are what the user approves.
+- Where the two disagree, the device is right. The UI should make that hierarchy
+  obvious rather than presenting both as equally authoritative.
+
+Practical notes for whoever builds it:
+
+- Decoding beyond the standard ERC-20/721 selectors needs an ABI source.
+  Querying a remote registry such as 4byte or Sourcify **leaks what you are
+  about to sign** to that service. Bundle the common selectors locally, make any
+  remote lookup opt-in, and say what it discloses.
+- Unlimited-approval detection is the single highest-value warning to implement
+  first. It is the pattern behind most drain incidents.
+
 ## 7. Versioning
 
 `Hello` carries a major version. Mismatch is a hard failure with an upgrade prompt, not a

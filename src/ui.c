@@ -400,19 +400,25 @@ static char entry_error[20] = {0};
  *              in NVS, and losing it on every lock is pure annoyance. Kept.
  * ============================================================================ */
 
-static const uint32_t LOCK_TIMEOUT_CHOICES[] = { 0, 60, 300, 900 };
+/* 1, 5, 10 or 30 minutes. Trezor and Ledger both default to 10; 5 is chosen
+ * here because a device meant for cold storage is idle far more often than it
+ * is used, and the cost of being wrong in that direction is one PIN entry.
+ *
+ * There is deliberately no "never". A wallet that stays unlocked indefinitely
+ * is a footgun, and 30 minutes is long enough for bench work. */
+static const uint32_t LOCK_TIMEOUT_CHOICES[] = { 60, 300, 600, 1800 };
 #define LOCK_TIMEOUT_COUNT (sizeof(LOCK_TIMEOUT_CHOICES) / sizeof(LOCK_TIMEOUT_CHOICES[0]))
 
-static int      lock_timeout_choice = 2;   /* default 5 minutes */
+static int      lock_timeout_choice = 1;   /* default 5 minutes */
 static int64_t  last_activity_us = 0;
 
 static const char *lock_timeout_label(int choice)
 {
     switch (choice) {
-        case 0:  return "Off";
-        case 1:  return "1 min";
-        case 2:  return "5 min";
-        case 3:  return "15 min";
+        case 0:  return "1 min";
+        case 1:  return "5 min";
+        case 2:  return "10 min";
+        case 3:  return "30 min";
         default: return "?";
     }
 }
@@ -426,7 +432,7 @@ static void lock_note_activity(void)
 static bool lock_check_timeout(void)
 {
     uint32_t seconds = LOCK_TIMEOUT_CHOICES[lock_timeout_choice];
-    if (seconds == 0 || !pin_is_unlocked()) {
+    if (!pin_is_unlocked()) {
         return false;
     }
 
