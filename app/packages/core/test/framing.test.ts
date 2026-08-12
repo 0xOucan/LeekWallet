@@ -33,14 +33,16 @@ group("round-trip");
   const frame = encodeFrame(FrameType.Request, payload);
 
   check(frame.length === payload.length + 3, `frame length ${frame.length}`);
-  check((frame[0] << 8 | frame[1]) === payload.length + 1, "length field wrong");
+  check((((frame[0] ?? 0) << 8) | (frame[1] ?? 0)) === payload.length + 1,
+        "length field wrong");
   check(frame[2] === FrameType.Request, "type byte wrong");
 
   const decoded = new FrameDecoder().push(frame);
   check(decoded.length === 1, `expected 1 frame, got ${decoded.length}`);
-  check(decoded[0].type === FrameType.Request, "decoded type wrong");
+  const first = decoded[0];
+  check(first?.type === FrameType.Request, "decoded type wrong");
   check(
-    [...decoded[0].payload].join() === [...payload].join(),
+    first !== undefined && [...first.payload].join() === [...payload].join(),
     "payload did not survive the round trip",
   );
 }
@@ -69,8 +71,8 @@ group("two frames in one read");
 
   const frames = new FrameDecoder().push(joined);
   check(frames.length === 2, `expected 2 frames, got ${frames.length}`);
-  check(frames[0].payload[0] === 0xaa, "first frame payload wrong");
-  check(frames[1].payload[1] === 0xcc, "second frame payload wrong");
+  check(frames[0]?.payload[0] === 0xaa, "first frame payload wrong");
+  check(frames[1]?.payload[1] === 0xcc, "second frame payload wrong");
 }
 
 group("hostile length fields are rejected before allocating");
@@ -129,12 +131,20 @@ group("out-of-order chunks are rejected");
   const chunks = chunkForBle(frame, 64);
   const reassembler = new ChunkReassembler();
 
-  reassembler.push(chunks[0]);
+  const [firstChunk, , thirdChunk] = chunks;
+  check(
+    firstChunk !== undefined && thirdChunk !== undefined,
+    "test needs at least three chunks",
+  );
+
   let threw = false;
-  try {
-    reassembler.push(chunks[2]); // skip one
-  } catch {
-    threw = true;
+  if (firstChunk && thirdChunk) {
+    reassembler.push(firstChunk);
+    try {
+      reassembler.push(thirdChunk); // skip one
+    } catch {
+      threw = true;
+    }
   }
   check(threw, "a dropped chunk went unnoticed");
 }

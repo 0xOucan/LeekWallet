@@ -150,6 +150,7 @@ compiler — start there if you just want to read and poke at the logic.
 | [PlatformIO](https://platformio.org/) | Building and flashing firmware | `pip install platformio` |
 | `python3`, `pyserial` | Serial monitoring | `sudo apt install python3 python3-serial` |
 | Node 22+ | Companion app core | [nodejs.org](https://nodejs.org) or `nvm install 22` |
+| pnpm 9+ | Companion app workspace | `corepack enable pnpm` (ships with Node) |
 | Rust + Cargo | Companion app shell | [rustup.rs](https://rustup.rs) |
 | `qemu-system-xtensa` (Espressif fork) | Emulated firmware testing | see [docs/QEMU.md](docs/QEMU.md) |
 
@@ -169,7 +170,7 @@ id -nG | grep dialout              # verify
 ```bash
 make -C sim test                   # host suite, no hardware, ~1 second
 pio run -e esp32s3                 # firmware builds
-cd app/packages/core && npm test   # protocol codec
+cd app && pnpm install && pnpm test # protocol codec
 ```
 
 All three should pass before you plug anything in.

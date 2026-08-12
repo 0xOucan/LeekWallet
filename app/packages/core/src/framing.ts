@@ -67,7 +67,10 @@ export class FrameDecoder {
     for (;;) {
       if (this.buffer.length < 3) break;
 
-      const length = (this.buffer[0] << 8) | this.buffer[1];
+      const hi = this.buffer[0];
+      const lo = this.buffer[1];
+      if (hi === undefined || lo === undefined) break;
+      const length = (hi << 8) | lo;
 
       // Reject before allocating. A signing device must never let the peer
       // dictate a buffer size, and neither should its client.
@@ -79,7 +82,7 @@ export class FrameDecoder {
       if (this.buffer.length < length + 2) break; // incomplete, wait for more
 
       frames.push({
-        type: this.buffer[2] as FrameType,
+        type: (this.buffer[2] ?? 0) as FrameType,
         payload: this.buffer.slice(3, length + 2),
       });
       this.buffer = this.buffer.slice(length + 2);
@@ -129,10 +132,11 @@ export class ChunkReassembler {
   private expectedSeq = 0;
 
   push(chunk: Uint8Array): Uint8Array | null {
-    if (chunk.length < 1) throw new Error("empty chunk");
+    const header = chunk[0];
+    if (header === undefined) throw new Error("empty chunk");
 
-    const seq = chunk[0] & CHUNK_SEQ_MASK;
-    const more = (chunk[0] & CHUNK_HEADER_MORE) !== 0;
+    const seq = header & CHUNK_SEQ_MASK;
+    const more = (header & CHUNK_HEADER_MORE) !== 0;
 
     if (seq !== this.expectedSeq) {
       this.reset();

@@ -1,0 +1,20 @@
+{
+  "name": "leekwallet-companion",
+  "version": "0.1.0",
+  "description": "LeekWallet companion app workspace (Tauri v2: desktop + Android)",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.3",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "pnpm -r test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^5.7.2"
+  }
+}

@@ -10,6 +10,32 @@ app/
 └── src-tauri/         Rust shell: transports, capability allowlist
 ```
 
+## Setup
+
+Requires **Node 22+** and **pnpm 9+**. Get pnpm through corepack, which ships with Node — no
+global install, and the version is pinned by `packageManager` in `package.json`:
+
+```bash
+corepack enable pnpm      # once per machine
+cd app
+pnpm install
+```
+
+| Command | From | Does |
+|---|---|---|
+| `pnpm install` | `app/` | Install the workspace |
+| `pnpm test` | `app/` | Run every package's tests |
+| `pnpm typecheck` | `app/` | Strict `tsc` over all sources |
+| `pnpm --filter @leekwallet/core test` | anywhere | One package only |
+
+Tests run under Node's native type stripping, so there is no build step and no bundler in the
+loop. Two consequences worth knowing: `enum` is unavailable (it needs code generation — use a
+const object), and `tsc` is typecheck-only, never emitting.
+
+`tsconfig.json` enables `strict`, `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`.
+That is deliberate for code that parses bytes off a wire on behalf of a signing device — the
+index checks alone caught four real unguarded accesses in the framing layer.
+
 ## Layering
 
 The rule that keeps a Tauri-to-something-else migration cheap, and keeps the

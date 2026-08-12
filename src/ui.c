@@ -1685,7 +1685,17 @@ static void screen_qr_code_on_button(button_id_t btn)
  * never substituted for it - see entropy.h.
  * ============================================================================ */
 
-/* Enough presses that the conservative 4-bits-each estimate clears 128 bits. */
+/* Enough presses that the conservative 4-bits-each estimate clears 128 bits.
+ *
+ * Mandatory, not advisory. The hardware RNG passes its own health checks before
+ * anything is generated, but those checks cannot detect a source that is
+ * statistically clean and shallow - which is precisely what Coldcard's weak
+ * PRNG was, and why it went unnoticed for five years. User keypress jitter is
+ * the only layer that survives that failure, so it cannot be the layer users
+ * skip. Trezor takes the same position: external entropy is mandatory in its
+ * seed generation protocol, not an option.
+ *
+ * Roughly fifteen seconds, once, for a key that holds funds indefinitely. */
 #define ENTROPY_TARGET_EVENTS 32
 
 static void screen_entropy_enter(void)
@@ -1703,7 +1713,8 @@ static void screen_entropy_render(void)
     int target = ENTROPY_TARGET_EVENTS;
 
     char line[22];
-    snprintf(line, sizeof(line), "%d / %d presses", events, target);
+    snprintf(line, sizeof(line), "%d / %d  (+%d bits)",
+             events, target, entropy_user_bits_estimate());
     oled_draw_string_centered(2, line);
 
     /* A 16-cell bar so progress is legible at a glance. */
@@ -1719,37 +1730,42 @@ static void screen_entropy_render(void)
 
     if (events >= target) {
         oled_draw_string_centered(5, "Ready");
-        oled_draw_string(7, 0, "SKIP       DONE");
+        oled_draw_string(7, 0, "MIX MIX BCK NEXT");
     } else {
-        oled_draw_string_centered(5, "Press any key");
-        oled_draw_string(7, 0, "SKIP");
+        char remaining[22];
+        snprintf(remaining, sizeof(remaining), "%d more to go", target - events);
+        oled_draw_string_centered(5, remaining);
+        /* No NEXT yet - the target is required, not suggested. CANCEL still
+         * abandons wallet creation so nobody is stuck on this screen. */
+        oled_draw_string(7, 0, "MIX MIX BCK MIX");
     }
 }
 
 static void screen_entropy_on_button(button_id_t btn)
 {
-    int events = entropy_user_event_count();
-    bool ready = events >= ENTROPY_TARGET_EVENTS;
+    /* CANCEL abandons wallet creation. Mandatory entropy must not mean a screen
+     * with no way out - the escape is "do not create a wallet", never "create
+     * one with less entropy". */
+    if (btn == BUTTON_CANCEL) {
+        ESP_LOGI(TAG, "Entropy collection cancelled at %d events",
+                 entropy_user_event_count());
+        entropy_reset_user_pool();
+        ui_set_screen(SCREEN_MAIN_MENU);
+        return;
+    }
 
-    /* Once the target is met, CANCEL skips and ACCEPT proceeds. Before that,
-     * every press is a sample - including CANCEL, so the user cannot leave
-     * early by accident. A deliberate skip is still available via CANCEL after
-     * one press, which the footer advertises. */
-    if (ready && btn == BUTTON_ACCEPT) {
+    int events = entropy_user_event_count();
+
+    /* ACCEPT proceeds only once the target is met; before that it is just
+     * another sample. */
+    if (btn == BUTTON_ACCEPT && events >= ENTROPY_TARGET_EVENTS) {
         ESP_LOGI(TAG, "Collected %d events (~%d bits) for the pool",
                  events, entropy_user_bits_estimate());
         ui_set_screen(SCREEN_WALLET_CREATE);
         return;
     }
 
-    if (btn == BUTTON_CANCEL && events > 0 && !ready) {
-        /* Skipping is allowed: hardware entropy alone is the baseline, and the
-         * pool is additive. Keep whatever was collected. */
-        ESP_LOGI(TAG, "User skipped with %d events", events);
-        ui_set_screen(SCREEN_WALLET_CREATE);
-        return;
-    }
-
+    /* What is harvested is the microsecond timing, not which button. */
     entropy_add_user_event((uint8_t)btn, (uint64_t)esp_timer_get_time());
     ui_invalidate();
 }
