@@ -436,8 +436,16 @@ When enabled, LeekWallet advertises as:
 - [ ] On-device transaction decode & confirmation
 - [ ] BLE + USB protocol layer
 - [ ] Companion app — Tauri v2 (Linux/macOS/Windows + Android)
-- [ ] Multiple coin support (BTC, ETH, etc.)
 - [ ] Secure element integration
+
+**Chains.** EVM only, and chain-agnostic within it — chains differ by a chain ID
+that is already signed, so Base, Arbitrum, Optimism and the rest are an app-side
+concern. Bitcoin, Solana and Monero are recorded in
+[ROADMAP.md](ROADMAP.md#other-coins-possible-not-planned) as possible but
+unscheduled, roughly in that order of difficulty. Unlike Ledger they would ship
+in one firmware rather than as loadable apps: that design answers a 320 KB flash
+constraint we do not have, and an app loader is a security-critical component we
+would rather not write.
 
 ### Companion app
 

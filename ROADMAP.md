@@ -291,6 +291,48 @@ device- and OEM-specific, and none of it can be validated against the mock. But 
 
 ---
 
+## Other coins: possible, not planned
+
+**EVM only for now.** The items below are recorded so the door stays open, not
+because they are scheduled. None of them should start before flash encryption
+(T11) and on-device transaction decode (T12) are done — a second coin on an
+insecure vault is two insecure wallets.
+
+### Do not copy Ledger's app model
+
+Ledger loads a separate app per coin onto the device. That architecture exists
+because the Nano S had 320 KB of flash and could not hold everything at once. It
+is an answer to a constraint we do not share: our app partition is 4 MB and the
+current firmware uses 1.09 MB, about 26%.
+
+Copying it would mean building an app loader with memory isolation and per-app
+signature verification — a security-critical component, and a large new attack
+surface, bought to solve a problem we do not have. **One firmware with per-coin
+modules compiled in is simpler and safer here.**
+
+If separation is ever wanted, build-time variants (`leek-evm.bin`,
+`leek-btc.bin`) give most of the benefit for none of the risk: the user flashes
+what they need and unused code is not merely unreachable but absent.
+
+### Rough order, easiest first
+
+| Coin | Difficulty | What is already vendored | What is missing |
+|---|---|---|---|
+| **Solana** | Moderate | `ed25519` in trezor-crypto | Base58 addresses (have `base58.c`), transaction format, no UTXO model to handle |
+| **Bitcoin** | Harder | `secp256k1`, `segwit_addr.c`, `script.c`, `base58.c` | PSBT parsing, multi-input signing, and change-output verification — the device must prove a change address is its own or a host can steal the change |
+| **Monero** | **Much harder** | `ed25519` only | Ring signatures, Bulletproofs, view/spend key split, subaddresses, and a multi-round protocol with the host. Ledger's and Trezor's Monero apps are among their largest. Not a weekend. |
+
+Bitcoin's real cost is not the curve, it is the UTXO model: change-output
+verification is a class of bug that does not exist in EVM, and getting it wrong
+sends your change to an attacker. Solana is the natural second coin.
+
+| ID | Task | Depends | Done when |
+|----|------|---------|-----------|
+| T52 | Coin abstraction layer: derivation, address format and signing behind one interface, EVM as the first implementation | T12 | adding a coin touches no shared code |
+| T53 | Solana support | T52 | signs a testnet transfer |
+| T54 | Bitcoin support, including change-output verification | T52 | signs a testnet PSBT; a foreign change address is refused |
+| T55 | Monero — research spike first, scope before committing | T54 | a written assessment, not code |
+
 ## Critical path to the PoC
 
 Everything else is parallel decoration around this chain:
