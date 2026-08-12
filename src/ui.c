@@ -219,14 +219,33 @@ static void pin_option_scroll(int dir)
     current_digit = ((current_digit + dir) % n + n) % n;
 }
 
-/* Render the selector into `out`, e.g. "< 7 >" or "< OK >". */
+static void pin_option_text(int idx, char *out, size_t max)
+{
+    if (idx == PIN_OPTION_SUBMIT) {
+        snprintf(out, max, "OK");
+    } else {
+        snprintf(out, max, "%d", idx);
+    }
+}
+
+/* Render the selector with its neighbours, e.g. "8 <9> OK".
+ *
+ * Showing what comes next is what makes OK findable. With only the current
+ * option on screen, OK sits one step past 9 with nothing hinting it exists, and
+ * a user who never scrolls past 9 has no way to submit at all. */
 static void pin_option_label(char *out, size_t max)
 {
-    if (current_digit == PIN_OPTION_SUBMIT) {
-        snprintf(out, max, "< OK >");
-    } else {
-        snprintf(out, max, "< %d >", current_digit);
+    int n = pin_can_submit() ? PIN_OPTION_COUNT : 10;
+    if (current_digit >= n) {
+        current_digit = 0;
     }
+
+    char prev[4], cur[4], next[4];
+    pin_option_text(((current_digit - 1) % n + n) % n, prev, sizeof(prev));
+    pin_option_text(current_digit, cur, sizeof(cur));
+    pin_option_text((current_digit + 1) % n, next, sizeof(next));
+
+    snprintf(out, max, "%s <%s> %s", prev, cur, next);
 }
 
 static void pin_entry_reset(void)
@@ -488,14 +507,14 @@ static void screen_pin_setup_render(void)
     /* Show progress */
     char progress[22];
     if (pin_can_submit()) {
-        snprintf(progress, sizeof(progress), "%d digits - OK to set", pin_cursor);
+        snprintf(progress, sizeof(progress), "%d digits, pick OK", pin_cursor);
     } else {
-        snprintf(progress, sizeof(progress), "%d/%d min", pin_cursor, PIN_MIN_LENGTH);
+        snprintf(progress, sizeof(progress), "%d of %d min", pin_cursor, PIN_MIN_LENGTH);
     }
     oled_draw_string_centered(5, progress);
 
     /* Draw instructions */
-    oled_draw_string(7, 0, "UP DN  DEL  ADD");
+    oled_draw_string(7, 0, "UP DN  DEL  SEL");
 }
 
 static void screen_pin_setup_on_button(button_id_t btn)
@@ -597,14 +616,19 @@ static void screen_pin_unlock_render(void)
     display[PIN_DISPLAY_LEN + 2] = '\0';
     oled_draw_string_centered(4, display);
 
-    /* Draw attempts remaining */
-    char attempts_str[20];
-    snprintf(attempts_str, sizeof(attempts_str), "Tries: %d",
-             pin_get_remaining_attempts());
+    /* Attempts remaining, and how to submit once the PIN is long enough */
+    char attempts_str[22];
+    if (pin_can_submit()) {
+        snprintf(attempts_str, sizeof(attempts_str), "Tries: %d - pick OK",
+                 pin_get_remaining_attempts());
+    } else {
+        snprintf(attempts_str, sizeof(attempts_str), "Tries: %d",
+                 pin_get_remaining_attempts());
+    }
     oled_draw_string_centered(5, attempts_str);
 
     /* Draw instructions */
-    oled_draw_string(7, 0, "UP DN  DEL  ADD");
+    oled_draw_string(7, 0, "UP DN  DEL  SEL");
 }
 
 static void screen_pin_unlock_on_button(button_id_t btn)

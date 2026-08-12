@@ -73,8 +73,14 @@ which tells the user a longer PIN is possible, and README.md advertises "4-8 dig
 Setup and unlock are consistent with each other, so the device is not bricked — but the entropy
 ceiling is 10⁴ and that feeds directly into S1.
 
-**Fixed.** The selector now cycles 0-9 plus an `OK` option that appears once the PIN reaches
-`PIN_MIN_LENGTH`. ACCEPT appends; submitting is a separate, deliberate act, so 4-8 digits are all
+**Fixed, then fixed again.** The selector cycles 0-9 plus an `OK` option that appears once the
+PIN reaches `PIN_MIN_LENGTH`.
+
+The first version of this fix was unusable on real hardware. `OK` sat one step past 9 with only
+the current option rendered, so a user scrolling 0-9 never saw it and had no way to submit at
+all — strictly worse than the bug it replaced, and caught only by putting it on a device. The
+selector now renders its neighbours (`8 <9> OK`), which makes the option findable before you
+reach it. A reminder that a green test suite says nothing about whether a screen can be operated. ACCEPT appends; submitting is a separate, deliberate act, so 4-8 digits are all
 reachable and each attempt is charged once, on intent. Note this raises the *ceiling* to 10⁸ but
 the KDF underneath is still `SHA256²` — S1 is what makes that entropy worth anything.
 

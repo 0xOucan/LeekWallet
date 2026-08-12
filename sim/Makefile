@@ -22,7 +22,7 @@ $(BUILD)/test_mnemonic_entry: test_mnemonic_entry.c host_stubs.c ../src/mnemonic
 $(BUILD)/test_vault_kdf: test_vault_kdf.c ../components/leek-wallet/vault-kdf.c \
                          $(CRYPTO)/sha2.c $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c \
                          $(CRYPTO)/memzero.c | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -DLEEK_HOST_TEST -o $@ $^
 
 $(BUILD)/test_entropy: test_entropy.c ../src/entropy.c \
                        $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c | $(BUILD)

@@ -97,3 +97,25 @@ bool vault_hash_equals(const uint8_t a[VAULT_HASH_SIZE],
     }
     return diff == 0;
 }
+
+#ifndef LEEK_HOST_TEST
+#include "esp_timer.h"
+#include "esp_log.h"
+
+uint32_t vault_kdf_benchmark_ms(void)
+{
+    static const uint8_t probe_salt[VAULT_SALT_SIZE] = {0};
+    uint8_t key[VAULT_KEY_SIZE];
+
+    int64_t start = esp_timer_get_time();
+    vault_derive_key(VAULT_KDF_V2, "000000", 6, probe_salt, key);
+    int64_t elapsed_us = esp_timer_get_time() - start;
+
+    memzero(key, sizeof(key));
+
+    uint32_t ms = (uint32_t)(elapsed_us / 1000);
+    ESP_LOGW("vault-kdf", "KDF benchmark: %u iterations in %u ms (target ~500)",
+             (unsigned)VAULT_KDF_V2_ITERATIONS, (unsigned)ms);
+    return ms;
+}
+#endif

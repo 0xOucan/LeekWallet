@@ -50,6 +50,7 @@ Your cryptocurrency keys are like the warm tortillas of the digital age - they m
 | **HD Wallet** | BIP39/BIP32/BIP44 hierarchical deterministic wallet |
 | **Multi-Wallet** | Store up to 30 wallets securely |
 | **PIN Protection** | 4-8 digit PIN, 3-attempt wipe, counter hardened against power-cut attacks |
+| **Vault** | Per-device salted PBKDF2-HMAC-SHA512, ~1 s on hardware, domain-separated key and verifier |
 | **Seed Phrases** | 12 or 24-word mnemonic generation and import |
 | **QR Codes** | Display addresses as scannable QR codes |
 | **Air-Gapped** | No internet required for key operations |
@@ -106,12 +107,14 @@ orders and pick a vendor with a long history rather than the cheapest result.
 - [6x6mm tactile buttons](https://www.aliexpress.com/w/wholesale-6x6mm-tactile-push-button.html)
 - [Dupont jumper wires](https://www.aliexpress.com/w/wholesale-dupont-jumper-wire-female-female.html)
 
-> **Which S3 module?** This firmware is currently configured for **4 MB flash, no PSRAM**
-> (`platformio.ini`, `partitions.csv`, `CONFIG_SPIRAM=n`). Boards advertised as **N16R8** have
-> 16 MB flash and 8 MB PSRAM — they will work, but you must update `board_build.flash_size`
-> and the partition table together, and PSRAM should stay disabled (it is
-> [broken under QEMU](https://github.com/espressif/qemu/issues/129), which this project's test
-> strategy relies on). Tracked as T33 in [ROADMAP.md](ROADMAP.md).
+> **Which S3 module?** The firmware is configured for **16 MB flash, no PSRAM**
+> (`platformio.ini`, `partitions.csv`, `CONFIG_SPIRAM=n`), which matches the board this was
+> developed against. If yours reports a different size the boot log will say so:
+> `Detected size(16384k) larger than the size in the binary image header(4096k)` means the
+> config is too small and flash is being wasted. Adjust `board_build.flash_size` and
+> `partitions.csv` together. Keep PSRAM disabled — it is
+> [broken under QEMU](https://github.com/espressif/qemu/issues/129), which the test strategy
+> relies on.
 
 ### Wiring
 
@@ -138,26 +141,64 @@ K1 lives on GPIO10.
 
 ### Prerequisites
 
-- [PlatformIO](https://platformio.org/) (VS Code extension or CLI)
-- The parts above — or nothing at all, if you only want to run the
-  [host test suite](sim/README.md)
+Nothing at all is needed to run the [host test suite](sim/README.md) beyond a C
+compiler — start there if you just want to read and poke at the logic.
+
+| Tool | Needed for | Install |
+|---|---|---|
+| `gcc`, `make` | Host test suite | `sudo apt install build-essential` |
+| [PlatformIO](https://platformio.org/) | Building and flashing firmware | `pip install platformio` |
+| `python3`, `pyserial` | Serial monitoring | `sudo apt install python3 python3-serial` |
+| Node 22+ | Companion app core | [nodejs.org](https://nodejs.org) or `nvm install 22` |
+| Rust + Cargo | Companion app shell | [rustup.rs](https://rustup.rs) |
+| `qemu-system-xtensa` (Espressif fork) | Emulated firmware testing | see [docs/QEMU.md](docs/QEMU.md) |
+
+PlatformIO downloads the ESP-IDF toolchain itself on first build — expect a few
+hundred MB and several minutes.
+
+**Linux serial access.** The board appears as `/dev/ttyACM0`. You must be in the
+`dialout` group:
+
+```bash
+sudo usermod -a -G dialout $USER   # then log out and back in
+id -nG | grep dialout              # verify
+```
+
+### Verify your setup
+
+```bash
+make -C sim test                   # host suite, no hardware, ~1 second
+pio run -e esp32s3                 # firmware builds
+cd app/packages/core && npm test   # protocol codec
+```
+
+All three should pass before you plug anything in.
 
 ### Build & Flash
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/leekwallet.git
+git clone https://github.com/0xoucan/leekwallet.git
 cd leekwallet
 
-# Build
-pio run -e esp32s3
-
-# Flash
-pio run -e esp32s3 -t upload
-
-# Monitor serial output
-pio device monitor
+pio run -e esp32s3                 # build
+pio run -e esp32s3 -t upload       # flash over USB-C
+./monitor.sh                       # serial monitor (Ctrl-] to exit)
 ```
+
+A healthy boot log ends with something like:
+
+```
+I leekwallet: NVS initialized
+I vault-kdf:  KDF benchmark: 4500 iterations in 1008 ms
+I oled:       SSD1306 initialized: 128x64 @ 0x3C
+I button:     Buttons initialized (polling): K1=10, K2=5, K3=6, K4=7
+I ui:         UI task started
+```
+
+If the OLED line is missing, check SDA/SCL and that the display is a 4-pin I²C
+module at `0x3C`. If the KDF benchmark reports a wildly different figure than
+~1000 ms, the iteration count needs retuning for your board — see
+`VAULT_KDF_V2_ITERATIONS`.
 
 ### First Boot
 
@@ -358,7 +399,8 @@ When enabled, LeekWallet advertises as:
 - [x] BLE NimBLE stack
 - [x] Host test harness (no hardware required)
 - [ ] Fix seed import (110 unreachable BIP39 words)
-- [ ] Real PIN entropy + KDF + flash encryption
+- [x] Salted vault KDF, tuned on hardware
+- [ ] Flash encryption + secure boot
 - [ ] On-device transaction decode & confirmation
 - [ ] BLE + USB protocol layer
 - [ ] Companion app — Tauri v2 (Linux/macOS/Windows + Android)

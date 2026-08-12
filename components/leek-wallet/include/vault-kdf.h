@@ -40,12 +40,24 @@ typedef enum {
 /**
  * Iteration count for v2.
  *
- * Tuned so derivation costs roughly half a second on an ESP32-S3 at 160 MHz.
- * That is slow enough to make a 6-digit PIN take days to exhaust and fast
- * enough that unlocking does not feel broken. Measure before changing: too low
- * and the vault is decorative, too high and users disable the PIN.
+ * Measured on hardware, not guessed. On an ESP32-S3 at 160 MHz this
+ * implementation costs 0.224 ms per iteration (12000 took 2688 ms), so 4500
+ * lands near 1.0 s. A desktop runs the same work ~380x faster, which is exactly
+ * why this number could not be chosen from the host suite.
+ *
+ * Why 1.0 s and not the 0.5 s originally planned: unlocking already pays ~800 ms
+ * for BIP39 seed derivation, so the marginal cost of a slower KDF is small
+ * against a doubled work factor.
+ *
+ * This is still a modest work factor in absolute terms. PBKDF2-HMAC-SHA512 is
+ * slow here because SHA-512's 64-bit operations are expensive on a 32-bit core
+ * and this is a pure software implementation. Routing it through the S3's SHA
+ * accelerator, or moving to PBKDF2-HMAC-SHA256, would buy several times the
+ * iterations at the same latency - tracked as T9e. Note the KDF is defence in
+ * depth: with flash encryption enabled (T11) an attacker cannot obtain the
+ * ciphertext to attack in the first place.
  */
-#define VAULT_KDF_V2_ITERATIONS 12000
+#define VAULT_KDF_V2_ITERATIONS 4500
 
 /**
  * Derive the storage encryption key.
@@ -71,5 +83,14 @@ void vault_derive_verifier(VaultKdfVersion version,
 /** Constant-time comparison of two verification hashes. */
 bool vault_hash_equals(const uint8_t a[VAULT_HASH_SIZE],
                        const uint8_t b[VAULT_HASH_SIZE]);
+
+/**
+ * Time one key derivation and return the cost in milliseconds.
+ *
+ * The iteration count has to be tuned on real silicon: a desktop is two orders
+ * of magnitude faster, and QEMU's timing is not faithful. Called once at boot
+ * so the number is in the log without needing a user to sit through an unlock.
+ */
+uint32_t vault_kdf_benchmark_ms(void);
 
 #endif /* VAULT_KDF_H */

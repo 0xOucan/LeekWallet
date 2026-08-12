@@ -31,6 +31,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "leek-wallet.h"
+#include "vault-kdf.h"
 
 #include "oled.h"
 #include "button.h"
@@ -60,6 +61,9 @@ void app_main(void)
     WalletStatus status = wallet_get_status();
     ESP_LOGI(TAG, "Wallet status: initialized=%d, password_set=%d, unlocked=%d",
              status.initialized, status.password_set, status.unlocked);
+
+    /* Measure key derivation on this silicon - see ROADMAP T9c. */
+    vault_kdf_benchmark_ms();
 
     /* Initialize I2C */
     if (oled_i2c_init() != ESP_OK) {

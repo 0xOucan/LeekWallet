@@ -5,4 +5,5 @@ idf_component_register(
     SRCS "leek-wallet.c" "vault-kdf.c"
     INCLUDE_DIRS "include"
     REQUIRES trezor-crypto nvs_flash mbedtls
+    PRIV_REQUIRES esp_timer
 )
