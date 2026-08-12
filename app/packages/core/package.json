@@ -6,6 +6,6 @@
   "type": "module",
   "exports": { ".": "./src/index.ts" },
   "scripts": {
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/framing.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/framing.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/cbor.test.ts"
   }
 }

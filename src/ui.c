@@ -300,15 +300,60 @@ static void pin_entry_backspace(void)
  * Menu State
  * ============================================================================ */
 
-#define MENU_ITEMS 5
-static const char *menu_items[MENU_ITEMS] = {
-    "View Address",
-    "Select Wallet",
-    "New Wallet",
-    "Import Wallet",
-    "Settings"
-};
+/* The menu is built per render rather than fixed.
+ *
+ * One seed is the recommended configuration (docs/VAULT.md), so "Select Wallet"
+ * is noise until a second one exists - and a menu entry that does nothing is
+ * worse than absent on a four-button device where every scroll costs a press. */
+typedef enum {
+    MENU_VIEW_ADDRESS,
+    MENU_SELECT_WALLET,
+    MENU_NEW_WALLET,
+    MENU_IMPORT_WALLET,
+    MENU_SETTINGS,
+    MENU_ACTION_COUNT
+} MenuAction;
+
+#define MENU_MAX_ITEMS MENU_ACTION_COUNT
+
+static MenuAction menu_actions[MENU_MAX_ITEMS];
+static int menu_item_count = 0;
 static int menu_selection = 0;
+
+static const char *menu_action_label(MenuAction a)
+{
+    switch (a) {
+        case MENU_VIEW_ADDRESS:  return "View Address";
+        case MENU_SELECT_WALLET: return "Select Wallet";
+        case MENU_NEW_WALLET:    return "New Wallet";
+        case MENU_IMPORT_WALLET: return "Import Wallet";
+        case MENU_SETTINGS:      return "Settings";
+        default:                 return "?";
+    }
+}
+
+static void menu_rebuild(void)
+{
+    WalletStatus status = wallet_get_status();
+    menu_item_count = 0;
+
+    if (status.wallet_count > 0) {
+        menu_actions[menu_item_count++] = MENU_VIEW_ADDRESS;
+    }
+    if (status.wallet_count > 1) {
+        menu_actions[menu_item_count++] = MENU_SELECT_WALLET;
+    }
+    menu_actions[menu_item_count++] = MENU_NEW_WALLET;
+    menu_actions[menu_item_count++] = MENU_IMPORT_WALLET;
+    menu_actions[menu_item_count++] = MENU_SETTINGS;
+
+    if (menu_selection >= menu_item_count) {
+        menu_selection = menu_item_count - 1;
+    }
+    if (menu_selection < 0) {
+        menu_selection = 0;
+    }
+}
 
 /* ============================================================================
  * Wallet State
@@ -323,6 +368,10 @@ static EthAddress eth_address;
 static uint32_t address_index = 0;
 static char mnemonic_buffer[256];
 static int mnemonic_word_count = 0;
+
+/* Set when the seed display is gated behind a fresh PIN entry. Declared here
+ * because auto-lock clears it, and auto-lock is defined above its old home. */
+static bool pending_mnemonic_display = false;
 static int mnemonic_page = 0;  /* Current page (3 words per page) */
 static int wallet_list_selection = 0;
 
@@ -336,12 +385,74 @@ static char create_error[32] = {0};
 static MnemonicEntry entry;
 static char entry_error[20] = {0};
 
+/* ============================================================================
+ * Auto-lock
+ *
+ * Locking clears secrets, not preferences. Two kinds of state exist after an
+ * unlock and they must be treated differently:
+ *
+ *   Secret   - passphrase, decrypted mnemonic, cached seed. Cleared on lock,
+ *              because that is what locking is for. Keeping the passphrase
+ *              across a lock would mean the PIN alone reopens a hidden wallet,
+ *              which removes the second factor entirely.
+ *
+ *   Selection - which wallet, which address index. Not secret, already stored
+ *              in NVS, and losing it on every lock is pure annoyance. Kept.
+ * ============================================================================ */
+
+static const uint32_t LOCK_TIMEOUT_CHOICES[] = { 0, 60, 300, 900 };
+#define LOCK_TIMEOUT_COUNT (sizeof(LOCK_TIMEOUT_CHOICES) / sizeof(LOCK_TIMEOUT_CHOICES[0]))
+
+static int      lock_timeout_choice = 2;   /* default 5 minutes */
+static int64_t  last_activity_us = 0;
+
+static const char *lock_timeout_label(int choice)
+{
+    switch (choice) {
+        case 0:  return "Off";
+        case 1:  return "1 min";
+        case 2:  return "5 min";
+        case 3:  return "15 min";
+        default: return "?";
+    }
+}
+
+static void lock_note_activity(void)
+{
+    last_activity_us = esp_timer_get_time();
+}
+
+/* Called from the UI task. Returns true if the device just auto-locked. */
+static bool lock_check_timeout(void)
+{
+    uint32_t seconds = LOCK_TIMEOUT_CHOICES[lock_timeout_choice];
+    if (seconds == 0 || !pin_is_unlocked()) {
+        return false;
+    }
+
+    int64_t idle_us = esp_timer_get_time() - last_activity_us;
+    if (idle_us < (int64_t)seconds * 1000000) {
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Auto-lock after %u s idle", (unsigned)seconds);
+    pin_lock();
+    wallet_lock();               /* drops passphrase, mnemonic and seed cache */
+    pending_mnemonic_display = false;
+    memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
+    mnemonic_word_count = 0;
+    /* address_index and the active wallet survive deliberately - see above. */
+    ui_set_screen(SCREEN_PIN_UNLOCK);
+    return true;
+}
+
 /* Settings state */
-#define SETTINGS_ITEMS 6
+#define SETTINGS_ITEMS 7
 static const char *settings_items[SETTINGS_ITEMS] = {
     "WiFi Test",
     "BLE Test",
     "USB HID Test",
+    "Auto-lock",
     "Change PIN",
     "Wipe Device",
     "Back"
@@ -349,9 +460,6 @@ static const char *settings_items[SETTINGS_ITEMS] = {
 static int settings_selection = 0;
 static bool wifi_enabled = false;
 static bool ble_enabled = false;
-
-/* PIN verification for sensitive operations */
-static bool pending_mnemonic_display = false;
 
 /* ============================================================================
  * Helper: Unlock wallet with PIN
@@ -732,29 +840,39 @@ static void screen_main_menu_enter(void)
 {
     ESP_LOGI(TAG, "Main menu screen");
     menu_selection = 0;
+    menu_rebuild();
 }
 
 static void screen_main_menu_render(void)
 {
     oled_clear();
-    oled_draw_string_centered(0, "-- Menu --");
+    menu_rebuild();
+
+    /* Show which wallet is active, so "View Address" is not a mystery box. */
+    WalletStatus status = wallet_get_status();
+    char header[22];
+    if (status.wallet_count > 1) {
+        snprintf(header, sizeof(header), "-- Menu -- W%u/%u",
+                 (unsigned)status.active_wallet_index, (unsigned)status.wallet_count);
+    } else {
+        snprintf(header, sizeof(header), "-- Menu --");
+    }
+    oled_draw_string_centered(0, header);
 
     /* Draw menu items (3 visible at a time on 128x64) */
     int start = (menu_selection > 1) ? menu_selection - 1 : 0;
-    if (start > MENU_ITEMS - 3) {
-        start = MENU_ITEMS - 3;
+    if (start > menu_item_count - 3) {
+        start = menu_item_count - 3;
     }
     if (start < 0) start = 0;
 
-    for (int i = 0; i < 3 && (start + i) < MENU_ITEMS; i++) {
+    for (int i = 0; i < 3 && (start + i) < menu_item_count; i++) {
         int item_idx = start + i;
         char line[22];
 
-        if (item_idx == menu_selection) {
-            snprintf(line, sizeof(line), "> %s", menu_items[item_idx]);
-        } else {
-            snprintf(line, sizeof(line), "  %s", menu_items[item_idx]);
-        }
+        snprintf(line, sizeof(line), "%s %s",
+                 item_idx == menu_selection ? ">" : " ",
+                 menu_action_label(menu_actions[item_idx]));
         oled_draw_string(2 + i * 2, 0, line);
     }
 
@@ -772,28 +890,32 @@ static void screen_main_menu_on_button(button_id_t btn)
             break;
 
         case BUTTON_DOWN:
-            if (menu_selection < MENU_ITEMS - 1) {
+            if (menu_selection < menu_item_count - 1) {
                 menu_selection++;
             }
             break;
 
         case BUTTON_ACCEPT:
-            /* Handle menu selection */
-            switch (menu_selection) {
-                case 0: /* View Address */
+            if (menu_selection < 0 || menu_selection >= menu_item_count) {
+                break;
+            }
+            switch (menu_actions[menu_selection]) {
+                case MENU_VIEW_ADDRESS:
                     ui_set_screen(SCREEN_WALLET_INFO);
                     break;
-                case 1: /* Select Wallet */
+                case MENU_SELECT_WALLET:
                     ui_set_screen(SCREEN_WALLET_SELECT);
                     break;
-                case 2: /* New Wallet - collect extra entropy first */
+                case MENU_NEW_WALLET:   /* entropy first */
                     ui_set_screen(SCREEN_ENTROPY);
                     break;
-                case 3: /* Import Wallet */
+                case MENU_IMPORT_WALLET:
                     ui_set_screen(SCREEN_MNEMONIC_ENTRY);
                     break;
-                case 4: /* Settings */
+                case MENU_SETTINGS:
                     ui_set_screen(SCREEN_SETTINGS);
+                    break;
+                default:
                     break;
             }
             break;
@@ -1620,12 +1742,14 @@ static void screen_settings_render(void)
             } else {
                 snprintf(line, sizeof(line), "  BLE %s", ble_enabled ? "[ON]" : "[OFF]");
             }
+        } else if (item_idx == 3) {  /* Auto-lock */
+            snprintf(line, sizeof(line), "%s Lock %s",
+                     item_idx == settings_selection ? ">" : " ",
+                     lock_timeout_label(lock_timeout_choice));
         } else {
-            if (item_idx == settings_selection) {
-                snprintf(line, sizeof(line), "> %s", settings_items[item_idx]);
-            } else {
-                snprintf(line, sizeof(line), "  %s", settings_items[item_idx]);
-            }
+            snprintf(line, sizeof(line), "%s %s",
+                     item_idx == settings_selection ? ">" : " ",
+                     settings_items[item_idx]);
         }
         oled_draw_string(2 + i * 2, 0, line);
     }
@@ -1663,13 +1787,18 @@ static void screen_settings_on_button(button_id_t btn)
                 case 2: /* USB HID Test */
                     usb_hid_test();
                     break;
-                case 3: /* Change PIN */
+                case 3: /* Auto-lock - cycle the timeout */
+                    lock_timeout_choice = (lock_timeout_choice + 1) % (int)LOCK_TIMEOUT_COUNT;
+                    ESP_LOGI(TAG, "Auto-lock set to %s",
+                             lock_timeout_label(lock_timeout_choice));
+                    break;
+                case 4: /* Change PIN */
                     ESP_LOGI(TAG, "Change PIN not yet implemented");
                     break;
-                case 4: /* Wipe Device - confirm first */
+                case 5: /* Wipe Device - confirm first */
                     ui_set_screen(SCREEN_WIPE_CONFIRM);
                     break;
-                case 5: /* Back */
+                case 6: /* Back */
                     ui_set_screen(SCREEN_MAIN_MENU);
                     break;
             }
@@ -2198,10 +2327,15 @@ void ui_task(void *pvParameters)
 
     ESP_LOGI(TAG, "UI task started");
 
+    lock_note_activity();
+
     while (1) {
         /* Wait for button event with timeout for periodic refresh */
         if (xQueueReceive(queue, &event, pdMS_TO_TICKS(100)) == pdTRUE) {
+            lock_note_activity();
             ui_handle_button(event.id);
+        } else if (lock_check_timeout()) {
+            /* Just locked; fall through to render the unlock screen. */
         }
 
         /* Re-render if needed */

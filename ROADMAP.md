@@ -267,7 +267,9 @@ T23 is the highest-leverage item in the plan: it decouples Track D from all firm
 | T29 | Android target: `tauri android init`, build, sign | T27b | APK runs on a device |
 | T30 | Android BLE: runtime permissions (`BLUETOOTH_SCAN`/`CONNECT`, location on older APIs), scan/pair flow, reconnect handling | T22, T29 | phone connects and survives a backgrounding |
 | T31 | Screen-reader labels, keyboard traversal, contrast audit | T27c, T28 | pre-delivery checklist passes |
-| T32 | WalletConnect / dapp connection | T28 | signs a request from a real dapp |
+| T32 | WalletConnect v2 pairing (URI + QR), session list, pending-request view. **No in-app dapp browser** — see [PROTOCOL.md 6b](docs/PROTOCOL.md) | T28 | signs a request from a real dapp in the user's own browser |
+| T46 | Address enumeration in the app: derive and list addresses so the user picks there, Ledger-behind-Rabby style | T24 | list of 10 addresses with balances, selection drives the signing path |
+| T47 | Show the signing *source* address on the device confirmation, not just the destination | T12 | a host naming a different path is visible on screen |
 
 T30 is still the riskiest item — Android BLE permissions and background/reconnect behaviour are
 device- and OEM-specific, and none of it can be validated against the mock. But it is now

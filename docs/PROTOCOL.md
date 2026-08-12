@@ -209,6 +209,34 @@ wrong and lose money over.
 
 ---
 
+## 5b. Who picks the address
+
+The device and the app select addresses for different reasons, and conflating
+them produces a worse version of both.
+
+| Purpose | Chosen by | How |
+|---|---|---|
+| Which address signs | **The app** | full BIP44 path in every signing request |
+| Which address to receive on | **The device** | UP/DOWN on the wallet screen |
+
+This mirrors how a Ledger behaves behind Rabby: the extension enumerates derived
+addresses, the user picks one there, and the device is never asked to browse.
+The device's own selector exists for the case with no app at all — plug it into
+a power bank, scroll to an address, show the QR, receive funds. That is a
+genuine standalone mode and worth keeping, but it is not the signing path.
+
+**No device, no signature**, in either mode.
+
+### Consequence: confirmation must show the source
+
+Because the host names the path, the host can name a *different* path than the
+user believes they selected. The signature would come from an account they did
+not intend — same signature machinery, wrong key.
+
+So the on-device confirmation screen must show **the address being signed from**,
+not only the destination and amount. The user compares what the app claims with
+what the device says, and the device is the authority. Folded into T12.
+
 ## 6. Errors
 
 ```
@@ -230,6 +258,41 @@ Messages are for developers. Never render a device-supplied string to the user a
 security statement — that is a phishing vector.
 
 ---
+
+## 6b. Dapp connectivity: WalletConnect, and no built-in browser
+
+Three ways a dapp could reach the wallet:
+
+| Approach | Where the dapp runs | Verdict |
+|---|---|---|
+| Injected provider (MetaMask-style `window.ethereum`) | Browser extension | Needs an extension per browser; large surface; not available to a desktop app |
+| **WalletConnect v2** | **The user's own browser** | **Chosen** |
+| Built-in dapp browser | Inside the wallet app | Rejected |
+
+**WalletConnect is the right call**, and the reason is where the dapp's code
+executes. With WalletConnect the dapp stays in the user's browser, and all that
+crosses the relay is structured JSON-RPC — `eth_sendTransaction`,
+`personal_sign`, `eth_signTypedData_v4`. The wallet app renders none of the
+dapp's HTML or JavaScript.
+
+**The built-in browser is the part to push back on.** Rendering arbitrary
+untrusted web content inside the process that talks to a signing device
+undoes much of the point. Every dapp becomes code running one webview away from
+the transport, and the app's own attack surface becomes the whole web platform.
+Mobile wallets that ship dapp browsers do it for reach, and it is consistently
+their largest security liability.
+
+So: pair by URI or QR, list active sessions, show pending requests. No address
+bar.
+
+Two things to plan for:
+
+- **The relay is a third party.** It sees connection metadata and encrypted
+  payloads, never keys. Acceptable, worth stating in the UI.
+- **A project ID is required** from WalletConnect Cloud, so the app needs
+  network access. That is fine — the host was never trusted. The device still
+  confirms every request on its own screen, which is what makes the untrusted
+  host survivable.
 
 ## 7. Versioning
 
