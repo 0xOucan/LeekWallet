@@ -260,6 +260,20 @@ WalletError wallet_sign_transaction(const uint8_t *tx_bytes, size_t tx_length,
 #define MAX_WALLETS 30
 
 /**
+ * Backup verification tracking.
+ *
+ * Records whether a wallet's seed phrase has been read back correctly by the
+ * user. This is not an access control - it exists so destructive actions can
+ * warn about the case that actually loses funds: erasing a wallet whose backup
+ * was never confirmed. Asking for a PIN would not catch that.
+ */
+void wallet_mark_backup_verified(uint8_t index);
+bool wallet_is_backup_verified(uint8_t index);
+
+/** How many stored wallets have never had their backup verified. */
+uint8_t wallet_unverified_count(void);
+
+/**
  * Get the number of stored wallets
  */
 uint8_t wallet_get_count(void);

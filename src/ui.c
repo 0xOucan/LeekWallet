@@ -1808,6 +1808,10 @@ static void screen_entropy_on_button(button_id_t btn)
  * gesture cannot be reached by the same reflex that selected the menu item. */
 #define WIPE_CONFIRM_PRESSES 3
 
+/* More friction when a seed has never been read back, because that is the case
+ * where the device holds the only usable copy. */
+#define WIPE_CONFIRM_PRESSES_UNVERIFIED 5
+
 static int wipe_confirm_count = 0;
 
 static void screen_wipe_confirm_enter(void)
@@ -1823,13 +1827,26 @@ static void screen_wipe_confirm_render(void)
 
     WalletStatus status = wallet_get_status();
     char line[22];
-    snprintf(line, sizeof(line), "Erases %d wallet%s",
-             status.wallet_count, status.wallet_count == 1 ? "" : "s");
+    snprintf(line, sizeof(line), "Erases %u wallet%s",
+             (unsigned)status.wallet_count, status.wallet_count == 1 ? "" : "s");
     oled_draw_string_centered(2, line);
     oled_draw_string_centered(3, "and the PIN.");
-    oled_draw_string_centered(4, "No undo.");
 
-    int left = WIPE_CONFIRM_PRESSES - wipe_confirm_count;
+    /* The dangerous case is not "was this the owner" - Settings already
+     * required the PIN, and three wrong PINs wipe the device anyway. It is
+     * erasing a seed whose backup was never confirmed correct. */
+    uint8_t unverified = wallet_unverified_count();
+    if (unverified > 0) {
+        snprintf(line, sizeof(line), "%u NOT backed up!", (unsigned)unverified);
+        oled_draw_string_centered(4, line);
+    } else {
+        oled_draw_string_centered(4, "No undo.");
+    }
+
+    int required = (wallet_unverified_count() > 0)
+                       ? WIPE_CONFIRM_PRESSES_UNVERIFIED
+                       : WIPE_CONFIRM_PRESSES;
+    int left = required - wipe_confirm_count;
     char msg[32];
     snprintf(msg, sizeof(msg), "Press OK %u more", (unsigned)(left < 0 ? 0 : left));
     oled_draw_string_centered(6, msg);
@@ -1839,8 +1856,12 @@ static void screen_wipe_confirm_render(void)
 
 static void screen_wipe_confirm_on_button(button_id_t btn)
 {
+    int required = (wallet_unverified_count() > 0)
+                       ? WIPE_CONFIRM_PRESSES_UNVERIFIED
+                       : WIPE_CONFIRM_PRESSES;
+
     if (btn == BUTTON_ACCEPT) {
-        if (++wipe_confirm_count >= WIPE_CONFIRM_PRESSES) {
+        if (++wipe_confirm_count >= required) {
             ESP_LOGW(TAG, "Wipe confirmed by user");
             pin_wipe();
             wallet_wipe();
@@ -2005,6 +2026,10 @@ static void screen_mnemonic_verify_on_button(button_id_t btn)
             verify_current++;
             if (verify_current >= VERIFY_CHALLENGES) {
                 ESP_LOGI(TAG, "Seed phrase verified");
+                {
+                    WalletStatus vs = wallet_get_status();
+                    wallet_mark_backup_verified(vs.active_wallet_index);
+                }
                 /* The seed has served its purpose on screen; do not leave it
                  * sitting in .bss (AUDIT.md S5). */
                 memzero(mnemonic_buffer, sizeof(mnemonic_buffer));

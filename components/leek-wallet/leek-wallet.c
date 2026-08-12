@@ -41,6 +41,7 @@ static const char *TAG = "wallet";
 #define KEY_ACTIVE_WALLET "active_idx"
 #define KEY_KDF_VERSION "kdf_ver"    // absent => legacy v1
 #define KEY_KDF_SALT "kdf_salt"      // 16 bytes, per device
+#define KEY_BACKUP_OK "backup_ok"    // bitmask: wallet N verified
 // Indexed keys: mnemonic_1, mnemonic_2, ..., iv_1, iv_2, ...
 
 // Limits
@@ -423,6 +424,60 @@ static void load_wallet_metadata(void) {
         state.active_wallet_index = active;
         nvs_close(nvs);
     }
+}
+
+// ========== Backup Verification Tracking ========== //
+//
+// Records which wallets have had their seed phrase read back correctly. Not a
+// security control - it drives warnings before destructive actions, because
+// wiping a wallet whose backup was never confirmed is how people actually lose
+// funds. A wrong PIN prompt would not catch that; this does.
+
+static uint32_t load_backup_mask(void) {
+    uint32_t mask = 0;
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
+        size_t len = sizeof(mask);
+        if (nvs_get_blob(nvs, KEY_BACKUP_OK, &mask, &len) != ESP_OK || len != sizeof(mask)) {
+            mask = 0;
+        }
+        nvs_close(nvs);
+    }
+    return mask;
+}
+
+void wallet_mark_backup_verified(uint8_t index) {
+    if (index == 0 || index > MAX_WALLETS) {
+        return;
+    }
+
+    uint32_t mask = load_backup_mask() | (1u << (index - 1));
+
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_blob(nvs, KEY_BACKUP_OK, &mask, sizeof(mask));
+        nvs_commit(nvs);
+        nvs_close(nvs);
+        ESP_LOGI(TAG, "Wallet %d marked as backed up", index);
+    }
+}
+
+bool wallet_is_backup_verified(uint8_t index) {
+    if (index == 0 || index > MAX_WALLETS) {
+        return false;
+    }
+    return (load_backup_mask() & (1u << (index - 1))) != 0;
+}
+
+uint8_t wallet_unverified_count(void) {
+    uint32_t mask = load_backup_mask();
+    uint8_t count = 0;
+    for (uint8_t i = 1; i <= state.wallet_count && i <= MAX_WALLETS; i++) {
+        if (!(mask & (1u << (i - 1)))) {
+            count++;
+        }
+    }
+    return count;
 }
 
 // ========== Vault Migration (v1 -> v2) ========== //
