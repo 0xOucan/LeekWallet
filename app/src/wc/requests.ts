@@ -322,7 +322,8 @@ function planTransaction(args: unknown[], ctx: WalletContext, broadcast: boolean
     return { kind: "error", error: invalidParams("the transaction's chainId is not a number.") };
   }
   const chainId = declared === undefined ? ctx.chainId : Number(declared);
-  if (!resolveChainForDapp(chainId)) return { kind: "error", error: unrecognisedChain(chainId) };
+  const chain = resolveChainForDapp(chainId);
+  if (!chain) return { kind: "error", error: unrecognisedChain(chainId) };
 
   const data = typeof tx["data"] === "string" ? tx["data"] : "0x";
   if (!/^0x([0-9a-fA-F]{2})*$/.test(data)) {
@@ -343,6 +344,12 @@ function planTransaction(args: unknown[], ctx: WalletContext, broadcast: boolean
       ? { maxFeePerGas: toBigInt(tx["maxFeePerGas"]) }
       : {}),
     ...(toBigInt(tx["gasPrice"]) !== undefined ? { gasPrice: toBigInt(tx["gasPrice"]) } : {}),
+  }, {
+    /* The gas-token ticker comes from the chain registry, never from the dapp
+     * — it is the one string in the descriptor block this app is entitled to
+     * put there. Descriptors themselves come from the bundled registry subset
+     * (the default), so no dapp can supply one either. */
+    nativeSymbol: chain.nativeCurrency.symbol,
   });
 
   /* The one place the interpretation is allowed to decide something. It is

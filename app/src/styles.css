@@ -49,7 +49,45 @@ body {
 .badge[data-mode="mock"] { color: var(--warn); border-color: var(--warn); }
 
 main { flex: 1; width: 100%; max-width: 640px; margin: 0 auto; padding: var(--space-6) var(--space-4); }
-@media (min-width: 1024px) { main { max-width: 960px; } }
+
+/* Widths, and the one rule they all serve: an address must stay comparable
+ * against the device screen, character by character, at every size. Nothing
+ * here truncates, ellipsises or re-flows an address — the chunked form wraps
+ * at the spaces between four-character groups, so groups never split.
+ *
+ * Small tablet portrait (the Galaxy Tab A7 reports roughly 800 CSS px that way
+ * once its 1200x2000 panel is divided by its device pixel ratio): a little more
+ * room, still one column. */
+@media (min-width: 768px) { main { max-width: 720px; } }
+
+/* Two columns, but only on a screen that is genuinely large in both
+ * directions. A single 640px column centred in a 1340px landscape tablet is
+ * the "narrow column stranded in a huge screen" problem; two columns on a
+ * phone held sideways (a 915x412 window, which is what the Edge Neo becomes in
+ * landscape) is a worse one. Hence the height condition: 900px of width earns
+ * a second column only if there is a tablet's worth of height behind it. */
+@media (min-width: 900px) and (min-height: 600px) {
+  main {
+    max-width: 1200px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(320px, 1fr));
+    gap: var(--space-4);
+    /* Panels are different heights; stretching them to match would put a lot
+     * of empty bordered space next to a short one. */
+    align-items: start;
+  }
+  /* The warning and the log are read straight through, so they get the width.
+   * Everything else is a form or a list and reads better in a column. */
+  .notice, #logpanel { grid-column: 1 / -1; }
+  /* Grid items ignore the panel's own bottom margin; the gap does that job. */
+  .panel, .notice { margin-bottom: 0; }
+}
+
+/* An address on one line across 1200px is technically intact and genuinely
+ * hard to scan — the eye loses its place returning across that much
+ * whitespace. Capping the measure keeps the line short without ever cutting
+ * the string: it wraps at group boundaries exactly as it does on a phone. */
+.kv dd, .addr-item .addr { max-width: 62ch; }
 
 h1 { font-size: var(--text-lg); font-weight: 500; margin: 0 0 var(--space-4); }
 h2 { font-size: var(--text-base); font-weight: 500; margin: 0 0 var(--space-3); }
@@ -178,6 +216,53 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   font-size: var(--text-xs);
 }
 
+/* ------------------------------------------- unverified descriptor (7730) */
+
+/* One step further down the confidence ladder than .preview, and it has to
+ * look like it. The preview above is at least this app reading the bytes it is
+ * about to send; this box is a label written by a third party, delivered
+ * unsigned, that the device will never see and cannot check. So: inset, dimmer
+ * text, a warn-coloured edge rather than the neutral one, and the word
+ * UNVERIFIED both on the box and in front of every single label inside it.
+ *
+ * The per-label prefix is CSS rather than text so it cannot be forgotten by a
+ * future caller that builds rows some other way, and so it cannot be spoofed
+ * away by a descriptor whose own label happens to read "verified". */
+.unverified-desc {
+  border: 1px dashed var(--warn);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin: var(--space-3) 0 0 var(--space-3);
+  background: transparent;
+}
+.unverified-desc__tag {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--warn);
+  margin-bottom: var(--space-2);
+}
+.unverified-desc__intent {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.unverified-desc .kv dt::before { content: "UNVERIFIED · "; color: var(--warn); }
+.unverified-desc .kv dd { color: var(--muted); }
+.unverified-desc__conflicts { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
+.unverified-desc__conflicts li {
+  border-left: 2px solid var(--danger);
+  padding: var(--space-1) var(--space-3);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+}
+.unverified-desc__notice {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text);
+}
+
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2) var(--space-4); font-size: var(--text-sm); }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; font-family: var(--font-mono); overflow-wrap: anywhere; }
@@ -256,8 +341,28 @@ main {
   button { height: 44px; }
   .field input, .field select { height: 44px; }
   /* Address rows are the tap target for choosing where funds come from, so
-   * they get room even though their height is content-driven. */
-  .addr-item { padding: var(--space-3); }
+   * they get room even though their height is content-driven. `min-height`
+   * rather than `height`, because a wrapped address must still be allowed to
+   * grow the row: shrinking it to fit would be the one thing this layout must
+   * never do to an address. */
+  .addr-item { padding: var(--space-3); min-height: 44px; }
+  /* A tablet is a coarse pointer with a lot of width, so the buttons that sit
+   * in a row need a floor as well as a height or they end up 44px tall and
+   * thumb-narrow. */
+  .row > button { min-width: 44px; }
+}
+
+/* The manual-copy escape hatch. Only ever shown when every clipboard route
+ * failed, so it is styled to be usable rather than pretty: monospace, tall
+ * enough to prove there is content, and horizontally intact. */
+.copyout {
+  width: 100%; min-height: 120px;
+  margin-bottom: var(--space-3);
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: var(--space-2);
+  white-space: pre;
 }
 
 @media (max-width: 480px) {
