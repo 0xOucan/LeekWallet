@@ -19,6 +19,7 @@
 #include "bip39.h"
 #include "memzero.h"
 #include "entropy.h"
+#include "session.h"
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "nvs.h"
@@ -107,6 +108,10 @@ static void screen_wipe_confirm_on_button(button_id_t btn);
 static void screen_mnemonic_verify_enter(void);
 static void screen_mnemonic_verify_render(void);
 static void screen_mnemonic_verify_on_button(button_id_t btn);
+
+static void screen_session_confirm_enter(void);
+static void screen_session_confirm_render(void);
+static void screen_session_confirm_on_button(button_id_t btn);
 
 static void screen_qr_code_enter(void);
 static void screen_qr_code_render(void);
@@ -201,6 +206,13 @@ static const screen_t screen_mnemonic_verify = {
     .enter = screen_mnemonic_verify_enter,
     .render = screen_mnemonic_verify_render,
     .on_button = screen_mnemonic_verify_on_button,
+    .exit = NULL
+};
+
+static const screen_t screen_session_confirm = {
+    .enter = screen_session_confirm_enter,
+    .render = screen_session_confirm_render,
+    .on_button = screen_session_confirm_on_button,
     .exit = NULL
 };
 
@@ -427,12 +439,31 @@ static int64_t  last_activity_us = 0;
  * they must survive a wipe of neither more nor less than the wallet does. */
 #define UI_NVS_NAMESPACE "leek_ui"
 #define UI_KEY_LOCK_TIMEOUT "lock_to"
+#define UI_KEY_BRIGHTNESS   "bright"
 
-static void lock_timeout_load(void)
+/* Four steps rather than a slider: the OLED is legible across the whole range,
+ * so fine control buys nothing and costs presses. Low is genuinely useful -
+ * a dim screen is harder to read over someone's shoulder. */
+static const uint8_t BRIGHTNESS_LEVELS[] = { 0x10, 0x50, 0xA0, 0xFF };
+#define BRIGHTNESS_COUNT (sizeof(BRIGHTNESS_LEVELS) / sizeof(BRIGHTNESS_LEVELS[0]))
+static int brightness_choice = 2;
+
+static const char *brightness_label(int choice)
+{
+    switch (choice) {
+        case 0:  return "Low";
+        case 1:  return "Mid";
+        case 2:  return "High";
+        case 3:  return "Max";
+        default: return "?";
+    }
+}
+
+static void settings_load(void)
 {
     nvs_handle_t nvs;
     if (nvs_open(UI_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
-        return;   /* never saved; keep the default */
+        return;   /* never saved; keep the defaults */
     }
 
     uint8_t stored = 0;
@@ -440,7 +471,23 @@ static void lock_timeout_load(void)
         stored < LOCK_TIMEOUT_COUNT) {
         lock_timeout_choice = (int)stored;
     }
+    if (nvs_get_u8(nvs, UI_KEY_BRIGHTNESS, &stored) == ESP_OK &&
+        stored < BRIGHTNESS_COUNT) {
+        brightness_choice = (int)stored;
+    }
     nvs_close(nvs);
+}
+
+static void brightness_apply_and_save(void)
+{
+    oled_set_contrast(BRIGHTNESS_LEVELS[brightness_choice]);
+
+    nvs_handle_t nvs;
+    if (nvs_open(UI_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, UI_KEY_BRIGHTNESS, (uint8_t)brightness_choice);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
 }
 
 static void lock_timeout_save(void)
@@ -501,6 +548,7 @@ typedef enum {
     SET_SHOW_SEED,
     SET_NEW_WALLET,
     SET_IMPORT_WALLET,
+    SET_BRIGHTNESS,
     SET_AUTOLOCK,
     SET_CHANGE_PIN,
     SET_WIFI,
@@ -515,6 +563,7 @@ static const char *settings_items[SETTINGS_ITEMS] = {
     "Show Seed",
     "New Wallet",
     "Import Wallet",
+    "Brightness",
     "Auto-lock",
     "Change PIN",
     "WiFi Test",
@@ -1826,6 +1875,10 @@ static void screen_settings_render(void)
             } else {
                 snprintf(line, sizeof(line), "  BLE %s", ble_enabled ? "[ON]" : "[OFF]");
             }
+        } else if (item_idx == SET_BRIGHTNESS) {
+            snprintf(line, sizeof(line), "%s Bright %s",
+                     item_idx == settings_selection ? ">" : " ",
+                     brightness_label(brightness_choice));
         } else if (item_idx == SET_AUTOLOCK) {
             snprintf(line, sizeof(line), "%s Lock %s",
                      item_idx == settings_selection ? ">" : " ",
@@ -1874,6 +1927,12 @@ static void screen_settings_on_button(button_id_t btn)
                     break;
                 case SET_IMPORT_WALLET:
                     ui_set_screen(SCREEN_MNEMONIC_ENTRY);
+                    break;
+                case SET_BRIGHTNESS:
+                    brightness_choice = (brightness_choice + 1) % (int)BRIGHTNESS_COUNT;
+                    brightness_apply_and_save();
+                    ESP_LOGI(TAG, "Brightness set to %s",
+                             brightness_label(brightness_choice));
                     break;
                 case SET_AUTOLOCK:
                     lock_timeout_choice = (lock_timeout_choice + 1) % (int)LOCK_TIMEOUT_COUNT;
@@ -2352,6 +2411,65 @@ static void screen_mnemonic_verify_on_button(button_id_t btn)
 }
 
 /* ============================================================================
+ * Session Confirmation Screen
+ *
+ * The whole point of the passkey. It is derived from the ECDH shared secret,
+ * so an attacker relaying between the host and the device holds a different
+ * secret and cannot make the two codes agree. Encryption alone would protect a
+ * conversation with an impostor perfectly well; a human comparing two screens
+ * is what notices one.
+ *
+ * Which means this screen is not a formality to be skipped or auto-confirmed.
+ * Without someone actually looking, the channel is encrypted and unauthenticated.
+ * ============================================================================ */
+
+static volatile bool session_confirm_pending = false;
+static screen_id_t   session_confirm_return = SCREEN_MAIN_MENU;
+
+void ui_request_session_confirm(void)
+{
+    /* Called from the protocol task. Only sets a flag; the UI task owns screen
+     * transitions, and having two tasks drive the screen graph is how you get
+     * a render against half-changed state. */
+    session_confirm_pending = true;
+}
+
+static void screen_session_confirm_enter(void)
+{
+    ESP_LOGI(TAG, "Session confirmation screen");
+}
+
+static void screen_session_confirm_render(void)
+{
+    oled_clear();
+    oled_draw_string_centered(0, "Connect?");
+
+    const char *code = session_passkey();
+    char spaced[16];
+    /* Grouped 3+3: six digits in a row are easy to misread, and misreading is
+     * the failure this screen exists to prevent. */
+    snprintf(spaced, sizeof(spaced), "%.3s %.3s", code, code + 3);
+    oled_draw_string_centered(2, spaced);
+
+    oled_draw_string_centered(4, "Match the code");
+    oled_draw_string_centered(5, "shown in the app");
+
+    oled_draw_string(7, 0, "DENY       ALLOW");
+}
+
+static void screen_session_confirm_on_button(button_id_t btn)
+{
+    if (btn == BUTTON_ACCEPT) {
+        session_confirm();
+        ESP_LOGI(TAG, "Session confirmed by user");
+    } else {
+        session_reset();
+        ESP_LOGW(TAG, "Session denied by user");
+    }
+    ui_set_screen(session_confirm_return);
+}
+
+/* ============================================================================
  * Public API
  * ============================================================================ */
 
@@ -2372,14 +2490,17 @@ void ui_init(void)
     screens[SCREEN_ENTROPY] = &screen_entropy;
     screens[SCREEN_WIPE_CONFIRM] = &screen_wipe_confirm;
     screens[SCREEN_MNEMONIC_VERIFY] = &screen_mnemonic_verify;
+    screens[SCREEN_SESSION_CONFIRM] = &screen_session_confirm;
 
     current_screen = SCREEN_BOOT;
     needs_render = true;
 
-    lock_timeout_load();
+    settings_load();
+    oled_set_contrast(BRIGHTNESS_LEVELS[brightness_choice]);
 
-    ESP_LOGI(TAG, "UI initialized (auto-lock %s)",
-             lock_timeout_label(lock_timeout_choice));
+    ESP_LOGI(TAG, "UI initialized (auto-lock %s, brightness %s)",
+             lock_timeout_label(lock_timeout_choice),
+             brightness_label(brightness_choice));
 }
 
 void ui_set_screen(screen_id_t screen)
@@ -2422,6 +2543,8 @@ void ui_render(void)
     if (screens[current_screen] && screens[current_screen]->render) {
         screens[current_screen]->render();
     }
+    /* Screens draw into the buffer; the panel changes exactly once, here. */
+    oled_flush();
     needs_render = false;
 }
 
@@ -2467,6 +2590,16 @@ void ui_task(void *pvParameters)
             ui_handle_button(event.id);
         } else if (lock_check_timeout()) {
             /* Just locked; fall through to render the unlock screen. */
+        }
+
+        /* A handshake arrived on the protocol task. Interrupt whatever is on
+         * screen: the host is waiting, and the user needs to compare a code. */
+        if (session_confirm_pending) {
+            session_confirm_pending = false;
+            if (ui_get_screen() != SCREEN_SESSION_CONFIRM) {
+                session_confirm_return = ui_get_screen();
+                ui_set_screen(SCREEN_SESSION_CONFIRM);
+            }
         }
 
         /* Re-render if needed */

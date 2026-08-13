@@ -34,6 +34,8 @@
 #include "cbor.h"
 #include "leek-wallet.h"
 #include "pin.h"
+#include "session.h"
+#include "ui.h"
 
 static const char *TAG = "protocol";
 
@@ -46,11 +48,15 @@ static const char *TAG = "protocol";
 /* Frame types, matching app/packages/core/src/framing.ts */
 #define FRAME_REQUEST   0x01
 #define FRAME_RESPONSE  0x02
+#define FRAME_ENC_REQUEST  0x11
+#define FRAME_ENC_RESPONSE 0x12
 #define FRAME_ERROR     0x7F
 
 /* Error codes, matching transport.ts */
-#define ERR_MALFORMED   0x0001
+#define ERR_MALFORMED    0x0001
 #define ERR_NOT_UNLOCKED 0x0100
+#define ERR_NO_WALLET    0x0300
+#define ERR_SESSION      0x0400
 
 static uint8_t rx_buf[MAX_FRAME];
 static size_t  rx_len = 0;
@@ -88,6 +94,44 @@ static void send_error(uint16_t code, const char *message)
     if (cbor_writer_ok(&w)) {
         send_frame(FRAME_ERROR, out, w.length);
     }
+}
+
+/* Handle the plaintext handshake. Runs before any session exists, so it must
+ * reveal nothing: a device public key and a version, and no user-specific
+ * state at all. */
+static bool handle_hello(const uint8_t *payload, size_t len,
+                         uint8_t *out, size_t out_size, size_t *out_len)
+{
+    CborItem item;
+    if (!cbor_map_find(payload, len, "hostPubkey", &item) ||
+        item.type != CBOR_BYTES || item.value != SESSION_PUBKEY_SIZE) {
+        return false;
+    }
+
+    uint8_t device_pub[SESSION_PUBKEY_SIZE];
+    if (!session_begin(item.data, device_pub)) {
+        return false;
+    }
+
+    /* The user now has to compare a six-digit code on the OLED with the one
+     * the app computes. Until they confirm, nothing encrypted is accepted. */
+    ui_request_session_confirm();
+
+    CborWriter w;
+    cbor_writer_init(&w, out, out_size);
+    cbor_write_map(&w, 1);
+    cbor_write_text(&w, "result");
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "devicePubkey");
+    cbor_write_bytes(&w, device_pub, sizeof(device_pub));
+    cbor_write_text(&w, "version");
+    cbor_write_uint(&w, 1);
+
+    if (!cbor_writer_ok(&w)) {
+        return false;
+    }
+    *out_len = w.length;
+    return true;
 }
 
 /* Handle one decoded request. */
@@ -141,10 +185,46 @@ static void dispatch(const uint8_t *payload, size_t len)
         cbor_write_text(&w, "walletCount");
         cbor_write_uint(&w, status.wallet_count);
 
+    } else if (strcmp(method, "getAddress") == 0) {
+        /* Behind the session: an address list is not secret, but it is
+         * user-specific, and anything plugged into this port should not be able
+         * to enumerate a wallet without the user confirming a passkey. */
+        if (session_state() != SESSION_ACTIVE) {
+            send_error(ERR_SESSION, "session required");
+            return;
+        }
+        if (!pin_is_unlocked()) {
+            send_error(ERR_NOT_UNLOCKED, "device is locked");
+            return;
+        }
+
+        uint32_t index = 0;
+        if (cbor_map_find(payload, len, "index", &item) && item.type == CBOR_UINT) {
+            index = item.value;
+        }
+
+        HDPath path = HDPATH_ETH_DEFAULT;
+        path.address_index = index;
+        EthAddress addr;
+
+        if (wallet_select_path(&path) != WALLET_OK ||
+            wallet_get_eth_address(&addr) != WALLET_OK) {
+            send_error(ERR_NO_WALLET, "derivation failed");
+            return;
+        }
+
+        cbor_write_map(&w, 1);
+        cbor_write_text(&w, "result");
+        cbor_write_map(&w, 2);
+        cbor_write_text(&w, "address");
+        cbor_write_text(&w, addr.hex);
+        cbor_write_text(&w, "index");
+        cbor_write_uint(&w, index);
+
     } else {
-        /* Everything touching keys is deliberately absent until the session
-         * layer exists. Answering them now would mean answering them
-         * unauthenticated. */
+        /* Signing waits for on-device transaction rendering (T12). Answering
+         * it before the device can display what it signs would be blind
+         * signing with extra steps. */
         send_error(ERR_MALFORMED, "unknown or not yet implemented");
         return;
     }
@@ -153,7 +233,17 @@ static void dispatch(const uint8_t *payload, size_t len)
         send_error(ERR_MALFORMED, "response too large");
         return;
     }
-    send_frame(FRAME_RESPONSE, out, w.length);
+
+    if (session_state() == SESSION_ACTIVE) {
+        int enc = session_encrypt(out, w.length, sizeof(out));
+        if (enc < 0) {
+            send_error(ERR_SESSION, "encrypt failed");
+            return;
+        }
+        send_frame(FRAME_ENC_RESPONSE, out, (size_t)enc);
+    } else {
+        send_frame(FRAME_RESPONSE, out, w.length);
+    }
 }
 
 /* Pull complete frames out of the receive buffer, resynchronising on garbage. */
@@ -187,7 +277,31 @@ static void consume(void)
 
         uint8_t type = rx_buf[4];
         if (type == FRAME_REQUEST) {
-            dispatch(rx_buf + 5, body - 1);
+            /* Plaintext is only ever the handshake. */
+            uint8_t out[128];
+            size_t  out_len = 0;
+            CborItem probe;
+            char method[32] = {0};
+
+            if (cbor_map_find(rx_buf + 5, body - 1, "method", &probe) &&
+                cbor_text_copy(&probe, method, sizeof(method)) &&
+                strcmp(method, "hello") == 0) {
+                if (handle_hello(rx_buf + 5, body - 1, out, sizeof(out), &out_len)) {
+                    send_frame(FRAME_RESPONSE, out, out_len);
+                } else {
+                    send_error(ERR_MALFORMED, "handshake failed");
+                }
+            } else {
+                dispatch(rx_buf + 5, body - 1);
+            }
+        } else if (type == FRAME_ENC_REQUEST) {
+            /* Decrypt in place, dispatch, re-encrypt the reply. */
+            int plain = session_decrypt(rx_buf + 5, body - 1);
+            if (plain < 0) {
+                send_error(ERR_SESSION, "decrypt failed");
+            } else {
+                dispatch(rx_buf + 5, (size_t)plain);
+            }
         } else {
             send_error(ERR_MALFORMED, "unexpected frame type");
         }

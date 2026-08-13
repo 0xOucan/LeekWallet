@@ -285,6 +285,7 @@ with a resume-on-boot flag.
 | g | `src/ui.c:1272-1274` | Wi-Fi AP ships a hardcoded WPA2 password (`leek1234`) and the AP is reachable while the wallet is unlocked. It is a test feature; make it unavailable in release builds rather than a menu item. |
 | h | `colibri-wallet.c:129` | AES-CBC with zero padding and no MAC. Recovery relies on the plaintext being a NUL-terminated string, and nothing detects tampering with the ciphertext. Move to AES-GCM (already vendored under `components/trezor-crypto/aes/aesgcm.c`). |
 | i | `src/ui.c:1630-1636` | ~~The QR screen maps ACCEPT/DOWN to "reveal seed phrase"~~ **fixed**. Hardware testing hit it: the QR fills the display so there is no footer, and pressing a button to leave the screen instead locked the device and demanded the PIN. Revealing the seed now lives in Settings, labelled, and still re-asks for the PIN. |
+| k | `src/oled.c` | ~~Every character was written straight to the panel, after `oled_clear()` blanked it over I2C~~ **fixed**. Hardware testing reported the screen flickering on every keypress, which was the frame being composed in front of the user: a blank panel, then ~20 separate I2C transactions filling it back in. Drawing now composes into a RAM buffer and the panel changes once per render. |
 | j | `src/button.c:71` | `xQueueSend(..., 0)` drops button events when the 8-slot queue is full. Silent input loss during a slow render (PBKDF2 takes ~800 ms and blocks the UI task). Consider blocking briefly, or draining stale input after long operations. |
 
 ---

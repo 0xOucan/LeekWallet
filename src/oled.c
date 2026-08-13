@@ -215,7 +215,45 @@ esp_err_t oled_init(void)
     return ESP_OK;
 }
 
+/* Single frame buffer, pushed to the panel once per render.
+ *
+ * Text used to be written straight to the display: oled_clear() blanked the
+ * panel over I2C and then every character was its own transaction. At 400 kHz
+ * that is a visible blank-then-refill on each keypress, which reads as the
+ * screen flickering. Nothing wrong with the hardware - the frame was simply
+ * being composed in front of the user. */
+static uint8_t framebuffer[OLED_WIDTH * OLED_PAGES];
+static uint8_t cursor_page = 0;
+static uint8_t cursor_col = 0;
+
+esp_err_t oled_flush(void)
+{
+    ssd1306_send_cmd(0x21);
+    ssd1306_send_cmd(0x00);
+    ssd1306_send_cmd(OLED_WIDTH - 1);
+    ssd1306_send_cmd(0x22);
+    ssd1306_send_cmd(0x00);
+    ssd1306_send_cmd(OLED_PAGES - 1);
+    return ssd1306_send_data(framebuffer, sizeof(framebuffer));
+}
+
+esp_err_t oled_set_contrast(uint8_t level)
+{
+    ssd1306_send_cmd(0x81);      /* Set Contrast Control */
+    ssd1306_send_cmd(level);
+    return ESP_OK;
+}
+
 esp_err_t oled_clear(void)
+{
+    /* Clears the buffer, not the panel. The panel changes once, at flush. */
+    memset(framebuffer, 0, sizeof(framebuffer));
+    cursor_page = 0;
+    cursor_col = 0;
+    return ESP_OK;
+}
+
+esp_err_t oled_clear_panel_now(void)
 {
     /* Set column and page address to cover entire display */
     ssd1306_send_cmd(0x21);  /* Set column address */
@@ -253,12 +291,8 @@ esp_err_t oled_clear_page(uint8_t page)
 
 esp_err_t oled_set_cursor(uint8_t page, uint8_t col)
 {
-    ssd1306_send_cmd(0x21);  /* Set column address */
-    ssd1306_send_cmd(col);   /* Start column */
-    ssd1306_send_cmd(0x7F);  /* End column 127 */
-    ssd1306_send_cmd(0x22);  /* Set page address */
-    ssd1306_send_cmd(page);  /* Start page */
-    ssd1306_send_cmd(0x07);  /* End page 7 */
+    cursor_page = (page < OLED_PAGES) ? page : (uint8_t)(OLED_PAGES - 1);
+    cursor_col = (col < OLED_WIDTH) ? col : (uint8_t)(OLED_WIDTH - 1);
     return ESP_OK;
 }
 
@@ -268,11 +302,18 @@ esp_err_t oled_draw_char(char c)
         c = ' ';  /* Replace unprintable with space */
     }
 
-    uint8_t buf[6];
-    memcpy(buf, font_5x7[c - 32], 5);
-    buf[5] = 0x00;  /* 1 pixel spacing between characters */
+    const uint8_t *glyph = font_5x7[c - 32];
+    size_t base = (size_t)cursor_page * OLED_WIDTH;
 
-    return ssd1306_send_data(buf, sizeof(buf));
+    for (int i = 0; i < 6; i++) {
+        if (cursor_col >= OLED_WIDTH) {
+            break;   /* clip at the right edge rather than wrapping */
+        }
+        framebuffer[base + cursor_col] = (i < 5) ? glyph[i] : 0x00;
+        cursor_col++;
+    }
+
+    return ESP_OK;
 }
 
 esp_err_t oled_draw_string(uint8_t page, uint8_t col, const char *str)
@@ -333,7 +374,7 @@ esp_err_t oled_fill_page(uint8_t page, uint8_t pattern)
 }
 
 /* Framebuffer for pixel-level operations */
-static uint8_t framebuffer[OLED_WIDTH * OLED_PAGES];
+
 
 esp_err_t oled_set_pixel(uint8_t x, uint8_t y, bool on)
 {

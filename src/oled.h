@@ -39,6 +39,21 @@ esp_err_t oled_init(void);
 esp_err_t oled_clear(void);
 
 /**
+ * Push the frame buffer to the panel.
+ *
+ * Drawing composes into RAM; nothing reaches the display until this is called.
+ * One I2C transfer per frame instead of one per character, which is the
+ * difference between a screen that updates and a screen that flickers.
+ */
+esp_err_t oled_flush(void);
+
+/** Blank the panel immediately, bypassing the buffer. For shutdown paths. */
+esp_err_t oled_clear_panel_now(void);
+
+/** Panel contrast, 0x00 to 0xFF. The SSD1306/SSD1315 "brightness" control. */
+esp_err_t oled_set_contrast(uint8_t level);
+
+/**
  * Clear a single page (8-pixel row)
  * @param page Page number (0-7)
  * @return ESP_OK on success

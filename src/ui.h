@@ -28,6 +28,7 @@ typedef enum {
     SCREEN_QR_CODE,
     SCREEN_ENTROPY,
     SCREEN_MNEMONIC_VERIFY,
+    SCREEN_SESSION_CONFIRM,
     SCREEN_COUNT
 } screen_id_t;
 
@@ -103,5 +104,13 @@ void ui_register_screen(screen_id_t id, const screen_t *screen);
  * @param pvParameters Unused
  */
 void ui_task(void *pvParameters);
+
+/**
+ * Ask the user to compare the session passkey.
+ *
+ * Called from the protocol task when a handshake begins. The UI task picks it
+ * up on its next pass rather than switching screens from another task.
+ */
+void ui_request_session_confirm(void);
 
 #endif /* UI_H */

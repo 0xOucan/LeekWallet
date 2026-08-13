@@ -256,7 +256,8 @@ Write the protocol spec first and both sides build against it simultaneously.
 | T24 | viem `toAccount()` adapter | T21 | signs against a testnet using the mock |
 | T25 | Firmware: BLE GATT service + protocol dispatcher | T20 | echoes a ping from a phone |
 | ~~T25b~~ ✅ | Firmware protocol endpoint over USB-Serial-JTAG, sync-marked so it shares the console port. `scripts/probe-device.py` talks to it | T20 | ping/getFeatures/getStatus answered on hardware; key commands correctly refused |
-| T25c | Session layer on the device (X25519 + passkey), then the key commands behind it | T25b | getAddress works only after a confirmed session |
+| ~~T25c~~ ✅ | Session layer wired in: X25519 handshake, on-device passkey comparison screen, encrypted frames, `getAddress` behind a confirmed session | T25b | handshake works on hardware; key commands refused without confirmation |
+| T56 | Configurable BLE device name, as Ledger allows. Affects advertising, so it is also a privacy control: a name is broadcast to anyone scanning | T25 | name set on-device, persists, appears in the advertisement |
 | T26 | Conformance suite against mock, BLE firmware, USB firmware | T23, T25, T25b | all three identical — this is what keeps the two transports honest |
 
 T23 is the highest-leverage item in the plan: it decouples Track D from all firmware work.
