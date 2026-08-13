@@ -90,9 +90,37 @@ single thing to protect, which is exactly why the single-seed convention exists.
 The 30 slots are a capability, not a recommendation — the default path should
 stay one seed and many accounts.
 
-This is also why backup verification is tracked per wallet and why the wipe
-screen counts unverified ones. Thirty seeds is thirty chances to have written
-one down wrong.
+### Is multi-seed a security problem?
+
+No, but it is a backup problem, and the distinction matters.
+
+**Not a security problem.** Every seed is encrypted under the same vault key
+with its own IV, so storing thirty weakens no individual seed. One PIN protects
+one seed exactly as well as it protects thirty.
+
+**It is an aggregation problem.** A compromised PIN now costs N wallets instead
+of one. That is not a weakness in the crypto, it is more value behind the same
+door, and it is the argument for the KDF and flash encryption rather than
+against multiple seeds.
+
+**The real risk is human.** N seeds means N phrases to write down, and the
+failure is forgetting that wallet 2 was ever created, then wiping. Three
+guardrails address it:
+
+- Backup verification is tracked per wallet, and the wipe screen counts
+  unverified ones and demands more presses when any exist.
+- New Wallet and Import Wallet leave the main menu once a seed exists, so a
+  second seed is a deliberate trip into Settings.
+- **Every screen showing a phrase names its wallet** — `Seed W2/2 1-4` rather
+  than `Seed Phrase`. Hardware testing found this missing, and an unlabelled
+  backup is how a phrase ends up filed under the wrong wallet, which is the
+  same as losing it.
+
+**But once the passphrase UI lands, most users should not need this.** One seed
+plus a passphrase gives unlimited hidden wallets from a single backup, which is
+strictly better than N backups: fewer things to lose, and the extra wallets
+leave no trace on the device. Multiple stored seeds are for importing wallets
+that already exist elsewhere, not for organising new ones.
 
 ### Passphrase input on four buttons
 

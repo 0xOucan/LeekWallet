@@ -1359,9 +1359,27 @@ static void screen_mnemonic_display_render(void)
         return;
     }
 
-    /* Header: "Seed Phrase" */
+    /* Name the wallet and the page.
+     *
+     * With more than one seed stored, "Seed Phrase" alone is how a backup ends
+     * up labelled with the wrong wallet - and a phrase written down under the
+     * wrong name is a phrase you will not find when you need it. */
     int total_pages = (mnemonic_word_count + 2) / 3;
-    oled_draw_string_centered(0, "Seed Phrase");
+    WalletStatus mstatus = wallet_get_status();
+    /* Clamped so the compiler can size the buffer: a 24-word phrase is 8 pages
+     * and MAX_WALLETS is 30, so none of these need more than two digits. */
+    unsigned page_no  = (unsigned)(mnemonic_page + 1) & 0xF;
+    unsigned page_tot = (unsigned)total_pages & 0xF;
+    char mheader[22];
+    if (mstatus.wallet_count > 1) {
+        snprintf(mheader, sizeof(mheader), "Seed W%u/%u %u-%u",
+                 (unsigned)mstatus.active_wallet_index & 0x3F,
+                 (unsigned)mstatus.wallet_count & 0x3F,
+                 page_no, page_tot);
+    } else {
+        snprintf(mheader, sizeof(mheader), "Seed Phrase %u/%u", page_no, page_tot);
+    }
+    oled_draw_string_centered(0, mheader);
 
     /* Display 3 words */
     for (int i = 0; i < 3; i++) {
@@ -2204,9 +2222,17 @@ static void screen_mnemonic_verify_render(void)
         return;
     }
 
+    WalletStatus vstatus = wallet_get_status();
     char header[22];
-    snprintf(header, sizeof(header), "Verify %d/%d",
-             verify_current + 1, VERIFY_CHALLENGES);
+    unsigned step = (unsigned)(verify_current + 1) & 0x7;
+    if (vstatus.wallet_count > 1) {
+        snprintf(header, sizeof(header), "Verify W%u %u/%u",
+                 (unsigned)vstatus.active_wallet_index & 0x3F,
+                 step, (unsigned)VERIFY_CHALLENGES);
+    } else {
+        snprintf(header, sizeof(header), "Verify %u/%u", step,
+                 (unsigned)VERIFY_CHALLENGES);
+    }
     oled_draw_string_centered(0, header);
 
     char prompt[22];
