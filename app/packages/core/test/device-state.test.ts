@@ -29,7 +29,7 @@ async function call(dev: MockDevice, method: string, params: Record<string, Cbor
       if (fr.type === FrameType.Error) reject(new Error(String(body["message"])));
       else resolve((body["result"] ?? {}) as Record<string, CborValue>);
     });
-    dev.send(encodeFrame(FrameType.Request, encodeCbor({ method, params }))).catch(reject);
+    dev.send(encodeFrame(FrameType.Request, encodeCbor({ method, ...params }))).catch(reject);
   });
 }
 

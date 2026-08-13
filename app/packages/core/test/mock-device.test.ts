@@ -33,7 +33,7 @@ async function call(
         resolve({ result: body["result"] as Record<string, CborValue> });
       }
     });
-    dev.send(encodeFrame(FrameType.Request, encodeCbor({ method, params }))).catch(reject);
+    dev.send(encodeFrame(FrameType.Request, encodeCbor({ method, ...params }))).catch(reject);
   });
 }
 

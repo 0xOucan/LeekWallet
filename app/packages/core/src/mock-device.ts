@@ -126,7 +126,10 @@ export class MockDevice implements Transport {
     if (typeof method !== "string") {
       return this.error(ErrorCode.MalformedFrame, "missing method");
     }
-    const params = (map["params"] ?? {}) as Record<string, CborValue>;
+    /* Fields are top-level, beside `method` - the same shape the firmware
+     * parses. Reading them from a nested `params` object would let the mock
+     * accept requests real hardware ignores. */
+    const params = map;
 
     // Session must be established before anything encrypted.
     const preSession = method === "hello" || method === "getFeatures";

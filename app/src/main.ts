@@ -15,6 +15,9 @@ import {
   derivationsInvalidated, UNKNOWN_STATUS, type DeviceStatus,
 } from "../packages/core/src/device-state.ts";
 import { isTauri, listPorts, TauriSerialTransport } from "./tauri-transport.ts";
+import {
+  deriveSession, generateKeypair, Session,
+} from "../packages/core/src/session.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -35,12 +38,30 @@ class Client {
   private readonly transport: Transport;
   private readonly decoder = new FrameDecoder();
   private pending: ((v: { ok?: Record<string, CborValue>; err?: DeviceError }) => void) | null = null;
+  /** Established after the handshake; null while everything is plaintext. */
+  private session: Session | null = null;
 
   constructor(transport: Transport) {
     this.transport = transport;
     this.transport.onFrame((frame) => {
       for (const f of this.decoder.push(frame)) {
-        const body = decodeCbor(f.payload) as Record<string, CborValue>;
+        let payload = f.payload;
+
+        /* Encrypted replies are unsealed before parsing. A failed tag throws
+         * and is surfaced rather than retried: a forged frame means the
+         * channel is no longer trustworthy. */
+        if (f.type === FrameType.EncryptedResponse && this.session) {
+          try {
+            payload = this.session.decrypt(payload);
+          } catch {
+            const resolve = this.pending;
+            this.pending = null;
+            resolve?.({ err: new DeviceError(0x0400, "authentication failed") });
+            continue;
+          }
+        }
+
+        const body = decodeCbor(payload) as Record<string, CborValue>;
         const resolve = this.pending;
         this.pending = null;
         if (!resolve) continue;
@@ -58,10 +79,70 @@ class Client {
     const reply = new Promise<{ ok?: Record<string, CborValue>; err?: DeviceError }>((r) => {
       this.pending = r;
     });
-    await this.transport.send(encodeFrame(FrameType.Request, encodeCbor({ method, params })));
+
+    /* Flat, per PROTOCOL.md section 4: fields sit beside `method` rather than
+     * inside a `params` object. The firmware looks for them at the top level,
+     * so a nested request would have had its arguments silently ignored. */
+    const body = encodeCbor({ method, ...params });
+    const [type, payload] = this.session?.isActive
+      ? [FrameType.EncryptedRequest, this.session.encrypt(body)]
+      : [FrameType.Request, body];
+
+    await this.transport.send(encodeFrame(type, payload));
     const { ok, err } = await reply;
     if (err) throw err;
     return ok ?? {};
+  }
+
+  /**
+   * Run the X25519 handshake and return the passkey to compare.
+   *
+   * The device shows the same six digits on its own screen. They match only if
+   * nobody is relaying between the two, which is the whole reason the user is
+   * asked to look — encryption alone would protect a conversation with an
+   * impostor perfectly well.
+   */
+  async handshake(): Promise<string> {
+    const { privateKey, publicKey } = generateKeypair();
+    const reply = await this.call("hello", { hostPubkey: publicKey });
+
+    const devicePubkey = reply["devicePubkey"];
+    if (!(devicePubkey instanceof Uint8Array) || devicePubkey.length !== 32) {
+      throw new Error("device did not return a public key");
+    }
+
+    this.session = new Session(deriveSession(privateKey, devicePubkey), "host");
+    return this.session.passkey;
+  }
+
+  /**
+   * Wait for the user to approve on the device.
+   *
+   * There is no "confirmed" message to wait for: the device simply starts
+   * accepting encrypted traffic once the button is pressed. So the host tries
+   * an encrypted call until one succeeds, which is both the check and the
+   * first real use of the channel.
+   */
+  async waitForApproval(timeoutMs = 60000): Promise<void> {
+    if (!this.session) throw new Error("no handshake");
+    this.session.confirm();
+
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try {
+        await this.call("getStatus");
+        return;
+      } catch (e) {
+        if (Date.now() > deadline) {
+          throw new Error("timed out waiting for confirmation on the device");
+        }
+        await new Promise((r) => setTimeout(r, 750));
+      }
+    }
+  }
+
+  get encrypted(): boolean {
+    return this.session?.isActive ?? false;
   }
 }
 
@@ -167,14 +248,25 @@ async function connect(): Promise<void> {
   busy(true);
   await transport.open();
 
-  const hello = await client.call("hello");
-  /* The mock reports a fixed passkey; real firmware derives one from the ECDH
-   * shared secret and shows it on the OLED for the user to compare. */
-  const passkey = hello["passkey"];
-  $("passkey").textContent =
-    typeof passkey === "string" ? passkey : "compare the code on the device";
-  $("pairing").hidden = false;
-  log(`session established with ${transport.label}`);
+  if (isTauri()) {
+    /* Real firmware: derive the passkey from the exchange and wait for the
+     * user to compare it against the OLED. */
+    const passkey = await client.handshake();
+    $("passkey").textContent = `${passkey.slice(0, 3)} ${passkey.slice(3)}`;
+    $("pairing").hidden = false;
+    log(`handshake done — compare ${passkey} with the device screen`);
+    setConnection("connecting", "Waiting for approval…");
+
+    await client.waitForApproval();
+    log("approved on device; channel encrypted");
+  } else {
+    const hello = await client.call("hello");
+    const passkey = hello["passkey"];
+    $("passkey").textContent =
+      typeof passkey === "string" ? passkey : "(mock: nothing to compare)";
+    $("pairing").hidden = false;
+    log(`session established with ${transport.label}`);
+  }
 
   setConnection("connected", transport.label);
   $("devicehint").textContent =
