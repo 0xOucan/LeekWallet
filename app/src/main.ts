@@ -40,6 +40,8 @@ class Client {
   private pending: ((v: { ok?: Record<string, CborValue>; err?: DeviceError }) => void) | null = null;
   /** Established after the handshake; null while everything is plaintext. */
   private session: Session | null = null;
+  /** Serialises requests; see call(). */
+  private queue: Promise<void> = Promise.resolve();
 
   constructor(transport: Transport) {
     this.transport = transport;
@@ -50,7 +52,10 @@ class Client {
         /* Encrypted replies are unsealed before parsing. A failed tag throws
          * and is surfaced rather than retried: a forged frame means the
          * channel is no longer trustworthy. */
-        if (f.type === FrameType.EncryptedResponse && this.session) {
+        const encrypted =
+          f.type === FrameType.EncryptedResponse || f.type === FrameType.EncryptedError;
+
+        if (encrypted && this.session) {
           try {
             payload = this.session.decrypt(payload);
           } catch {
@@ -65,7 +70,7 @@ class Client {
         const resolve = this.pending;
         this.pending = null;
         if (!resolve) continue;
-        if (f.type === FrameType.Error) {
+        if (f.type === FrameType.Error || f.type === FrameType.EncryptedError) {
           resolve({ err: new DeviceError(Number(body["code"]), String(body["message"])) });
         } else {
           resolve({ ok: body["result"] as Record<string, CborValue> });
@@ -74,8 +79,28 @@ class Client {
     });
   }
 
+  /**
+   * Send one request and await its reply, one at a time.
+   *
+   * The link has no request IDs, so a reply belongs to whichever request went
+   * out last. With a background poll running, a user action could overlap it
+   * and each would resolve the other's promise — and because the nonce counter
+   * advances on a completed exchange, the two ends then drift apart and every
+   * later frame fails. That is what "clicked Unlock and it hung" was.
+   *
+   * Serialising here is the fix rather than removing the poll: the poll exists
+   * to notice changes made on the device, which is exactly when a user is also
+   * touching the app.
+   */
   async call(method: string, params: Record<string, CborValue> = {}): Promise<Record<string, CborValue>> {
-    if (this.pending) throw new Error("a request is already in flight");
+    const mine = this.queue.then(() => this.callNow(method, params));
+    // Keep the chain alive even when a call rejects, or one failure wedges
+    // every request that follows.
+    this.queue = mine.then(() => undefined, () => undefined);
+    return mine;
+  }
+
+  private async callNow(method: string, params: Record<string, CborValue> = {}): Promise<Record<string, CborValue>> {
     const reply = new Promise<{ ok?: Record<string, CborValue>; err?: DeviceError }>((r) => {
       this.pending = r;
     });
@@ -270,8 +295,9 @@ async function connect(): Promise<void> {
   }
 
   setConnection("connected", transport.label);
-  $("devicehint").textContent =
-    "Connected to the mock. Behaviour matches the protocol, but keys and signatures are not real.";
+  $("devicehint").textContent = isTauri()
+    ? `Connected over ${transport.label}. The device confirms everything it signs on its own screen.`
+    : "Connected to the mock. Behaviour matches the protocol, but keys and signatures are not real.";
   busy(false);
   ($("connect") as HTMLButtonElement).disabled = true;
   ($("unlock") as HTMLButtonElement).disabled = false;

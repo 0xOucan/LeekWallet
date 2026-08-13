@@ -24,6 +24,9 @@ export const FrameType = {
   EncryptedRequest: 0x11,
   EncryptedResponse: 0x12,
   Event: 0x13,
+  /* Encrypted errors carry their own type. Sharing the encrypted-response type
+   * would make a failure look like an empty success once decrypted. */
+  EncryptedError: 0x7e,
   Error: 0x7f,
 } as const;
 

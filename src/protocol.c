@@ -51,6 +51,7 @@ static const char *TAG = "protocol";
 #define FRAME_RESPONSE  0x02
 #define FRAME_ENC_REQUEST  0x11
 #define FRAME_ENC_RESPONSE 0x12
+#define FRAME_ENC_ERROR    0x7E
 #define FRAME_ERROR     0x7F
 
 /* Error codes, matching transport.ts */
@@ -114,7 +115,11 @@ static void send_error_ex(uint16_t code, const char *message, bool allow_encrypt
     if (allow_encrypt && session_state() == SESSION_ACTIVE) {
         int enc = session_encrypt(out, w.length, sizeof(out));
         if (enc > 0) {
-            send_frame(FRAME_ENC_RESPONSE, out, (size_t)enc);
+            /* A distinct type. Sending an encrypted error as an encrypted
+             * *response* makes it indistinguishable from success once the
+             * payload is opened, and the client reports an empty result rather
+             * than the failure that actually happened. */
+            send_frame(FRAME_ENC_ERROR, out, (size_t)enc);
             return;
         }
     }
