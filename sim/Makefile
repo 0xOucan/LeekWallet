@@ -12,7 +12,7 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui test_button test_pin_change test_protocol test_xfp
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
@@ -76,6 +76,12 @@ $(BUILD)/test_xfp: test_xfp.c host_stubs.c \
                    $(CRYPTO)/ed25519-donna/ed25519-keccak.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -o $@ $^
 
+# The chunking layer alone, with no transport under it. Pure C by design: this
+# is the code an unpaired stranger reaches first, so it has to run on the host
+# and under a sanitiser.
+$(BUILD)/test_ble_chunk: test_ble_chunk.c ../src/ble-chunk.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
 $(BUILD)/test_cbor: test_cbor.c ../src/cbor.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
@@ -106,7 +112,8 @@ $(BUILD)/test_pin: test_pin.c esp_stubs.c wallet_stubs.c ../src/pin.c \
 # for why the real one is not linked here). The Wi-Fi/BLE/USB blocks in ui.c are
 # all behind CONFIG_* macros that stay undefined on the host, so they vanish.
 $(BUILD)/test_ui: test_ui.c esp_stubs.c host_stubs.c fake_oled.c fake_wallet.c \
-                  fake_input.c ../src/ui.c ../src/pin.c ../src/mnemonic-entry.c \
+                  fake_input.c fake_protocol.c ../src/transport.c ../src/ble.c \
+                  ../src/ui.c ../src/pin.c ../src/mnemonic-entry.c \
                   ../src/entropy.c ../src/session.c ../src/text-entry.c \
                   ../src/eth-tx.c ../src/eth-decode.c ../src/device-wipe.c \
                   $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
@@ -160,6 +167,7 @@ $(BUILD)/test_pin_change: test_pin_change.c esp_stubs.c host_stubs.c \
 # the mock has to match; see test_protocol.c.
 PROTOCOL_SRC := test_protocol.c esp_stubs.c host_stubs.c fake_usb.c fake_wallet.c \
                 ../src/protocol.c ../src/cbor.c ../src/session.c ../src/pin.c \
+                ../src/ble-chunk.c ../src/ble.c ../src/transport.c \
                 ../src/eth-tx.c ../src/eth-decode.c \
                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
@@ -194,8 +202,13 @@ $(BUILD)/test_protocol_asan: $(PROTOCOL_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST \
 	      -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $^
 
-asan: $(BUILD)/test_protocol_asan
+# The chunk layer gets the same treatment, for the same reason.
+$(BUILD)/test_ble_chunk_asan: test_ble_chunk.c ../src/ble-chunk.c | $(BUILD)
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $^
+
+asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan
 	./$(BUILD)/test_protocol_asan
+	./$(BUILD)/test_ble_chunk_asan
 
 $(BUILD):
 	mkdir -p $(BUILD)

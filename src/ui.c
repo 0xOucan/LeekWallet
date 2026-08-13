@@ -24,6 +24,7 @@
 #include "eth-tx.h"
 #include "eth-decode.h"
 #include "device-wipe.h"
+#include "transport.h"
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "nvs.h"
@@ -697,7 +698,7 @@ typedef enum {
 #ifdef CONFIG_ESP_WIFI_ENABLED
     SET_WIFI,
 #endif
-    SET_BLE,
+    SET_TRANSPORT,
     SET_USB,
     SET_WIPE,
     SET_BACK,
@@ -716,14 +717,13 @@ static const char *settings_items[SETTINGS_ITEMS] = {
 #ifdef CONFIG_ESP_WIFI_ENABLED
     "WiFi Test",
 #endif
-    "BLE Test",
+    "Link",
     "USB HID Test",
     "Wipe Device",
     "Back"
 };
 static int settings_selection = 0;
 static bool wifi_enabled = false;
-static bool ble_enabled = false;
 
 /* ============================================================================
  * Helper: Unlock wallet with PIN
@@ -2143,147 +2143,16 @@ static void wifi_test_toggle(void)
         esp_wifi_stop();
         esp_wifi_deinit();
         wifi_enabled = false;
-        entropy_set_rf_active(ble_enabled);
+        entropy_set_rf_active(transport_get() == TRANSPORT_BLE);
         ESP_LOGI(TAG, "WiFi disabled");
     }
 }
 #endif /* CONFIG_ESP_WIFI_ENABLED */
 
-/* BLE test functions */
-#ifdef CONFIG_BT_NIMBLE_ENABLED
-static uint8_t ble_addr_type;
-
-/* BLE advertising data */
-static void ble_advertise(void)
-{
-    struct ble_gap_adv_params adv_params;
-    struct ble_hs_adv_fields fields;
-    int rc;
-
-    memset(&fields, 0, sizeof(fields));
-
-    /* Advertise flags: general discoverable + BLE only */
-    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-
-    /* Include device name */
-    fields.name = (uint8_t *)"LeekWallet";
-    fields.name_len = strlen("LeekWallet");
-    fields.name_is_complete = 1;
-
-    /* Include TX power level */
-    fields.tx_pwr_lvl_is_present = 1;
-    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
-
-    rc = ble_gap_adv_set_fields(&fields);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "Error setting adv fields: %d", rc);
-        return;
-    }
-
-    /* Start advertising */
-    memset(&adv_params, 0, sizeof(adv_params));
-    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;  /* Undirected connectable */
-    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;  /* General discoverable */
-    adv_params.itvl_min = 160;  /* 100ms */
-    adv_params.itvl_max = 160;
-
-    rc = ble_gap_adv_start(ble_addr_type, NULL, BLE_HS_FOREVER, &adv_params, NULL, NULL);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "Error starting advertising: %d", rc);
-        return;
-    }
-
-    ESP_LOGI(TAG, "BLE advertising started as 'LeekWallet'");
-}
-
-static void ble_on_sync(void)
-{
-    int rc = ble_hs_id_infer_auto(0, &ble_addr_type);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "Error determining address type: %d", rc);
-        return;
-    }
-
-    uint8_t addr[6] = {0};
-    ble_hs_id_copy_addr(ble_addr_type, addr, NULL);
-    ESP_LOGI(TAG, "BLE Address: %02X:%02X:%02X:%02X:%02X:%02X",
-             addr[5], addr[4], addr[3], addr[2], addr[1], addr[0]);
-
-    ble_advertise();
-}
-
-static void ble_on_reset(int reason)
-{
-    ESP_LOGW(TAG, "BLE reset, reason: %d", reason);
-}
-
-static void ble_host_task(void *param)
-{
-    ESP_LOGI(TAG, "BLE Host Task Started");
-    nimble_port_run();
-    nimble_port_freertos_deinit();
-}
-#endif
-
-static void ble_test_toggle(void)
-{
-#ifdef CONFIG_BT_NIMBLE_ENABLED
-    if (!ble_enabled) {
-        ESP_LOGI(TAG, "Enabling BLE (NimBLE)...");
-        esp_err_t ret = nimble_port_init();
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "NimBLE init failed: %d", ret);
-            return;
-        }
-
-        /* Configure NimBLE host */
-        ble_hs_cfg.sync_cb = ble_on_sync;
-        ble_hs_cfg.reset_cb = ble_on_reset;
-
-        /* Initialize GAP and GATT services */
-        ble_svc_gap_device_name_set("LeekWallet");
-        ble_svc_gap_init();
-        ble_svc_gatt_init();
-
-        /* Start host task */
-        nimble_port_freertos_init(ble_host_task);
-        ble_enabled = true;
-        entropy_set_rf_active(true);
-        ESP_LOGI(TAG, "BLE enabled - advertising as 'LeekWallet'");
-    } else {
-        ESP_LOGI(TAG, "Disabling BLE...");
-        ble_gap_adv_stop();
-        nimble_port_stop();
-        nimble_port_deinit();
-        ble_enabled = false;
-        entropy_set_rf_active(wifi_enabled);
-        ESP_LOGI(TAG, "BLE disabled");
-    }
-#elif defined(CONFIG_BT_ENABLED)
-    if (!ble_enabled) {
-        ESP_LOGI(TAG, "Enabling BLE (Bluedroid)...");
-        esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-        esp_bt_controller_init(&bt_cfg);
-        esp_bt_controller_enable(ESP_BT_MODE_BLE);
-        esp_bluedroid_init();
-        esp_bluedroid_enable();
-        ble_enabled = true;
-        ESP_LOGI(TAG, "BLE enabled");
-    } else {
-        ESP_LOGI(TAG, "Disabling BLE...");
-        esp_bluedroid_disable();
-        esp_bluedroid_deinit();
-        esp_bt_controller_disable();
-        esp_bt_controller_deinit();
-        ble_enabled = false;
-        entropy_set_rf_active(wifi_enabled);
-        ESP_LOGI(TAG, "BLE disabled");
-    }
-#else
-    ESP_LOGW(TAG, "BLE not enabled in sdkconfig");
-    ble_enabled = !ble_enabled;  /* Just toggle display */
-#endif
-}
+/* BLE lives in ble.c and is reached only through transport.c: the settings
+ * screen selects a link, it does not drive a radio. The ad-hoc NimBLE toggle
+ * that used to sit here advertised forever and served nothing, and it could be
+ * on at the same time as the USB endpoint. */
 
 /* USB HID test function */
 static void usb_hid_test(void)
@@ -2334,12 +2203,13 @@ static void screen_settings_render(void)
             }
         } else
 #endif
-        if (item_idx == SET_BLE) {
-            if (item_idx == settings_selection) {
-                snprintf(line, sizeof(line), "> BLE %s", ble_enabled ? "[ON]" : "[OFF]");
-            } else {
-                snprintf(line, sizeof(line), "  BLE %s", ble_enabled ? "[ON]" : "[OFF]");
-            }
+        if (item_idx == SET_TRANSPORT) {
+            /* Named for what it is rather than "BLE [ON]": the two are
+             * exclusive, so a per-radio on/off would imply a state the device
+             * cannot be in (PROTOCOL.md 3b). */
+            snprintf(line, sizeof(line), "%s Link %s",
+                     item_idx == settings_selection ? ">" : " ",
+                     transport_label(transport_get()));
         } else if (item_idx == SET_BRIGHTNESS) {
             snprintf(line, sizeof(line), "%s Bright %s",
                      item_idx == settings_selection ? ">" : " ",
@@ -2425,7 +2295,12 @@ static void screen_settings_on_button(button_id_t btn)
 #ifdef CONFIG_ESP_WIFI_ENABLED
                 case SET_WIFI: wifi_test_toggle(); break;
 #endif
-                case SET_BLE:  ble_test_toggle();  break;
+                case SET_TRANSPORT:
+                    /* Turning one on turns the other off and kills any
+                     * session; transport.c is the only place that may. */
+                    transport_toggle();
+                    entropy_set_rf_active(transport_get() == TRANSPORT_BLE);
+                    break;
                 case SET_USB:  usb_hid_test();     break;
                 case SET_WIPE:
                     ui_set_screen(SCREEN_WIPE_CONFIRM);

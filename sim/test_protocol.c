@@ -39,7 +39,10 @@
 #include "fake_wallet.h"
 #include "leek-wallet.h"
 #include "pin.h"
+#include "ble.h"
+#include "ble-chunk.h"
 #include "protocol.h"
+#include "transport.h"
 #include "session.h"
 #include "ui.h"
 
@@ -1463,6 +1466,256 @@ static void test_set_passphrase(void)
     CHECK(!wallet_has_passphrase(), "a malformed passphrase was applied anyway");
 }
 
+
+/* ==========================================================================
+ * BLE transport (ROADMAP T25, T57)
+ *
+ * The point of these is not that chunking works — sim/test_ble_chunk.c covers
+ * that layer on its own bytes. It is that the SAME dispatch answers over BLE:
+ * same frames, same errors, no sync marker, and no second code path that could
+ * quietly disagree with the cable. And that the two transports are never both
+ * live, which is the property session.c's single nonce pair depends on.
+ * ========================================================================== */
+
+/* What the device notified, as chunks, exactly as a peer would see them. */
+static uint8_t ble_chunks[64][BLE_CHUNK_MAX_FRAME + 1];
+static size_t  ble_chunk_len[64];
+static int     ble_chunk_count;
+static uint16_t ble_mtu = 23;
+
+static bool ble_capture(void *ctx, const uint8_t *chunk, size_t len)
+{
+    (void)ctx;
+    if (ble_chunk_count >= 64) return false;
+    memcpy(ble_chunks[ble_chunk_count], chunk, len);
+    ble_chunk_len[ble_chunk_count] = len;
+    ble_chunk_count++;
+    return true;
+}
+
+/* Stands in for ble.c's notify path: the same ble_chunk_split call, at the same
+ * negotiated MTU, into a buffer instead of a radio. */
+static void ble_writer(const uint8_t *frame, size_t len)
+{
+    ble_chunk_split(frame, len, ble_mtu, ble_capture, NULL);
+}
+
+/* Send a request over BLE the way a host does: encode the frame with NO sync
+ * marker, split it at the MTU, and deliver each chunk as its own GATT write. */
+static void ble_send_frame(uint8_t type, const uint8_t *payload, size_t len)
+{
+    uint8_t frame[1024];
+    size_t body = len + 1;
+    frame[0] = (uint8_t)(body >> 8);
+    frame[1] = (uint8_t)body;
+    frame[2] = type;
+    if (len) memcpy(frame + 3, payload, len);
+
+    static uint8_t wire[64][BLE_CHUNK_MAX_FRAME + 1];
+    static size_t  wire_len[64];
+
+    /* Chunked by the same function the device uses, because that is what the
+     * TypeScript client does too — chunkForBle is one algorithm on both ends. */
+    ble_chunk_count = 0;
+    ble_chunk_split(frame, body + 2, ble_mtu, ble_capture, NULL);
+    int n = ble_chunk_count;
+    for (int i = 0; i < n; i++) {
+        memcpy(wire[i], ble_chunks[i], ble_chunk_len[i]);
+        wire_len[i] = ble_chunk_len[i];
+    }
+    ble_chunk_count = 0;
+
+    static BleReassembler rx;
+    ble_chunk_reset(&rx);
+    for (int i = 0; i < n; i++) {
+        BleChunkResult res = ble_chunk_push(&rx, wire[i], wire_len[i]);
+        if (res == BLE_CHUNK_FRAME_READY) {
+            protocol_handle_frame(rx.buf, rx.len);
+            ble_chunk_reset(&rx);
+        } else if (res == BLE_CHUNK_ERROR) {
+            printf("  FAIL: the device refused its own chunking\n");
+            failures++;
+        }
+    }
+}
+
+/** Reassemble whatever the device notified back into one frame. */
+static Frame ble_next_reply(void)
+{
+    Frame f;
+    memset(&f, 0, sizeof(f));
+
+    BleReassembler rx;
+    ble_chunk_reset(&rx);
+    for (int i = 0; i < ble_chunk_count; i++) {
+        if (ble_chunk_push(&rx, ble_chunks[i], ble_chunk_len[i]) == BLE_CHUNK_FRAME_READY) {
+            f.present = true;
+            f.type = rx.buf[2];
+            f.len  = rx.len - 3;
+            memcpy(f.payload, rx.buf + 3, f.len);
+            break;
+        }
+    }
+    ble_chunk_count = 0;
+
+    if (f.present && (f.type == T_ENC_RESPONSE || f.type == T_ENC_ERROR)) {
+        int n = host_open(f.payload, f.len);
+        f.len = n < 0 ? 0 : (size_t)n;
+    }
+    return f;
+}
+
+static void ble_selected(void)
+{
+    fresh_device();
+    ble_chunk_count = 0;
+    transport_set(TRANSPORT_BLE);
+    protocol_set_writer(ble_writer);
+}
+
+static void test_ble_carries_the_same_frames(void)
+{
+    printf("== BLE answers the same frames as the cable, unmarked\n");
+
+    ble_selected();
+
+    uint8_t payload[64];
+    ble_mtu = 23;                       /* the floor many stacks actually give */
+    ble_send_frame(T_REQUEST, payload, req(payload, sizeof(payload), "ping"));
+
+    CHECK(ble_chunk_count > 0, "no notification at all");
+
+    /* The marker is a USB artifact. If it appeared here the host — which ships
+     * BLE_USES_SYNC = false — would read 'L','K' as a length and hang. */
+    CHECK(!(ble_chunk_count > 0 && ble_chunk_len[0] >= 3 &&
+            ble_chunks[0][1] == 'L' && ble_chunks[0][2] == 'K'),
+          "a sync marker leaked onto BLE");
+
+    Frame f = ble_next_reply();
+    CHECK(f.present, "ping produced no reassemblable frame");
+    CHECK(f.type == T_RESPONSE, "ping answered with frame type 0x%02X", f.type);
+
+    /* Byte-for-byte the cable's answer. Two transports, one dispatch. */
+    fresh_device();
+    transport_set(TRANSPORT_USB);   /* also detaches the BLE writer */
+    send_plain(payload, req(payload, sizeof(payload), "ping"));
+    Frame usb = next_frame();
+    CHECK(usb.present && usb.type == f.type && usb.len == f.len &&
+          memcmp(usb.payload, f.payload, f.len) == 0,
+          "BLE and USB gave different answers to the same request");
+}
+
+static void test_ble_survives_a_split_write_at_mtu_23(void)
+{
+    printf("== a request split across many GATT writes is answered\n");
+
+    ble_selected();
+    device_has_a_wallet();
+
+    /* getStatus's reply is comfortably over 19 bytes, so the answer has to be
+     * chunked as well as the request. */
+    ble_mtu = 23;
+    uint8_t payload[64];
+    ble_send_frame(T_REQUEST, payload, req(payload, sizeof(payload), "getStatus"));
+
+    CHECK(ble_chunk_count >= 1, "no reply chunks");
+    for (int i = 0; i < ble_chunk_count; i++) {
+        CHECK(ble_chunk_len[i] <= 20,
+              "chunk %d is %zu bytes, past the 19+1 an MTU of 23 allows",
+              i, ble_chunk_len[i]);
+    }
+    Frame f = ble_next_reply();
+    CHECK(f.present && f.type == T_RESPONSE, "getStatus was not answered over BLE");
+}
+
+static void test_ble_rejects_hostile_writes(void)
+{
+    printf("== hostile GATT writes are dropped without reaching dispatch\n");
+
+    ble_selected();
+
+    BleReassembler rx;
+    ble_chunk_reset(&rx);
+
+    /* A frame claiming 64 KB. Nothing may be buffered on that claim. */
+    uint8_t huge[8] = { 0x80, 0xff, 0xff, 0x01, 0x00 };
+    CHECK(ble_chunk_push(&rx, huge, 5) == BLE_CHUNK_ERROR, "an oversized frame was buffered");
+    CHECK(ble_chunk_count == 0, "the device answered a frame it never received");
+
+    /* Out of order: chunk 1 with no chunk 0. */
+    uint8_t stray[8] = { 0x01, 0xaa, 0xbb };
+    CHECK(ble_chunk_push(&rx, stray, 3) == BLE_CHUNK_ERROR, "an orphan chunk was accepted");
+    CHECK(ble_chunk_count == 0, "the device answered an orphan chunk");
+
+    /* And after all that noise the next real request still works — a peer that
+     * misbehaves must not wedge the endpoint for the next one. */
+    uint8_t payload[64];
+    ble_send_frame(T_REQUEST, payload, req(payload, sizeof(payload), "ping"));
+    Frame f = ble_next_reply();
+    CHECK(f.present && f.type == T_RESPONSE, "the endpoint was wedged by bad chunks");
+}
+
+static void test_only_one_transport_is_live(void)
+{
+    printf("== USB and BLE are never both reachable (T57)\n");
+
+    fresh_device();
+    transport_init();
+
+    /* Default is the cable, and BLE is off — not idle, off. */
+    CHECK(transport_get() == TRANSPORT_USB, "the device did not default to USB");
+    CHECK(!ble_transport_running(), "BLE was up before anyone selected it");
+
+    uint8_t payload[64];
+    send_plain(payload, req(payload, sizeof(payload), "ping"));
+    CHECK(next_frame().present, "USB did not answer while selected");
+
+    /* Select BLE: the radio comes up and the cable goes quiet. A device that
+     * kept answering here would have two peers on one set of nonce counters. */
+    transport_set(TRANSPORT_BLE);
+    protocol_set_writer(ble_writer);
+    CHECK(ble_transport_running(), "selecting BLE did not start the radio");
+
+    drop_pending();
+    ble_chunk_count = 0;
+    send_plain(payload, req(payload, sizeof(payload), "ping"));
+    expect_silence("USB while BLE is selected");
+    /* Not just "no bytes on the cable": the cable must not have been PARSED.
+     * A device that dispatches a USB request and notifies the answer over BLE
+     * is still serving two peers from one set of nonce counters, which is the
+     * fault this setting exists to prevent. */
+    CHECK(ble_chunk_count == 0,
+          "a USB request was dispatched and answered over BLE");
+
+    /* Back to the cable: advertising stops. */
+    transport_set(TRANSPORT_USB);
+    CHECK(!ble_transport_running(), "BLE kept advertising after USB was selected");
+    CHECK(transport_get() == TRANSPORT_USB, "the setting did not follow");
+
+    send_plain(payload, req(payload, sizeof(payload), "ping"));
+    CHECK(next_frame().present, "USB stayed deaf after being reselected");
+}
+
+static void test_switching_transports_drops_the_session(void)
+{
+    printf("== switching transports tears the session down (T57)\n");
+
+    fresh_device();
+    transport_set(TRANSPORT_USB);
+    device_unlocked();
+    confirmed_session(31);
+    CHECK(session_state() == SESSION_ACTIVE, "no session to tear down");
+
+    transport_set(TRANSPORT_BLE);
+    /* A passkey confirmed on the cable does not authorise the radio. */
+    CHECK(session_state() == SESSION_IDLE,
+          "a confirmed session survived a transport switch (state %d)",
+          session_state());
+
+    transport_set(TRANSPORT_USB);
+    CHECK(session_state() == SESSION_IDLE, "switching back left a session");
+}
+
 int main(void)
 {
     test_plaintext_ping_and_features();
@@ -1480,6 +1733,11 @@ int main(void)
     test_sign_message_refuses_what_it_cannot_show();
     test_select_wallet();
     test_set_passphrase();
+    test_ble_carries_the_same_frames();
+    test_ble_survives_a_split_write_at_mtu_23();
+    test_ble_rejects_hostile_writes();
+    test_only_one_transport_is_live();
+    test_switching_transports_drops_the_session();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");
