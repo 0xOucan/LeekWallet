@@ -80,6 +80,47 @@ check(
 );
 check(decodeCall("0xzz").kind === CallKind.Unknown, "non-hex accepted");
 
+group("the wider decodable set mirrors the firmware");
+{
+  const A = "d8da6bf26964af9d7eed9e03e53415d37aa96045";
+  const B = "112233445566778899aabbccddeeff0102030405";
+  const w = (v: bigint) => v.toString(16).padStart(64, "0");
+  const pad = (a: string) => "0".repeat(24) + a;
+
+  const tf = decodeCall("0x23b872dd" + pad(A) + pad(B) + w(5n));
+  check(tf.kind === CallKind.Erc20TransferFrom, `transferFrom: ${tf.kind}`);
+  check(tf.address === "0x" + A && tf.second === "0x" + B, "transferFrom parties wrong");
+  check(tf.amount === 5n, "transferFrom amount wrong");
+
+  const grant = decodeCall("0xa22cb465" + pad(A) + w(1n));
+  check(grant.kind === CallKind.SetApprovalForAll && grant.flag === true, "grant-all wrong");
+  check(describeCall(grant).includes("ALL"), "granting every token must say so loudly");
+  check(decodeCall("0xa22cb465" + pad(A) + w(0n)).flag === false, "revoke-all wrong");
+  check(decodeCall("0xa22cb465" + pad(A) + w(2n)).kind === CallKind.Unknown,
+    "a bool of 2 was accepted; a contract may read the raw word");
+
+  check(decodeCall("0xd0e30db0").kind === CallKind.WethDeposit, "deposit() not recognised");
+  check(decodeCall("0xd0e30db0" + w(1n)).kind === CallKind.Unknown,
+    "deposit() takes no arguments");
+  const un = decodeCall("0x2e1a7d4d" + w(7n));
+  check(un.kind === CallKind.WethWithdraw && un.amount === 7n, "withdraw wrong");
+
+  const mintTo = decodeCall("0x40c10f19" + pad(A) + w(100n));
+  check(mintTo.kind === CallKind.MintTo && mintTo.address === "0x" + A, "mint(address,uint256)");
+  check(decodeCall("0xa0712d68" + w(9n)).kind === CallKind.Mint, "mint(uint256)");
+
+  /* safeTransferFrom is deliberately NOT in the set: identical argument shape
+   * to transferFrom, but the third word is a token id on ERC-721 and an amount
+   * on ERC-20, and neither side can tell which standard it is talking to. Any
+   * wording would be wrong half the time. It also proves both decoders match on
+   * the selector rather than on the length. */
+  check(decodeCall("0x42842e0e" + pad(A) + pad(B) + w(1n)).kind === CallKind.Unknown,
+    "safeTransferFrom was accepted; it is ambiguous by design");
+
+  check(decodeCall("0x40c10f19" + pad(A) + "f".repeat(64)).unlimited !== true,
+    "a mint was flagged unlimited; only an approval can be");
+}
+
 group("transaction-level gate");
 check(isDecodable({ to: "0x" + ADDR }).ok, "plain transfer refused");
 check(!isDecodable({ to: undefined, data: "0x60806040" }).ok, "contract creation accepted");
