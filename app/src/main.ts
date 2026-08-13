@@ -782,12 +782,17 @@ function renderPreview(fee?: { gas: bigint; maxFeePerGas: bigint }): void {
     return;
   }
 
-  const view: TxInterpretation = interpretTransaction({
-    chainId,
-    to: toValue,
-    value,
-    ...(fee ? { gas: fee.gas, maxFeePerGas: fee.maxFeePerGas } : {}),
-  });
+  const view: TxInterpretation = interpretTransaction(
+    {
+      chainId,
+      to: toValue,
+      value,
+      ...(fee ? { gas: fee.gas, maxFeePerGas: fee.maxFeePerGas } : {}),
+    },
+    // Symbol from the chain registry, for descriptor `amount` fields. The
+    // descriptor set itself is the bundled one and is never fetched here.
+    { nativeSymbol: activeChain().nativeCurrency.symbol },
+  );
 
   renderInterpretation(
     {

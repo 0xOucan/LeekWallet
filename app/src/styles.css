@@ -178,6 +178,53 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   font-size: var(--text-xs);
 }
 
+/* ------------------------------------------- unverified descriptor (7730) */
+
+/* One step further down the confidence ladder than .preview, and it has to
+ * look like it. The preview above is at least this app reading the bytes it is
+ * about to send; this box is a label written by a third party, delivered
+ * unsigned, that the device will never see and cannot check. So: inset, dimmer
+ * text, a warn-coloured edge rather than the neutral one, and the word
+ * UNVERIFIED both on the box and in front of every single label inside it.
+ *
+ * The per-label prefix is CSS rather than text so it cannot be forgotten by a
+ * future caller that builds rows some other way, and so it cannot be spoofed
+ * away by a descriptor whose own label happens to read "verified". */
+.unverified-desc {
+  border: 1px dashed var(--warn);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin: var(--space-3) 0 0 var(--space-3);
+  background: transparent;
+}
+.unverified-desc__tag {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--warn);
+  margin-bottom: var(--space-2);
+}
+.unverified-desc__intent {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.unverified-desc .kv dt::before { content: "UNVERIFIED · "; color: var(--warn); }
+.unverified-desc .kv dd { color: var(--muted); }
+.unverified-desc__conflicts { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
+.unverified-desc__conflicts li {
+  border-left: 2px solid var(--danger);
+  padding: var(--space-1) var(--space-3);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+}
+.unverified-desc__notice {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text);
+}
+
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2) var(--space-4); font-size: var(--text-sm); }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; font-family: var(--font-mono); overflow-wrap: anywhere; }

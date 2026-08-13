@@ -22,6 +22,8 @@ import { keccak_256 } from "@noble/hashes/sha3";
 
 import { chainName as lookupChainName } from "./chains.ts";
 import { CallKind, decodeCall, describeCall, isDecodable } from "./eth-decode.ts";
+import { BUNDLED_DESCRIPTORS } from "./erc7730-bundled.ts";
+import { matchDescriptor, type Descriptor, type DescriptorMatch } from "./erc7730.ts";
 
 /** The subset of a signing request that changes what the user is agreeing to. */
 export interface TxRequest {
@@ -41,6 +43,7 @@ export const WarningCode = {
   DeviceWillRefuse: "device-will-refuse",
   ZeroAddress: "zero-address",
   UnknownChain: "unknown-chain",
+  DescriptorConflict: "descriptor-conflict",
 } as const;
 
 export type WarningCode = (typeof WarningCode)[keyof typeof WarningCode];
@@ -89,6 +92,26 @@ export interface TxInterpretation {
   /** The device refuses this before showing a confirmation screen. */
   deviceWillRefuse: boolean;
   warnings: TxWarning[];
+  /**
+   * A public ERC-7730 descriptor's account of this call, if one matches.
+   *
+   * Deliberately a separate sub-object rather than folded into `summary`,
+   * `action` or `recipient`. Everything above this line is derived from the
+   * transaction fields alone, by code that mirrors the firmware; everything
+   * inside `descriptor` is unsigned third-party text that the device has never
+   * seen and cannot check. Merging the two would erase the only distinction
+   * that matters, and would let descriptor text reach any caller that thinks
+   * it is reading `summary`. See erc7730.ts.
+   */
+  descriptor?: DescriptorMatch;
+}
+
+/** Everything that is not the transaction itself. */
+export interface InterpretOptions {
+  /** Defaults to the bundled registry subset. Pass `[]` to switch it off. */
+  descriptors?: readonly Descriptor[];
+  /** Gas-token ticker for descriptor `amount` fields. From chains.ts only. */
+  nativeSymbol?: string;
 }
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -146,7 +169,10 @@ const isZero = (addr: string | undefined) => addr !== undefined && addr === ZERO
  * lookup. A remote selector registry would leak what you are about to sign to
  * whoever runs it (section 6c), so anything not bundled stays undecoded.
  */
-export function interpretTransaction(tx: TxRequest): TxInterpretation {
+export function interpretTransaction(
+  tx: TxRequest,
+  options: InterpretOptions = {},
+): TxInterpretation {
   const chainId = Number(tx.chainId ?? 0);
   // Names come from the shared registry (chains.ts) so the preview and the
   // chain selector can never disagree about what an ID means.
@@ -216,6 +242,38 @@ export function interpretTransaction(tx: TxRequest): TxInterpretation {
     });
   }
 
+  /* ---------------------------------------------------------------------
+   * The descriptor layer. Strictly additive: it runs after every judgement
+   * above has already been made, cannot change any of them, and cannot change
+   * `deviceWillRefuse`. A registry descriptor is unsigned host-supplied data;
+   * it may make a call readable, never acceptable.
+   */
+  const descriptor = matchDescriptor(options.descriptors ?? BUNDLED_DESCRIPTORS, {
+    chainId,
+    ...(tx.to !== undefined ? { to: tx.to } : {}),
+    ...(tx.data !== undefined ? { data: tx.data } : {}),
+    ...(tx.value !== undefined ? { value: tx.value } : {}),
+    ...(options.nativeSymbol !== undefined ? { nativeSymbol: options.nativeSymbol } : {}),
+    builtin: call,
+  });
+
+  /* Two readings of the same bytes that disagree is a red flag, not a thing to
+   * reconcile: one of them is wrong, and quietly preferring either would mean
+   * showing a confident summary built on the loser. The message says nothing
+   * the descriptor supplied — the detail lives in `descriptor.conflicts`, so
+   * that no descriptor-derived string escapes into the general warning list,
+   * which is logged and rendered in several places. */
+  if (descriptor !== undefined && descriptor.conflicts.length > 0) {
+    warnings.push({
+      code: WarningCode.DescriptorConflict,
+      severity: WarningSeverity.High,
+      message:
+        "The bundled contract description and this app's own decoder read this " +
+        "calldata differently. At least one of them is wrong about what you would " +
+        "be signing. Trust neither, and read the device screen.",
+    });
+  }
+
   const action = describeCall(call);
   const where = chainName ?? `chain ${chainId}`;
   const summary = isToken
@@ -250,6 +308,7 @@ export function interpretTransaction(tx: TxRequest): TxInterpretation {
     result.maxFeeWei = maxFeeWei;
     result.maxFeeEther = formatEther(maxFeeWei);
   }
+  if (descriptor !== undefined) result.descriptor = descriptor;
   return result;
 }
 
