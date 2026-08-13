@@ -5,3 +5,10 @@ sim/build/
 
 # Third-party prebuilt image, downloaded not built
 ESP32_GENERIC_S3-*.bin
+
+# Secure boot signing key. Whoever holds this can sign firmware the device
+# will accept, so it is the one file in this repository that must never be
+# committed. Keep it offline; losing it means no future firmware updates,
+# and leaking it means secure boot protects nothing.
+secure_boot_signing_key.pem
+*.pem

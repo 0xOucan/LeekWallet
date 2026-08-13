@@ -97,3 +97,64 @@ of which the host suite could see:
   an N16R8.
 - The ESP32-S3 target reuses the ESP32-C3 timer group implementation, so
   timer-sensitive behaviour may differ from hardware.
+
+---
+
+## Secure target: partial result (T11)
+
+`./scripts/qemu-secure.sh --fresh` builds and boots the flash-encryption plus
+secure-boot target against emulated eFuses.
+
+**Where it got to.** The build produces correctly signed artefacts, and QEMU
+reports:
+
+```
+Valid secure boot key blocks: 0
+secure boot verification succeeded
+```
+
+So signature verification works under emulation. **Boot then stops** before the
+second-stage bootloader logs anything further, and never reaches the
+application. Secure boot alone, without flash encryption, does not even reach
+the verification line.
+
+The most likely explanation is that the ESP32-S3 flash-encryption path is not
+fully modelled in this QEMU build — the XTS-AES peripheral and the first-boot
+encrypt-in-place sequence. That is consistent with Espressif describing QEMU
+support as a work in progress, and with PSRAM being broken on the same target.
+It has **not** been confirmed against Espressif's issue tracker, so treat it as
+the current best explanation rather than a diagnosis.
+
+**Do not conclude the configuration is correct.** A build that hangs proves
+nothing about whether the eFuse scheme is right. What it does prove is that the
+scheme can be iterated on without destroying hardware, which was the point.
+
+### What this exercise caught anyway
+
+Four configuration faults, every one of which would have produced a bricked or
+half-configured board, and none of which the build reported as an error:
+
+1. **`extends` does not merge `sdkconfig_defaults`.** The secure environment
+   inherited `board_build.cmake_extra_args` from the base environment, which
+   pins the defaults file, and that silently won. The build succeeded with
+   *none* of the security options set — `CONFIG_SECURE_FLASH_ENC_ENABLED` was
+   simply absent. A "successful" secure build that is not secure is the worst
+   possible outcome, and only reading the generated `sdkconfig` revealed it.
+2. **`board_build.partitions` is inherited the same way** and had to be
+   overridden separately.
+3. **A signed bootloader is 0xB000**, well past the default 0x8000 table
+   offset. On hardware this is a boot loop with no output.
+4. **The signed binaries must be merged, not the plain ones.** Merging
+   `bootloader.bin` instead of `bootloader-signed.bin` gives the same silent
+   loop.
+
+PlatformIO's toolchain also needs `cryptography`, `ecdsa` and `reedsolo` in
+*its* virtualenv (`~/.local/share/pipx/venvs/platformio/bin/python -m pip
+install ...`), not the system Python.
+
+### Before trying this on hardware
+
+Flash encryption in release mode is irreversible, and a wrong eFuse scheme is
+irreversible across every device built from it. Two things should happen first:
+confirm whether the S3 flash-encryption path is emulated at all, and if it is
+not, treat the first hardware attempt as a sacrificial board.
