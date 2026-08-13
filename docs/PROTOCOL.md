@@ -287,6 +287,13 @@ So the on-device confirmation screen must show **the address being signed from**
 not only the destination and amount. The user compares what the app claims with
 what the device says, and the device is the authority. Folded into T12.
 
+Implemented as the full checksummed address, not the index (T47). The index
+alone describes what the device was *asked*, and is blind to what it did — a
+task race once had it signing with a key the screen never named. The address is
+derived on the protocol task, at the same path the signature is taken at, and
+handed to the UI rather than looked up there: the UI task shares derivation
+state, which is how the original race happened.
+
 ## 6. Errors
 
 ```

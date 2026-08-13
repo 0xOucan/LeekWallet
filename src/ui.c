@@ -2722,6 +2722,7 @@ typedef enum {
 static EthTx        sign_tx;
 static EthCall      sign_call;
 static uint32_t     sign_index;
+static char         sign_from[43];
 static int          sign_page;
 static SignPageKind sign_page_kind[SIGN_MAX_PAGES] = {SIGN_PAGE_FROM};
 /* Never zero: the button handler takes a modulus by it, so reaching this
@@ -2732,10 +2733,43 @@ static bool         sign_seen[SIGN_MAX_PAGES];
 static volatile SignOutcome sign_outcome = SIGN_PENDING;
 static volatile bool sign_request_pending = false;
 
-void ui_request_sign(const EthTx *tx, uint32_t address_index)
+void ui_request_sign(const EthTx *tx, uint32_t address_index, const char *from)
 {
     memcpy(&sign_tx, tx, sizeof(sign_tx));
     sign_index = address_index;
+
+    /* The source address is derived by the protocol task before it asks, and
+     * carried in rather than looked up here. Deriving on the UI task would put
+     * this screen in the same race that once signed with a key it never named
+     * (T47) - and a screen that names the wrong address is worse than one that
+     * names none. */
+    if (from) {
+        snprintf(sign_from, sizeof(sign_from), "%s", from);
+    } else {
+        sign_from[0] = '\0';
+    }
+
+    eth_decode_call(sign_tx.data, sign_tx.data_length, &sign_call);
+
+    int n = 0;
+    switch (sign_call.kind) {
+        case ETH_CALL_ERC20_TRANSFER:
+        case ETH_CALL_ERC20_APPROVE:
+            sign_page_kind[n++] = SIGN_PAGE_ACTION;
+            sign_page_kind[n++] = SIGN_PAGE_PARTY;
+            sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
+            break;
+        default:
+            /* ETH_CALL_UNKNOWN cannot reach this screen; the protocol task
+             * refuses it. Rendering it as a plain transfer would be a lie, so
+             * if it ever does arrive the value pages are still what is signed. */
+            sign_page_kind[n++] = SIGN_PAGE_VALUE;
+            sign_page_kind[n++] = SIGN_PAGE_TO;
+            break;
+    }
+    sign_page_kind[n++] = SIGN_PAGE_FROM;
+    sign_page_count = n;
+
     sign_outcome = SIGN_PENDING;
     sign_request_pending = true;
 }
@@ -2750,6 +2784,7 @@ void ui_sign_clear(void)
     sign_outcome = SIGN_PENDING;
     memzero(&sign_tx, sizeof(sign_tx));
     memzero(&sign_call, sizeof(sign_call));
+    memzero(sign_from, sizeof(sign_from));
 }
 
 static bool sign_all_seen(void)
@@ -2893,19 +2928,28 @@ static void screen_sign_confirm_render(void)
             break;
         }
         default: {
-            /* Where it is signed from, so a host that quietly changed the path
-             * is visible (T47), plus whether there is calldata at all. */
-            oled_draw_string(2, 0, "From");
-            snprintf(line, sizeof(line), "addr %u", (unsigned)sign_index);
-            oled_draw_string(3, 0, line);
+            /* The address that will sign, in full.
+             *
+             * The index alone was true of what the device was asked and blind
+             * to what it did - a task race had it signing with a key this
+             * screen never named (T47). The address is derived from the same
+             * path the signature is taken at. */
+            snprintf(line, sizeof(line), "From  addr %u", (unsigned)sign_index);
+            oled_draw_string(1, 0, line);
+            sign_draw_address(2, sign_from);
 
-            if (sign_tx.data_length > 0) {
-                snprintf(line, sizeof(line), "DATA %u bytes",
-                         (unsigned)sign_tx.data_length);
-                oled_draw_string(5, 0, line);
-                oled_draw_string(6, 0, "Contract call!");
+            if (sign_call.kind == ETH_CALL_EMPTY) {
+                oled_draw_string(6, 0, "Plain transfer");
             } else {
-                oled_draw_string(5, 0, "Plain transfer");
+                char value[40];
+                if (!eth_format_value(&sign_tx.value, value, sizeof(value), 8)) {
+                    snprintf(value, sizeof(value), "?");
+                }
+                /* A token call that also moves ether is unusual and worth
+                 * seeing; almost always this reads "+0 ETH". */
+                char eth[24];
+                snprintf(eth, sizeof(eth), "+%.15s ETH", value);
+                oled_draw_string(6, 0, eth);
             }
             break;
         }

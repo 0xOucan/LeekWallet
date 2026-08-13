@@ -413,10 +413,22 @@ static void dispatch(const uint8_t *payload, size_t len)
             return;
         }
 
+        /* Derive the source address here, on the task that will do the
+         * signing, and hand it to the screen. Deriving on the UI task shares
+         * state with this one and once produced a signature from a key the
+         * confirmation never named (T47). */
+        HDPath from_path = HDPATH_ETH_DEFAULT;
+        from_path.address_index = sign_index;
+        EthAddress from_addr;
+        if (wallet_get_address_at_path(&from_path, &from_addr) != WALLET_OK) {
+            send_error(ERR_NO_WALLET, "derivation failed");
+            return;
+        }
+
         /* Show it and wait. The screen renders these exact fields and the hash
          * below is taken from the same struct, so what is approved and what is
          * signed cannot differ. */
-        ui_request_sign(&tx, sign_index);
+        ui_request_sign(&tx, sign_index, from_addr.hex);
 
         const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(120000);
         SignOutcome outcome;

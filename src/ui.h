@@ -134,9 +134,13 @@ void ui_request_lock(void);
  * The fields come from the device's own parse, never from a string the host
  * supplied, and the payload that gets signed is the one rendered here.
  *
+ * `from` is the checksummed source address, derived by the caller at the same
+ * path the signature will be taken at. It is passed in rather than looked up
+ * on the UI task, which shares derivation state with the protocol task (T47).
+ *
  * Returns immediately. The protocol task polls ui_sign_outcome().
  */
-void ui_request_sign(const EthTx *tx, uint32_t address_index);
+void ui_request_sign(const EthTx *tx, uint32_t address_index, const char *from);
 
 typedef enum {
     SIGN_PENDING,
