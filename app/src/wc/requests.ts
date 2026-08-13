@@ -41,6 +41,21 @@ export interface WalletContext {
   accounts: readonly string[];
   /** The chain the session is currently on. */
   chainId: number;
+  /**
+   * Whether the DEVICE has blind signing switched on, as reported by
+   * `getFeatures`.
+   *
+   * The app must not refuse a call the device would accept. The hatch is a
+   * setting on the device, turned on by its owner with five deliberate
+   * presses; refusing here anyway would mean the app silently overruling that
+   * decision, and the owner would see the same refusal after opting in and
+   * have no way to tell which layer said no. It happened.
+   *
+   * This never makes the app more permissive than the device: the device
+   * re-checks and still refuses contract creation, oversized calldata and
+   * unrenderable messages whatever this says.
+   */
+  blindSigning?: boolean;
 }
 
 /** A transaction as the device will be asked to sign it. Amounts are bigint. */
@@ -333,7 +348,7 @@ function planTransaction(args: unknown[], ctx: WalletContext, broadcast: boolean
   /* The one place the interpretation is allowed to decide something. It is
    * still not a safety judgement — `deviceWillRefuse` mirrors the firmware's
    * own decodable set, so this is predicting a refusal, not making one. */
-  if (interpretation.deviceWillRefuse) {
+  if (interpretation.deviceWillRefuse && !ctx.blindSigning) {
     const why = interpretation.warnings.find((w) => w.code === "device-will-refuse");
 
     /* Name the selector that was refused.

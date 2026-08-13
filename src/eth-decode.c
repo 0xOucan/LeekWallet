@@ -28,6 +28,8 @@ static const uint8_t SEL_WITHDRAW[4]      = {0x2e, 0x1a, 0x7d, 0x4d};
 static const uint8_t SEL_MINT_TO[4]       = {0x40, 0xc1, 0x0f, 0x19};
 /* keccak256("mint(uint256)")[0:4] */
 static const uint8_t SEL_MINT[4]          = {0xa0, 0x71, 0x2d, 0x68};
+/* keccak256("mint(address,address,uint256)")[0:4] — (token, to, amount) */
+static const uint8_t SEL_MINT_TOKEN_TO[4] = {0xc6, 0xc3, 0xbb, 0xe6};
 
 /* The argument shapes the decoder knows how to read. Each kind names exactly
  * how many 32-byte words follow the selector and what they mean, and the
@@ -56,6 +58,7 @@ static const KnownCall KNOWN[] = {
     { SEL_WITHDRAW,      ETH_CALL_WETH_WITHDRAW,       ARGS_UINT           },
     { SEL_MINT_TO,       ETH_CALL_MINT_TO,             ARGS_ADDR_UINT      },
     { SEL_MINT,          ETH_CALL_MINT,                ARGS_UINT           },
+    { SEL_MINT_TOKEN_TO, ETH_CALL_MINT_TOKEN_TO,       ARGS_ADDR_ADDR_UINT },
 };
 #define KNOWN_COUNT (sizeof(KNOWN) / sizeof(KNOWN[0]))
 
@@ -208,6 +211,7 @@ const char *eth_call_name(EthCallKind kind)
         case ETH_CALL_WETH_DEPOSIT:         return "wrap";
         case ETH_CALL_WETH_WITHDRAW:        return "unwrap";
         case ETH_CALL_MINT_TO:              return "mint to";
+        case ETH_CALL_MINT_TOKEN_TO:        return "mint token to";
         case ETH_CALL_MINT:                 return "mint";
         default:                            return "unknown call";
     }

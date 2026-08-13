@@ -298,11 +298,30 @@ const addresses: string[] = [];
 /* Last known device state, and a poll to notice changes the app did not cause
  * - an auto-lock on the device's own timer, or a wallet switched by hand. */
 let lastStatus: DeviceStatus = UNKNOWN_STATUS;
+
+/* Whether the DEVICE will accept a call it cannot decode.
+ *
+ * Read from getFeatures rather than assumed, and re-read on every status poll
+ * because the setting lives on the device and its owner can change it mid
+ * session - which is exactly what someone does the moment a dapp is refused.
+ * Defaults to false so a device that has not answered yet is treated as
+ * protected: the safe direction to be wrong in. */
+let deviceBlindSigning = false;
+
+async function readBlindSigning(): Promise<boolean> {
+  try {
+    const f = await (client as Client).call("getFeatures");
+    return f["blindSigning"] === 1;
+  } catch {
+    return false;
+  }
+}
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 /** Bumped whenever a derivation is superseded or discarded. */
 let loadGeneration = 0;
 
 async function readStatus(): Promise<DeviceStatus> {
+  deviceBlindSigning = await readBlindSigning();
   const s = await (client as Client).call("getStatus");
   return {
     unlocked: s["unlocked"] === 1,
@@ -1076,6 +1095,10 @@ const walletBridge: WalletBridge = {
   // Locked means no accounts, which is what stops a dapp asking for a
   // signature the device could not produce anyway.
   accounts: () => [...addresses],
+  /* The device's setting, not the app's opinion of it. Refusing here a call
+   * the owner has explicitly allowed on the device would be the app overruling
+   * them, invisibly - they would opt in and see the identical refusal. */
+  blindSigning: () => deviceBlindSigning,
   chainId: () => chainId,
   setChainId: (id: number) => {
     const picked = getChain(id);

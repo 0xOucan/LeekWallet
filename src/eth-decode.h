@@ -16,7 +16,8 @@
  *   - ERC-20 transferFrom(address,address,uint256)
  *   - ERC-721/1155 setApprovalForAll(address,bool)
  *   - WETH deposit() and withdraw(uint256)
- *   - mint(address,uint256) and mint(uint256), the faucet shape
+ *   - mint(address,uint256), mint(uint256) and mint(address,address,uint256),
+ *     the faucet shapes
  *
  * Growing it means adding a decoder AND a screen that says what the call does.
  * A selector recognised but not rendered is worse than one refused, because it
@@ -46,6 +47,11 @@ typedef enum {
     ETH_CALL_WETH_DEPOSIT,     /* deposit() — wrap the attached ether */
     ETH_CALL_WETH_WITHDRAW,    /* withdraw(uint256) — unwrap */
     ETH_CALL_MINT_TO,          /* mint(address to, uint256 amount) */
+    ETH_CALL_MINT_TOKEN_TO,    /* mint(address token, address to, uint256) —
+                                * the shape Aave's testnet faucet uses. Same
+                                * argument layout as transferFrom and a wholly
+                                * different meaning, which is why the decoder
+                                * matches on the selector and never the length */
     ETH_CALL_MINT,             /* mint(uint256 amount) */
     ETH_CALL_UNKNOWN           /* not in the decodable set — refuse it */
 } EthCallKind;

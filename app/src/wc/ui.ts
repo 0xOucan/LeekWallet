@@ -45,6 +45,8 @@ import {
 export interface WalletBridge {
   /** Checksummed addresses currently offered, or empty when locked. */
   accounts(): string[];
+  /** Does the connected device have blind signing on? See WalletContext. */
+  blindSigning(): boolean;
   chainId(): number;
   /** Switch the app's chain, exactly as the selector does. */
   setChainId(chainId: number): void;
@@ -250,6 +252,7 @@ export function initWalletConnect(bridge: WalletBridge): {
     const plan = planRequest(request.method, request.params, {
       accounts: bridge.accounts(),
       chainId,
+      blindSigning: bridge.blindSigning(),
     });
 
     /* Answered from app state, with no device round trip and no prompt. Both

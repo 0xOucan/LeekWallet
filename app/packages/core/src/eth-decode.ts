@@ -21,6 +21,7 @@ export const CallKind = {
   WethWithdraw: "weth-withdraw",
   MintTo: "mint-to",
   Mint: "mint",
+  MintTokenTo: "mint-token-to",
   Unknown: "unknown",
 } as const;
 
@@ -54,6 +55,7 @@ const SEL_DEPOSIT = "d0e30db0"; // deposit()
 const SEL_WITHDRAW = "2e1a7d4d"; // withdraw(uint256)
 const SEL_MINT_TO = "40c10f19"; // mint(address,uint256)
 const SEL_MINT = "a0712d68"; // mint(uint256)
+const SEL_MINT_TOKEN_TO = "c6c3bbe6"; // mint(address token,address to,uint256)
 
 /** Argument shapes, mirroring ArgShape in the C decoder. */
 const Shape = {
@@ -76,6 +78,7 @@ const KNOWN: ReadonlyArray<{ selector: string; kind: CallKind; shape: Shape }> =
   { selector: SEL_WITHDRAW, kind: CallKind.WethWithdraw, shape: Shape.Uint },
   { selector: SEL_MINT_TO, kind: CallKind.MintTo, shape: Shape.AddrUint },
   { selector: SEL_MINT, kind: CallKind.Mint, shape: Shape.Uint },
+  { selector: SEL_MINT_TOKEN_TO, kind: CallKind.MintTokenTo, shape: Shape.AddrAddrUint },
 ];
 
 /** Anything from 2^255 up. See the C implementation for why not just 2^256-1. */
@@ -216,6 +219,7 @@ export function describeCall(call: DecodedCall): string {
       return "unwrap";
     case CallKind.MintTo:
     case CallKind.Mint:
+    case CallKind.MintTokenTo:
       return "mint";
     default:
       return "unknown call";

@@ -3284,6 +3284,10 @@ void ui_request_sign(const EthTx *tx, uint32_t address_index, const char *from)
             sign_page_kind[n++] = SIGN_PAGE_PARTY;
             sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
             break;
+        case ETH_CALL_MINT_TOKEN_TO:
+            /* Two addresses again, but the first is the TOKEN and the second
+             * the recipient - not a payer and a payee. Same pages, different
+             * labels; see sign_party_label(). */
         case ETH_CALL_ERC20_TRANSFER_FROM:
             /* Two parties, and which is which matters more here than
              * anywhere: this call moves someone else's tokens. */
@@ -3600,6 +3604,12 @@ static void screen_sign_confirm_render(void)
                     sign_draw_amount(4);
                     break;
 
+                case ETH_CALL_MINT_TOKEN_TO:
+                    oled_draw_string(2, 0, "Mint a token");
+                    oled_draw_string(3, 0, "to address below");
+                    sign_draw_amount(4);
+                    break;
+
                 case ETH_CALL_MINT:
                     oled_draw_string(2, 0, "Mint tokens");
                     oled_draw_string(3, 0, "to this account");
@@ -3624,6 +3634,7 @@ static void screen_sign_confirm_render(void)
                 case ETH_CALL_SET_APPROVAL_ALL:    label = "Operator";     break;
                 case ETH_CALL_ERC20_TRANSFER_FROM: label = "Taken from";   break;
                 case ETH_CALL_MINT_TO:             label = "Minted to";    break;
+                case ETH_CALL_MINT_TOKEN_TO:       label = "Token";        break;
                 default:                           label = "To";           break;
             }
             oled_draw_string(2, 0, label);
@@ -3634,7 +3645,12 @@ static void screen_sign_confirm_render(void)
         }
         case SIGN_PAGE_PARTY2: {
             char addr[43];
-            oled_draw_string(2, 0, "Sent to");
+            /* "Sent to" is right for transferFrom, where the two addresses are
+             * a payer and a payee. For mint(token,to,amount) the first word is
+             * the token and this one is the recipient, so naming both "Sent
+             * to" would describe the wrong argument. */
+            oled_draw_string(2, 0,
+                sign_call.kind == ETH_CALL_MINT_TOKEN_TO ? "Minted to" : "Sent to");
             if (sign_call.has_second &&
                 eth_format_address(sign_call.second, addr, sizeof(addr))) {
                 sign_draw_address(3, addr);
