@@ -1,0 +1,23 @@
+# ============================================================================
+# QEMU console override — emulation only, never flashed
+# ============================================================================
+# Espressif's QEMU has no USB-Serial-JTAG device model for the esp32s3 machine.
+# `qemu-system-xtensa -device help` lists `misc.esp32c3.usb_serial_jtag` and no
+# S3 equivalent, so with CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y (what the real
+# board needs) every byte the firmware prints after the ROM stage goes to a
+# peripheral that is not there. The result looks exactly like a hang: the ROM
+# banner appears, and then nothing, forever.
+#
+# That cost this project a wrong diagnosis once already — the secure target was
+# recorded as "stalls after secure boot verification, flash encryption probably
+# not emulated", when in fact it was booting all the way to the PIN screen in
+# silence. See docs/QEMU.md.
+#
+# Routing the console to UART0 makes it visible. This file is appended to a
+# defaults list for the QEMU environments only; nothing that goes to hardware
+# includes it.
+# ============================================================================
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
+CONFIG_ESP_CONSOLE_USB_CDC=n
+CONFIG_ESP_CONSOLE_UART_NUM=0

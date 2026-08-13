@@ -230,7 +230,7 @@ one physical board.
 |----|------|---------|-----------|
 | T9 | **The vault** — salted PBKDF2 KDF, AES-GCM, flash encryption + secure boot. Full design and subtask breakdown in [docs/VAULT.md](docs/VAULT.md) ([S1](AUDIT.md)) | T0.1 | see VAULT.md T9a-T11c |
 | ~~T10~~ ✅ | Attempt counter: persist before compare, sentinel for 0 ([S4](AUDIT.md)) | T0.1 | crash-injection test grants no free attempts |
-| T11 | Flash encryption + secure boot v2 (must ship together — see [docs/VAULT.md](docs/VAULT.md)) | — | `read_flash` yields no plaintext; unsigned image refuses to boot |
+| T11 | Flash encryption + secure boot v2 (must ship together — see [docs/VAULT.md](docs/VAULT.md)). Proven end-to-end in QEMU; the hardware burn is written up in [docs/BURN-PROCEDURE.md](docs/BURN-PROCEDURE.md) and **not yet executed** | — | `read_flash` yields no plaintext *on a real board*; unsigned image refuses to boot |
 | T11b | Migration path for wallets encrypted under the old KDF | T9 | existing device upgrades without seed loss |
 | ~~T12~~ ✅ | On-device EIP-1559 decode, three-page confirmation, sign only what was displayed | T0.3 | 6 test groups on encoding and rendering; signs on hardware |
 | T12b | ERC-20 transfer and approve decoding ✅, and EIP-712 typed data (pending — needs a `signTypedData` command first) | T12, T50 | a token transfer shows the contract address and amount |

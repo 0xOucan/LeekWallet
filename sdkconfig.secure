@@ -16,10 +16,14 @@ CONFIG_ESPTOOLPY_FLASHFREQ="80m"
 
 # ============================================================================
 # PARTITION TABLE - Custom for NVS wallet storage
+#
+# Only the CUSTOM flag lives here. The filename and offset are set at the
+# bottom of this file with the rest of the secure-boot settings, because they
+# are consequences of signing rather than of storage. Leaving a stale
+# "partitions.csv" here as well meant the file disagreed with itself, and the
+# only reason the right one won was line order.
 # ============================================================================
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
-CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
 # ============================================================================
 # NVS - Non-Volatile Storage for wallet data
@@ -126,3 +130,4 @@ CONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"
 # esptool refusing to merge, or worse, a silent overlap.
 CONFIG_PARTITION_TABLE_OFFSET=0xF000
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-secure.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions-secure.csv"

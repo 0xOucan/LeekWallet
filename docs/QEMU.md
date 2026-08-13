@@ -54,8 +54,9 @@ Scans the flash image for plaintext BIP39 words. This is the
 
 Read the output carefully: **the firmware embeds the BIP39 wordlist itself**, so
 matches in `.rodata` are expected and are not a finding. What matters is whether
-any land inside the NVS partition at `0x9000`. Once flash encryption is on, the
-whole image should be opaque and the script comes up empty.
+any land inside the NVS partition — `0x10000` on the plain target, `0x12000` on
+the secure one. Once flash encryption is on, the whole image should be opaque
+and the script comes up empty, which it now does.
 
 ## What QEMU covers, and what it does not
 
@@ -63,8 +64,9 @@ whole image should be opaque and the script comes up empty.
 |---|---|
 | Boot path, panics, partition table | I²C — no SSD1306/SSD1315 device model |
 | NVS read/write, wear levelling | GPIO buttons |
-| eFuses, flash encryption, secure boot | Real RNG entropy (see [S6](../AUDIT.md)) |
+| eFuses, flash encryption, secure boot v2 | Real RNG entropy (see [S6](../AUDIT.md)) |
 | Crypto correctness and timing *ratios* | Absolute timing, power draw, brownout |
+| Console — **on UART0 only** | USB-Serial-JTAG: no S3 device model, so the console is silent (see below) |
 
 Concretely on the timing point: the KDF benchmark reports **31 ms** under QEMU
 and **504 ms** on the board, so the emulator runs this workload about sixteen
@@ -100,61 +102,127 @@ of which the host suite could see:
 
 ---
 
-## Secure target: partial result (T11)
+## Secure target: the whole sequence runs (T11a, T11b)
 
 `./scripts/qemu-secure.sh --fresh` builds and boots the flash-encryption plus
-secure-boot target against emulated eFuses.
+secure-boot target against emulated eFuses, and it goes all the way to the PIN
+setup screen.
 
-**Where it got to.** The build produces correctly signed artefacts, and QEMU
-reports:
+**Both halves of T11 are emulated, and both work.** Verified end to end:
 
-```
-Valid secure boot key blocks: 0
-secure boot verification succeeded
-```
+| | Evidence in the QEMU log |
+|---|---|
+| ROM-stage secure boot | `Valid secure boot key blocks: 0` / `secure boot verification succeeded` |
+| Key digest burn | `Writing EFUSE_BLK_KEY0 with purpose 9`, `Secure boot permanently enabled` |
+| RSA-PSS verification | `secure_boot_v2: Signature verified successfully!` |
+| AES-256-XTS key burn | `Writing EFUSE_BLK_KEY1 with purpose 2` / `KEY2 with purpose 3` |
+| Encrypt-in-place | `Encrypting partition 2 at offset 0x20000` → `Flash encryption completed` |
+| Boot under encryption | second reset boots the app; `flash encryption is enabled` |
+| **T11a acceptance** | `scripts/qemu-read-flash.sh` on the encrypted image: **PASS**, image entropy ~7.95 bits/byte throughout |
+| **T11b acceptance** | one flipped ciphertext bit → `Checksum failed` → `No bootable app partitions`, forever |
 
-So signature verification works under emulation. **Boot then stops** before the
-second-stage bootloader logs anything further, and never reaches the
-application. Secure boot alone, without flash encryption, does not even reach
-the verification line.
+## The previous "stall" was a missing UART, not a missing feature
 
-The most likely explanation is that the ESP32-S3 flash-encryption path is not
-fully modelled in this QEMU build — the XTS-AES peripheral and the first-boot
-encrypt-in-place sequence. That is consistent with Espressif describing QEMU
-support as a work in progress, and with PSRAM being broken on the same target.
-It has **not** been confirmed against Espressif's issue tracker, so treat it as
-the current best explanation rather than a diagnosis.
+The earlier note in this file said the secure target hung after secure boot
+verification and guessed that the S3 flash-encryption path was not emulated.
+**That was wrong, and the correction is the most useful thing this session
+produced.**
 
-**Do not conclude the configuration is correct.** A build that hangs proves
-nothing about whether the eFuse scheme is right. What it does prove is that the
-scheme can be iterated on without destroying hardware, which was the point.
+QEMU's `esp32s3` machine has **no USB-Serial-JTAG device model**. `-device help`
+lists `misc.esp32c3.usb_serial_jtag` and no S3 equivalent. The firmware sets
+`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`, which is correct for the real board, so
+every byte printed after the ROM stage went to a peripheral that does not exist.
+The ROM banner appeared (the ROM uses UART0) and then silence — indistinguishable
+from a hang, and it silenced the *plain* target too.
 
-### What this exercise caught anyway
+Routing the console to UART0 for emulation only makes it visible. That is
+`sdkconfig.qemu-console`, applied by the `esp32s3-qemu` and `esp32s3-secure-qemu`
+environments, which the two scripts now build. Nothing that goes to hardware
+includes it.
 
-Four configuration faults, every one of which would have produced a bricked or
-half-configured board, and none of which the build reported as an error:
+The lesson generalises: **under emulation, "no output" is a claim about the
+console, not about the CPU.** Check the device model before diagnosing a hang.
+
+## Is S3 flash encryption emulated? Yes — verified
+
+Sources, and which are primary:
+
+- **The binary itself.** `hw/misc/esp32s3_xts_aes.c` is compiled into the
+  installed `qemu-system-xtensa` (`esp32s3_xts_aes_decrypt`,
+  `esp32s3_xts_aes_is_flash_enc_enabled`, `esp32s3_xts_aes_read_ciphertext`, and
+  cache integration via `[CACHE] XTS_AES controller must be set!`). eFuse key
+  blocks and read protection are modelled in `hw/nvram/esp_efuse.c`
+  (`esp_hide_protected_block`). This is the strongest evidence and it is local.
+- **[ESP-IDF QEMU guide (esp32s3)](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/tools/qemu.html)** —
+  "QEMU supports emulation of eFuses... to test security-related features, such
+  as secure boot and flash encryption, without having to perform irreversible
+  operations on real hardware", and "QEMU supports emulation of secure boot v2
+  scheme".
+- **[esp-toolchain-docs `qemu/esp32s3/README.md`](https://github.com/espressif/esp-toolchain-docs/blob/main/qemu/esp32s3/README.md)** —
+  "supports SHA, AES (including flash encyption), RSA, HMAC, and Digital
+  Signature" [sic]. The same file also says *"'Secure Boot' feature is not
+  supported yet for ESP32-S3 target"*, which the run above contradicts
+  directly; treat that line as stale documentation.
+
+Version matters. [espressif/qemu#132](https://github.com/espressif/qemu/issues/132)
+records S3 flash encryption broken in the build ESP-IDF bundles, with the
+maintainer advising a manual download of a newer release; the reporter confirmed
+9.2.2 works. This machine runs `esp_develop_9.2.2_20260417`.
+
+[espressif/qemu#159](https://github.com/espressif/qemu/issues/159) reports the S3
+secure-boot-plus-flash-encryption first boot failing with `Checksum failed` on
+that same build. **It did not reproduce here** — but note that `Checksum failed`
+is also exactly what a *correctly working* device prints when the ciphertext has
+been tampered with, which is the T11b test above. If you ever see it, establish
+which of the two you are looking at before believing either.
+
+## What emulation still cannot tell you
+
+Verified above; the rest is in
+[BURN-PROCEDURE.md](BURN-PROCEDURE.md#what-still-cannot-be-known-until-a-board-is-burned).
+The short list: real eFuse programming (QEMU accepts every write and models no
+coding scheme — [#143](https://github.com/espressif/qemu/issues/143)), read
+protection holding under a glitch, absolute timing, brownout during
+encrypt-in-place, download-mode behaviour in release mode, and the RTC watchdog,
+which is not emulated at all.
+
+Timing in particular: encrypting the app took ~7 s of emulated time here. That
+number means nothing for hardware — the KDF benchmark runs ~16x fast under QEMU.
+
+## Five configuration faults this exercise caught
+
+Every one built successfully and none produced a warning.
 
 1. **`extends` does not merge `sdkconfig_defaults`.** The secure environment
-   inherited `board_build.cmake_extra_args` from the base environment, which
-   pins the defaults file, and that silently won. The build succeeded with
-   *none* of the security options set — `CONFIG_SECURE_FLASH_ENC_ENABLED` was
-   simply absent. A "successful" secure build that is not secure is the worst
-   possible outcome, and only reading the generated `sdkconfig` revealed it.
-2. **`board_build.partitions` is inherited the same way** and had to be
-   overridden separately.
-3. **A signed bootloader is 0xB000**, well past the default 0x8000 table
-   offset. On hardware this is a boot loop with no output.
+   inherited `board_build.cmake_extra_args` from the base, which pins the
+   defaults file, and that silently won. The build succeeded with *none* of the
+   security options set. A "successful" secure build that is not secure is the
+   worst possible outcome.
+2. **`board_build.partitions` is inherited the same way** and needed its own
+   override.
+3. **A signed bootloader is 0xB000**, past the default 0x8000 table offset. On
+   hardware this is a boot loop with no output.
 4. **The signed binaries must be merged, not the plain ones.** Merging
-   `bootloader.bin` instead of `bootloader-signed.bin` gives the same silent
-   loop.
+   `bootloader.bin` gives the same silent loop.
+5. **A signed partition table is 0x2000, not 0x1000.** With the table at 0xF000
+   it spans to 0x11000, and `nvs` was at 0x10000 — the table's own signature
+   sector was being written over the first 4 KB of the vault. It boots anyway on
+   a blank device, which is what makes it dangerous: it would have started
+   corrupting wallet data on a provisioned board. `nvs` now starts at 0x12000.
+   Found by `scripts/preflight-secure.sh`, not by any build error.
+
+And one that is not a config fault but behaves like one:
+
+6. **PlatformIO does not regenerate `sdkconfig.<env>` when the defaults change.**
+   Verified directly: after editing `sdkconfig.secure` and rebuilding, the
+   generated file still held the old console setting. `rm sdkconfig.<env>` before
+   building, and let `preflight-secure.sh` confirm it.
 
 PlatformIO's toolchain also needs `cryptography`, `ecdsa` and `reedsolo` in
 *its* virtualenv (`~/.local/share/pipx/venvs/platformio/bin/python -m pip
 install ...`), not the system Python.
 
-### Before trying this on hardware
+## Before trying this on hardware
 
-Flash encryption in release mode is irreversible, and a wrong eFuse scheme is
-irreversible across every device built from it. Two things should happen first:
-confirm whether the S3 flash-encryption path is emulated at all, and if it is
-not, treat the first hardware attempt as a sacrificial board.
+Read [BURN-PROCEDURE.md](BURN-PROCEDURE.md) in full and run
+`./scripts/preflight-secure.sh`. The first board is sacrificial.
