@@ -13,10 +13,15 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Desktop speaks USB CDC; Android speaks BLE. One transport per platform, both
-# behind the same protocol - see docs/PROTOCOL.md.
+# Desktop speaks USB CDC. Android will speak BLE (T22c/T30), but no BLE
+# dependency is carried until there is hardware to verify it against: a
+# transport nobody has ever run is a liability, not a head start. Until then the
+# Android build ships with no transport and the UI falls back to the mock.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 leek-transport-serial = { path = "../transport-serial" }
 
-[target.'cfg(target_os = "android")'.dependencies]
-btleplug = "0.11"
+# Tauri builds Android as a shared library loaded by the JVM, not an executable
+# with a main(). Without this the linker produces something the APK cannot load.
+[lib]
+name = "leekwallet_companion_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
