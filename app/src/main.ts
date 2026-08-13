@@ -54,6 +54,8 @@ class Client {
   private session: Session | null = null;
   /** Serialises requests; see call(). */
   private queue: Promise<void> = Promise.resolve();
+  /** True during waitForApproval, when a plaintext 0x0400 means "not yet". */
+  private awaitingApproval = false;
 
   constructor(transport: Transport) {
     this.transport = transport;
@@ -66,6 +68,21 @@ class Client {
          * channel is no longer trustworthy. */
         const encrypted =
           f.type === FrameType.EncryptedResponse || f.type === FrameType.EncryptedError;
+
+        /* An encrypted frame with no session to open it is ciphertext, and
+         * ciphertext parsed as CBOR is noise - "unsupported major type 7",
+         * "trailing bytes", whatever the random bytes happen to spell. Say
+         * what actually happened instead of reporting the shape of the
+         * garbage. */
+        if (encrypted && !this.session) {
+          const resolve = this.pending;
+          this.pending = null;
+          resolve?.({ err: new DeviceError(
+            ErrorCode.SessionRequired,
+            "the device replied encrypted but this side has no session; reconnect",
+          ) });
+          continue;
+        }
 
         if (encrypted && this.session) {
           try {
@@ -95,7 +112,14 @@ class Client {
            *
            * One corrupted frame is rare on a cable and entirely ordinary on a
            * radio, which is why this only ever showed up over BLE. */
-          if (code === ErrorCode.SessionRequired && f.type === FrameType.Error) {
+          /* Not while waiting for the button. A device that has not been
+           * confirmed yet answers exactly this, in plaintext, every time it is
+           * polled - it means "not yet", not "your session is gone". Killing
+           * the session here deleted the one that was about to become valid,
+           * and the poll then succeeded in plaintext and reported an encrypted
+           * channel that did not exist. */
+          if (code === ErrorCode.SessionRequired && f.type === FrameType.Error &&
+              !this.awaitingApproval) {
             this.killSession("the device ended the session");
           }
           resolve({ err: new DeviceError(code, String(body["message"])) });
@@ -205,18 +229,30 @@ class Client {
   async waitForApproval(timeoutMs = 60000): Promise<void> {
     if (!this.session) throw new Error("no handshake");
     this.session.confirm();
+    this.awaitingApproval = true;
+    try {
 
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      try {
-        await this.call("getStatus");
-        return;
-      } catch (e) {
-        if (Date.now() > deadline) {
-          throw new Error("timed out waiting for confirmation on the device");
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        /* The first encrypted call to succeed IS the confirmation - there is
+         * no "confirmed" message to wait for. So it must be an encrypted one:
+         * getStatus answers in plaintext too, and a plaintext success here
+         * would report a channel that was never established. */
+        if (!this.session) {
+          throw new Error("the session was lost while waiting for confirmation");
         }
-        await new Promise((r) => setTimeout(r, 750));
+        try {
+          await this.call("getStatus");
+          return;
+        } catch {
+          if (Date.now() > deadline) {
+            throw new Error("timed out waiting for confirmation on the device");
+          }
+          await new Promise((r) => setTimeout(r, 750));
+        }
       }
+    } finally {
+      this.awaitingApproval = false;
     }
   }
 
