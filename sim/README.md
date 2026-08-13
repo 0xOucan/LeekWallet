@@ -29,6 +29,13 @@ wallet's encrypt/decrypt round-trip belong. What is already here:
   OLED. Covers the 12/24 word-count prompt on the import screen, the seed buffer's lifetime
   across the display/verify handoff ([S5](../AUDIT.md)), and PIN entry's explicit-submit
   selector.
+- `test_protocol.c` — the real `src/protocol.c` driven at the byte level over an in-memory
+  USB-Serial-JTAG pipe (`fake_usb.c`). Frames are built by hand — sync marker, length, type,
+  CBOR — rather than through the endpoint's own encoder, because a test that shares an encoder
+  with the code under test agrees with it by construction. This is the reference
+  `app/packages/core/src/mock-device.ts` has to match: the rule is that the mock must never be
+  more permissive than the device, and until this existed there was nothing to check it against.
+  Run it under sanitizers with `make -C sim asan` — it parses attacker-controlled bytes.
 - `esp_stubs.c` + `shim/` — in-memory NVS and logging; `shim/` shadows the ESP-IDF headers so
   firmware sources compile unmodified.
 - `host_stubs.c` — deterministic `random32()` so runs repeat.
@@ -53,6 +60,7 @@ running:
 | FreeRTOS queue/task, `button.h` | `fake_input.c` |
 | `oled.h` | `fake_oled.c` — 8×21 character grid plus a 128×64 bit buffer |
 | `leek-wallet.h` | `fake_wallet.c` — deterministic addresses, real BIP39 checksum |
+| `driver/usb_serial_jtag.h` | `fake_usb.c` — two byte FIFOs, one per direction |
 
 Wi-Fi, BLE and TinyUSB need no fakes at all: every such block in `ui.c` sits behind a
 `CONFIG_*` macro that is simply undefined on the host.

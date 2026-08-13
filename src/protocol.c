@@ -576,28 +576,52 @@ static void consume(void)
     }
 }
 
+/* One read-and-parse pass. Factored out of the task so the host suite can run
+ * the real receive path (sim/test_protocol.c) without a scheduler to preempt
+ * an endless loop; the task is what that loop was, and nothing else changed. */
+static bool rx_pump(void)
+{
+    uint8_t chunk[RX_CHUNK];
+
+    int n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk), pdMS_TO_TICKS(100));
+    if (n <= 0) {
+        return false;
+    }
+    if (rx_len + (size_t)n > sizeof(rx_buf)) {
+        /* Never grow past the fixed buffer on the host's say-so. */
+        ESP_LOGW(TAG, "Receive buffer overrun; resynchronising");
+        rx_len = 0;
+        return true;
+    }
+    memcpy(rx_buf + rx_len, chunk, (size_t)n);
+    rx_len += (size_t)n;
+    consume();
+    return true;
+}
+
 static void protocol_task(void *arg)
 {
     (void)arg;
     ESP_LOGI(TAG, "Protocol endpoint listening on USB-Serial-JTAG");
 
-    uint8_t chunk[RX_CHUNK];
     for (;;) {
-        int n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk), pdMS_TO_TICKS(100));
-        if (n <= 0) {
-            continue;
-        }
-        if (rx_len + (size_t)n > sizeof(rx_buf)) {
-            /* Never grow past the fixed buffer on the host's say-so. */
-            ESP_LOGW(TAG, "Receive buffer overrun; resynchronising");
-            rx_len = 0;
-            continue;
-        }
-        memcpy(rx_buf + rx_len, chunk, (size_t)n);
-        rx_len += (size_t)n;
-        consume();
+        rx_pump();
     }
 }
+
+#ifdef LEEK_HOST_TEST
+/** Drain whatever the test has queued on the port, then return. */
+void protocol__pump_for_test(void)
+{
+    while (rx_pump()) { }
+}
+
+/** Forget any partial frame, as a reconnect would. */
+void protocol__reset_for_test(void)
+{
+    rx_len = 0;
+}
+#endif
 
 void protocol_start(void)
 {

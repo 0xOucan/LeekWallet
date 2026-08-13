@@ -12,7 +12,7 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui test_button test_pin_change
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui test_button test_pin_change test_protocol
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
@@ -132,6 +132,48 @@ $(BUILD)/test_pin_change: test_pin_change.c esp_stubs.c host_stubs.c \
                           $(CRYPTO)/aes/aesgcm.c $(CRYPTO)/aes/gf128mul.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST -o $@ $^
 
+# The real src/protocol.c, against an in-memory USB-Serial-JTAG pipe. This is
+# the only place the wire protocol exists on the device, so it is the reference
+# the mock has to match; see test_protocol.c.
+PROTOCOL_SRC := test_protocol.c esp_stubs.c host_stubs.c fake_usb.c fake_wallet.c \
+                ../src/protocol.c ../src/cbor.c ../src/session.c ../src/pin.c \
+                ../src/eth-tx.c ../src/eth-decode.c \
+                $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
+                $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
+                $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
+                $(CRYPTO)/ed25519-donna/curve25519-donna-scalarmult-base.c \
+                $(CRYPTO)/ed25519-donna/curve25519-donna-32bit.c \
+                $(CRYPTO)/ed25519-donna/curve25519-donna-helpers.c \
+                $(CRYPTO)/ed25519-donna/ed25519-donna-32bit-tables.c \
+                $(CRYPTO)/chacha20poly1305/chacha20poly1305.c \
+                $(CRYPTO)/chacha20poly1305/chacha_merged.c \
+                $(CRYPTO)/chacha20poly1305/poly1305-donna.c \
+                $(CRYPTO)/chacha20poly1305/rfc7539.c
+
+$(BUILD)/test_protocol: $(PROTOCOL_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST -o $@ $^
+
+# Sanitised build of the protocol suite, as a separate binary.
+#
+# Kept off the default target on purpose: `make test` has to stay the thing
+# anyone runs without thinking, and ASan changes the exit codes and the runtime
+# enough that a sanitiser failure and a test failure would look alike. This is
+# the parser that reads attacker-controlled bytes, so it is the one place the
+# extra runtime earns its keep.
+#
+# Known noise: UBSan reports misaligned u32 access inside trezor-crypto's
+# chacha_merged.c, because protocol.c decrypts in place at rx_buf + 5 and the
+# vendor code casts the buffer to u32. It is UB by the letter of C and benign
+# on both hosts we build for; it is not an ASan finding and not a leak.
+#
+#   make -C sim asan
+$(BUILD)/test_protocol_asan: $(PROTOCOL_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST \
+	      -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $^
+
+asan: $(BUILD)/test_protocol_asan
+	./$(BUILD)/test_protocol_asan
+
 $(BUILD):
 	mkdir -p $(BUILD)
 
@@ -143,4 +185,4 @@ test: all
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test clean
+.PHONY: all test asan clean
