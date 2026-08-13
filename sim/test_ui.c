@@ -552,6 +552,28 @@ static void test_passphrase_confirmation_needs_an_address(void)
     CHECK_SCREEN(fake_oled_contains("Error"), "the failure is not stated");
 }
 
+/* ============================================================================
+ * The Wi-Fi test fixture is gone from release builds (AUDIT S8g, T17)
+ * ============================================================================ */
+
+static void test_settings_has_no_wifi_entry(void)
+{
+    printf("== settings offers no Wi-Fi AP in a build without it (S8g)\n");
+    boot_unlocked_with_seed();
+    go(SCREEN_SETTINGS);
+
+    /* The host build defines no CONFIG_ESP_WIFI_ENABLED, so this exercises
+     * exactly what ships. Walk the whole menu rather than reading one page:
+     * the entry used to sit below the fold. */
+    bool seen_back = false;
+    for (int i = 0; i < 40 && !seen_back; i++) {
+        CHECK_SCREEN(!fake_oled_contains("WiFi"), "the Wi-Fi entry is still offered");
+        seen_back = fake_oled_contains("Back");
+        press(BUTTON_DOWN);
+    }
+    CHECK(seen_back, "never reached the end of the settings menu");
+}
+
 int main(void)
 {
     test_harness_sees_the_screen();
@@ -573,6 +595,8 @@ int main(void)
     test_qr_refuses_to_encode_an_error();
     test_qr_still_works_for_a_real_address();
     test_passphrase_confirmation_needs_an_address();
+
+    test_settings_has_no_wifi_entry();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");

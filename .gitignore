@@ -12,3 +12,14 @@ ESP32_GENERIC_S3-*.bin
 # and leaking it means secure boot protects nothing.
 secure_boot_signing_key.pem
 *.pem
+
+# Generated sdkconfig, one per PlatformIO environment.
+#
+# sdkconfig.defaults is the source of truth; these are built from it. Committing
+# one makes it the truth instead, and it does NOT regenerate when the defaults
+# change - so an edit to sdkconfig.defaults silently does nothing and the build
+# reports success with none of the settings applied. That is how Wi-Fi stayed
+# compiled in after being turned off (T17), and it is the same trap that
+# produced four config faults in the secure environment.
+sdkconfig.esp32s3
+sdkconfig.esp32s3-*

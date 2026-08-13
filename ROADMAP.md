@@ -241,7 +241,7 @@ one physical board.
 | T16 | Gate `signHash` behind a default-off blind-signing setting | T12 | off by default, warns when enabled. **Currently vacuous**: the device has no `signHash` method and `getFeatures` reports `blindSigning: 0`. The gate must be built *with* the method, never after |
 | T51 | Chain-agnostic EVM: chain ID displayed on-device, per-chain RPC config in the app, Uniswap-format token lists (CoinGecko) as an app-side advisory layer with a small device-verified list of major contracts. See [PROTOCOL.md 6d](docs/PROTOCOL.md) | T50 | signs on two chains; a token transfer shows a contract address, not a host-supplied symbol |
 | ~~T50~~ ✅ | Define the decodable transaction set (native transfer, ERC-20 transfer/approve, EIP-712) and **refuse** anything outside it unless blind signing is on. See [PROTOCOL.md 6bis](docs/PROTOCOL.md) | T12 | `sim/test_eth_decode.c` + `eth-decode.test.ts`; `0x0202` before any prompt, and the mock refuses identically. EIP-712 waits on a `signTypedData` command |
-| T17 | Strip Wi-Fi AP from release builds ([S8g](AUDIT.md)) | — | absent from the settings menu in release |
+| ~~T17~~ ✅ | Strip Wi-Fi AP from release builds ([S8g](AUDIT.md)) | — | absent from the settings menu in release; 43 KB of flash and 480 bytes of RAM back. `pio run -e esp32s3-wifi` still builds it for testing |
 
 ### Track C — protocol + shared core (parallel after T0, no firmware dependency)
 
@@ -255,7 +255,7 @@ Write the protocol spec first and both sides build against it simultaneously.
 | ~~T22b~~ ✅ | Tauri command surface over the serial transport; the shell picks hardware when the backend is present and the mock otherwise | T22a | backend builds; frontend selects transport automatically |
 | T22c | BLE transport (`btleplug`) for Android behind the same interface | T22a | identical results over both channels |
 | ~~T23~~ ✅ | **Mock device** implementing the protocol: session, permission tiers, confirmations, rejection, latency | T20 | 10 test groups green; UI can be built with no hardware |
-| T48 | Transaction interpretation in the app (Rabby-style), with unlimited-approval warnings and local selector DB. Advisory only — see [PROTOCOL.md 6c](docs/PROTOCOL.md) | T24 | ERC-20 transfer and approve decoded and labelled as a preview |
+| ~~T48~~ ✅ | Transaction interpretation in the app (Rabby-style), with unlimited-approval warnings and local selector DB. Advisory only — see [PROTOCOL.md 6c](docs/PROTOCOL.md) | T24 | ERC-20 transfer and approve decoded and labelled as a preview; addresses render EIP-55 to match the device screen |
 | T49 | WalletConnect project ID: bundled default plus a user override in settings | T32 | app works out of the box and can be pointed at your own project |
 | ~~T24~~ ✅ | viem `toAccount()` adapter — structured fields only, never a serialised payload | T21 | 5 test groups; drops into any walletClient |
 | T25 | Firmware: BLE GATT service + protocol dispatcher | T20 | echoes a ping from a phone |

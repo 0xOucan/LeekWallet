@@ -659,7 +659,13 @@ typedef enum {
     SET_BRIGHTNESS,
     SET_AUTOLOCK,
     SET_CHANGE_PIN,
+/* The Wi-Fi AP is a test fixture, not a feature (AUDIT S8g). It brings up an
+ * access point with a hardcoded password on a device holding seeds, so it is
+ * compiled out unless a build asks for it. The enum and the label array below
+ * are positional and guarded together, which is what keeps them in step. */
+#ifdef CONFIG_ESP_WIFI_ENABLED
     SET_WIFI,
+#endif
     SET_BLE,
     SET_USB,
     SET_WIPE,
@@ -675,7 +681,9 @@ static const char *settings_items[SETTINGS_ITEMS] = {
     "Brightness",
     "Auto-lock",
     "Change PIN",
+#ifdef CONFIG_ESP_WIFI_ENABLED
     "WiFi Test",
+#endif
     "BLE Test",
     "USB HID Test",
     "Wipe Device",
@@ -1822,6 +1830,7 @@ static void screen_mnemonic_entry_on_button(button_id_t btn)
  * Settings Screen
  * ============================================================================ */
 
+#ifdef CONFIG_ESP_WIFI_ENABLED
 /* WiFi test functions - AP mode so other devices can see it */
 static bool wifi_event_loop_created = false;
 
@@ -1832,7 +1841,6 @@ static bool wifi_event_loop_created = false;
 
 static void wifi_test_toggle(void)
 {
-#ifdef CONFIG_ESP_WIFI_ENABLED
     if (!wifi_enabled) {
         ESP_LOGI(TAG, "Enabling WiFi AP...");
 
@@ -1878,11 +1886,8 @@ static void wifi_test_toggle(void)
         entropy_set_rf_active(ble_enabled);
         ESP_LOGI(TAG, "WiFi disabled");
     }
-#else
-    ESP_LOGW(TAG, "WiFi not enabled in sdkconfig");
-    wifi_enabled = !wifi_enabled;  /* Just toggle display */
-#endif
 }
+#endif /* CONFIG_ESP_WIFI_ENABLED */
 
 /* BLE test functions */
 #ifdef CONFIG_BT_NIMBLE_ENABLED
@@ -2060,13 +2065,16 @@ static void screen_settings_render(void)
         char line[22];
 
         /* Show status for toggles */
+#ifdef CONFIG_ESP_WIFI_ENABLED
         if (item_idx == SET_WIFI) {
             if (item_idx == settings_selection) {
                 snprintf(line, sizeof(line), "> WiFi %s", wifi_enabled ? "[ON]" : "[OFF]");
             } else {
                 snprintf(line, sizeof(line), "  WiFi %s", wifi_enabled ? "[ON]" : "[OFF]");
             }
-        } else if (item_idx == SET_BLE) {
+        } else
+#endif
+        if (item_idx == SET_BLE) {
             if (item_idx == settings_selection) {
                 snprintf(line, sizeof(line), "> BLE %s", ble_enabled ? "[ON]" : "[OFF]");
             } else {
@@ -2143,7 +2151,9 @@ static void screen_settings_on_button(button_id_t btn)
                 case SET_CHANGE_PIN:
                     ESP_LOGI(TAG, "Change PIN not yet implemented");
                     break;
+#ifdef CONFIG_ESP_WIFI_ENABLED
                 case SET_WIFI: wifi_test_toggle(); break;
+#endif
                 case SET_BLE:  ble_test_toggle();  break;
                 case SET_USB:  usb_hid_test();     break;
                 case SET_WIPE:
