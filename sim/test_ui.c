@@ -106,11 +106,31 @@ static void boot_unlocked_with_seed(void)
 
 /* ---------------------------------------------------- typing on 4 buttons */
 
+/* Drive the selector onto option `to` through the real screen. A long option
+ * list is shown as blocks, so reaching a letter means scrolling to its block,
+ * pressing ACCEPT to open it, then scrolling inside - T44 added that level, and
+ * this helper is where the extra press is spent. */
+static void select_option(int to)
+{
+    const MnemonicEntry *e = ui__entry_for_test();
+
+    if (mnemonic_entry_on_group(e)) {
+        int want = to / e->group_size;
+        for (int guard = 0; guard < 40 && e->option_index / e->group_size != want; guard++) {
+            press(BUTTON_UP);
+        }
+        press(BUTTON_ACCEPT);   /* open the block */
+    }
+    for (int guard = 0; guard < 40 && e->option_index != to; guard++) {
+        press(BUTTON_UP);
+    }
+}
+
 /*
- * Type `target` on the seed-entry selector, the way a user would: scroll to the
- * letter, accept, repeat; pick COMMIT once the whole word is typed and no
- * auto-commit has fired. Returns false if the letter needed is not on offer,
- * which means the screen has stopped following the word.
+ * Type `target` on the seed-entry selector, the way a user would: pick the
+ * letter, accept, repeat - and once the selector switches to whole words, pick
+ * the word itself. Returns false if what is needed is not on offer, which means
+ * the screen has stopped following the word.
  */
 static bool type_word(const char *target)
 {
@@ -119,22 +139,35 @@ static bool type_word(const char *target)
     size_t next = 0;
 
     for (int guard = 0; guard < 400; guard++) {
-        char want = (next < strlen(target)) ? target[next] : MNEMONIC_ENTRY_COMMIT;
-
         int found = -1;
-        for (int i = 0; i < e->option_count; i++) {
-            if (e->options[i] == want) { found = i; break; }
-        }
-        if (found < 0) {
-            return false;
-        }
-        while (e->option_index != found) {
-            press(BUTTON_UP);
+
+        if (e->word_mode) {
+            /* option_index is the read-only view of the selector, so probe the
+             * candidates by walking it with real presses. */
+            for (int i = 0; i < e->option_count; i++) {
+                const char *w;
+                select_option(i);
+                w = mnemonic_entry_selected_word(e);
+                if (w && strcmp(w, target) == 0) { found = i; break; }
+            }
+            if (found < 0) {
+                return false;
+            }
+            select_option(found);
+        } else {
+            char want = (next < strlen(target)) ? target[next] : MNEMONIC_ENTRY_COMMIT;
+            for (int i = 0; i < e->option_count; i++) {
+                if (e->options[i] == want) { found = i; break; }
+            }
+            if (found < 0) {
+                return false;
+            }
+            select_option(found);
+            if (want != MNEMONIC_ENTRY_COMMIT) {
+                next++;
+            }
         }
 
-        if (want != MNEMONIC_ENTRY_COMMIT) {
-            next++;
-        }
         press(BUTTON_ACCEPT);
 
         if (e->word_count != before) {
