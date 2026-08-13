@@ -29,6 +29,7 @@ import {
 } from "../packages/core/src/tx-interpret.ts";
 import { chunk, renderInterpretation } from "./interpretation-view.ts";
 import { initWalletConnect, type WalletBridge } from "./wc/ui.ts";
+import { resolveProjectId } from "./wc/project-id.ts";
 import type { PlannedTx } from "./wc/requests.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -1268,6 +1269,200 @@ function currentTheme(): Theme {
 }
 
 applyTheme(currentTheme());
+
+/* ------------------------------------------------------------ diagnostics */
+
+/**
+ * Everything a bug report needs, as plain text.
+ *
+ * Every bug report on this project so far has been the log, hand-copied off a
+ * screen. This assembles it with the state that makes it readable — which
+ * transport, which chain, which addresses — formatted for a chat box rather
+ * than as JSON, because the person reading it is a human and the person
+ * sending it is on a phone.
+ *
+ * ---------------------------------------------------------------------------
+ * What it must never contain, and why. This list is a decision, not an
+ * oversight, and it is short because the app holds no seed, PIN or key — those
+ * never leave the device (PROTOCOL.md 6). What is left is:
+ *
+ * - **The session passkey.** Excluded. It is the value the user compares
+ *   against the device screen to prove the encrypted channel reaches *that*
+ *   device and not something in the middle; it is short-lived and it is a
+ *   comparison secret. Pasting it into a chat while the session is live hands
+ *   it to whoever reads the chat, and its only job is to be compared, never
+ *   transmitted. It is also useless in a bug report: what matters is whether
+ *   the pairing succeeded, and the log already says that.
+ * - **The WalletConnect project ID.** Excluded. It is the user's own relay
+ *   credential — attributable and rate-limited against them — and a bug is
+ *   never explained by its 32 hex digits. Whether one is configured is worth
+ *   knowing, so that is what gets reported.
+ * - **The pairing URI / symKey.** Excluded, and already excluded upstream: the
+ *   loggable form of a wc: URI never contains the key (see wc-uri.ts and its
+ *   test), so the log below cannot carry one.
+ * - **Whatever is typed into the form fields.** Excluded. A half-typed
+ *   recipient is not state, and the amount someone is about to send is theirs.
+ *
+ * Included on purpose: **addresses**. They are public by construction — they
+ * are what the user hands out to be paid — and "address 3 came back wrong" is
+ * precisely the bug this button exists to report. The user agent is included
+ * because "which Android" is the first question anyone will ask.
+ */
+function diagnosticsReport(): string {
+  const L: string[] = [];
+  const chain = activeChain();
+  const rpc = ($("rpc") as HTMLSelectElement).value;
+
+  L.push("LeekWallet companion — diagnostics");
+  L.push(new Date().toISOString());
+  L.push(`User agent: ${navigator.userAgent}`);
+  L.push("");
+
+  L.push("== Connection");
+  L.push(`State:      ${$("conn").textContent ?? "?"}`);
+  L.push(`Backend:    ${$("mode").textContent ?? "?"}`);
+  L.push(`Link:       ${LINK_NAMES[selectedKind()]} (selected)`);
+  L.push(`Transports: ${available.length > 0 ? available.join(", ") : "none — mock only"}`);
+  L.push(
+    `Device:     ${lastStatus.unlocked ? "unlocked" : "locked"}, ` +
+      `wallet ${lastStatus.activeWallet}, ` +
+      `passphrase ${lastStatus.passphrase ? "on" : "off"}, ` +
+      `blind signing ${deviceBlindSigning ? "ON" : "off"}`,
+  );
+  L.push("");
+
+  L.push("== Chain");
+  L.push(`${chain.name} (${chain.id})${chain.testnet ? " — testnet" : ""}, ${chain.source}`);
+  L.push(`RPC: ${rpc || "none selected"}`);
+  L.push("");
+
+  L.push("== Addresses");
+  if (addresses.length === 0) {
+    L.push("None derived. (Device locked, or not connected.)");
+  } else {
+    // Unchunked, so the line pastes straight into an explorer. The chunked
+    // form is for comparing against the device screen, which is a different
+    // job done by a different surface.
+    addresses.forEach((a, i) => L.push(`${i === selectedIndex ? ">" : " "} [${i}] ${a}`));
+    L.push(`Derivation: m/44'/60'/0'/0/i`);
+  }
+  L.push("");
+
+  L.push("== Dapps (WalletConnect)");
+  /* Presence, never the value — and read through the module that owns the key
+   * so this cannot start reporting on a key nothing writes any more. */
+  L.push(`Project ID: ${resolveProjectId().source} (value withheld)`);
+  L.push($("wcstatus").textContent || "(no status)");
+  /* Read back from the rendered list rather than from the WalletConnect client:
+   * what the user is reporting is what they are looking at, and a second source
+   * for the same list could disagree with the screen. Dapp-authored names come
+   * through as text and stay text. */
+  const sessions = Array.from($("wcsessions").querySelectorAll(".wc-session"))
+    .map((row) =>
+      Array.from(row.children)
+        .filter((el) => el.tagName !== "BUTTON")
+        .map((el) => el.textContent?.trim() ?? "")
+        .filter((s) => s.length > 0)
+        .join(" · "),
+    );
+  L.push(sessions.length > 0 ? sessions.map((s) => `- ${s}`).join("\n") : "No dapp is connected.");
+  L.push("");
+
+  L.push("== Device log (newest first)");
+  L.push($("log").textContent ?? "");
+
+  return L.join("\n");
+}
+
+type CopyRoute = "tauri" | "async-clipboard" | "exec-command" | "manual";
+
+/**
+ * Put text on the clipboard, trying every route this app can reach.
+ *
+ * There are three because none of them works everywhere:
+ *
+ * 1. **Tauri's clipboard plugin**, if the native build has it. It is the only
+ *    route that is unambiguously correct inside an Android webview. NOTE: as
+ *    of this commit `src-tauri/capabilities/default.json` grants only
+ *    `core:default`, so the plugin is *not* registered and this probe will
+ *    miss; it is written first anyway so that adding the plugin on the Rust
+ *    side is the only change needed to light it up.
+ * 2. **`navigator.clipboard`**, which requires a secure context. A Tauri
+ *    Android window is served from `http://tauri.localhost`, which is not one
+ *    of the origins browsers treat as secure, so this may well be undefined
+ *    there. It is the right answer on desktop and in a dev browser tab.
+ * 3. **`document.execCommand("copy")`** over a hidden textarea. Deprecated,
+ *    and still the thing that actually works in an Android webview under a
+ *    user gesture — which a button click is.
+ *
+ * If all three fail the text is put on screen, selected, and the caller says
+ * so. A copy button that silently does nothing is worse than no button: the
+ * user pastes stale clipboard content and nobody finds out for an hour.
+ */
+async function copyText(text: string): Promise<CopyRoute> {
+  const tauri = (window as unknown as {
+    __TAURI__?: { clipboardManager?: { writeText?: (t: string) => Promise<void> } };
+  }).__TAURI__?.clipboardManager?.writeText;
+  if (tauri) {
+    try {
+      await tauri(text);
+      return "tauri";
+    } catch { /* fall through: a failed plugin call is not a reason to give up */ }
+  }
+
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return "async-clipboard";
+    } catch { /* permission denied or no gesture; try the old way */ }
+  }
+
+  /* The textarea has to be in the document, visible to the layout engine and
+   * focused for the selection to be real, so it is placed off-screen rather
+   * than hidden — `display: none` cannot be selected. */
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:0;left:-9999px;opacity:0;";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    ta.remove();
+    if (ok) return "exec-command";
+  } catch { /* fall through to manual */ }
+
+  const out = $("copyout") as HTMLTextAreaElement;
+  out.value = text;
+  out.hidden = false;
+  out.focus();
+  out.select();
+  return "manual";
+}
+
+$("copydiag").addEventListener("click", () => {
+  const text = diagnosticsReport();
+  const out = $("copyout") as HTMLTextAreaElement;
+  out.hidden = true;
+  const status = $("copystatus");
+  status.textContent = "Copying…";
+
+  void copyText(text).then(
+    (route) => {
+      const lines = text.split("\n").length;
+      status.textContent =
+        route === "manual"
+          ? "This build could not reach the clipboard. The text is below and selected — copy it by hand."
+          : `Copied ${lines} lines (${route}). No passkey, project ID or form input is included.`;
+      log(`diagnostics copied via ${route}`);
+    },
+    (e: unknown) => {
+      status.textContent = `Copy failed: ${(e as Error).message}`;
+      log(`diagnostics copy failed: ${(e as Error).message}`);
+    },
+  );
+});
 
 $("theme").addEventListener("click", () => {
   const next = THEME_ORDER[(THEME_ORDER.indexOf(currentTheme()) + 1) % THEME_ORDER.length] ?? "system";

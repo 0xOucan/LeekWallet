@@ -185,8 +185,21 @@
           <div id="wcsessions" class="wc-sessions"></div>
         </div>
 
-        <div class="panel">
+        <div class="panel" id="logpanel">
           <h2>Device log</h2>
+          <!-- Selecting text on a phone is painful and this log is what every
+               bug report in this project has been. The button assembles it
+               with the surrounding state; what it deliberately leaves out is
+               listed in main.ts (diagnosticsReport). -->
+          <div class="row">
+            <button id="copydiag">Copy diagnostics</button>
+          </div>
+          <p class="muted" id="copystatus" aria-live="polite"></p>
+          <!-- Shown only when no clipboard route worked, so the button never
+               just does nothing: the text arrives here, selected, to copy by
+               hand. -->
+          <textarea id="copyout" class="copyout" readonly hidden
+                    aria-label="Diagnostics text, select and copy"></textarea>
           <div class="log" id="log">Nothing yet.</div>
         </div>
       </main>
