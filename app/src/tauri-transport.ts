@@ -11,7 +11,10 @@
 import type { Transport } from "../packages/core/src/transport.ts";
 import { FrameType } from "../packages/core/src/framing.ts";
 
-type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+export type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+
+/** The transports a build can offer. Mirrors `Transport["kind"]` minus mock. */
+export type HardwareKind = "usb" | "ble";
 
 /**
  * Locate Tauri's invoke function.
@@ -25,7 +28,7 @@ type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
  * Both shapes are accepted because v2 moved invoke under `core` and older
  * builds put it at the top level.
  */
-function invoker(): Invoke | null {
+export function invoker(): Invoke | null {
   const w = window as unknown as {
     __TAURI__?: { core?: { invoke?: Invoke }; invoke?: Invoke };
   };
@@ -33,24 +36,32 @@ function invoker(): Invoke | null {
 }
 
 /**
- * Is a *serial* backend available?
+ * Which transports the backend actually has compiled in.
  *
- * Callers use this as the hardware-or-mock switch, so it has to mean "there is
- * a transport", not merely "this is a native window". The Android build ships
- * no transport at all — serial is compiled out (Android has no ports) and BLE
- * is not written yet — so a native Android window has an `invoke` bridge and
- * nothing behind it. Returning true there would make the badge read "hardware"
- * on a phone connected to nothing, which is the one lie a wallet UI must never
- * tell, and would send `connect()` down the handshake path to fail.
+ * This has to mean "there is a transport", not merely "this is a native
+ * window". The Android build ships no transport at all — serial is compiled
+ * out (no ports to enumerate) and BLE needs a JVM-side driver that is not
+ * there yet — so a native Android window has an `invoke` bridge and nothing
+ * behind it. Claiming "hardware" on a phone connected to nothing is the one
+ * lie a wallet UI must never tell.
  *
- * Platform is read from the user agent rather than asked of the backend
- * because the callers are synchronous, and every Android WebView UA contains
- * "Android". When BLE lands (T22c/T30) this becomes a real capability query
- * against the backend instead.
+ * Asked of the backend rather than sniffed from the user agent, which is what
+ * this did before: the backend is the only thing that knows what was compiled
+ * into it, and a UA string cannot answer "was BLE built in".
+ *
+ * An older backend without the `transports` command still answers usefully:
+ * the invoke rejects, and the fallback reports the one transport such a build
+ * had.
  */
-export function isTauri(): boolean {
-  if (invoker() === null) return false;
-  return !/Android/i.test(navigator.userAgent);
+export async function availableTransports(): Promise<HardwareKind[]> {
+  const invoke = invoker();
+  if (!invoke) return [];
+  try {
+    const kinds = await invoke<string[]>("transports");
+    return kinds.filter((k): k is HardwareKind => k === "usb" || k === "ble");
+  } catch {
+    return /Android/i.test(navigator.userAgent) ? [] : ["usb"];
+  }
 }
 
 export interface SerialPortInfo {

@@ -2,9 +2,18 @@
 
 The companion app runs on Android through the same Tauri shell as the desktop
 build. **The Android build has no transport yet**: it drives the built-in mock
-device, which is enough to exercise the entire UI on a real phone. BLE is
-T22c/T30 and is deliberately absent until there is hardware to verify it
-against.
+device, which is enough to exercise the entire UI on a real phone.
+
+T22c added a BLE transport, but on **desktop only**. btleplug's Android backend
+needs a JVM-side driver class compiled into the Gradle project that Tauri
+generates — and that project is not tracked here (see "Generated project"
+below), so there is nowhere to put it that survives a regeneration. Compiling
+btleplug in for Android would produce a transport that links, reports itself as
+available, and then fails at the first call with a JNI class-not-found. That is
+worse than no transport, so `leek-transport-ble` stays behind
+`cfg(not(target_os = "android"))` alongside the serial one, the `transports`
+command returns an empty list on Android, and the app keeps saying `mock`.
+Wiring the JVM side is the remaining work for T30.
 
 ## What you need
 
@@ -127,6 +136,5 @@ treat it like `secure_boot_signing_key.pem`.
   hardware.
 - No transport: the app reports `mock` in the status badge on Android and
   connects to the built-in mock device. It never claims `hardware` there.
-- The "mock" hint text in `src/main.ts` says "Browser: no USB access here",
-  which reads oddly in a native Android window. Owned by another change; worth
-  a reword to something platform-neutral.
+- After T22c: `cargo check --target aarch64-linux-android` still passes. A full
+  `pnpm android:build` was **not** re-run.

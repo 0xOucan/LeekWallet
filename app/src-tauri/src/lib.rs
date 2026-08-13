@@ -20,6 +20,36 @@
 #[cfg(not(target_os = "android"))]
 mod serial;
 
+// BLE is compiled out on Android for a different reason than serial, and not a
+// permanent one. btleplug does support Android, but only through a JVM-side
+// driver class that has to be added to the generated Gradle project — which
+// Tauri regenerates and which this repo does not track (see ANDROID.md). Until
+// that side exists, a compiled-in BLE transport would fail at the first call
+// with a class-not-found from the JNI layer. Absent beats present-and-broken:
+// Android keeps reporting no transport and the UI keeps using the mock, which
+// is at least true.
+#[cfg(not(target_os = "android"))]
+mod ble;
+
+/// Which transports this build actually has behind it.
+///
+/// A real capability query, replacing the frontend's old habit of sniffing the
+/// user agent for "Android". The frontend must not decide from the presence of
+/// an `invoke` bridge that a device is reachable: on Android the bridge exists
+/// and there is nothing behind it, and a status badge reading "hardware" on a
+/// phone connected to nothing is the one lie a wallet UI must never tell.
+#[tauri::command]
+fn transports() -> Vec<&'static str> {
+    #[cfg(not(target_os = "android"))]
+    {
+        vec!["usb", "ble"]
+    }
+    #[cfg(target_os = "android")]
+    {
+        Vec::new()
+    }
+}
+
 /// Start the app.
 ///
 /// `mobile_entry_point` is what the generated Android project calls; on desktop
@@ -29,14 +59,23 @@ pub fn run() {
     let builder = tauri::Builder::default();
 
     #[cfg(not(target_os = "android"))]
-    let builder = builder.manage(serial::Connection::default()).invoke_handler(
-        tauri::generate_handler![
+    let builder = builder
+        .manage(serial::Connection::default())
+        .manage(ble::Connection::default())
+        .invoke_handler(tauri::generate_handler![
+            transports,
             serial::ports,
             serial::connect,
             serial::disconnect,
-            serial::request
-        ],
-    );
+            serial::request,
+            ble::ble_scan,
+            ble::ble_connect,
+            ble::ble_disconnect,
+            ble::ble_request
+        ]);
+
+    #[cfg(target_os = "android")]
+    let builder = builder.invoke_handler(tauri::generate_handler![transports]);
 
     builder
         .run(tauri::generate_context!())

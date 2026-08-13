@@ -27,6 +27,11 @@
           <h1>Device</h1>
           <p id="devicehint">Checking for a device…</p>
           <div class="row">
+            <!-- The device serves one transport at a time (PROTOCOL.md 3b), so
+                 this is a real choice the user has to make, not a preference.
+                 Populated from what the backend reports it can do. -->
+            <label class="muted" for="transport">Link</label>
+            <select id="transport" class="addr" aria-label="Transport"></select>
             <button class="primary" id="connect">Connect</button>
             <button id="unlock" disabled>Unlock</button>
             <button id="disconnect" disabled>Disconnect</button>
