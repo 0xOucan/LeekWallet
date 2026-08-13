@@ -182,6 +182,8 @@ const addresses: string[] = [];
  * - an auto-lock on the device's own timer, or a wallet switched by hand. */
 let lastStatus: DeviceStatus = UNKNOWN_STATUS;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+/** Bumped whenever a derivation is superseded or discarded. */
+let loadGeneration = 0;
 
 async function readStatus(): Promise<DeviceStatus> {
   const s = await (client as Client).call("getStatus");
@@ -201,6 +203,8 @@ async function readStatus(): Promise<DeviceStatus> {
  * longer produce, and nothing about them would look wrong.
  */
 function invalidateDerived(reason: string): void {
+  // Retire any in-flight derivation as well as the current list.
+  loadGeneration++;
   addresses.length = 0;
   $("addrs").textContent = "";
   $("addrpanel").hidden = true;
@@ -209,28 +213,55 @@ function invalidateDerived(reason: string): void {
   log(`derived addresses cleared: ${reason}`);
 }
 
+let polling = false;
+
+/** Why the previous state no longer applies. Ordered most specific first. */
+function invalidationReason(before: DeviceStatus, after: DeviceStatus): string {
+  if (!after.unlocked) return "device locked";
+  if (!before.unlocked) return "device unlocked";
+  if (before.activeWallet !== after.activeWallet) return "wallet changed on device";
+  if (before.passphrase !== after.passphrase) {
+    return after.passphrase ? "passphrase applied on device" : "passphrase cleared on device";
+  }
+  return "device state changed";
+}
+
 async function poll(): Promise<void> {
   if (!client) return;
+
+  /* setInterval does not wait. Deriving ten addresses takes seconds, so
+   * without this guard the next tick re-enters while the previous run is still
+   * working, and each one starts another derivation. */
+  if (polling) return;
+  polling = true;
+
   try {
     const now = await readStatus();
-    if (derivationsInvalidated(lastStatus, now)) {
-      invalidateDerived(
-        !now.unlocked ? "device locked"
-          : now.activeWallet !== lastStatus.activeWallet ? "wallet changed on device"
-          : "passphrase changed on device",
-      );
+    const changed = derivationsInvalidated(lastStatus, now);
+
+    /* Record the new state *before* the slow part. Updating it afterwards
+     * meant every tick during a derivation still compared against the old
+     * status, decided things had changed again, and kicked off another
+     * derivation - forty-two addresses and climbing. */
+    const reason = changed ? invalidationReason(lastStatus, now) : "";
+    lastStatus = now;
+
+    $("wallet").textContent = now.unlocked
+      ? `wallet ${now.activeWallet}/${now.walletCount}${now.passphrase ? " + passphrase" : ""}`
+      : "locked";
+
+    if (changed) {
+      invalidateDerived(reason);
       if (now.unlocked) {
         await loadAddresses();
         $("addrpanel").hidden = false;
         $("signpanel").hidden = false;
       }
     }
-    lastStatus = now;
-    $("wallet").textContent = now.unlocked
-      ? `wallet ${now.activeWallet}/${now.walletCount}${now.passphrase ? " + passphrase" : ""}`
-      : "locked";
   } catch {
     /* A poll failing is not itself news; the connection state covers it. */
+  } finally {
+    polling = false;
   }
 }
 
@@ -353,14 +384,25 @@ async function unlock(): Promise<void> {
 
 async function loadAddresses(): Promise<void> {
   if (!client) return;
+
+  /* Each run claims a generation. If another starts while this one is waiting
+   * on the device, this one abandons its results rather than appending them to
+   * a list it no longer owns. */
+  const generation = ++loadGeneration;
+
   addresses.length = 0;
   const list = $("addrs");
   list.textContent = "Deriving…";
 
+  const derived: string[] = [];
   for (let i = 0; i < 10; i++) {
     const r = await client.call("getAddress", { path: `m/44'/60'/0'/0/${i}` });
-    addresses.push(String(r["address"]));
+    if (generation !== loadGeneration) return;   // superseded
+    derived.push(String(r["address"]));
   }
+
+  addresses.length = 0;
+  addresses.push(...derived);
 
   list.textContent = "";
   addresses.forEach((addr, i) => {
