@@ -222,8 +222,23 @@ export class MockDevice implements Transport {
     getAddress: (p) => {
       this.requireUnlocked();
       const path = String(p["path"] ?? "m/44'/60'/0'/0/0");
+
+      /* Derive from the trailing index exactly as the firmware does. Deriving
+       * from the whole path string would make the mock distinguish addresses
+       * the device cannot, hiding a parsing bug rather than reproducing it -
+       * which is what happened: the device read only "index", ignored "path",
+       * and returned address zero ten times while the mock looked fine. */
+      const tail = path.slice(path.lastIndexOf("/") + 1);
+      const index = Number.parseInt(tail, 10);
+      if (!Number.isFinite(index) || index < 0) {
+        throw new MockRejection(ErrorCode.MalformedFrame, `bad path ${path}`);
+      }
+
       if (p["display"]) this.confirm(`Show address for ${path}`);
-      return { path, address: mockAddress(path, this.activeWallet, this.passphraseActive) };
+      return {
+        path,
+        address: mockAddress(String(index), this.activeWallet, this.passphraseActive),
+      };
     },
 
     signTransaction: (p) => {

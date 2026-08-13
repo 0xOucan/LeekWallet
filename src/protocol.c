@@ -24,6 +24,7 @@
 #include "protocol.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -79,7 +80,22 @@ static void send_frame(uint8_t type, const uint8_t *payload, size_t len)
     usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
 }
 
-static void send_error(uint16_t code, const char *message)
+/**
+ * Send an error.
+ *
+ * Once a session is active, application errors are encrypted like any other
+ * reply. That is not about secrecy - it is about counters. The device advances
+ * its receive counter the moment a frame decrypts, even if the reply is an
+ * error, while the host only advances its send counter when it opens a reply.
+ * A plaintext error therefore leaves the two one apart, and every later frame
+ * fails to decrypt. Hardware testing walked straight into it: an unimplemented
+ * method returned a plaintext error and the next request died with "decrypt
+ * failed".
+ *
+ * Session-level errors stay in plaintext, because at that point there is no
+ * working channel to send them over.
+ */
+static void send_error_ex(uint16_t code, const char *message, bool allow_encrypt)
 {
     uint8_t out[128];
     CborWriter w;
@@ -91,9 +107,30 @@ static void send_error(uint16_t code, const char *message)
     cbor_write_text(&w, "message");
     cbor_write_text(&w, message);
 
-    if (cbor_writer_ok(&w)) {
-        send_frame(FRAME_ERROR, out, w.length);
+    if (!cbor_writer_ok(&w)) {
+        return;
     }
+
+    if (allow_encrypt && session_state() == SESSION_ACTIVE) {
+        int enc = session_encrypt(out, w.length, sizeof(out));
+        if (enc > 0) {
+            send_frame(FRAME_ENC_RESPONSE, out, (size_t)enc);
+            return;
+        }
+    }
+
+    send_frame(FRAME_ERROR, out, w.length);
+}
+
+static void send_error(uint16_t code, const char *message)
+{
+    send_error_ex(code, message, true);
+}
+
+/** For failures that mean the channel itself is unusable. */
+static void send_session_error(uint16_t code, const char *message)
+{
+    send_error_ex(code, message, false);
 }
 
 /* Handle the plaintext handshake. Runs before any session exists, so it must
@@ -190,7 +227,7 @@ static void dispatch(const uint8_t *payload, size_t len)
          * the device, and the host learns the outcome by polling getStatus.
          * A PIN crossing the wire would defeat the point of having one. */
         if (session_state() != SESSION_ACTIVE) {
-            send_error(ERR_SESSION, "session required");
+            send_session_error(ERR_SESSION, "session required");
             return;
         }
 
@@ -213,7 +250,7 @@ static void dispatch(const uint8_t *payload, size_t len)
 
     } else if (strcmp(method, "lock") == 0) {
         if (session_state() != SESSION_ACTIVE) {
-            send_error(ERR_SESSION, "session required");
+            send_session_error(ERR_SESSION, "session required");
             return;
         }
         ui_request_lock();
@@ -228,7 +265,7 @@ static void dispatch(const uint8_t *payload, size_t len)
          * user-specific, and anything plugged into this port should not be able
          * to enumerate a wallet without the user confirming a passkey. */
         if (session_state() != SESSION_ACTIVE) {
-            send_error(ERR_SESSION, "session required");
+            send_session_error(ERR_SESSION, "session required");
             return;
         }
         if (!pin_is_unlocked()) {
@@ -236,9 +273,29 @@ static void dispatch(const uint8_t *payload, size_t len)
             return;
         }
 
+        /* Accept either a bare index or a full path. The client sends a path
+         * because that is what PROTOCOL.md documents and what viem thinks in;
+         * reading only "index" meant every request quietly derived address
+         * zero, and ten identical addresses is a symptom that looks like a
+         * derivation bug rather than a parsing one. */
         uint32_t index = 0;
         if (cbor_map_find(payload, len, "index", &item) && item.type == CBOR_UINT) {
             index = item.value;
+        } else if (cbor_map_find(payload, len, "path", &item) && item.type == CBOR_TEXT) {
+            char path_str[40];
+            if (cbor_text_copy(&item, path_str, sizeof(path_str))) {
+                /* Take the trailing component of m/44'/60'/0'/0/<n>. Only the
+                 * address index is variable today; accounts are T45. */
+                const char *last = strrchr(path_str, '/');
+                if (last && last[1] != '\0') {
+                    index = (uint32_t)strtoul(last + 1, NULL, 10);
+                }
+            }
+        }
+
+        if (index > 0x7FFFFFFFu) {
+            send_error(ERR_MALFORMED, "address index out of range");
+            return;
         }
 
         HDPath path = HDPATH_ETH_DEFAULT;
@@ -327,7 +384,7 @@ static void consume(void)
                 if (handle_hello(rx_buf + 5, body - 1, out, sizeof(out), &out_len)) {
                     send_frame(FRAME_RESPONSE, out, out_len);
                 } else {
-                    send_error(ERR_MALFORMED, "handshake failed");
+                    send_session_error(ERR_MALFORMED, "handshake failed");
                 }
             } else {
                 dispatch(rx_buf + 5, body - 1);
@@ -336,7 +393,7 @@ static void consume(void)
             /* Decrypt in place, dispatch, re-encrypt the reply. */
             int plain = session_decrypt(rx_buf + 5, body - 1);
             if (plain < 0) {
-                send_error(ERR_SESSION, "decrypt failed");
+                send_session_error(ERR_SESSION, "decrypt failed");
             } else {
                 dispatch(rx_buf + 5, (size_t)plain);
             }
