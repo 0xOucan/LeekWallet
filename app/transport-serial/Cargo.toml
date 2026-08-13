@@ -1,0 +1,17 @@
+[package]
+name = "leek-transport-serial"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "USB CDC transport for LeekWallet. Desktop only; Android uses BLE."
+
+# Deliberately standalone rather than a module inside the Tauri app. The
+# transport is the part worth testing against real hardware, and a crate that
+# builds in seconds gets tested far more often than one behind Tauri's
+# dependency tree.
+[dependencies]
+serialport = "4"
+
+[[bin]]
+name = "leek-probe"
+path = "src/bin/probe.rs"

@@ -5,3 +5,5 @@ target/
 dist/
 src-tauri/target/
 src-tauri/gen/
+transport-serial/target/
+transport-serial/Cargo.lock
