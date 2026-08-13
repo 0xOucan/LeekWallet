@@ -14,7 +14,10 @@ import { DeviceError, type Transport } from "../packages/core/src/transport.ts";
 import {
   derivationsInvalidated, UNKNOWN_STATUS, type DeviceStatus,
 } from "../packages/core/src/device-state.ts";
-import { isTauri, listPorts, TauriSerialTransport } from "./tauri-transport.ts";
+import {
+  availableTransports, listPorts, TauriSerialTransport, type HardwareKind,
+} from "./tauri-transport.ts";
+import { BleTransport, scanBle, BLE_NOT_FOUND } from "./ble-transport.ts";
 import { createPublicClient, defineChain, http, parseEther, serializeTransaction,
          isAddress, type Chain, type Hex, type Address } from "viem";
 import {
@@ -210,6 +213,20 @@ class Client {
 
 let transport: Transport | null = null;
 let client: Client | null = null;
+
+/**
+ * What the backend says it can do. Empty in a browser tab and on Android,
+ * where the mock is the only honest option.
+ */
+let available: HardwareKind[] = [];
+
+type LinkKind = HardwareKind | "mock";
+
+/** Whatever the Link selector currently reads. */
+function selectedKind(): LinkKind {
+  const value = ($("transport") as HTMLSelectElement).value;
+  return value === "usb" || value === "ble" ? value : "mock";
+}
 let selectedIndex = 0;
 const addresses: string[] = [];
 
@@ -313,36 +330,91 @@ const busy = (on: boolean): void => {
 
 /* ----------------------------------------------------------------- actions */
 
-async function connect(): Promise<void> {
-  /* Real hardware when the Tauri backend is present, the mock otherwise. The
-   * two are interchangeable by construction - if they were not, everything
-   * built against the mock would need revisiting the first time a device was
-   * plugged in. */
-  if (isTauri()) {
+/**
+ * Find a device on the selected link.
+ *
+ * Returns null having already explained itself, because the two failures need
+ * different explanations: no serial port is usually a cable or a permissions
+ * problem, while nothing advertising over BLE is usually a device that is
+ * simply in USB mode and therefore silent on the radio (PROTOCOL.md 3b).
+ * Collapsing both into "no device found" would send someone hunting a fault
+ * that does not exist.
+ */
+async function findDevice(kind: LinkKind): Promise<Transport | null> {
+  if (kind === "usb") {
     const ports = await listPorts();
     const port = ports.find((p) => p.likely_device) ?? ports[0];
     if (!port) {
-      setConnection("error", "No device found");
-      log("no USB serial ports; check the cable and the dialout group");
-      return;
+      setConnection("error", "No device over USB");
+      log("no USB serial ports; check the cable, and that you are in the dialout group");
+      log("if the device's Link setting is Bluetooth, it will not appear here at all");
+      return null;
     }
-    transport = new TauriSerialTransport(port.name);
     log(`found ${port.name} — ${port.description}`);
-  } else {
-    /* Latency is deliberate: a mock that answers instantly hides every place
-     * the UI forgot to show that it is waiting. `pinEntryMs` is the same idea
-     * applied to unlocking - the device only prompts, and the seconds the user
-     * spends on the keypad are seconds this app has to keep polling and keep
-     * saying so. */
-    transport = new MockDevice({ latencyMs: 250, walletCount: 1, pinEntryMs: 2000 });
+    return new TauriSerialTransport(port.name);
   }
+
+  if (kind === "ble") {
+    log("scanning for Bluetooth devices…");
+    let found;
+    try {
+      found = await scanBle();
+    } catch (e) {
+      setConnection("error", "Bluetooth unavailable");
+      log(String((e as Error).message ?? e));
+      return null;
+    }
+    const device = found[0];
+    if (!device) {
+      setConnection("error", "No device over Bluetooth");
+      log(BLE_NOT_FOUND);
+      return null;
+    }
+    // More than one is unusual and worth saying out loud rather than silently
+    // taking the first: the user should know a choice was made for them.
+    if (found.length > 1) {
+      log(`${found.length} devices advertising; using ${device.name ?? device.id}`);
+    }
+    log(`found ${device.name ?? "(unnamed)"} — ${device.id}`);
+    return new BleTransport(device);
+  }
+
+  /* Latency is deliberate: a mock that answers instantly hides every place
+   * the UI forgot to show that it is waiting. `pinEntryMs` is the same idea
+   * applied to unlocking - the device only prompts, and the seconds the user
+   * spends on the keypad are seconds this app has to keep polling and keep
+   * saying so. */
+  return new MockDevice({ latencyMs: 250, walletCount: 1, pinEntryMs: 2000 });
+}
+
+async function connect(): Promise<void> {
+  /* Real hardware over whichever link the user picked, the mock when there is
+   * none. All three are interchangeable by construction — if they were not,
+   * everything built against the mock would need revisiting the first time a
+   * device was plugged in, and everything proven over USB would prove nothing
+   * about BLE. */
+  const kind = selectedKind();
+  const found = await findDevice(kind);
+  if (!found) return;
+  transport = found;
   client = new Client(transport);
+  setMode(transport);
 
   setConnection("connecting", "Connecting…");
   busy(true);
-  await transport.open();
+  try {
+    await transport.open();
+  } catch (e) {
+    setConnection("error", "Connection failed");
+    log(String((e as Error).message ?? e));
+    transport = null;
+    client = null;
+    setMode(null);
+    busy(false);
+    return;
+  }
 
-  if (isTauri()) {
+  if (kind !== "mock") {
     /* Real firmware: derive the passkey from the exchange and wait for the
      * user to compare it against the OLED. */
     const passkey = await client.handshake();
@@ -364,11 +436,14 @@ async function connect(): Promise<void> {
   }
 
   setConnection("connected", transport.label);
-  $("devicehint").textContent = isTauri()
+  $("devicehint").textContent = kind !== "mock"
     ? `Connected over ${transport.label}. The device confirms everything it signs on its own screen.`
     : "Connected to the mock. Behaviour matches the protocol, but keys and signatures are not real.";
   busy(false);
   ($("connect") as HTMLButtonElement).disabled = true;
+  // Switching links mid-session would tear down the device's session anyway;
+  // shutting the selector says so before it happens.
+  ($("transport") as HTMLSelectElement).disabled = true;
   ($("unlock") as HTMLButtonElement).disabled = false;
   ($("disconnect") as HTMLButtonElement).disabled = false;
 }
@@ -807,6 +882,10 @@ async function disconnect(): Promise<void> {
   transport = null;
   client = null;
   setConnection("disconnected", "Disconnected");
+  setMode(null);
+  // Back to whatever the build allows: a single-option selector stays shut.
+  ($("transport") as HTMLSelectElement).disabled =
+    ($("transport") as HTMLSelectElement).options.length < 2;
   $("addrpanel").hidden = true;
   $("signpanel").hidden = true;
   $("pairing").hidden = true;
@@ -825,27 +904,85 @@ const chunk = (addr: string): string => {
 
 /* ------------------------------------------------------------------- wiring */
 
-/* Say plainly which backend this window uses, before anything is connected.
- * The label used to read "Connect mock device" unconditionally, so a native
- * window talking to real hardware still claimed to be a simulation. */
-function describeEnvironment(): void {
-  const tauri = isTauri();
+const LINK_NAMES: Record<LinkKind, string> = {
+  usb: "USB cable",
+  ble: "Bluetooth",
+  mock: "Mock device",
+};
+
+/**
+ * Say what the badge actually knows, and no more.
+ *
+ * Before a connection it can only report what this build could do; after one
+ * it names the live transport. Naming it matters: a user comparing an address
+ * against the device screen is checking that the thing on the desk produced
+ * it, and "hardware" alone does not say which wire that answer came down.
+ */
+function setMode(active: Transport | null): void {
   const badge = $("mode");
-  badge.textContent = tauri ? "hardware" : "mock";
-  badge.dataset["mode"] = tauri ? "hardware" : "mock";
+  if (active) {
+    const hardware = active.kind !== "mock";
+    badge.textContent = hardware
+      ? `hardware · ${active.kind.toUpperCase()}`
+      : "mock";
+    badge.dataset["mode"] = hardware ? "hardware" : "mock";
+    badge.title = hardware
+      ? `Connected to real hardware over ${LINK_NAMES[active.kind]}`
+      : "Simulated device — nothing here is signed by hardware";
+    return;
+  }
+
+  const hasHardware = available.length > 0;
+  badge.textContent = hasHardware ? "no link" : "mock";
+  badge.dataset["mode"] = hasHardware ? "idle" : "mock";
+  badge.title = hasHardware
+    ? "Not connected. The badge names the transport once a device answers."
+    : "This build has no device transport; the mock is the only option";
+}
+
+/* Say plainly what this window can talk to, before anything is connected. The
+ * label used to read "Connect mock device" unconditionally, so a native window
+ * talking to real hardware still claimed to be a simulation. */
+async function initEnvironment(): Promise<void> {
+  available = await availableTransports();
+
+  const select = $("transport") as HTMLSelectElement;
+  select.textContent = "";
+  /* The mock is offered only when there is no real transport. On a desktop
+   * build it would be an option sitting one mis-click away from the hardware
+   * one, and a fake device the user believes is real is worse than no device
+   * at all. */
+  const kinds: LinkKind[] = available.length > 0 ? [...available] : ["mock"];
+  for (const kind of kinds) {
+    const opt = document.createElement("option");
+    opt.value = kind;
+    opt.textContent = LINK_NAMES[kind];
+    select.appendChild(opt);
+  }
+  /* USB first: it is the link the device ships selected, and the one a user
+   * with a cable in hand is most likely to want. */
+  select.value = kinds[0] as string;
+  select.disabled = kinds.length < 2;
 
   ($("connect") as HTMLButtonElement).textContent =
-    tauri ? "Connect device" : "Connect mock device";
+    available.length > 0 ? "Connect device" : "Connect mock device";
 
-  $("devicehint").textContent = tauri
-    ? "Native shell: this will talk to a LeekWallet over USB. Confirm the passkey on the device when asked."
+  $("devicehint").textContent = available.length > 0
+    ? "Pick the link the device is set to, then Connect. The device serves only one at a time — if it is set to USB it will not appear over Bluetooth, and the reverse. Confirm the passkey on the device when asked."
     /* Reaches a browser tab and an Android window alike, so it cannot name a
      * cause it does not know. What matters is the same either way: nothing
      * here is signed by a device. */
     : "No device transport available, so this uses the built-in mock. It speaks the same protocol as the firmware and the interface behaves identically — but nothing is signed by real hardware, and no address shown here is one you should send funds to.";
+
+  setMode(null);
+  ($("connect") as HTMLButtonElement).disabled = false;
 }
 
-describeEnvironment();
+/* Held shut until the backend has answered. Clicking through an unpopulated
+ * selector would read as "mock" and quietly connect to a simulation on a
+ * machine that has a device attached. */
+($("connect") as HTMLButtonElement).disabled = true;
+void initEnvironment();
 initChainSelector();
 
 $("connect").addEventListener("click", () => void connect());

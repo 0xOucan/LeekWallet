@@ -13,12 +13,19 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Desktop speaks USB CDC. Android will speak BLE (T22c/T30), but no BLE
-# dependency is carried until there is hardware to verify it against: a
-# transport nobody has ever run is a liability, not a head start. Until then the
-# Android build ships with no transport and the UI falls back to the mock.
+# Desktop speaks both USB CDC and BLE; the device serves one at a time
+# (PROTOCOL.md 3b), so which one is live is a runtime question, not a build-time
+# one.
+#
+# Android is excluded from both. Serial because there are no ports to
+# enumerate. BLE because btleplug's Android backend needs a JVM-side driver
+# class in the generated Gradle project, which this repo does not track — see
+# the note in lib.rs. Android therefore still ships with no transport and the
+# UI falls back to the mock, honestly labelled.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 leek-transport-serial = { path = "../transport-serial" }
+leek-transport-ble = { path = "../transport-ble" }
+tokio = { version = "1", features = ["sync"] }
 
 # Tauri builds Android as a shared library loaded by the JVM, not an executable
 # with a main(). Without this the linker produces something the APK cannot load.

@@ -85,6 +85,18 @@ impl From<WireError> for BleError {
     }
 }
 
+/// One advertising peer, as far as a chooser needs to know it.
+///
+/// `id` is the platform's own handle (a MAC on BlueZ/Android, a UUID on
+/// CoreBluetooth) and is what `connect_id` matches on. `name` is decoration
+/// only — it is host-supplied, user-settable under T56, and must never be the
+/// thing an identity decision rests on.
+#[derive(Debug, Clone)]
+pub struct BleDevice {
+    pub id: String,
+    pub name: Option<String>,
+}
+
 pub struct BleTransport {
     peripheral: Peripheral,
     write_char: Characteristic,
@@ -104,31 +116,50 @@ impl BleTransport {
     /// decoration (T56 makes it user-settable), while the service UUID is what
     /// actually identifies the protocol.
     pub async fn connect(scan_time: Duration) -> Result<Self, BleError> {
-        let manager = Manager::new().await?;
-        let adapters = manager.adapters().await?;
-        let adapter: Adapter = adapters.into_iter().next().ok_or(BleError::NoAdapter)?;
+        let found = sweep(scan_time, None).await?;
+        let peripheral = found
+            .into_iter()
+            .next()
+            .ok_or(BleError::NotFound { scanned_for: scan_time })?;
+        Self::attach(peripheral).await
+    }
 
+    /// Connect to one specific peer by the id `scan` reported.
+    ///
+    /// Separate from `connect` because a chooser that lists devices and then
+    /// connects to "the first match" would connect to a different device than
+    /// the one the user picked whenever two are in range. Rare with a single
+    /// wallet on the desk, and exactly the kind of rare that signs the wrong
+    /// transaction.
+    pub async fn connect_id(id: &str, scan_time: Duration) -> Result<Self, BleError> {
+        let found = sweep(scan_time, Some(id)).await?;
+        let peripheral = found
+            .into_iter()
+            .next()
+            .ok_or(BleError::NotFound { scanned_for: scan_time })?;
+        Self::attach(peripheral).await
+    }
+
+    /// List everything advertising the service, without connecting to any of it.
+    ///
+    /// Always waits out the full window, unlike `connect`: a chooser that
+    /// stopped at the first hit would hide the second device rather than let
+    /// the user pick between them.
+    pub async fn scan(scan_time: Duration) -> Result<Vec<BleDevice>, BleError> {
+        let adapter = adapter().await?;
         adapter
             .start_scan(ScanFilter { services: vec![SERVICE_UUID] })
             .await?;
-
-        // Poll rather than wait out the full window: a device that is already
-        // advertising is usually found in well under a second, and making the
-        // common case take `scan_time` would be gratuitous.
-        let deadline = tokio::time::Instant::now() + scan_time;
-        let peripheral = loop {
-            if let Some(p) = first_match(&adapter).await? {
-                break Some(p);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                break None;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        };
+        tokio::time::sleep(scan_time).await;
+        let peripherals = matches(&adapter).await;
         let _ = adapter.stop_scan().await;
 
-        let peripheral = peripheral.ok_or(BleError::NotFound { scanned_for: scan_time })?;
-        Self::attach(peripheral).await
+        let mut out = Vec::new();
+        for p in peripherals? {
+            let name = p.properties().await?.and_then(|props| props.local_name);
+            out.push(BleDevice { id: p.id().to_string(), name });
+        }
+        Ok(out)
     }
 
     async fn attach(peripheral: Peripheral) -> Result<Self, BleError> {
@@ -228,20 +259,60 @@ impl BleTransport {
         }
     }
 
-    pub async fn disconnect(&self) -> Result<(), BleError> {
+    /// Takes `&mut self` despite not mutating anything: the notification
+    /// stream is `Send` but not `Sync`, so a future holding `&BleTransport`
+    /// across an await is not `Send` and cannot be a Tauri async command.
+    /// A unique borrow needs only `Send`.
+    pub async fn disconnect(&mut self) -> Result<(), BleError> {
         self.peripheral.disconnect().await?;
         Ok(())
     }
 }
 
-async fn first_match(adapter: &Adapter) -> Result<Option<Peripheral>, BleError> {
+async fn adapter() -> Result<Adapter, BleError> {
+    let manager = Manager::new().await?;
+    let adapters = manager.adapters().await?;
+    adapters.into_iter().next().ok_or(BleError::NoAdapter)
+}
+
+/// Scan until something matches or the window closes.
+///
+/// Polls rather than waiting out the full window: a device that is already
+/// advertising is usually found in well under a second, and making the common
+/// case take `scan_time` would be gratuitous.
+async fn sweep(scan_time: Duration, want: Option<&str>) -> Result<Vec<Peripheral>, BleError> {
+    let adapter = adapter().await?;
+    adapter
+        .start_scan(ScanFilter { services: vec![SERVICE_UUID] })
+        .await?;
+
+    let deadline = tokio::time::Instant::now() + scan_time;
+    let found = loop {
+        let mut hits = matches(&adapter).await?;
+        if let Some(id) = want {
+            hits.retain(|p| p.id().to_string() == id);
+        }
+        if !hits.is_empty() {
+            break hits;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break Vec::new();
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let _ = adapter.stop_scan().await;
+    Ok(found)
+}
+
+async fn matches(adapter: &Adapter) -> Result<Vec<Peripheral>, BleError> {
+    let mut out = Vec::new();
     for p in adapter.peripherals().await? {
         let Some(props) = p.properties().await? else {
             continue;
         };
         if props.services.contains(&SERVICE_UUID) {
-            return Ok(Some(p));
+            out.push(p);
         }
     }
-    Ok(None)
+    Ok(out)
 }

@@ -16,7 +16,7 @@ pub mod transport;
 
 #[cfg(feature = "ble")]
 pub use transport::{
-    BleError, BleTransport, CHAR_NOTIFY_UUID, CHAR_WRITE_UUID, SERVICE_UUID,
+    BleDevice, BleError, BleTransport, CHAR_NOTIFY_UUID, CHAR_WRITE_UUID, SERVICE_UUID,
 };
 pub use wire::{
     chunk_for_ble, encode_frame, ChunkReassembler, FrameDecoder, WireError, BLE_USES_SYNC,
