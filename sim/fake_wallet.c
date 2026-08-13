@@ -203,6 +203,33 @@ void fake_wallet_fail_derivation(bool fail)
     fail_derivation = fail;
 }
 
+/* Not a signature. It is a receipt: r and s carry the digest and the path
+ * index, so a protocol test can prove the bytes that were signed are the ones
+ * the device rendered, without linking secp256k1 in to prove it. v uses the
+ * legacy 27+parity convention because that is what the real wallet returns,
+ * and the endpoint's job of converting it to yParity is exactly the bug worth
+ * guarding (protocol.c). */
+WalletError wallet_sign_hash_at_path(const HDPath *path, const uint8_t hash[32],
+                                     EthSignature *signature_out)
+{
+    if (!path || !hash || !signature_out) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
+    if (fail_derivation) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
+    if (!w.unlocked || w.active == 0) {
+        return WALLET_ERROR_LOCKED;
+    }
+
+    memcpy(signature_out->r, hash, 32);
+    memset(signature_out->s, 0, 32);
+    signature_out->s[0] = w.active;
+    signature_out->s[1] = (uint8_t)(path->address_index & 0xFF);
+    signature_out->v = 27 + (hash[31] & 1);
+    return WALLET_OK;
+}
+
 WalletError wallet_get_address_at_path(const HDPath *path, EthAddress *address_out)
 {
     if (!path || !address_out) {
