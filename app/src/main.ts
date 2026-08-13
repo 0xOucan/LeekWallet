@@ -418,6 +418,12 @@ async function findDevice(kind: LinkKind): Promise<Transport | null> {
       return null;
     }
     log(`found ${port.name} — ${port.description}`);
+    /* A port existing does not mean the device is listening on it. With Link
+     * set to Bluetooth the firmware drains this port and parses nothing
+     * (PROTOCOL.md 3b), so the cable enumerates exactly as it always does and
+     * every request goes unanswered. There is no way to ask the device which
+     * link it is on over the link it has switched off, so the silence is the
+     * signal - see the handshake timeout below. */
     return new TauriSerialTransport(port.name);
   }
 
@@ -482,9 +488,33 @@ async function connect(): Promise<void> {
   }
 
   if (kind !== "mock") {
+    /* Nothing stale may survive into a new attempt. A passkey left on screen
+     * from a previous session is worse than none: the whole point is that the
+     * user compares it against the device, and a number the device is not
+     * showing invites them to conclude the comparison failed for some other
+     * reason - or, worse, to stop checking. */
+    $("passkey").textContent = "";
+    $("pairing").hidden = true;
+
     /* Real firmware: derive the passkey from the exchange and wait for the
      * user to compare it against the OLED. */
-    const passkey = await client.handshake();
+    let passkey: string;
+    try {
+      passkey = await client.handshake();
+    } catch (e) {
+      /* On USB this is nearly always a device whose Link is set to Bluetooth:
+       * the port opened, the bytes went out, and nothing was listening. */
+      setConnection("error", "Device did not answer");
+      if (kind === "usb") {
+        log("the port opened but the device never answered.");
+        log("if the device's Link setting is Bluetooth, USB is silent by design —");
+        log("check Settings → Link on the device, or switch this app to Bluetooth.");
+      } else {
+        log(`handshake failed: ${String((e as Error).message ?? e)}`);
+      }
+      await transport.close().catch(() => {});
+      return;
+    }
     $("passkey").textContent = `${passkey.slice(0, 3)} ${passkey.slice(3)}`;
     $("pairing").hidden = false;
     log(`handshake done — compare ${passkey} with the device screen`);
