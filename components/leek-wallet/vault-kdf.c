@@ -74,6 +74,8 @@ void vault_derive_key(VaultKdfVersion version,
                       const uint8_t salt[VAULT_SALT_SIZE],
                       uint8_t key_out[VAULT_KEY_SIZE])
 {
+    /* v2 and v3 share this derivation - they differ only in how the mnemonic
+     * is encrypted afterwards. */
     if (version == VAULT_KDF_V1_LEGACY) {
         /* Legacy: double SHA256, unsalted. Reproduced bit-for-bit so existing
          * vaults can be opened once and migrated - never for new data. */

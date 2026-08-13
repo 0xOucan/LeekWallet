@@ -32,10 +32,25 @@
 #define VAULT_HASH_SIZE  32
 
 /** Storage format version, persisted so old vaults can be migrated. */
+/**
+ * Vault format version.
+ *
+ * Covers both key derivation and storage encryption, because a stored blob is
+ * only interpretable if you know both. v2 and v3 share the same derivation and
+ * differ only in how the mnemonic is encrypted, so migrating between them
+ * re-encrypts without re-keying.
+ */
 typedef enum {
-    VAULT_KDF_V1_LEGACY = 1,   /* SHA256^2 / SHA256^3, unsalted */
-    VAULT_KDF_V2        = 2,   /* PBKDF2-HMAC-SHA512, salted, domain separated */
+    VAULT_KDF_V1_LEGACY = 1,   /* SHA256^2 / SHA256^3 unsalted, AES-CBC        */
+    VAULT_KDF_V2        = 2,   /* PBKDF2-HMAC-SHA512 salted, AES-CBC           */
+    VAULT_KDF_V3        = 3,   /* PBKDF2-HMAC-SHA512 salted, AES-GCM           */
 } VaultKdfVersion;
+
+/** The version new vaults are created at. */
+#define VAULT_KDF_CURRENT VAULT_KDF_V3
+
+/** True if `v` stores mnemonics with authenticated encryption. */
+#define VAULT_USES_GCM(v) ((v) >= VAULT_KDF_V3)
 
 /**
  * Iteration count for v2.

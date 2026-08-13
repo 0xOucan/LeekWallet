@@ -20,6 +20,7 @@
 #include "sha3.h"
 #include "memzero.h"
 #include "vault-kdf.h"
+#include "vault-crypt.h"
 #include "rand.h"
 #include "ecdsa.h"
 #include "bignum.h"
@@ -148,13 +149,14 @@ static void load_vault_params(void) {
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
         uint8_t ver = 0;
-        if (nvs_get_u8(nvs, KEY_KDF_VERSION, &ver) == ESP_OK && ver == VAULT_KDF_V2) {
+        if (nvs_get_u8(nvs, KEY_KDF_VERSION, &ver) == ESP_OK &&
+            (ver == VAULT_KDF_V2 || ver == VAULT_KDF_V3)) {
             size_t salt_len = VAULT_SALT_SIZE;
             if (nvs_get_blob(nvs, KEY_KDF_SALT, vault_salt, &salt_len) == ESP_OK &&
                 salt_len == VAULT_SALT_SIZE) {
-                vault_version = VAULT_KDF_V2;
+                vault_version = (VaultKdfVersion)ver;
             } else {
-                ESP_LOGE(TAG, "kdf_ver=2 but salt is missing or malformed");
+                ESP_LOGE(TAG, "kdf_ver=%d but salt is missing or malformed", (int)ver);
             }
         }
         nvs_close(nvs);
@@ -167,7 +169,7 @@ static void load_vault_params(void) {
 // Generate and persist a fresh salt, switching the vault to v2.
 // Fails rather than proceeding if entropy is unavailable - a predictable salt
 // would silently undo the point of having one.
-static WalletError init_vault_params_v2(void) {
+static WalletError init_vault_params_v3(void) {
     uint8_t salt[VAULT_SALT_SIZE];
     random_buffer(salt, sizeof(salt));
 
@@ -179,7 +181,7 @@ static WalletError init_vault_params_v2(void) {
 
     esp_err_t err = nvs_set_blob(nvs, KEY_KDF_SALT, salt, VAULT_SALT_SIZE);
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, KEY_KDF_VERSION, VAULT_KDF_V2);
+        err = nvs_set_u8(nvs, KEY_KDF_VERSION, VAULT_KDF_CURRENT);
     }
     if (err == ESP_OK) {
         nvs_commit(nvs);
@@ -192,11 +194,11 @@ static WalletError init_vault_params_v2(void) {
     }
 
     memcpy(vault_salt, salt, VAULT_SALT_SIZE);
-    vault_version = VAULT_KDF_V2;
+    vault_version = VAULT_KDF_CURRENT;
     vault_params_loaded = true;
     memzero(salt, sizeof(salt));
 
-    ESP_LOGI(TAG, "Vault initialized at KDF v2");
+    ESP_LOGI(TAG, "Vault initialized at v%d", (int)VAULT_KDF_CURRENT);
     return WALLET_OK;
 }
 
@@ -280,6 +282,47 @@ static WalletError save_encrypted_mnemonic_at_index(uint8_t index) {
     }
 
     size_t mnemonic_len = strlen(state.mnemonic);
+
+    char mnemonic_key_v3[16], iv_key_v3[16];
+    get_mnemonic_key(index, mnemonic_key_v3, sizeof(mnemonic_key_v3));
+    get_iv_key(index, iv_key_v3, sizeof(iv_key_v3));
+
+    if (VAULT_USES_GCM(vault_version)) {
+        /* One self-contained blob: nonce, ciphertext, tag. The separate iv_N
+         * key that CBC needed is deleted, so a stale IV cannot be paired with
+         * a v3 blob by a half-finished migration. */
+        size_t blob_cap = mnemonic_len + 1 + VAULT_CRYPT_OVERHEAD;
+        uint8_t *blob = calloc(blob_cap, 1);
+        if (!blob) {
+            nvs_close(nvs);
+            return WALLET_ERROR_STORAGE_FAILED;
+        }
+
+        size_t blob_len = vault_encrypt((const uint8_t *)state.mnemonic,
+                                        mnemonic_len + 1,
+                                        state.encryption_key, blob, blob_cap);
+        if (blob_len == 0) {
+            memzero(blob, blob_cap);
+            free(blob);
+            nvs_close(nvs);
+            return WALLET_ERROR_STORAGE_FAILED;
+        }
+
+        err = nvs_set_blob(nvs, mnemonic_key_v3, blob, blob_len);
+        memzero(blob, blob_cap);
+        free(blob);
+
+        if (err != ESP_OK) {
+            nvs_close(nvs);
+            return WALLET_ERROR_STORAGE_FAILED;
+        }
+
+        nvs_erase_key(nvs, iv_key_v3);   /* absent is fine; unused under GCM */
+        nvs_commit(nvs);
+        nvs_close(nvs);
+        return WALLET_OK;
+    }
+
     size_t padded_len = ((mnemonic_len + 15) / 16) * 16;
     uint8_t *ciphertext = calloc(padded_len, 1);
     uint8_t iv[AES_IV_SIZE];
@@ -341,6 +384,51 @@ static WalletError load_encrypted_mnemonic_at_index(uint8_t index) {
     if (err != ESP_OK || cipher_len == 0) {
         nvs_close(nvs);
         return WALLET_ERROR_NO_MNEMONIC;
+    }
+
+    if (VAULT_USES_GCM(vault_version)) {
+        /* v3: one blob carrying its own nonce and tag. A wrong key, a
+         * corrupted blob and a tampered one are indistinguishable here, and
+         * deliberately so - all three mean the same thing to the caller. */
+        uint8_t *blob = calloc(cipher_len, 1);
+        if (!blob) {
+            nvs_close(nvs);
+            return WALLET_ERROR_STORAGE_FAILED;
+        }
+
+        err = nvs_get_blob(nvs, mnemonic_key, blob, &cipher_len);
+        nvs_close(nvs);
+
+        if (err != ESP_OK) {
+            memzero(blob, cipher_len);
+            free(blob);
+            return WALLET_ERROR_NO_MNEMONIC;
+        }
+
+        uint8_t plain[MAX_MNEMONIC_LENGTH] = {0};
+        size_t plain_len = vault_decrypt(blob, cipher_len, state.encryption_key,
+                                         plain, sizeof(plain));
+        memzero(blob, cipher_len);
+        free(blob);
+
+        if (plain_len == 0) {
+            memzero(plain, sizeof(plain));
+            return WALLET_ERROR_WRONG_PASSWORD;
+        }
+
+        plain[sizeof(plain) - 1] = '\0';
+        strncpy(state.mnemonic, (const char *)plain, MAX_MNEMONIC_LENGTH - 1);
+        state.mnemonic[MAX_MNEMONIC_LENGTH - 1] = '\0';
+        memzero(plain, sizeof(plain));
+
+        if (!mnemonic_check(state.mnemonic)) {
+            memzero(state.mnemonic, sizeof(state.mnemonic));
+            return WALLET_ERROR_INVALID_MNEMONIC;
+        }
+
+        state.has_mnemonic = true;
+        invalidate_seed_cache();
+        return WALLET_OK;
     }
 
     uint8_t *ciphertext = calloc(cipher_len, 1);
@@ -532,9 +620,22 @@ static WalletError load_mnemonic_with_alt(uint8_t index, const uint8_t *alt_key)
     return err;
 }
 
-static WalletError migrate_vault_to_v2(const char *password, size_t length) {
-    ESP_LOGW(TAG, "Migrating vault from KDF v1 to v2 (%d wallets)",
-             state.wallet_count);
+/**
+ * Bring an older vault up to the current format.
+ *
+ * Two cases, and they differ in cost. v1 needs a new salt and new keys, so
+ * every mnemonic is re-derived and re-encrypted. v2 already uses the current
+ * derivation and differs only in storage, so the key is unchanged and the
+ * blobs are simply rewritten under GCM.
+ *
+ * Both share the same ordering, which is what makes them crash-safe: prove
+ * everything is readable, rewrite it, and flip the version marker last. Losing
+ * power leaves the vault on its old version and the next unlock tries again.
+ */
+static WalletError migrate_vault_to_current(const char *password, size_t length) {
+    VaultKdfVersion from = vault_version;
+    ESP_LOGW(TAG, "Migrating vault from v%d to v%d (%d wallets)",
+             (int)from, (int)VAULT_KDF_CURRENT, state.wallet_count);
 
     uint8_t old_key[32], new_key[32];
     memcpy(old_key, state.encryption_key, sizeof(old_key));
@@ -576,7 +677,7 @@ static WalletError migrate_vault_to_v2(const char *password, size_t length) {
     }
 
     // Establish v2 parameters and derive the new key.
-    WalletError err = init_vault_params_v2();
+    WalletError err = init_vault_params_v3();
     if (err != WALLET_OK) {
         memzero(old_key, sizeof(old_key));
         memzero(resume_key, sizeof(resume_key));
@@ -589,8 +690,15 @@ static WalletError migrate_vault_to_v2(const char *password, size_t length) {
     // this off the RAM budget - buffering 30 mnemonics would cost ~7.7 KB and
     // park every seed in .bss for the duration.
     for (uint8_t i = 1; i <= state.wallet_count && i <= MAX_WALLETS; i++) {
+        /* Read under the old format, write under the new one. vault_version
+         * selects the format on both sides, so it is moved around each pair. */
+        VaultKdfVersion target = vault_version;
+        vault_version = from;
         memcpy(state.encryption_key, old_key, sizeof(old_key));
-        if (load_mnemonic_with_alt(i, new_key) != WALLET_OK) {
+        WalletError rerr = load_mnemonic_with_alt(i, new_key);
+        vault_version = target;
+
+        if (rerr != WALLET_OK) {
             memzero(old_key, sizeof(old_key));
             memzero(new_key, sizeof(new_key));
             memzero(resume_key, sizeof(resume_key));
@@ -640,7 +748,14 @@ static WalletError migrate_vault_to_v2(const char *password, size_t length) {
         load_encrypted_mnemonic_at_index(state.active_wallet_index);
     }
 
-    ESP_LOGW(TAG, "Vault migrated to KDF v2");
+    nvs_handle_t vnvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &vnvs) == ESP_OK) {
+        nvs_set_u8(vnvs, KEY_KDF_VERSION, VAULT_KDF_CURRENT);
+        nvs_commit(vnvs);
+        nvs_close(vnvs);
+    }
+
+    ESP_LOGW(TAG, "Vault migrated to v%d", (int)VAULT_KDF_CURRENT);
     return WALLET_OK;
 }
 
@@ -712,7 +827,7 @@ WalletError wallet_set_password(const char *password, size_t length) {
     // anything, so the very first key is salted.
     load_vault_params();
     if (vault_version != VAULT_KDF_V2) {
-        WalletError verr = init_vault_params_v2();
+        WalletError verr = init_vault_params_v3();
         if (verr != WALLET_OK) {
             return verr;
         }
@@ -787,15 +902,16 @@ WalletError wallet_unlock(const char *password, size_t length) {
     // Load wallet metadata
     load_wallet_metadata();
 
-    // A legacy vault just proved the password, which is the only moment we can
-    // re-encrypt it. Do so now.
-    if (vault_version == VAULT_KDF_V1_LEGACY) {
-        WalletError merr = migrate_vault_to_v2(password, length);
+    /* An older vault just proved its password, which is the only moment it can
+     * be re-encrypted. Do so now. */
+    if (vault_version != VAULT_KDF_CURRENT) {
+        WalletError merr = migrate_vault_to_current(password, length);
         if (merr != WALLET_OK) {
-            // Migration failed but the vault is still readable under v1, so
-            // stay unlocked and retry on the next unlock rather than locking
-            // the user out of their own funds.
-            ESP_LOGE(TAG, "Vault migration failed (%d); staying on v1", merr);
+            /* Migration failed but the vault is still readable in its old
+             * format, so stay unlocked and retry on the next unlock rather
+             * than locking the user out of their own funds. */
+            ESP_LOGE(TAG, "Vault migration failed (%d); staying on v%d",
+                     merr, (int)vault_version);
         }
     }
 

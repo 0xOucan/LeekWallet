@@ -38,7 +38,7 @@ $(BUILD)/test_text_entry: test_text_entry.c ../src/text-entry.c $(CRYPTO)/memzer
 # AES_VAR selects the variable-key-length entry point that gcm_init_and_key
 # calls; without it aes_encrypt_key is compiled out and the link fails.
 $(BUILD)/test_vault_crypt: CFLAGS += -DAES_VAR
-$(BUILD)/test_vault_crypt: test_vault_crypt.c host_stubs.c ../src/vault-crypt.c \
+$(BUILD)/test_vault_crypt: test_vault_crypt.c host_stubs.c ../components/leek-wallet/vault-crypt.c \
                            $(CRYPTO)/aes/aesgcm.c $(CRYPTO)/aes/aescrypt.c \
                            $(CRYPTO)/aes/aeskey.c $(CRYPTO)/aes/aestab.c \
                            $(CRYPTO)/aes/gf128mul.c $(CRYPTO)/memzero.c \
