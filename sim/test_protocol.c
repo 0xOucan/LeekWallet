@@ -133,6 +133,19 @@ void ui_request_passphrase_confirm(const char *address)
 }
 
 SignOutcome ui_sign_outcome(void) { return scripted_outcome; }
+
+/* What the device told the screen about the signature it produced. -1 means
+ * it said nothing, which is the bug this records: an approval that silently
+ * drops back to the address list is indistinguishable from a press that never
+ * registered. Reported on hardware over BLE. */
+static int sign_reports;
+static int last_sign_report = -1;
+
+void ui_sign_report(bool ok)
+{
+    sign_reports++;
+    last_sign_report = ok ? 1 : 0;
+}
 void ui_sign_clear(void) { }
 
 /* ------------------------------------------------------------ host side */
@@ -391,6 +404,8 @@ static void fresh_device(void)
     host_tx = host_rx = 0;
     session_up = false;
     confirm_requests = unlock_prompts = lock_requests = session_confirm_prompts = 0;
+    sign_reports = 0;
+    last_sign_report = -1;
     message_prompts = passphrase_prompts = 0;
     memset(shown_message, 0, sizeof(shown_message));
     shown_message_len = 0;
@@ -765,6 +780,12 @@ static void test_signing_signs_what_it_showed(void)
               it.value);
         CHECK(cbor_map_find(body, body_len, "index", &it) && it.type == CBOR_UINT &&
               it.value == 3, "the reply names a different index than was signed");
+
+        /* And the user is told. Dropping straight back to the address list
+         * after an approval reads as a press that never registered - observed
+         * on hardware, over BLE, where there is no cable to check against. */
+        CHECK(sign_reports == 1, "the screen was told %d times, expected once", sign_reports);
+        CHECK(last_sign_report == 1, "the screen was not told the signature succeeded");
     }
 }
 

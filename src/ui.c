@@ -126,6 +126,10 @@ static void screen_passphrase_confirm_enter(void);
 static void screen_passphrase_confirm_render(void);
 static void screen_passphrase_confirm_on_button(button_id_t btn);
 
+static void screen_sign_result_enter(void);
+static void screen_sign_result_render(void);
+static void screen_sign_result_on_button(button_id_t btn);
+
 static void screen_sign_confirm_enter(void);
 static void screen_sign_confirm_render(void);
 static void screen_sign_confirm_on_button(button_id_t btn);
@@ -138,6 +142,13 @@ static void forget_pin_entry(screen_id_t next);
 static void screen_qr_code_enter(void);
 static void screen_qr_code_render(void);
 static void screen_qr_code_on_button(button_id_t btn);
+
+static const screen_t screen_sign_result = {
+    .enter = screen_sign_result_enter,
+    .render = screen_sign_result_render,
+    .on_button = screen_sign_result_on_button,
+    .exit = NULL
+};
 
 /* Built-in screen definitions */
 static const screen_t screen_boot = {
@@ -3157,6 +3168,56 @@ SignOutcome ui_sign_outcome(void)
     return sign_outcome;
 }
 
+/* What to say, and until when. Reported by the protocol task; the UI task
+ * dismisses it so a user who walks away is not left on a stale screen. */
+static volatile bool  sign_result_ok = false;
+static volatile bool  sign_result_ready = false;
+static int64_t        sign_result_until_us = 0;
+
+#define SIGN_RESULT_HOLD_US 2000000   /* long enough to read, short enough not to nag */
+
+void ui_sign_report(bool ok)
+{
+    sign_result_ok = ok;
+    sign_result_ready = true;
+    sign_result_until_us = esp_timer_get_time() + SIGN_RESULT_HOLD_US;
+}
+
+static void screen_sign_result_enter(void)
+{
+    ESP_LOGI(TAG, "Sign result screen");
+}
+
+static void screen_sign_result_render(void)
+{
+    oled_clear();
+
+    if (!sign_result_ready) {
+        /* Approved, and the signature is being computed - about 30 ms, but
+         * saying so beats a frozen-looking screen if it ever is not. */
+        oled_draw_string_centered(2, "Approved");
+        oled_draw_string_centered(4, "Signing...");
+        return;
+    }
+
+    if (sign_result_ok) {
+        oled_draw_string_centered(2, "Signed");
+        /* Deliberately not "Sent". Broadcasting happens on the host and the
+         * device has no way to know whether it worked. */
+        oled_draw_string_centered(4, "Handed to host");
+    } else {
+        oled_draw_string_centered(2, "NOT signed");
+        oled_draw_string_centered(4, "Nothing was sent");
+    }
+    oled_draw_string(7, 0, "any key");
+}
+
+static void screen_sign_result_on_button(button_id_t btn)
+{
+    (void)btn;
+    ui_set_screen(SCREEN_WALLET_INFO);
+}
+
 void ui_sign_clear(void)
 {
     sign_outcome = SIGN_PENDING;
@@ -3389,8 +3450,9 @@ static void screen_sign_confirm_on_button(button_id_t btn)
                 break;
             }
             ESP_LOGW(TAG, "Transaction approved by user");
+            sign_result_ready = false;
             sign_outcome = SIGN_APPROVED;
-            ui_set_screen(SCREEN_WALLET_INFO);
+            ui_set_screen(SCREEN_SIGN_RESULT);
             return;
 
         default:
@@ -3499,6 +3561,7 @@ void ui_init(void)
     screens[SCREEN_PASSPHRASE] = &screen_passphrase;
     screens[SCREEN_PASSPHRASE_CONFIRM] = &screen_passphrase_confirm;
     screens[SCREEN_SIGN_CONFIRM] = &screen_sign_confirm;
+    screens[SCREEN_SIGN_RESULT] = &screen_sign_result;
     screens[SCREEN_HOST_PASSPHRASE_CONFIRM] = &screen_host_passphrase;
 
     current_screen = SCREEN_BOOT;
@@ -3617,6 +3680,13 @@ void ui_task(void *pvParameters)
                         : here;
                 ui_set_screen(SCREEN_SESSION_CONFIRM);
             }
+        }
+
+        /* Dismiss the result once it has been up long enough. Doing it here
+         * rather than blocking in the screen keeps buttons live throughout. */
+        if (ui_get_screen() == SCREEN_SIGN_RESULT && sign_result_ready &&
+            esp_timer_get_time() > sign_result_until_us) {
+            ui_set_screen(SCREEN_WALLET_INFO);
         }
 
         if (sign_request_pending) {

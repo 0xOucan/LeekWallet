@@ -548,9 +548,11 @@ static void dispatch(const uint8_t *payload, size_t len)
 
         EthSignature sig;
         if (wallet_sign_hash_at_path(&sign_path, digest, &sig) != WALLET_OK) {
+            ui_sign_report(false);
             send_error(ERR_NO_WALLET, "signing failed");
             return;
         }
+        ui_sign_report(true);
 
         cbor_write_map(&w, 1);
         cbor_write_text(&w, "result");
@@ -654,9 +656,11 @@ static void dispatch(const uint8_t *payload, size_t len)
 
         EthSignature msg_sig;
         if (wallet_sign_hash_at_path(&msg_path, msg_digest, &msg_sig) != WALLET_OK) {
+            ui_sign_report(false);
             send_error(ERR_NO_WALLET, "signing failed");
             return;
         }
+        ui_sign_report(true);
 
         /* Same shape as signTransaction. One reply format for one kind of
          * answer; a client that parses one parses the other. */

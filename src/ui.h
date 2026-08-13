@@ -35,6 +35,7 @@ typedef enum {
     SCREEN_PASSPHRASE_CONFIRM,
     SCREEN_SIGN_CONFIRM,
     SCREEN_HOST_PASSPHRASE_CONFIRM,
+    SCREEN_SIGN_RESULT,
     SCREEN_COUNT
 } screen_id_t;
 
@@ -182,6 +183,19 @@ typedef enum {
     SIGN_APPROVED,
     SIGN_REJECTED,
 } SignOutcome;
+
+/**
+ * Tell the user what became of the thing they approved.
+ *
+ * Called by the task that actually produced the signature, not at the moment
+ * of approval - the device should not claim to have signed something before it
+ * has. Without this the screen dropped straight back to the address list and
+ * an approval looked identical to a press that never registered.
+ *
+ * The device cannot know whether the transaction was broadcast; that happens on
+ * the host. It knows only that it signed, and says only that.
+ */
+void ui_sign_report(bool ok);
 
 SignOutcome ui_sign_outcome(void);
 void ui_sign_clear(void);
