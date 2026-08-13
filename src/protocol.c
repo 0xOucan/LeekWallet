@@ -310,8 +310,7 @@ static void dispatch(const uint8_t *payload, size_t len)
         path.address_index = index;
         EthAddress addr;
 
-        if (wallet_select_path(&path) != WALLET_OK ||
-            wallet_get_eth_address(&addr) != WALLET_OK) {
+        if (wallet_get_address_at_path(&path, &addr) != WALLET_OK) {
             send_error(ERR_NO_WALLET, "derivation failed");
             return;
         }
@@ -429,15 +428,14 @@ static void dispatch(const uint8_t *payload, size_t len)
             return;
         }
 
+        /* Select and sign atomically. Doing these as two calls let the UI
+         * task re-derive in between and the device signed with a key nobody
+         * asked for. */
         HDPath sign_path = HDPATH_ETH_DEFAULT;
         sign_path.address_index = sign_index;
-        if (wallet_select_path(&sign_path) != WALLET_OK) {
-            send_error(ERR_NO_WALLET, "derivation failed");
-            return;
-        }
 
         EthSignature sig;
-        if (wallet_sign_hash(digest, &sig) != WALLET_OK) {
+        if (wallet_sign_hash_at_path(&sign_path, digest, &sig) != WALLET_OK) {
             send_error(ERR_NO_WALLET, "signing failed");
             return;
         }

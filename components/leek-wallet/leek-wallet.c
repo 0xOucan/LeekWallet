@@ -25,6 +25,8 @@
 #include "ecdsa.h"
 #include "bignum.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
@@ -757,6 +759,79 @@ static WalletError migrate_vault_to_current(const char *password, size_t length)
 
     ESP_LOGW(TAG, "Vault migrated to v%d", (int)VAULT_KDF_CURRENT);
     return WALLET_OK;
+}
+
+/* ========== Derivation lock ==========
+ *
+ * wallet_select_path() and wallet_sign_hash() communicate through state.node,
+ * and two tasks reach them: the UI at priority 5 and the protocol endpoint at
+ * 4. The UI therefore preempts. Selecting a path and then signing as separate
+ * calls is not atomic, and the UI switching screens in between re-derives to
+ * its own address index - so the device signs with a key nobody asked for.
+ *
+ * That is not hypothetical: it produced a real signature over a real
+ * transaction from the wrong account, which the network rejected for having no
+ * funds. The failure was safe only by accident.
+ */
+static SemaphoreHandle_t derive_lock = NULL;
+
+static void derive_lock_init(void) {
+    if (!derive_lock) {
+        derive_lock = xSemaphoreCreateRecursiveMutex();
+    }
+}
+
+static bool derive_lock_take(void) {
+    derive_lock_init();
+    return derive_lock && xSemaphoreTakeRecursive(derive_lock, pdMS_TO_TICKS(5000)) == pdTRUE;
+}
+
+static void derive_lock_give(void) {
+    if (derive_lock) {
+        xSemaphoreGiveRecursive(derive_lock);
+    }
+}
+
+/**
+ * Select a path and sign in one indivisible step.
+ *
+ * The only safe way to sign: nothing can re-derive between choosing the key
+ * and using it.
+ */
+WalletError wallet_sign_hash_at_path(const HDPath *path, const uint8_t hash[32],
+                                     EthSignature *signature_out) {
+    if (!derive_lock_take()) {
+        return WALLET_ERROR_STORAGE_FAILED;
+    }
+
+    WalletError err = wallet_select_path(path);
+    if (err == WALLET_OK) {
+        err = wallet_sign_hash(hash, signature_out);
+    }
+
+    derive_lock_give();
+    return err;
+}
+
+/**
+ * Derive an address at a path, atomically.
+ *
+ * Same reasoning: reading back an address that another task re-derived under
+ * you is how the app and the device came to disagree about which address index
+ * zero was.
+ */
+WalletError wallet_get_address_at_path(const HDPath *path, EthAddress *address_out) {
+    if (!derive_lock_take()) {
+        return WALLET_ERROR_STORAGE_FAILED;
+    }
+
+    WalletError err = wallet_select_path(path);
+    if (err == WALLET_OK) {
+        err = wallet_get_eth_address(address_out);
+    }
+
+    derive_lock_give();
+    return err;
 }
 
 // ========== Public API ========== //

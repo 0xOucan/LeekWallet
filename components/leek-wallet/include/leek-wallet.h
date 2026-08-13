@@ -222,6 +222,19 @@ WalletError wallet_get_public_key(PublicKey *pubkey_out);
 WalletError wallet_sign_hash(const uint8_t hash[32], EthSignature *signature_out);
 
 /**
+ * Select a path and sign under one lock.
+ *
+ * Prefer this over select-then-sign. Those are two calls sharing mutable
+ * derivation state, and the UI task preempts the protocol task, so anything
+ * between them can change which key signs.
+ */
+WalletError wallet_sign_hash_at_path(const HDPath *path, const uint8_t hash[32],
+                                     EthSignature *signature_out);
+
+/** Derive an address at a path under the same lock. */
+WalletError wallet_get_address_at_path(const HDPath *path, EthAddress *address_out);
+
+/**
  * Sign an Ethereum message (EIP-191 personal_sign)
  * @param message Message bytes
  * @param length Message length

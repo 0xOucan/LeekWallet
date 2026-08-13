@@ -1139,8 +1139,8 @@ static void screen_wallet_info_enter(void)
         return;
     }
 
-    /* Get ETH address */
-    err = wallet_get_eth_address(&eth_address);
+    /* Get ETH address, under the derivation lock */
+    err = wallet_get_address_at_path(&eth_path, &eth_address);
     if (err != WALLET_OK) {
         ESP_LOGE(TAG, "Failed to get address: %d", err);
         strcpy(eth_address.hex, "Addr failed");
@@ -1191,8 +1191,7 @@ static void wallet_info_refresh_address(void)
     HDPath eth_path = HDPATH_ETH_DEFAULT;
     eth_path.address_index = address_index;
 
-    if (wallet_select_path(&eth_path) != WALLET_OK ||
-        wallet_get_eth_address(&eth_address) != WALLET_OK) {
+    if (wallet_get_address_at_path(&eth_path, &eth_address) != WALLET_OK) {
         ESP_LOGE(TAG, "Failed to derive address %u", (unsigned)address_index);
         strcpy(eth_address.hex, "Derive failed");
     }
