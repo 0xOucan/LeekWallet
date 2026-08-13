@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "button.h"
+#include "eth-tx.h"
 
 /**
  * Screen identifiers
@@ -31,6 +32,7 @@ typedef enum {
     SCREEN_SESSION_CONFIRM,
     SCREEN_PASSPHRASE,
     SCREEN_PASSPHRASE_CONFIRM,
+    SCREEN_SIGN_CONFIRM,
     SCREEN_COUNT
 } screen_id_t;
 
@@ -125,5 +127,24 @@ void ui_request_unlock(void);
 
 /** Lock on behalf of a host request. */
 void ui_request_lock(void);
+
+/**
+ * Show a transaction and ask the user to approve it.
+ *
+ * The fields come from the device's own parse, never from a string the host
+ * supplied, and the payload that gets signed is the one rendered here.
+ *
+ * Returns immediately. The protocol task polls ui_sign_outcome().
+ */
+void ui_request_sign(const EthTx *tx, uint32_t address_index);
+
+typedef enum {
+    SIGN_PENDING,
+    SIGN_APPROVED,
+    SIGN_REJECTED,
+} SignOutcome;
+
+SignOutcome ui_sign_outcome(void);
+void ui_sign_clear(void);
 
 #endif /* UI_H */

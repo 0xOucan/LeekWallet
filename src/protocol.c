@@ -36,6 +36,7 @@
 #include "leek-wallet.h"
 #include "pin.h"
 #include "session.h"
+#include "eth-tx.h"
 #include "ui.h"
 
 static const char *TAG = "protocol";
@@ -59,6 +60,8 @@ static const char *TAG = "protocol";
 #define ERR_NOT_UNLOCKED 0x0100
 #define ERR_NO_WALLET    0x0300
 #define ERR_SESSION      0x0400
+#define ERR_USER_REJECTED 0x0200
+#define ERR_USER_TIMEOUT  0x0201
 
 static uint8_t rx_buf[MAX_FRAME];
 static size_t  rx_len = 0;
@@ -321,10 +324,137 @@ static void dispatch(const uint8_t *payload, size_t len)
         cbor_write_text(&w, "index");
         cbor_write_uint(&w, index);
 
+    } else if (strcmp(method, "signTransaction") == 0) {
+        if (session_state() != SESSION_ACTIVE) {
+            send_session_error(ERR_SESSION, "session required");
+            return;
+        }
+        if (!pin_is_unlocked()) {
+            send_error(ERR_NOT_UNLOCKED, "device is locked");
+            return;
+        }
+
+        /* Build the transaction from the host's fields. Every value is parsed
+         * here and nothing the host sends is treated as bytes to sign. */
+        EthTx tx;
+        memset(&tx, 0, sizeof(tx));
+
+        if (!cbor_map_find(payload, len, "chainId", &item) || item.type != CBOR_UINT) {
+            send_error(ERR_MALFORMED, "chainId required");
+            return;
+        }
+        tx.chain_id = item.value;
+
+        if (cbor_map_find(payload, len, "nonce", &item) && item.type == CBOR_UINT) {
+            eth_quantity_set_u64(&tx.nonce, item.value);
+        }
+
+        if (cbor_map_find(payload, len, "to", &item) &&
+            item.type == CBOR_BYTES && item.value == 20) {
+            memcpy(tx.to, item.data, 20);
+            tx.has_to = true;
+        }
+
+        if (cbor_map_find(payload, len, "value", &item) && item.type == CBOR_BYTES) {
+            if (!eth_quantity_set(&tx.value, item.data, item.value)) {
+                send_error(ERR_MALFORMED, "value too large");
+                return;
+            }
+        }
+        if (cbor_map_find(payload, len, "maxFeePerGas", &item) && item.type == CBOR_BYTES) {
+            eth_quantity_set(&tx.max_fee, item.data, item.value);
+        }
+        if (cbor_map_find(payload, len, "maxPriorityFeePerGas", &item) &&
+            item.type == CBOR_BYTES) {
+            eth_quantity_set(&tx.max_priority_fee, item.data, item.value);
+        }
+        if (cbor_map_find(payload, len, "gas", &item) && item.type == CBOR_BYTES) {
+            eth_quantity_set(&tx.gas_limit, item.data, item.value);
+        }
+
+        if (cbor_map_find(payload, len, "data", &item) && item.type == CBOR_BYTES) {
+            if (item.value > ETH_MAX_DATA) {
+                /* Refusing is the honest answer. Truncating would sign
+                 * something other than what was asked for, and accepting an
+                 * unbounded blob lets the host choose our memory usage. */
+                send_error(ERR_MALFORMED, "calldata too large to display");
+                return;
+            }
+            memcpy(tx.data, item.data, item.value);
+            tx.data_length = item.value;
+        }
+
+        uint32_t sign_index = 0;
+        if (cbor_map_find(payload, len, "index", &item) && item.type == CBOR_UINT) {
+            sign_index = item.value;
+        } else if (cbor_map_find(payload, len, "path", &item) && item.type == CBOR_TEXT) {
+            char path_str[40];
+            if (cbor_text_copy(&item, path_str, sizeof(path_str))) {
+                const char *last = strrchr(path_str, '/');
+                if (last && last[1] != '\0') {
+                    sign_index = (uint32_t)strtoul(last + 1, NULL, 10);
+                }
+            }
+        }
+
+        /* Show it and wait. The screen renders these exact fields and the hash
+         * below is taken from the same struct, so what is approved and what is
+         * signed cannot differ. */
+        ui_request_sign(&tx, sign_index);
+
+        const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(120000);
+        SignOutcome outcome;
+        for (;;) {
+            outcome = ui_sign_outcome();
+            if (outcome != SIGN_PENDING) {
+                break;
+            }
+            if (xTaskGetTickCount() > deadline) {
+                ui_sign_clear();
+                send_error(ERR_USER_TIMEOUT, "no answer on the device");
+                return;
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        ui_sign_clear();
+
+        if (outcome != SIGN_APPROVED) {
+            send_error(ERR_USER_REJECTED, "rejected on device");
+            return;
+        }
+
+        uint8_t digest[32];
+        if (!eth_tx_hash(&tx, digest)) {
+            send_error(ERR_MALFORMED, "could not encode the transaction");
+            return;
+        }
+
+        HDPath sign_path = HDPATH_ETH_DEFAULT;
+        sign_path.address_index = sign_index;
+        if (wallet_select_path(&sign_path) != WALLET_OK) {
+            send_error(ERR_NO_WALLET, "derivation failed");
+            return;
+        }
+
+        EthSignature sig;
+        if (wallet_sign_hash(digest, &sig) != WALLET_OK) {
+            send_error(ERR_NO_WALLET, "signing failed");
+            return;
+        }
+
+        cbor_write_map(&w, 1);
+        cbor_write_text(&w, "result");
+        cbor_write_map(&w, 4);
+        cbor_write_text(&w, "index");
+        cbor_write_uint(&w, sign_index);
+        cbor_write_text(&w, "r");
+        cbor_write_bytes(&w, sig.r, sizeof(sig.r));
+        cbor_write_text(&w, "s");
+        cbor_write_bytes(&w, sig.s, sizeof(sig.s));
+        cbor_write_text(&w, "v");
+        cbor_write_uint(&w, sig.v);
+
     } else {
-        /* Signing waits for on-device transaction rendering (T12). Answering
-         * it before the device can display what it signs would be blind
-         * signing with extra steps. */
         send_error(ERR_MALFORMED, "unknown or not yet implemented");
         return;
     }

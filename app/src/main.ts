@@ -441,17 +441,40 @@ async function sign(): Promise<void> {
   busy(true);
   log("confirm on the device…");
   try {
+    log("check the transaction on the device — every page — then approve");
+
+    /* Quantities go as big-endian byte strings, not numbers: values run to
+     * 2^256 and CBOR integers here stop at 32 bits. */
+    const wei = (v: bigint): Uint8Array => {
+      let hex = v.toString(16);
+      if (hex.length % 2) hex = "0" + hex;
+      return new Uint8Array((hex.match(/../g) ?? []).map((h) => parseInt(h, 16)));
+    };
+
     const r = await client.call("signTransaction", {
-      path: `m/44'/60'/0'/0/${selectedIndex}`,
-      to: new Uint8Array(20).fill(0x71),
+      index: selectedIndex,
       chainId: 1,
+      nonce: 0,
+      to: new Uint8Array(20).fill(0x71),
+      value: wei(500000000000000000n),          // 0.5 ETH
+      gas: wei(21000n),
+      maxFeePerGas: wei(20000000000n),
+      maxPriorityFeePerGas: wei(1000000000n),
     });
-    const sig = r["signature"];
-    log(`signed: ${sig instanceof Uint8Array ? sig.length : 0} bytes`);
+
+    const rr = r["r"];
+    const ss = r["s"];
+    if (rr instanceof Uint8Array && ss instanceof Uint8Array) {
+      const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+      log(`signed by the device: r=${hex(rr).slice(0, 16)}… v=${String(r["v"])}`);
+    } else {
+      log("device returned no signature");
+    }
   } catch (e) {
-    if (e instanceof DeviceError && e.code === 0x0001) {
-      log("the device cannot sign yet: it must decode and display a transaction");
-      log("before it signs one, or this would be blind signing");
+    if (e instanceof DeviceError && e.code === 0x0200) {
+      log("rejected on the device");
+    } else if (e instanceof DeviceError && e.code === 0x0201) {
+      log("timed out waiting for an answer on the device");
     } else if (e instanceof DeviceError) {
       log(`declined: ${e.message}`);
     } else {

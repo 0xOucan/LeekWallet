@@ -232,8 +232,9 @@ one physical board.
 | ~~T10~~ ✅ | Attempt counter: persist before compare, sentinel for 0 ([S4](AUDIT.md)) | T0.1 | crash-injection test grants no free attempts |
 | T11 | Flash encryption + secure boot v2 (must ship together — see [docs/VAULT.md](docs/VAULT.md)) | — | `read_flash` yields no plaintext; unsigned image refuses to boot |
 | T11b | Migration path for wallets encrypted under the old KDF | T9 | existing device upgrades without seed loss |
-| T12 | **On-device transaction decode + confirm screen** (critical path) | T0.3 | golden screens for native transfer, ERC-20 transfer, EIP-712 |
-| T13 | Address/amount presentation on 128x64 (chunked hex, checksum casing) | T0.3 | legible at arm's length on real hardware |
+| ~~T12~~ ✅ | On-device EIP-1559 decode, three-page confirmation, sign only what was displayed | T0.3 | 6 test groups on encoding and rendering; signs on hardware |
+| T12b | ERC-20 transfer and approve decoding, and EIP-712 typed data | T12, T50 | a token transfer shows the contract address and amount |
+| ~~T13~~ ✅ | Address and amount presentation: EIP-55 casing, one wei never rounds to zero, unknown chains show a number | T0.3 | covered by `sim/test_eth_tx.c` |
 | T14 | AES-GCM instead of unauthenticated CBC ([S8h](AUDIT.md)) | T9 | tampered ciphertext is rejected |
 | ~~T15~~ ✅ | Entropy gate ([S6](AUDIT.md)): bootloader RNG + SP 800-90B health tests, fails closed | — | `sim/test_entropy.c` green; **dieharder run on hardware still pending** |
 | ~~T15b~~ ✅ | User entropy pool: button-timing collection screen, hashed with hardware entropy | T15 | 5 pool tests green; worst-case user cannot weaken output |

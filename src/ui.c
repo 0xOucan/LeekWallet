@@ -21,6 +21,7 @@
 #include "entropy.h"
 #include "session.h"
 #include "text-entry.h"
+#include "eth-tx.h"
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "nvs.h"
@@ -121,6 +122,10 @@ static void screen_passphrase_on_button(button_id_t btn);
 static void screen_passphrase_confirm_enter(void);
 static void screen_passphrase_confirm_render(void);
 static void screen_passphrase_confirm_on_button(button_id_t btn);
+
+static void screen_sign_confirm_enter(void);
+static void screen_sign_confirm_render(void);
+static void screen_sign_confirm_on_button(button_id_t btn);
 
 static void screen_qr_code_enter(void);
 static void screen_qr_code_render(void);
@@ -236,6 +241,13 @@ static const screen_t screen_passphrase_confirm = {
     .enter = screen_passphrase_confirm_enter,
     .render = screen_passphrase_confirm_render,
     .on_button = screen_passphrase_confirm_on_button,
+    .exit = NULL
+};
+
+static const screen_t screen_sign_confirm = {
+    .enter = screen_sign_confirm_enter,
+    .render = screen_sign_confirm_render,
+    .on_button = screen_sign_confirm_on_button,
     .exit = NULL
 };
 
@@ -2681,6 +2693,179 @@ static void screen_passphrase_confirm_on_button(button_id_t btn)
 }
 
 /* ============================================================================
+ * Transaction Confirmation
+ *
+ * The screen that makes this a hardware wallet rather than a USB key. The
+ * fields shown are the device's own parse of the request, and the bytes signed
+ * are the ones hashed from exactly these values. A host that says one thing and
+ * sends another is visible here, which is the only place it can be.
+ *
+ * Paged, because 128x64 cannot hold a 42-character address, an amount, a chain
+ * and a source path at a legible size. Every page must be seen before the
+ * approve option appears - scrolling past is the point, not an obstacle.
+ * ============================================================================ */
+
+#define SIGN_PAGES 3
+
+static EthTx        sign_tx;
+static uint32_t     sign_index;
+static int          sign_page;
+static bool         sign_seen[SIGN_PAGES];
+static volatile SignOutcome sign_outcome = SIGN_PENDING;
+static volatile bool sign_request_pending = false;
+
+void ui_request_sign(const EthTx *tx, uint32_t address_index)
+{
+    memcpy(&sign_tx, tx, sizeof(sign_tx));
+    sign_index = address_index;
+    sign_outcome = SIGN_PENDING;
+    sign_request_pending = true;
+}
+
+SignOutcome ui_sign_outcome(void)
+{
+    return sign_outcome;
+}
+
+void ui_sign_clear(void)
+{
+    sign_outcome = SIGN_PENDING;
+    memzero(&sign_tx, sizeof(sign_tx));
+}
+
+static bool sign_all_seen(void)
+{
+    for (int i = 0; i < SIGN_PAGES; i++) {
+        if (!sign_seen[i]) return false;
+    }
+    return true;
+}
+
+static void screen_sign_confirm_enter(void)
+{
+    ESP_LOGI(TAG, "Sign confirmation screen");
+    sign_page = 0;
+    memset(sign_seen, 0, sizeof(sign_seen));
+    sign_seen[0] = true;
+}
+
+static void screen_sign_confirm_render(void)
+{
+    oled_clear();
+
+    char line[24];
+    snprintf(line, sizeof(line), "Sign?  %u/%u",
+             (unsigned)(sign_page + 1), (unsigned)SIGN_PAGES);
+    oled_draw_string_centered(0, line);
+
+    char scratch[32];
+
+    switch (sign_page) {
+        case 0: {
+            /* Amount and chain. The two fields that decide what it costs. */
+            char value[40];
+            if (!eth_format_value(&sign_tx.value, value, sizeof(value), 8)) {
+                snprintf(value, sizeof(value), "?");
+            }
+            oled_draw_string(2, 0, "Send");
+
+            /* Compose explicitly. A truncating snprintf here would silently
+             * shorten an amount, and a shortened amount is a different
+             * amount. Eighteen characters fit the line; anything longer is
+             * marked rather than cut. */
+            char amount[24];
+            size_t vlen = strlen(value);
+            if (vlen <= 18) {
+                snprintf(amount, sizeof(amount), "%.18s ETH", value);
+            } else {
+                snprintf(amount, sizeof(amount), "%.15s.. ETH", value);
+            }
+            oled_draw_string(3, 0, amount);
+            oled_draw_string(5, 0, "On");
+            oled_draw_string(6, 0,
+                eth_chain_name(sign_tx.chain_id, scratch, sizeof(scratch)));
+            break;
+        }
+        case 1: {
+            /* Recipient, in full. Never truncated: the whole point is that the
+             * user can compare it against what they intended. */
+            char addr[43];
+            if (sign_tx.has_to && eth_format_address(sign_tx.to, addr, sizeof(addr))) {
+                oled_draw_string(2, 0, "To");
+                char part[15];
+                for (int i = 0; i < 3; i++) {
+                    strncpy(part, addr + 2 + i * 14, 14);
+                    part[14] = '\0';
+                    oled_draw_string(3 + i, 0, part);
+                }
+            } else {
+                oled_draw_string(2, 0, "Contract creation");
+                oled_draw_string(4, 0, "No recipient!");
+            }
+            break;
+        }
+        default: {
+            /* Where it is signed from, so a host that quietly changed the path
+             * is visible (T47), plus whether there is calldata at all. */
+            oled_draw_string(2, 0, "From");
+            snprintf(line, sizeof(line), "addr %u", (unsigned)sign_index);
+            oled_draw_string(3, 0, line);
+
+            if (sign_tx.data_length > 0) {
+                snprintf(line, sizeof(line), "DATA %u bytes",
+                         (unsigned)sign_tx.data_length);
+                oled_draw_string(5, 0, line);
+                oled_draw_string(6, 0, "Contract call!");
+            } else {
+                oled_draw_string(5, 0, "Plain transfer");
+            }
+            break;
+        }
+    }
+
+    if (sign_all_seen()) {
+        oled_draw_string(7, 0, "NO  <  >    SIGN");
+    } else {
+        oled_draw_string(7, 0, "NO  <  >  more");
+    }
+}
+
+static void screen_sign_confirm_on_button(button_id_t btn)
+{
+    switch (btn) {
+        case BUTTON_UP:
+            sign_page = (sign_page + SIGN_PAGES - 1) % SIGN_PAGES;
+            sign_seen[sign_page] = true;
+            break;
+        case BUTTON_DOWN:
+            sign_page = (sign_page + 1) % SIGN_PAGES;
+            sign_seen[sign_page] = true;
+            break;
+
+        case BUTTON_CANCEL:
+            ESP_LOGW(TAG, "Transaction rejected by user");
+            sign_outcome = SIGN_REJECTED;
+            ui_set_screen(SCREEN_WALLET_INFO);
+            return;
+
+        case BUTTON_ACCEPT:
+            /* Approving without having seen every page is not approval. */
+            if (!sign_all_seen()) {
+                break;
+            }
+            ESP_LOGW(TAG, "Transaction approved by user");
+            sign_outcome = SIGN_APPROVED;
+            ui_set_screen(SCREEN_WALLET_INFO);
+            return;
+
+        default:
+            break;
+    }
+
+    ui_invalidate();
+}
+
+/* ============================================================================
  * Public API
  * ============================================================================ */
 
@@ -2704,6 +2889,7 @@ void ui_init(void)
     screens[SCREEN_SESSION_CONFIRM] = &screen_session_confirm;
     screens[SCREEN_PASSPHRASE] = &screen_passphrase;
     screens[SCREEN_PASSPHRASE_CONFIRM] = &screen_passphrase_confirm;
+    screens[SCREEN_SIGN_CONFIRM] = &screen_sign_confirm;
 
     current_screen = SCREEN_BOOT;
     needs_render = true;
@@ -2820,6 +3006,11 @@ void ui_task(void *pvParameters)
                         : here;
                 ui_set_screen(SCREEN_SESSION_CONFIRM);
             }
+        }
+
+        if (sign_request_pending) {
+            sign_request_pending = false;
+            ui_set_screen(SCREEN_SIGN_CONFIRM);
         }
 
         if (host_unlock_pending) {
