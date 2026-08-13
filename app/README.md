@@ -51,6 +51,45 @@ const object), and `tsc` is typecheck-only, never emitting.
 That is deliberate for code that parses bytes off a wire on behalf of a signing device — the
 index checks alone caught four real unguarded accesses in the framing layer.
 
+## Dependencies and supply chain
+
+The tree is **35 packages**: viem, plus TypeScript, Vite and Node types. That
+number is the strongest control available here, and it is worth defending —
+every addition is a party who can push code into a process that talks to a
+signing device.
+
+`.npmrc` sets three things:
+
+| Setting | Why |
+|---|---|
+| `ignore-scripts=true` | Most npm supply-chain incidents execute through a `postinstall`. pnpm 9 still runs them by default; pnpm 10 changed that, and we are on 9.x. Nothing here needs them, and the build was verified without. |
+| `save-exact=true` | An install today and an install next month resolve identically, rather than relying on a range being honoured. |
+| `prefer-frozen-lockfile=true` | A dependency change should be a reviewed commit, not a side effect of running install. |
+
+### What pnpm does and does not do
+
+It gives a strict `node_modules` layout, so nothing can use a package it did
+not declare, and a lockfile with integrity hashes, so a resolved package cannot
+be swapped underneath you.
+
+**It does not stop a legitimate package from publishing a malicious version.**
+That arrives through the front door on your next install or update, and no
+package manager prevents it. Neither does it help with typosquatting, or with a
+transitive dependency changing hands.
+
+### Why that is survivable here
+
+The architecture, not the package manager, is what contains this. The seed never
+leaves the device, the device re-serialises and re-hashes every transaction
+itself, and it renders what it will sign on its own screen before a physical
+button press. A compromised npm package can show you a false preview — which is
+exactly why [PROTOCOL.md](../docs/PROTOCOL.md) says the app's preview is
+advisory — but it cannot extract a key or sign anything you did not approve on
+the device.
+
+That is the whole reason the trust boundary sits where it does. If the host had
+to be trustworthy, 35 dependencies would be 35 too many.
+
 ## Layering
 
 The rule that keeps a Tauri-to-something-else migration cheap, and keeps the
