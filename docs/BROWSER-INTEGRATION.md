@@ -2,9 +2,15 @@
 
 A research note, not a plan. The question behind it was "can we simulate or fake a MetaMask
 connection with an extension" — and the honest first answer is that *faking* one is not a
-thing that exists. There is no seam where a third-party device impersonates MetaMask. There
-are four real seams, each with a different owner, and three of them do not require MetaMask's
-cooperation at all.
+thing that exists — not in the sense the question meant, which was appearing *inside* MetaMask.
+There are four real seams, each with a different owner, and three of them do not require
+MetaMask's cooperation at all.
+
+There is, though, a fifth thing that is neither faking MetaMask nor ignoring it: speaking
+MetaMask's provider dialect on the page, which is what Rabby, Phantom and Coinbase Wallet all do
+and which an unmeasured but non-empty tail of dapps still requires. §4bis covers it, source read
+rather than
+the folklore repeated.
 
 Everything below was checked against primary sources in August 2026. Where a source could not
 be confirmed it says so rather than rounding up.
@@ -19,6 +25,7 @@ be confirmed it says so rather than rounding up.
 | MetaMask's built-in hardware keyrings (Ledger/Trezor/Lattice) | **No** — MetaMask code change | USB/HID | Not available |
 | MetaMask's QR keyring (ERC-4527) | **Yes**, no permission needed | Animated QR, both directions | **Blocked by our hardware** — no camera |
 | Our own extension + EIP-6963 | **Yes** | WebUSB / Web Serial / Web Bluetooth | Viable, and the only viable one |
+| …plus a MetaMask-*compatible* provider on `window.ethereum` (§4bis) | **Yes** | same | Do it, with hard limits |
 | WalletConnect v2 (in progress, [PROTOCOL.md 6b](PROTOCOL.md)) | **Yes** | Our app, over the relay | Already chosen; keep it |
 
 The thing worth internalising before reading further: **"appear inside MetaMask" and "work in a
@@ -154,12 +161,17 @@ carrying `{ uuid, name, icon, rdns }` plus an EIP-1193 provider; dapps dispatch
 the user picks from a list. MetaMask supports it and
 [recommends it](https://support.metamask.io/third-party-platforms-and-dapps/connecting-to-dapps-with-eip-6963-multi-wallet-discovery/).
 
-This is the direct answer to "alongside MetaMask": we do not fight MetaMask for the global, and
-we do not fake being MetaMask. We announce ourselves as `com.leekwallet` — sitting in the same
-picker, on equal footing, on any dapp that implements 6963. On dapps that don't, we are
-invisible unless we clobber the global, and **we should not clobber the global.** A wallet that
-overwrites `window.ethereum` to win a race is doing to users what we would object to being done
-to us.
+This is the direct answer to "alongside MetaMask": we do not fight MetaMask for the global. We
+announce ourselves as `com.leekwallet` — sitting in the same picker, on equal footing, on any
+dapp that implements 6963.
+
+An earlier draft of this note stopped there and said we would never touch `window.ethereum` at
+all. That was wrong, and §4bis is the correction. 6963 announcement is necessary and it is not
+sufficient: the spec itself says wallets **SHOULD** keep `window.ethereum` working for legacy
+dapps ([EIP-6963, Backwards Compatibility](https://eips.ethereum.org/EIPS/eip-6963)). The real
+question is not *whether* to be present on the global — it is *how much impersonation* the
+legacy tail actually requires, and that turns out to be a much smaller and more separable thing
+than "clobber the global".
 
 ### Reaching the device from an extension
 
@@ -237,6 +249,186 @@ extension can show a nicer summary", that is 6c, and the answer is no.
 
 ---
 
+## 4bis. The MetaMask-compatibility shim, as shipping wallets actually do it
+
+The folklore version is "set `isMetaMask = true`". The real thing is four separable decisions,
+and they have very different costs. Rabby is the best source because its page provider is
+open ([RabbyHub/page-provider `src/index.ts`](https://github.com/RabbyHub/page-provider/blob/main/src/index.ts));
+everything quoted below is read off that file, not remembered.
+
+### The four layers, in increasing order of aggression
+
+**1. Provider-shape compatibility.** Rabby's `EthereumProvider` class carries, as plain fields:
+
+```ts
+isRabby? = true;
+isMetaMask = true;
+_isRabby = true;
+...
+_metamask = {
+  isUnlocked: () => new Promise((resolve) => resolve(this._isUnlocked)),
+};
+```
+
+So `isMetaMask` is *unconditionally* true — not a toggle, not conditional on MetaMask being
+absent. Alongside it: `chainId`, `selectedAddress`, the deprecated `networkVersion`, and the
+`_metamask.isUnlocked()` experimental method that some dapps gate on. It also shims `window.web3`
+(`window.web3 = { currentProvider: rabbyProvider }`, only `if (!window.web3)`) and fires
+`window.dispatchEvent(new Event("ethereum#initialized"))` once ready — the legacy signal for
+pages that started before injection. MetaMask's own provider does the same two things
+([`@metamask/providers`](https://github.com/MetaMask/providers/blob/main/src/initializeInpageProvider.ts),
+`shimWeb3` and `setGlobalProvider`), so these are compatibility, not deception.
+
+**2. Owning the global.** Rabby takes `window.ethereum` with a getter and
+`configurable: false`:
+
+```ts
+const descriptor = Object.getOwnPropertyDescriptor(window, "ethereum");
+const canDefine = !descriptor || descriptor.configurable;
+...
+Object.defineProperty(window, "ethereum", { get() { return proxyRabbyEthereumProvider; },
+                                            configurable: false });
+```
+
+with a plain-assignment fallback in the `catch`. The comment in that `catch` is candid:
+`// think that defineProperty failed means there is any other wallet`. This is a land-grab, and
+it is the thing that generates the bug reports — [RabbyHub/Rabby#2953](https://github.com/RabbyHub/Rabby/issues/2953)
+is "Rabby tempers with `window.ethereum` which breaks MetaMask, Phantom and other wallet
+extensions"; Phantom did the same and produced the mirror-image report against MetaMask,
+[MetaMask/metamask-extension#18113](https://github.com/MetaMask/metamask-extension/issues/18113).
+
+**MetaMask does not do this**, and the asymmetry is worth stating precisely because it is
+checkable. `setGlobalProvider` is a bare assignment inside a `try`:
+
+```ts
+(window as Record<string, any>).ethereum = providerInstance;
+window.dispatchEvent(new Event('ethereum#initialized'));
+```
+
+and the `catch` logs "MetaMask encountered an error setting the global Ethereum provider - this
+is likely due to another Ethereum wallet extension also setting the global Ethereum provider".
+MetaMask loses the race gracefully. Whoever runs last wins, unless someone has made the property
+non-configurable, in which case that wallet wins permanently. Load order among extensions is not
+something a dapp or a user controls.
+
+**3. A `providers` array.** Coinbase Wallet's extension documents building
+`window.ethereum.providers` — an array of every injected provider, each tagged
+(`isCoinbaseWallet`, `isMetaMask`) so a dapp can pick
+([Coinbase docs](https://docs.cdp.coinbase.com/wallet-sdk/docs/injected-provider), [handling
+multiple extensions](https://docs.cloud.coinbase.com/wallet-sdk/docs/injected-provider-guidance)).
+This was the pre-6963 coexistence convention. It is superseded, it was never universally
+implemented by dapps, and 6963 exists precisely because it did not work.
+
+**4. Full identity impersonation, including over 6963.** This is where Rabby goes further than
+the shim. In "MetaMask mode" it deletes its own marker and announces itself under MetaMask's
+identity *through the 6963 channel*:
+
+```ts
+const announceMetamaskMode = () => {
+  rabbyEthereumProvider.isMetaMask = true;
+  delete rabbyEthereumProvider.isRabby;
+  rabbyProvider.isMetaMask = true;
+  delete rabbyProvider.isRabby;
+  announceEip6963Provider(rabbyProvider, true);
+};
+```
+
+and `announceEip6963Provider(provider, true)` swaps the announced `info` wholesale to
+`{ name: "MetaMask", rdns: "io.metamask", icon: <MetaMask's fox, base64 SVG> }` under a
+separate `uuid`. So a 6963-aware dapp sees a picker entry named MetaMask, with MetaMask's logo,
+claiming MetaMask's `rdns`, that is Rabby. Which dapps get this is driven by a **remotely fetched
+list**: `metamaskModeService` polls `https://static.debank.com/fake_mm_dapps.json` every 25–30
+minutes, plus per-site user overrides
+([`src/background/service/metamaskModeService.ts`](https://github.com/RabbyHub/Rabby/blob/develop/src/background/service/metamaskModeService.ts)).
+
+EIP-6963 anticipated exactly this. Its security considerations call `rdns` "self-attested and
+prone to impersonation", tell dapps not to use it for feature detection, and suggest watching for
+colliding `uuid`s. Anticipating an attack is not blessing it.
+
+### What we should and should not copy
+
+| Layer | Do it? | Why |
+|---|---|---|
+| EIP-6963 announce as `com.leekwallet` | **Yes** | The standard, and the honest picker entry |
+| `window.ethereum` fallback when the global is free | **Yes** | The spec's own SHOULD; the whole legacy tail |
+| `isMetaMask = true` on that provider | **Yes, with `isLeekWallet = true` beside it** | See below |
+| `_metamask.isUnlocked()`, `window.web3` shim, `ethereum#initialized` | **Yes** | Cheap, and legacy detection paths genuinely check them |
+| `Object.defineProperty(..., configurable: false)` | **No** | This is the land-grab, and it is the part that breaks other people's wallets |
+| Overwriting a global another wallet already set | **No** | Never assign over an existing `window.ethereum` |
+| `window.ethereum.providers` array | **No** | Superseded by 6963; adding to someone else's provider object is worse than leaving it alone |
+| Announcing over 6963 as `io.metamask` | **No** | 6963 is precisely the channel where identity is supposed to be true |
+
+The line that falls out of this: **be honest wherever the user can see us, be compatible only
+where nobody is looking.** `rdns: "com.leekwallet"`, name "LeekWallet", our own icon, always.
+`isMetaMask: true` is a *capability* claim read only by dapp code — "this provider speaks the
+dialect MetaMask defined" — and MetaMask's own documentation concedes the field means nothing
+stronger: it notes plainly that "non-MetaMask providers may also set this property to `true`"
+([provider API](https://docs.metamask.io/wallet/reference/provider-api/)). A user who opens a
+connect modal must never see the fox where we are.
+
+### Concretely, what our injected script does
+
+1. Read `Object.getOwnPropertyDescriptor(window, 'ethereum')`. **If it exists, stop.** Do not
+   assign, do not wrap, do not push onto `.providers`. We are 6963-only on that page. This one
+   rule is the whole difference between us and the bug reports above.
+2. If it does not exist, `window.ethereum = leekProvider` by **plain assignment** — writable and
+   configurable, so a later wallet can take it and nothing we did is permanent. Then dispatch
+   `ethereum#initialized`.
+3. Shim `window.web3 = { currentProvider }` only `if (!window.web3)`.
+4. Provider fields: `isLeekWallet: true`, `isMetaMask: true`, `chainId`, `selectedAddress`,
+   `networkVersion`, `_metamask.isUnlocked()`. EIP-1193 `request()`, `on`/`removeListener`, and
+   the events dapps actually bind: `connect`, `disconnect`, `chainChanged` (hex string chain id,
+   *not* a number — this is the shape mistake that breaks dapps), `accountsChanged` (array,
+   empty when locked or unapproved).
+5. Announce 6963 as `{ name: "LeekWallet", rdns: "com.leekwallet", uuid, icon }`, on load and
+   again on every `eip6963:requestProvider`. Never under any other `rdns`.
+6. Make the shim **switchable off**, defaulting on, with the state visible in the extension. A
+   user who wants to run MetaMask untouched should be one toggle away, and step 1 already means
+   the toggle rarely matters.
+
+### Does the shim still pay for itself?
+
+Less than it did, and not zero. EIP-6963 is Final and support in the connect stacks is not
+partial — it is the default path:
+
+| Stack | Status |
+|---|---|
+| wagmi v2 | `multiInjectedProviderDiscovery` defaults to `true` ([createConfig](https://wagmi.sh/react/api/createConfig)) |
+| RainbowKit v2 | 6963 wallets auto-appear under "Installed"; connectors carry `rdns` ([migration guide](https://rainbowkit.com/docs/migration-guide)) |
+| ConnectKit 1.6.0 (Jan 2024) | 6963 via `mipd` ([changelog](https://family.co/changelog/2024-01-10)) |
+| Reown AppKit (ex-WalletConnect/Web3Modal) | supported |
+| MetaMask's own guidance | recommends 6963 for connecting; `@metamask/detect-provider` is deprecated ([npm](https://www.npmjs.com/package/@metamask/detect-provider)) |
+
+So any dapp that has updated its connect kit since 2024 finds us without the shim. The tail is
+dapps pinned to older wagmi/web3modal, and — the more stubborn category — dapps with
+hand-rolled `if (window.ethereum) ... else "please install MetaMask"` code that no library
+upgrade will ever fix. **We could not find a credible measurement of how large that tail is
+today**, and we decline to invent one; the honest statement is that it is shrinking, that it is
+concentrated in unmaintained dapps, and that the shim's cost to us is roughly forty lines given
+we are building the provider anyway. Forty lines for an unknown-but-nonzero share of dapps, at
+no cost to anyone else because of rule 1 above, is worth it.
+
+### And the security question the shim does not answer
+
+Being reachable as `window.ethereum` widens nothing that §"the security question" below does not
+already cover — the ambient-provider problem is created by *injecting at all*, not by the name we
+inject under. It is not softened by the conclusion changing. Two things specific to the shim:
+
+- **`isMetaMask: true` makes us reachable by phishing pages written against MetaMask**, which is
+  most of them. A drainer page that does `window.ethereum.request({ method:
+  'eth_sendTransaction', ... })` reaches us with no adaptation. Per-origin approval and
+  device-rendered confirmation are what stand between that and a loss; the shim removes an
+  accidental barrier that was never a security control in the first place.
+- **What the device's screen fixes, and what it does not.** It fixes: what is being signed, to
+  whom, for how much — the device parses and renders it, so the extension cannot lie about the
+  payload (Rule 1, PROTOCOL.md §1). It does **not** fix: which page is asking. The device has no
+  way to verify an origin, so origin remains an extension-level claim and origin-approval remains
+  a host-side control that a compromised extension can forge. A user who approves a transaction
+  they misread is not rescued by any of this. The shim does not change either half; it just means
+  more pages can start the conversation.
+
+---
+
 ## 5. WalletConnect, fairly
 
 Already chosen and being built, so the fair test is where it actually loses — not a
@@ -267,9 +459,16 @@ a second front end onto the transport we already have, not a second wallet.
 
 ## 6. Recommendation
 
-**Build our own extension, announce over EIP-6963, and reach the device over Web Serial.**
-Ship it after WalletConnect, not instead of it. It is the only route that is open to us today
-without anyone's cooperation, and it is the only one that puts us in the same picker as MetaMask.
+**Build our own extension, dual-mode: announce over EIP-6963 as `com.leekwallet`, *and* install a
+MetaMask-compatible provider on `window.ethereum` when — and only when — the global is unclaimed.
+Reach the device over Web Serial.** Ship it after WalletConnect, not instead of it. It is the only
+route open to us today without anyone's cooperation, and it is the only one that puts us in the
+same picker as MetaMask.
+
+The dual-mode half of that is a correction to an earlier draft, which refused the global outright.
+The refusal conflated two things: *taking* the global from other wallets, which is the actual
+antisocial act and which we still refuse, and *filling* it when nobody else has, which EIP-6963's
+own Backwards Compatibility section says wallets SHOULD do. §4bis has the mechanism.
 
 Order of work, if it is taken up:
 
@@ -279,7 +478,10 @@ Order of work, if it is taken up:
 2. EIP-6963 announce plus the small provider surface: `eth_requestAccounts`, `eth_accounts`,
    `eth_chainId`, `personal_sign`, `eth_signTypedData_v4`, `eth_sendTransaction`. Nothing else.
 3. Per-origin approval with persisted grants and a visible origin. Before any signing path works.
-4. Reuse `@leekwallet/core` for framing, session and decoding, so the extension cannot end up
+4. Only then the legacy shim (§4bis), behind a toggle, gated on the
+   `getOwnPropertyDescriptor(window, 'ethereum')` check. It is the last thing built, because it is
+   the thing that widens who can reach us.
+5. Reuse `@leekwallet/core` for framing, session and decoding, so the extension cannot end up
    more permissive than the device (the discipline of PROTOCOL.md 6e, applied to a third client).
 
 **What I would not do:**
@@ -291,9 +493,15 @@ Order of work, if it is taken up:
 - **Not a MetaMask keyring PR.** Not a technical decision; it requires MetaMask to ship our code.
 - **Not the QR/airgap route.** No camera. It is a hardware revision and a second protocol, and it
   contradicts the connected design we already have.
-- **Not overwriting `window.ethereum`.** Announce and wait. If a dapp does not implement 6963 we
-  are not there — that is the standard working, and breaking it for reach is what we would
-  criticise in others.
+- **Not *taking* `window.ethereum`.** Never `defineProperty` it non-configurable, never assign
+  over a provider another wallet already installed, never add ourselves to someone else's
+  `.providers` array. Fill the global only when it is empty, and leave it writable so the next
+  wallet can have it. This is the specific behaviour that earns Rabby and Phantom their bug
+  reports, and none of the compatibility benefit requires it.
+- **Not impersonating anyone where the user can see it.** No `rdns: "io.metamask"`, no MetaMask
+  name or fox in a picker entry, no remotely-fetched list of dapps to impersonate on. Rabby does
+  all three; that is the line we do not cross. `isMetaMask: true` on the provider object is a
+  dialect claim read by code, and MetaMask's own docs say the field guarantees nothing.
 - **Not a dapp browser, in the extension or anywhere else.** 6b stands unchanged.
 - **Not moving any confirmation host-side.** The extension is a nicer keyboard and a bigger
   screen. It is still not an authority.
@@ -312,3 +520,21 @@ Stated plainly rather than papered over:
   no key and proxies to hardware.** Not addressed in the public docs.
 - **Whether the Custom EVM Account Snap allowlist has any published reopening date.** The docs say
   only that requests are not being accepted.
+- **How large the non-6963 dapp tail actually is.** Every connect kit that matters supports 6963
+  by default, but we found no measurement of what share of live dapps still detect wallets by
+  hand. The shim is justified on cheapness and on the existence of the tail, not on its size.
+  If someone measures it and it is negligible, drop the shim — the argument is that thin.
+- **MetaMask's stated position on `isMetaMask` impersonation.** We found the technical concession
+  ("non-MetaMask providers may also set this property to `true`") and the deprecation push toward
+  6963, but **no statement approving or forbidding the practice**, and nothing in the extension's
+  terms or brand guidelines that we could locate. So: widely done, technically anticipated,
+  **not sanctioned** — treat it as tolerated, not permitted. Announcing under `io.metamask` is a
+  different matter and is at least a trademark question; we are not doing it, so we did not
+  research it further.
+- **Whether MetaMask reacts to a foreign `isMetaMask` provider.** We read `setGlobalProvider` and
+  saw only the plain assignment and the error log; we did not test two extensions side by side.
+- **Coinbase Wallet's and Phantom's current behaviour.** Both are closed-source extensions; the
+  `providers`-array and global-override claims here come from Coinbase's own docs and from the
+  MetaMask/Phantom issue threads, not from reading their shipping code.
+- **Rabby's `fake_mm_dapps.json` contents.** We read the fetching service, not the list. Whether
+  it is small and targeted or broad is unknown, and it can change without a release.
