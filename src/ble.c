@@ -1,0 +1,438 @@
+/**
+ * BLE GATT transport — see ble.h for the UUIDs and the sync-marker decision.
+ *
+ * Three things here are load-bearing and easy to get wrong:
+ *
+ * 1. **Requests are dispatched off the NimBLE host task.** A signing request
+ *    blocks for as long as the user takes to press a button, and the reply is
+ *    sent as a notification — from the host task. Dispatching inline would have
+ *    the stack waiting on a human while holding the only thread that can talk
+ *    to the radio. So a write is reassembled on the host task (cheap, bounded)
+ *    and the finished frame is handed to a worker over a one-deep queue.
+ *
+ * 2. **The queue is one deep and drops when full.** A peer that pipelines
+ *    requests gets the extras dropped rather than buffered. There are no
+ *    request IDs in this protocol (PROTOCOL.md 3b), so a queue of pending
+ *    requests would produce replies nobody can match to a request, and an
+ *    unbounded one is just a memory exhaustion primitive.
+ *
+ * 3. **Disconnect tears the session down.** Session state and nonce counters
+ *    belong to a connection; carrying them across would let the next peer
+ *    inherit a confirmed session it never took part in.
+ */
+
+#include "ble.h"
+
+/* Before the check, not after: CONFIG_BT_NIMBLE_ENABLED lives here, and
+ * testing it first silently compiles the no-radio stub into a build that has a
+ * radio — which looks like a successful build and a device that never
+ * advertises. The host suite has no sdkconfig.h, hence the guard. */
+#ifndef LEEK_HOST_TEST
+#include "sdkconfig.h"
+#endif
+
+#if defined(CONFIG_BT_NIMBLE_ENABLED)
+
+#include <string.h>
+
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
+
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+#include "host/ble_hs.h"
+#include "host/util/util.h"
+#include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
+
+#include "ble-chunk.h"
+#include "protocol.h"
+#include "session.h"
+
+static const char *TAG = "ble";
+
+#define BLE_DEVICE_NAME "LeekWallet"
+
+/* 6c65656b-7761-6c6c-6574-0000000000NN — "leekwallet" in ASCII, so the UUID is
+ * recognisable in a scanner log. NimBLE takes the bytes little-endian. */
+#define LEEK_UUID(last)                                                     \
+    BLE_UUID128_INIT((last), 0x00, 0x00, 0x00, 0x00, 0x00, 0x74, 0x65,      \
+                     0x6c, 0x6c, 0x61, 0x77, 0x6b, 0x65, 0x65, 0x6c)
+
+static const ble_uuid128_t svc_uuid    = LEEK_UUID(0x01);
+static const ble_uuid128_t rx_chr_uuid = LEEK_UUID(0x02);   /* host → device */
+static const ble_uuid128_t tx_chr_uuid = LEEK_UUID(0x03);   /* device → host */
+
+static uint8_t  addr_type;
+static uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t tx_val_handle;
+static bool     running;
+static bool     host_task_started;
+
+static BleReassembler rx;
+
+/* One in flight. See note 2 above. */
+typedef struct {
+    uint16_t len;
+    uint8_t  data[PROTOCOL_MAX_FRAME];
+} BleFrameJob;
+
+static QueueHandle_t   work_queue;
+static TaskHandle_t    work_task;
+static BleFrameJob     job;          /* worker-owned scratch, not shared */
+
+/* ------------------------------------------------------------- outbound */
+
+static bool notify_chunk(void *ctx, const uint8_t *chunk, size_t len)
+{
+    (void)ctx;
+
+    uint16_t handle = conn_handle;
+    if (handle == BLE_HS_CONN_HANDLE_NONE) {
+        return false;
+    }
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(chunk, len);
+    if (!om) {
+        ESP_LOGW(TAG, "Out of mbufs; dropping a reply chunk");
+        return false;
+    }
+
+    int rc = ble_gatts_notify_custom(handle, tx_val_handle, om);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "notify failed: %d", rc);
+        return false;
+    }
+    return true;
+}
+
+void ble_transport_write_frame(const uint8_t *frame, size_t len)
+{
+    uint16_t handle = conn_handle;
+    if (handle == BLE_HS_CONN_HANDLE_NONE) {
+        return;
+    }
+
+    /* The negotiated MTU, not an assumed one. Plenty of stacks never negotiate
+     * past the 23-byte default, which leaves 19 payload bytes per chunk — the
+     * case the chunking layer exists for. */
+    uint16_t mtu = ble_att_mtu(handle);
+    if (mtu < 23) {
+        mtu = 23;
+    }
+
+    if (!ble_chunk_split(frame, len, mtu, notify_chunk, NULL)) {
+        ESP_LOGW(TAG, "Reply truncated; the host will see no complete frame");
+    }
+}
+
+/* -------------------------------------------------------------- inbound */
+
+static void ble_work_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        if (xQueueReceive(work_queue, &job, portMAX_DELAY) == pdTRUE) {
+            protocol_handle_frame(job.data, job.len);
+        }
+    }
+}
+
+static int on_rx_write(uint16_t conn, uint16_t attr_handle,
+                       struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn; (void)attr_handle; (void)arg;
+
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+
+    uint8_t  chunk[BLE_CHUNK_MAX_FRAME];
+    uint16_t got = 0;
+
+    /* A write longer than any chunk we would accept is refused without being
+     * copied anywhere. */
+    if (OS_MBUF_PKTLEN(ctxt->om) > sizeof(chunk)) {
+        ble_chunk_reset(&rx);
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    if (ble_hs_mbuf_to_flat(ctxt->om, chunk, sizeof(chunk), &got) != 0) {
+        ble_chunk_reset(&rx);
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+
+    switch (ble_chunk_push(&rx, chunk, got)) {
+        case BLE_CHUNK_NEED_MORE:
+            return 0;
+
+        case BLE_CHUNK_ERROR:
+            /* Deliberately not an error frame: at this point we do not have a
+             * frame, so there is nothing the peer could correlate a reply
+             * with. It resends from sequence zero or gets nothing. */
+            ESP_LOGW(TAG, "Discarded a malformed chunk");
+            return BLE_ATT_ERR_INVALID_PDU;
+
+        case BLE_CHUNK_FRAME_READY: {
+            /* Host-task-owned staging. Static because it is larger than this
+             * stack should carry; the queue copies it, so the worker never
+             * reads it. */
+            static BleFrameJob staged;
+            staged.len = (uint16_t)rx.len;
+            memcpy(staged.data, rx.buf, rx.len);
+            ble_chunk_reset(&rx);
+
+            if (xQueueSend(work_queue, &staged, 0) != pdTRUE) {
+                ESP_LOGW(TAG, "Busy; dropped a request");
+            }
+            return 0;
+        }
+    }
+    return BLE_ATT_ERR_UNLIKELY;
+}
+
+static const struct ble_gatt_svc_def gatt_services[] = {
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &svc_uuid.u,
+        .characteristics = (struct ble_gatt_chr_def[]) {
+            {
+                .uuid = &rx_chr_uuid.u,
+                .access_cb = on_rx_write,
+                /* Write-without-response as well: it is the fast path every
+                 * client uses for bulk chunks, and the chunk header already
+                 * detects a lost write. */
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+            },
+            {
+                .uuid = &tx_chr_uuid.u,
+                .access_cb = on_rx_write,   /* never read; notify only */
+                .flags = BLE_GATT_CHR_F_NOTIFY,
+                .val_handle = &tx_val_handle,
+            },
+            { 0 }
+        },
+    },
+    { 0 }
+};
+
+/* ----------------------------------------------------------------- GAP */
+
+static int on_gap_event(struct ble_gap_event *event, void *arg);
+
+static void ble_advertise(void)
+{
+    struct ble_hs_adv_fields fields;
+    struct ble_gap_adv_params adv_params;
+
+    memset(&fields, 0, sizeof(fields));
+    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.name = (uint8_t *)BLE_DEVICE_NAME;
+    fields.name_len = strlen(BLE_DEVICE_NAME);
+    fields.name_is_complete = 1;
+    fields.uuids128 = (ble_uuid128_t *)&svc_uuid;
+    fields.num_uuids128 = 1;
+    fields.uuids128_is_complete = 1;
+
+    int rc = ble_gap_adv_set_fields(&fields);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "adv_set_fields failed: %d", rc);
+        return;
+    }
+
+    memset(&adv_params, 0, sizeof(adv_params));
+    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
+    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    adv_params.itvl_min = 160;   /* 100 ms */
+    adv_params.itvl_max = 160;
+
+    rc = ble_gap_adv_start(addr_type, NULL, BLE_HS_FOREVER, &adv_params,
+                           on_gap_event, NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "adv_start failed: %d", rc);
+    }
+}
+
+static int on_gap_event(struct ble_gap_event *event, void *arg)
+{
+    (void)arg;
+
+    switch (event->type) {
+        case BLE_GAP_EVENT_CONNECT:
+            if (event->connect.status == 0) {
+                conn_handle = event->connect.conn_handle;
+                ble_chunk_reset(&rx);
+                /* A new peer starts from nothing. Whatever the last one
+                 * negotiated is not theirs to continue. */
+                session_reset();
+                /* The MTU is logged at connect and again if it changes: the
+                 * host cannot read the negotiated value on any btleplug
+                 * backend, so this line is how bring-up sees it. Chunking uses
+                 * the negotiated value, never an assumed one — a notification
+                 * larger than the link MTU is truncated silently and reaches
+                 * the host as a corrupt frame. */
+                ESP_LOGI(TAG, "Connected; MTU %d", ble_att_mtu(conn_handle));
+            } else if (running) {
+                ble_advertise();
+            }
+            return 0;
+
+        case BLE_GAP_EVENT_DISCONNECT:
+            ESP_LOGI(TAG, "Disconnected: %d", event->disconnect.reason);
+            conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            ble_chunk_reset(&rx);
+            session_reset();
+            if (running) {
+                ble_advertise();
+            }
+            return 0;
+
+        case BLE_GAP_EVENT_MTU:
+            ESP_LOGI(TAG, "MTU now %d", event->mtu.value);
+            return 0;
+
+        default:
+            return 0;
+    }
+}
+
+static void on_sync(void)
+{
+    if (ble_hs_util_ensure_addr(0) != 0) {
+        ESP_LOGE(TAG, "No usable BLE address");
+        return;
+    }
+    if (ble_hs_id_infer_auto(0, &addr_type) != 0) {
+        ESP_LOGE(TAG, "Could not determine address type");
+        return;
+    }
+    if (running) {
+        ble_advertise();
+    }
+}
+
+static void on_reset(int reason)
+{
+    ESP_LOGW(TAG, "BLE stack reset: %d", reason);
+    conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    ble_chunk_reset(&rx);
+}
+
+static void ble_host_task(void *param)
+{
+    (void)param;
+    nimble_port_run();
+    nimble_port_freertos_deinit();
+}
+
+/* ------------------------------------------------------------- lifecycle */
+
+bool ble_transport_start(void)
+{
+    if (running) {
+        return true;
+    }
+
+    if (!work_queue) {
+        work_queue = xQueueCreate(1, sizeof(BleFrameJob));
+        if (!work_queue) {
+            ESP_LOGE(TAG, "Out of memory for the request queue");
+            return false;
+        }
+    }
+    if (!work_task &&
+        xTaskCreate(ble_work_task, "bleproto", 4096, NULL, 4, &work_task) != pdPASS) {
+        ESP_LOGE(TAG, "Could not start the BLE request task");
+        return false;
+    }
+
+    if (nimble_port_init() != ESP_OK) {
+        ESP_LOGE(TAG, "nimble_port_init failed");
+        return false;
+    }
+
+    ble_hs_cfg.sync_cb  = on_sync;
+    ble_hs_cfg.reset_cb = on_reset;
+
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+    ble_svc_gap_device_name_set(BLE_DEVICE_NAME);
+
+    int rc = ble_gatts_count_cfg(gatt_services);
+    if (rc == 0) {
+        rc = ble_gatts_add_svcs(gatt_services);
+    }
+    if (rc != 0) {
+        ESP_LOGE(TAG, "GATT registration failed: %d", rc);
+        nimble_port_deinit();
+        return false;
+    }
+
+    ble_chunk_reset(&rx);
+    conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    running = true;
+
+    if (!host_task_started) {
+        nimble_port_freertos_init(ble_host_task);
+        host_task_started = true;
+    }
+
+    ESP_LOGI(TAG, "BLE transport up, advertising as '%s'", BLE_DEVICE_NAME);
+    return true;
+}
+
+void ble_transport_stop(void)
+{
+    if (!running) {
+        return;
+    }
+
+    running = false;
+    ble_gap_adv_stop();
+    if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    }
+    ble_chunk_reset(&rx);
+
+    nimble_port_stop();
+    nimble_port_deinit();
+    host_task_started = false;
+
+    ESP_LOGI(TAG, "BLE transport down; not advertising");
+}
+
+bool ble_transport_running(void)
+{
+    return running;
+}
+
+#elif defined(LEEK_HOST_TEST)
+
+/* Host stand-in: no radio, but the on/off state is real, so the host suite can
+ * assert that selecting USB leaves BLE off. The chunking and dispatch this file
+ * wraps are tested directly — see sim/test_ble_chunk.c. */
+static bool running;
+
+bool ble_transport_start(void)   { running = true;  return true; }
+void ble_transport_stop(void)    { running = false; }
+bool ble_transport_running(void) { return running; }
+void ble_transport_write_frame(const uint8_t *frame, size_t len)
+{
+    (void)frame; (void)len;
+}
+
+#else
+
+/* Built without a Bluetooth stack: BLE cannot be selected, and saying so is
+ * better than a transport that reports success and never advertises. */
+bool ble_transport_start(void)   { return false; }
+void ble_transport_stop(void)    { }
+bool ble_transport_running(void) { return false; }
+void ble_transport_write_frame(const uint8_t *frame, size_t len)
+{
+    (void)frame; (void)len;
+}
+
+#endif

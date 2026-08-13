@@ -55,11 +55,47 @@ device is an attack surface.
 | `0x7F` | Error |
 
 **BLE chunking.** GATT writes cap at MTU−3. Frames are split into chunks with a 1-byte header:
-bit 7 = "more follows", bits 0-6 = sequence. The receiver reassembles before parsing. USB CDC
-uses the same frames without chunking. Everything above this layer is transport-blind.
+bit 7 = "more follows", bits 0-6 = sequence, wrapping at 128. The receiver reassembles before
+parsing. USB CDC uses the same frames without chunking. Everything above this layer is
+transport-blind. Chunking is the *only* thing BLE adds; a transport that altered anything else
+would be a second protocol.
 
-**Limits.** Max frame 4 KB. The device rejects anything larger without buffering it — a signing
-device must never let the host dictate an allocation size.
+The device chunks to the MTU it actually negotiated (`ble_att_mtu()` on the connection handle),
+never an assumed one, and logs that MTU at connect. Chunking smaller than the link allows costs
+packets; chunking larger is silently truncated by the stack and reaches the peer as a *corrupt*
+frame rather than a short one. Hosts that cannot read the negotiated MTU (btleplug exposes no
+accessor on any backend) should assume the 23-byte floor and chunk at 19 payload bytes, which is
+always safe.
+
+**The sync marker is USB-only.** `src/protocol.c` emits and requires `'L','K'` before every frame
+because that port is shared with console log output, so a receiver has to be able to find a frame
+in a stream that also carries text. A GATT characteristic carries nothing but our frames and
+already delimits every write, so **BLE frames start at `len:u16` with no marker** — which is also
+what `framing.ts` encodes, being transport-blind. Two bytes is over 10% of a 19-byte payload
+budget at MTU 23, so the cost is not nominal either. Concretely:
+
+| Transport | On the wire |
+|---|---|
+| USB-Serial-JTAG | `'L' 'K'` ‖ len:u16 ‖ type ‖ payload |
+| BLE GATT | chunk header ‖ (len:u16 ‖ type ‖ payload, split across chunks) |
+
+The Rust serial transport adds and strips the marker; the BLE client must not. A mismatch here
+presents as a corrupt-frame bug rather than a convention disagreement, which is why it is
+tabulated rather than described.
+
+**GATT layout** (ROADMAP T25):
+
+| | UUID | Properties |
+|---|---|---|
+| Service | `6c65656b-7761-6c6c-6574-000000000001` | — |
+| Host → device | `6c65656b-7761-6c6c-6574-000000000002` | Write, Write Without Response |
+| Device → host | `6c65656b-7761-6c6c-6574-000000000003` | Notify |
+
+**Limits.** Max frame 4 KB by specification; the device's own buffer is 512 bytes and it refuses
+anything larger. Either way the rejection happens on the declared length, before the bytes are
+buffered — a signing device must never let the peer dictate an allocation size. On BLE that check
+runs on the first chunk, and a chunk that is out of sequence, empty, overshoots the declared
+length or falls short of it resets reassembly rather than being patched around.
 
 ---
 
@@ -583,12 +619,10 @@ permissive than the device:
   `uint8_t` (257 must not become 1), and passphrases are printable ASCII, so no
   wallet exists that is reachable from the app and not from the device.
 
-**The sync marker is a documentation bug, not a mock bug.** `protocol.c` requires
-and emits `'L','K'` before every frame because it shares the port with console
-output; section 2 above describes the frame starting at `len:u16`, and
-`framing.ts` implements it that way. The Rust transport adds and strips the
-marker, so both are correct at their own layer — but section 2 should say so,
-because anything else bridging to real hardware has to know.
+**The sync marker was a documentation bug, not a mock bug — now fixed.** Section 2
+above now states where the marker is present (USB) and where it is not (BLE),
+with the byte layout for each, because anything bridging to real hardware has to
+know and a mismatch looks like corruption rather than disagreement.
 
 ## 7. Versioning
 

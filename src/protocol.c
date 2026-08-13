@@ -46,7 +46,7 @@ static const char *TAG = "protocol";
 #define SYNC0 'L'
 #define SYNC1 'K'
 
-#define MAX_FRAME 512          /* far above anything the device answers today */
+#define MAX_FRAME PROTOCOL_MAX_FRAME  /* above anything the device answers today */
 #define RX_CHUNK  64
 
 /* Frame types, matching app/packages/core/src/framing.ts */
@@ -71,22 +71,67 @@ static const char *TAG = "protocol";
 static uint8_t rx_buf[MAX_FRAME];
 static size_t  rx_len = 0;
 
+/* Where replies go. NULL means the USB endpoint below; BLE installs its own
+ * writer when it becomes the selected transport (see transport.c). Only one is
+ * ever installed, because only one transport is ever live — PROTOCOL.md 3b. */
+static ProtocolWriter tx_writer = NULL;
+
+/* Whether the USB port is an endpoint at all. Cleared while BLE is selected. */
+static bool rx_enabled = true;
+
+void protocol_set_rx_enabled(bool enabled)
+{
+    rx_enabled = enabled;
+    rx_len = 0;
+}
+
+void protocol_set_writer(ProtocolWriter writer)
+{
+    tx_writer = writer;
+}
+
+/**
+ * The sync marker is a property of the USB port, not of the protocol.
+ *
+ * This port also carries console logs, so a frame has to be findable in a
+ * stream of text. BLE does not share its channel with anything, and GATT
+ * already delimits every write, so the marker is emitted and required here and
+ * nowhere else. See PROTOCOL.md section 2.
+ */
+static void usb_write_frame(const uint8_t *frame, size_t len)
+{
+    static const uint8_t sync[2] = { SYNC0, SYNC1 };
+
+    usb_serial_jtag_write_bytes(sync, sizeof(sync), portMAX_DELAY);
+    usb_serial_jtag_write_bytes(frame, len, portMAX_DELAY);
+    usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
+}
+
 static void send_frame(uint8_t type, const uint8_t *payload, size_t len)
 {
-    uint8_t header[4];
+    /* One assembled frame, so every transport ships the identical bytes and
+     * the marker stays the USB writer's business. Static rather than on the
+     * stack: this runs on a 4 KB task. */
+    static uint8_t tx_buf[MAX_FRAME];
+
     size_t body = len + 1;      /* type byte counts toward the length */
-
-    header[0] = SYNC0;
-    header[1] = SYNC1;
-    header[2] = (uint8_t)(body >> 8);
-    header[3] = (uint8_t)body;
-
-    usb_serial_jtag_write_bytes(header, sizeof(header), portMAX_DELAY);
-    usb_serial_jtag_write_bytes(&type, 1, portMAX_DELAY);
-    if (len) {
-        usb_serial_jtag_write_bytes(payload, len, portMAX_DELAY);
+    if (body + 2 > sizeof(tx_buf)) {
+        ESP_LOGE(TAG, "Refusing to send an oversized frame");
+        return;
     }
-    usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
+
+    tx_buf[0] = (uint8_t)(body >> 8);
+    tx_buf[1] = (uint8_t)body;
+    tx_buf[2] = type;
+    if (len) {
+        memcpy(tx_buf + 3, payload, len);
+    }
+
+    if (tx_writer) {
+        tx_writer(tx_buf, body + 2);
+    } else {
+        usb_write_frame(tx_buf, body + 2);
+    }
 }
 
 /**
@@ -782,6 +827,68 @@ static void dispatch(const uint8_t *payload, size_t len)
     }
 }
 
+/**
+ * Handle one complete frame: len:u16 ‖ type ‖ body, exactly as encodeFrame()
+ * produces it and with no transport decoration of any kind.
+ *
+ * This is the single entry point every transport funnels into — USB after it
+ * has found its sync marker, BLE after reassembly. Nothing below here knows or
+ * can ask which one it was, which is what keeps the two honest: a divergence
+ * would have to be written deliberately rather than drifting in.
+ *
+ * `frame` must be writable, because an encrypted body is decrypted in place.
+ */
+void protocol_handle_frame(uint8_t *frame, size_t len)
+{
+    if (len < 4) {
+        send_error(ERR_MALFORMED, "short frame");
+        return;
+    }
+
+    size_t body = ((size_t)frame[0] << 8) | frame[1];
+    if (body < 1 || body + 2 != len) {
+        /* The declared length has to agree with what arrived. A transport that
+         * hands over a frame it did not verify is a transport we cannot trust
+         * to have found a frame boundary at all. */
+        send_error(ERR_MALFORMED, "frame length mismatch");
+        return;
+    }
+
+    uint8_t  type    = frame[2];
+    uint8_t *payload = frame + 3;
+    size_t   payload_len = body - 1;
+
+    if (type == FRAME_REQUEST) {
+        /* Plaintext is only ever the handshake. */
+        uint8_t out[128];
+        size_t  out_len = 0;
+        CborItem probe;
+        char method[32] = {0};
+
+        if (cbor_map_find(payload, payload_len, "method", &probe) &&
+            cbor_text_copy(&probe, method, sizeof(method)) &&
+            strcmp(method, "hello") == 0) {
+            if (handle_hello(payload, payload_len, out, sizeof(out), &out_len)) {
+                send_frame(FRAME_RESPONSE, out, out_len);
+            } else {
+                send_session_error(ERR_MALFORMED, "handshake failed");
+            }
+        } else {
+            dispatch(payload, payload_len);
+        }
+    } else if (type == FRAME_ENC_REQUEST) {
+        /* Decrypt in place, dispatch, re-encrypt the reply. */
+        int plain = session_decrypt(payload, payload_len);
+        if (plain < 0) {
+            send_session_error(ERR_SESSION, "decrypt failed");
+        } else {
+            dispatch(payload, (size_t)plain);
+        }
+    } else {
+        send_error(ERR_MALFORMED, "unexpected frame type");
+    }
+}
+
 /* Pull complete frames out of the receive buffer, resynchronising on garbage. */
 static void consume(void)
 {
@@ -811,36 +918,8 @@ static void consume(void)
 
         if (rx_len < 4 + body) return;      /* wait for the rest */
 
-        uint8_t type = rx_buf[4];
-        if (type == FRAME_REQUEST) {
-            /* Plaintext is only ever the handshake. */
-            uint8_t out[128];
-            size_t  out_len = 0;
-            CborItem probe;
-            char method[32] = {0};
-
-            if (cbor_map_find(rx_buf + 5, body - 1, "method", &probe) &&
-                cbor_text_copy(&probe, method, sizeof(method)) &&
-                strcmp(method, "hello") == 0) {
-                if (handle_hello(rx_buf + 5, body - 1, out, sizeof(out), &out_len)) {
-                    send_frame(FRAME_RESPONSE, out, out_len);
-                } else {
-                    send_session_error(ERR_MALFORMED, "handshake failed");
-                }
-            } else {
-                dispatch(rx_buf + 5, body - 1);
-            }
-        } else if (type == FRAME_ENC_REQUEST) {
-            /* Decrypt in place, dispatch, re-encrypt the reply. */
-            int plain = session_decrypt(rx_buf + 5, body - 1);
-            if (plain < 0) {
-                send_session_error(ERR_SESSION, "decrypt failed");
-            } else {
-                dispatch(rx_buf + 5, (size_t)plain);
-            }
-        } else {
-            send_error(ERR_MALFORMED, "unexpected frame type");
-        }
+        /* Past the marker, the frame is the transport-blind one. */
+        protocol_handle_frame(rx_buf + 2, body + 2);
 
         memmove(rx_buf, rx_buf + 4 + body, rx_len - (4 + body));
         rx_len -= 4 + body;
@@ -857,6 +936,14 @@ static bool rx_pump(void)
     int n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk), pdMS_TO_TICKS(100));
     if (n <= 0) {
         return false;
+    }
+    if (!rx_enabled) {
+        /* BLE is the selected transport, so this port is not an endpoint right
+         * now. The bytes are still drained — leaving them to back up would
+         * mean a stale request executing the moment USB is reselected — but
+         * nothing is parsed and nothing is answered. */
+        rx_len = 0;
+        return true;
     }
     if (rx_len + (size_t)n > sizeof(rx_buf)) {
         /* Never grow past the fixed buffer on the host's say-so. */
@@ -878,6 +965,11 @@ static void protocol_task(void *arg)
     for (;;) {
         rx_pump();
     }
+}
+
+void protocol_reset_rx(void)
+{
+    rx_len = 0;
 }
 
 #ifdef LEEK_HOST_TEST

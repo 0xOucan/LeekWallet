@@ -20,9 +20,12 @@
 #include "fake_oled.h"
 #include "fake_wallet.h"
 
+#include "ble.h"
+#include "transport.h"
 #include "ui.h"
 #include "pin.h"
 #include "button.h"
+bool fake_protocol_rx_enabled(void);
 #include "mnemonic-entry.h"
 #include "leek-wallet.h"
 
@@ -607,6 +610,44 @@ static void test_settings_has_no_wifi_entry(void)
     CHECK(seen_back, "never reached the end of the settings menu");
 }
 
+
+/* ============================================================================
+ * T57 - the transport is chosen on the device, and only one is ever live
+ * ============================================================================ */
+
+static void test_settings_selects_one_transport(void)
+{
+    printf("== settings picks USB or BLE, and never both (T57)\n");
+    boot_unlocked_with_seed();
+    go(SCREEN_SETTINGS);
+
+    transport_init();
+    CHECK(transport_get() == TRANSPORT_USB, "the device did not default to USB");
+    CHECK(!ble_transport_running(), "BLE was advertising before it was chosen");
+
+    /* Reach the entry the way a user does. There is one item, not a pair of
+     * radio toggles: a screen offering "BLE [ON]" alongside a live USB link
+     * would be offering a state the device must never be in. */
+    bool found = false;
+    for (int i = 0; i < 40 && !found; i++) {
+        found = fake_oled_contains("> Link USB");
+        if (!found) press(BUTTON_DOWN);
+    }
+    CHECK(found, "no transport entry in the settings menu");
+    if (!found) return;
+
+    press(BUTTON_ACCEPT);
+    CHECK(transport_get() == TRANSPORT_BLE, "accepting did not switch to BLE");
+    CHECK(ble_transport_running(), "BLE was selected but is not up");
+    CHECK(!fake_protocol_rx_enabled(), "the USB endpoint stayed live under BLE");
+    CHECK_SCREEN(fake_oled_contains("Link BLE"), "the screen still claims USB");
+
+    press(BUTTON_ACCEPT);
+    CHECK(transport_get() == TRANSPORT_USB, "accepting again did not return to USB");
+    CHECK(!ble_transport_running(), "BLE kept advertising after USB was chosen");
+    CHECK(fake_protocol_rx_enabled(), "the cable stayed deaf after being chosen");
+}
+
 /* ============================================================================
  * T4 / AUDIT S8e - Change PIN is wired up and asks for three PINs
  * ============================================================================ */
@@ -795,6 +836,7 @@ int main(void)
 
     test_settings_has_no_wifi_entry();
 
+    test_settings_selects_one_transport();
     test_change_pin_is_reachable_and_works();
     test_change_pin_rejects_a_wrong_current_pin();
     test_change_pin_catches_a_mismatch();

@@ -39,6 +39,7 @@
 #include "ui.h"
 #include "device-wipe.h"
 #include "protocol.h"
+#include "transport.h"
 
 static const char *TAG = "leekwallet";
 
@@ -105,6 +106,12 @@ void app_main(void)
 
     /* Protocol endpoint over the same USB cable used for flashing */
     protocol_start();
+
+    /* Then select the one transport that may be live. Defaults to USB, and
+     * explicitly leaves BLE off rather than assuming it: a wallet that
+     * advertises without being asked to is discoverable by anyone in the room
+     * (PROTOCOL.md 3b, ROADMAP T57). */
+    transport_init();
 
     /* Start UI task */
     BaseType_t task_ret = xTaskCreate(
