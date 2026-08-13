@@ -23,3 +23,7 @@ secure_boot_signing_key.pem
 # produced four config faults in the secure environment.
 sdkconfig.esp32s3
 sdkconfig.esp32s3-*
+
+# Agent worktrees. These are full checkouts of this repo on other branches;
+# committing one would nest the repository inside itself.
+.claude/worktrees/

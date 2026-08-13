@@ -15,9 +15,11 @@ import {
   derivationsInvalidated, UNKNOWN_STATUS, type DeviceStatus,
 } from "../packages/core/src/device-state.ts";
 import { isTauri, listPorts, TauriSerialTransport } from "./tauri-transport.ts";
-import { createPublicClient, http, parseEther, serializeTransaction, isAddress,
-         type Hex, type Address } from "viem";
-import { sepolia } from "viem/chains";
+import { createPublicClient, defineChain, http, parseEther, serializeTransaction,
+         isAddress, type Chain, type Hex, type Address } from "viem";
+import {
+  CHAINS, TOKEN_HINT_NOTICE, formatUnits, getChain, tokenHint, type ChainInfo,
+} from "../packages/core/src/chains.ts";
 import {
   deriveSession, generateKeypair, Session,
 } from "../packages/core/src/session.ts";
@@ -458,6 +460,98 @@ async function loadAddresses(): Promise<void> {
   log(`derived ${addresses.length} addresses`);
 }
 
+/* ------------------------------------------------------------------ chains */
+
+/*
+ * Chain selection (T51). The registry in packages/core/src/chains.ts is the
+ * only source of chain facts; nothing about a network is written down here.
+ *
+ * The choice is persisted because it is the single field a user is most likely
+ * to get wrong by inattention: the same address exists on every EVM chain, and
+ * a signature that was meant for a testnet but was made on mainnet spends real
+ * money. Restoring the last choice is not merely convenient, it means the
+ * selector reads the same on every launch instead of quietly resetting.
+ */
+const CHAIN_KEY = "leek.chainId";
+
+/** Sepolia: the default has to be a testnet, since a mis-click here costs money. */
+const DEFAULT_CHAIN_ID = 11155111;
+
+function storedChainId(): number {
+  const raw = localStorage.getItem(CHAIN_KEY);
+  const id = raw === null ? NaN : Number(raw);
+  return getChain(id) ? id : DEFAULT_CHAIN_ID;
+}
+
+let chainId = storedChainId();
+
+/** Never undefined: storedChainId() only returns IDs the registry knows. */
+function activeChain(): ChainInfo {
+  return getChain(chainId) ?? (getChain(DEFAULT_CHAIN_ID) as ChainInfo);
+}
+
+/**
+ * The registry entry as viem wants it. Built per call rather than cached: viem
+ * only needs id, currency and a URL, and a stale cache here would mean signing
+ * for one chain while broadcasting to another.
+ */
+function viemChain(info: ChainInfo, endpoint: string): Chain {
+  return defineChain({
+    id: info.id,
+    name: info.name,
+    nativeCurrency: info.nativeCurrency,
+    rpcUrls: { default: { http: [endpoint] } },
+    ...(info.testnet ? { testnet: true } : {}),
+  });
+}
+
+/** Rebuild the RPC list for whatever chain is selected, preserving nothing. */
+function populateRpcs(info: ChainInfo): void {
+  const select = $("rpc") as HTMLSelectElement;
+  select.textContent = "";
+  for (const url of info.rpcUrls) {
+    const opt = document.createElement("option");
+    opt.value = url;
+    // The host, not the full URL: the user is choosing who to tell, and the
+    // path is noise in that decision.
+    opt.textContent = new URL(url).host;
+    select.appendChild(opt);
+  }
+}
+
+function applyChain(info: ChainInfo): void {
+  populateRpcs(info);
+  $("amountlabel").textContent = `Amount (${info.nativeCurrency.symbol})`;
+  $("chainnote").dataset["net"] = info.testnet ? "testnet" : "mainnet";
+  $("chainnote").textContent = info.testnet
+    ? `Chain ${info.id}. Testnet — this money is not worth anything. Check the chain ID on the device.`
+    : `Chain ${info.id}. MAINNET — real funds. Check the chain ID on the device before approving.`;
+  renderPreview();
+}
+
+function initChainSelector(): void {
+  const select = $("chain") as HTMLSelectElement;
+  select.textContent = "";
+  for (const c of CHAINS) {
+    const opt = document.createElement("option");
+    opt.value = String(c.id);
+    opt.textContent = `${c.name} (${c.id})${c.testnet ? " — testnet" : ""}`;
+    select.appendChild(opt);
+  }
+  select.value = String(chainId);
+  select.addEventListener("change", () => {
+    const picked = getChain(Number(select.value));
+    // An unknown value can only come from a tampered DOM; ignore rather than
+    // sign against a chain nothing in the app can name.
+    if (!picked) return;
+    chainId = picked.id;
+    localStorage.setItem(CHAIN_KEY, String(chainId));
+    applyChain(picked);
+    log(`chain: ${picked.name} (${picked.id})`);
+  });
+  applyChain(activeChain());
+}
+
 /* ---------------------------------------------------------------- preview */
 
 /**
@@ -489,7 +583,7 @@ function renderPreview(fee?: { gas: bigint; maxFeePerGas: bigint }): void {
   }
 
   const view: TxInterpretation = interpretTransaction({
-    chainId: sepolia.id,
+    chainId,
     to: toValue,
     value,
     ...(fee ? { gas: fee.gas, maxFeePerGas: fee.maxFeePerGas } : {}),
@@ -508,14 +602,29 @@ function renderPreview(fee?: { gas: bigint; maxFeePerGas: bigint }): void {
   };
   row("App reads it as", view.action);
   if (view.recipient) row("To", chunk(view.recipient));
-  row("Value", `${view.valueEther} ETH`);
+  row("Value", `${view.valueEther} ${activeChain().nativeCurrency.symbol}`);
   row("Chain", view.chainName ? `${view.chainId} (${view.chainName})` : String(view.chainId));
   // Raw units, never scaled: the device cannot call decimals() and neither can
   // this app claim to know them.
   if (view.tokenAmountRaw !== undefined) {
     row("Token amount", `${view.tokenAmountRaw} raw units (decimals unknown)`);
   }
-  if (view.contract) row("Token contract", chunk(view.contract));
+  /* The contract address comes first and is never replaced by a name. A hint,
+   * if there is one, is an extra line that says out loud that nothing checked
+   * it — a host-supplied symbol relabelling a worthless contract is exactly
+   * the attack PROTOCOL.md 6d describes, and this app is that host. */
+  if (view.contract) {
+    row("Token contract", chunk(view.contract));
+    const hint = tokenHint(view.chainId, view.contract);
+    if (hint) {
+      row(
+        "Possibly (UNVERIFIED)",
+        view.tokenAmountRaw === undefined
+          ? `${hint.symbol}?`
+          : `${formatUnits(view.tokenAmountRaw, hint.decimals)} ${hint.symbol}? — ${TOKEN_HINT_NOTICE}`,
+      );
+    }
+  }
   row(
     "Max fee",
     view.maxFeeEther === undefined
@@ -584,7 +693,11 @@ async function sign(): Promise<void> {
      * An editable field would mean allowing any host, which is precisely what
      * a compromised dependency would want. */
     const endpoint = ($("rpc") as HTMLSelectElement).value;
-    const rpc = createPublicClient({ chain: sepolia, transport: http(endpoint) });
+    /* Snapshot the chain for the whole of this signing run. Re-reading the
+     * selector after the device has been asked would let a mid-flight change
+     * broadcast to a network other than the one that was signed for. */
+    const chain = activeChain();
+    const rpc = createPublicClient({ chain: viemChain(chain, endpoint), transport: http(endpoint) });
     log(`fetching nonce and fees via ${new URL(endpoint).host}…`);
 
     const [nonce, fees] = await Promise.all([
@@ -601,7 +714,7 @@ async function sign(): Promise<void> {
      * approval is worth saying twice. Nothing here blocks: refusing to send
      * would only teach the user that the app decides what is safe. */
     renderPreview({ gas: 21000n, maxFeePerGas });
-    for (const w of interpretTransaction({ chainId: sepolia.id, to: toValue, value }).warnings) {
+    for (const w of interpretTransaction({ chainId: chain.id, to: toValue, value }).warnings) {
       log(`warning: ${w.message}`);
     }
 
@@ -618,7 +731,7 @@ async function sign(): Promise<void> {
 
     const SIGN_TIMEOUT_MS = 150000;   // the device gives the user 120 s
     const tx = {
-      chainId: sepolia.id,
+      chainId: chain.id,
       nonce,
       to: toValue as Address,
       value,
@@ -630,7 +743,7 @@ async function sign(): Promise<void> {
 
     const reply = await client.call("signTransaction", {
       index: selectedIndex,
-      chainId: BigInt(sepolia.id) <= 0xffffffffn ? sepolia.id : 0,
+      chainId: chain.id,
       nonce,
       to: bytes(toValue),
       value: wei(value),
@@ -666,7 +779,7 @@ async function sign(): Promise<void> {
 
     log(`sent: ${hash}`);
     $("txresult").innerHTML =
-      `Sent. <a href="https://sepolia.etherscan.io/tx/${hash}" target="_blank" rel="noreferrer">View on Etherscan</a>`;
+      `Sent. <a href="${chain.explorerUrl}/tx/${hash}" target="_blank" rel="noreferrer">View on explorer</a>`;
   } catch (e) {
     if (e instanceof DeviceError && e.code === 0x0200) {
       log("rejected on the device");
@@ -725,6 +838,7 @@ function describeEnvironment(): void {
 }
 
 describeEnvironment();
+initChainSelector();
 
 $("connect").addEventListener("click", () => void connect());
 $("unlock").addEventListener("click", () => void unlock());

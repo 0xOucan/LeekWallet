@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://ethereum-sepolia-rpc.publicnode.com https://sepolia.gateway.tenderly.co https://sepolia.drpc.org https://0xrpc.io"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://0xrpc.io https://arbitrum-one-rpc.publicnode.com https://arbitrum.drpc.org https://base-rpc.publicnode.com https://base-sepolia-rpc.publicnode.com https://base-sepolia.drpc.org https://base.drpc.org https://bsc-rpc.publicnode.com https://bsc.drpc.org https://eth.drpc.org https://ethereum-holesky-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://ethereum-sepolia-rpc.publicnode.com https://holesky.drpc.org https://optimism-rpc.publicnode.com https://optimism.drpc.org https://polygon-bor-rpc.publicnode.com https://polygon.drpc.org https://sepolia.drpc.org https://sepolia.gateway.tenderly.co"
     },
     "withGlobalTauri": true
   },

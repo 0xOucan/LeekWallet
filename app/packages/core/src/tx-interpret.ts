@@ -20,6 +20,7 @@
 
 import { keccak_256 } from "@noble/hashes/sha3";
 
+import { chainName as lookupChainName } from "./chains.ts";
 import { CallKind, decodeCall, describeCall, isDecodable } from "./eth-decode.ts";
 
 /** The subset of a signing request that changes what the user is agreeing to. */
@@ -95,22 +96,6 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const WEI_PER_ETHER = 10n ** 18n;
 
 /**
- * Chains the app is willing to name. Deliberately short: an entry here is a
- * claim that this ID means that network, and section 6d prefers "chain 8453"
- * to a confident mislabel.
- */
-const CHAIN_NAMES: Record<string, string> = {
-  "1": "Ethereum",
-  "10": "OP Mainnet",
-  "56": "BNB Smart Chain",
-  "137": "Polygon",
-  "8453": "Base",
-  "42161": "Arbitrum One",
-  "11155111": "Sepolia",
-  "17000": "Holesky",
-};
-
-/**
  * Exact wei → ether. Integer arithmetic throughout: Number cannot hold 18
  * significant digits, so any float here silently changes the amount.
  */
@@ -163,7 +148,9 @@ const isZero = (addr: string | undefined) => addr !== undefined && addr === ZERO
  */
 export function interpretTransaction(tx: TxRequest): TxInterpretation {
   const chainId = Number(tx.chainId ?? 0);
-  const chainName = CHAIN_NAMES[String(chainId)];
+  // Names come from the shared registry (chains.ts) so the preview and the
+  // chain selector can never disagree about what an ID means.
+  const chainName = lookupChainName(chainId);
 
   const gate = isDecodable({ to: tx.to, data: tx.data });
   // decodeCall on its own so calldata is still labelled when `to` is absent.

@@ -60,17 +60,18 @@
           </p>
           <dl class="kv">
             <dt>From</dt><dd id="sfrom">—</dd>
-            <dt>Chain</dt><dd>11155111 (Sepolia)</dd>
           </dl>
 
+          <!-- Chain and RPC are populated from the registry in chains.ts, so
+               the list here cannot drift from the one the preview names. -->
+          <label class="field">
+            <span>Chain</span>
+            <select id="chain" class="addr"></select>
+          </label>
+          <p class="muted chainnote" id="chainnote"></p>
           <label class="field">
             <span>RPC endpoint</span>
-            <select id="rpc" class="addr">
-              <option value="https://ethereum-sepolia-rpc.publicnode.com">publicnode.com</option>
-              <option value="https://sepolia.gateway.tenderly.co">tenderly.co</option>
-              <option value="https://sepolia.drpc.org">drpc.org</option>
-              <option value="https://0xrpc.io/sep">0xrpc.io</option>
-            </select>
+            <select id="rpc" class="addr"></select>
           </label>
           <label class="field">
             <span>To</span>
@@ -78,7 +79,7 @@
                    placeholder="0x…" autocomplete="off" />
           </label>
           <label class="field">
-            <span>Amount (ETH)</span>
+            <span id="amountlabel">Amount (ETH)</span>
             <input id="amount" class="addr" spellcheck="false"
                    value="0.0001" autocomplete="off" />
           </label>

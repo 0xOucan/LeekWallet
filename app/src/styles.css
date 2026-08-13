@@ -127,6 +127,10 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 }
 .notice--danger { border-left-color: var(--danger); }
 
+/* Selecting a mainnet changes what a mistake costs, so it must not read like
+ * the same grey hint the testnets get. */
+.chainnote[data-net="mainnet"] { color: var(--danger); }
+
 /* ------------------------------------------------------- advisory preview */
 
 /* Visually a margin note, not a result. Dashed border and no accent colour on
