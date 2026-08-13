@@ -17,7 +17,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "tauri": "tauri",
     "android:dev": "tauri android dev",
-    "android:build": "tauri android build --debug"
+    "android:build": "tauri android build --debug",
+    "android:build:arm64": "tauri android build --debug --target aarch64",
+    "android:check": "cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-linux-android"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

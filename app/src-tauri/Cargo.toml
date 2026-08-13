@@ -17,14 +17,25 @@ serde_json = "1"
 # (PROTOCOL.md 3b), so which one is live is a runtime question, not a build-time
 # one.
 #
-# Android is excluded from both. Serial because there are no ports to
-# enumerate. BLE because btleplug's Android backend needs a JVM-side driver
-# class in the generated Gradle project, which this repo does not track — see
-# the note in lib.rs. Android therefore still ships with no transport and the
-# UI falls back to the mock, honestly labelled.
+# Serial stays desktop-only: Android has no ports to enumerate and exposes USB
+# devices through a Java permission API instead, so serialport's platform code
+# does not build there at all.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 leek-transport-serial = { path = "../transport-serial" }
 leek-transport-ble = { path = "../transport-ble" }
+tokio = { version = "1", features = ["sync"] }
+
+# Android gets the same BLE transport crate with its other backend selected:
+# `blec` swaps btleplug for `tauri-plugin-blec`, which is a Tauri mobile plugin
+# and therefore ships the Kotlin driver Android needs inside the crate, where
+# `tauri android init` picks it up on every regeneration. The framing and
+# chunking above it are the same code as on desktop.
+#
+# `default-features = false` is what makes the two mutually exclusive: with the
+# default `ble` feature still on, the crate refuses to build.
+[target.'cfg(target_os = "android")'.dependencies]
+leek-transport-ble = { path = "../transport-ble", default-features = false, features = ["blec"] }
+tauri-plugin-blec = "0.12"
 tokio = { version = "1", features = ["sync"] }
 
 # Tauri builds Android as a shared library loaded by the JVM, not an executable

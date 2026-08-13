@@ -36,7 +36,16 @@ export const BLE_NOT_FOUND =
   "at a time, so if its Link setting is USB it will not advertise at all — check " +
   "Settings → Link on the device, and that it is powered on and in range.";
 
-/** Scan for advertising devices. Never throws; an adapter fault reads as empty. */
+/**
+ * Scan for advertising devices.
+ *
+ * Returns empty only when there is no Tauri bridge at all. A backend failure
+ * *rejects*, and the rejection is the useful half: on Android a denied
+ * "Nearby devices" permission produces an empty result set at the OS level and
+ * is indistinguishable from a device that is switched off, so the backend
+ * turns it into an error with instructions instead. Swallowing that here would
+ * put the user back where they started, staring at an empty list.
+ */
 export async function scanBle(): Promise<BleDeviceInfo[]> {
   const invoke = invoker();
   if (!invoke) return [];

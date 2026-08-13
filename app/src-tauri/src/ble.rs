@@ -1,4 +1,10 @@
-//! BLE GATT transport commands. Desktop only for now — see `lib.rs`.
+//! BLE GATT transport commands. Desktop and Android, from one source.
+//!
+//! Nothing here is platform-conditional: `leek-transport-ble` picks its radio
+//! backend at build time and hands back the same `BleTransport` either way.
+//! That is on purpose — a phone-specific command surface would be a second
+//! implementation of the signing path, and the one that gets less use is the
+//! one that quietly rots.
 //!
 //! A deliberate mirror of `serial.rs`: same four commands, same shapes, same
 //! request/response model. The frontend's two transports differ only in which
