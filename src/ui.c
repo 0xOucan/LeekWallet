@@ -20,6 +20,7 @@
 #include "memzero.h"
 #include "entropy.h"
 #include "session.h"
+#include "text-entry.h"
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "nvs.h"
@@ -112,6 +113,14 @@ static void screen_mnemonic_verify_on_button(button_id_t btn);
 static void screen_session_confirm_enter(void);
 static void screen_session_confirm_render(void);
 static void screen_session_confirm_on_button(button_id_t btn);
+
+static void screen_passphrase_enter(void);
+static void screen_passphrase_render(void);
+static void screen_passphrase_on_button(button_id_t btn);
+
+static void screen_passphrase_confirm_enter(void);
+static void screen_passphrase_confirm_render(void);
+static void screen_passphrase_confirm_on_button(button_id_t btn);
 
 static void screen_qr_code_enter(void);
 static void screen_qr_code_render(void);
@@ -213,6 +222,20 @@ static const screen_t screen_session_confirm = {
     .enter = screen_session_confirm_enter,
     .render = screen_session_confirm_render,
     .on_button = screen_session_confirm_on_button,
+    .exit = NULL
+};
+
+static const screen_t screen_passphrase = {
+    .enter = screen_passphrase_enter,
+    .render = screen_passphrase_render,
+    .on_button = screen_passphrase_on_button,
+    .exit = NULL
+};
+
+static const screen_t screen_passphrase_confirm = {
+    .enter = screen_passphrase_confirm_enter,
+    .render = screen_passphrase_confirm_render,
+    .on_button = screen_passphrase_confirm_on_button,
     .exit = NULL
 };
 
@@ -548,6 +571,7 @@ typedef enum {
     SET_SHOW_SEED,
     SET_NEW_WALLET,
     SET_IMPORT_WALLET,
+    SET_PASSPHRASE,
     SET_BRIGHTNESS,
     SET_AUTOLOCK,
     SET_CHANGE_PIN,
@@ -563,6 +587,7 @@ static const char *settings_items[SETTINGS_ITEMS] = {
     "Show Seed",
     "New Wallet",
     "Import Wallet",
+    "Passphrase",
     "Brightness",
     "Auto-lock",
     "Change PIN",
@@ -1939,6 +1964,9 @@ static void screen_settings_on_button(button_id_t btn)
                 case SET_IMPORT_WALLET:
                     ui_set_screen(SCREEN_MNEMONIC_ENTRY);
                     break;
+                case SET_PASSPHRASE:
+                    ui_set_screen(SCREEN_PASSPHRASE);
+                    break;
                 case SET_BRIGHTNESS:
                     brightness_choice = (brightness_choice + 1) % (int)BRIGHTNESS_COUNT;
                     brightness_apply_and_save();
@@ -2481,6 +2509,165 @@ static void screen_session_confirm_on_button(button_id_t btn)
 }
 
 /* ============================================================================
+ * Passphrase Entry
+ *
+ * BIP39's optional extra word. Applied to the active seed for this session
+ * only; nothing about it is ever written down by the device, which is what
+ * gives a passphrase wallet its deniability - and also why a typo cannot be
+ * reported as an error. See docs/VAULT.md.
+ * ============================================================================ */
+
+static TextEntry passphrase_entry;
+
+static void screen_passphrase_enter(void)
+{
+    ESP_LOGI(TAG, "Passphrase entry screen");
+    text_entry_reset(&passphrase_entry);
+}
+
+static void screen_passphrase_render(void)
+{
+    oled_clear();
+    oled_draw_string_centered(0, "Passphrase");
+
+    /* Show the tail of what has been typed. Masking it would be worse than
+     * useless here: the user cannot verify a string they cannot see, and the
+     * screen is already in their hand. */
+    const char *text = passphrase_entry.text;
+    int len = passphrase_entry.length;
+    const char *tail = (len > 18) ? text + (len - 18) : text;
+    char shown[24];
+    /* Copy explicitly rather than through %s. The compiler cannot prove the
+     * tail is short, and a truncating snprintf would silently misreport what
+     * the user typed - on this screen that is the difference between two
+     * wallets. */
+    size_t out = 0;
+    if (len > 18) {
+        shown[out++] = '<';
+    }
+    for (size_t i = 0; tail[i] != '\0' && out < sizeof(shown) - 1; i++) {
+        shown[out++] = tail[i];
+    }
+    shown[out] = '\0';
+    oled_draw_string(2, 0, len ? shown : "(empty = no pass)");
+
+    /* Neighbours, so the mode entries are visible before they are reached. */
+    int n = text_entry_option_count(&passphrase_entry);
+    int idx = passphrase_entry.option_index;
+    char sa[4], sb[4], sc[4];
+    const char *prev = text_entry_option_label(
+        text_entry_option_at(&passphrase_entry, ((idx - 1) % n + n) % n), sa, sizeof(sa));
+    const char *cur = text_entry_option_label(
+        text_entry_option_at(&passphrase_entry, idx), sb, sizeof(sb));
+    const char *next = text_entry_option_label(
+        text_entry_option_at(&passphrase_entry, (idx + 1) % n), sc, sizeof(sc));
+
+    char sel[22];
+    snprintf(sel, sizeof(sel), "%s <%s> %s", prev, cur, next);
+    oled_draw_string_centered(4, sel);
+
+    char count[22];
+    snprintf(count, sizeof(count), "%u chars", (unsigned)len & 0x7F);
+    oled_draw_string_centered(5, count);
+
+    oled_draw_string(7, 0, "UP DN  BCK  SEL");
+}
+
+static void screen_passphrase_on_button(button_id_t btn)
+{
+    switch (btn) {
+        case BUTTON_UP:   text_entry_scroll(&passphrase_entry, 1);  break;
+        case BUTTON_DOWN: text_entry_scroll(&passphrase_entry, -1); break;
+
+        case BUTTON_CANCEL:
+            if (!text_entry_backspace(&passphrase_entry)) {
+                text_entry_clear(&passphrase_entry);
+                ui_set_screen(SCREEN_SETTINGS);
+                return;
+            }
+            break;
+
+        case BUTTON_ACCEPT: {
+            TextEntryResult r = text_entry_accept(&passphrase_entry);
+            if (r == TEXT_ENTRY_CANCELLED) {
+                text_entry_clear(&passphrase_entry);
+                ui_set_screen(SCREEN_SETTINGS);
+                return;
+            }
+            if (r == TEXT_ENTRY_DONE) {
+                if (!ensure_wallet_unlocked()) {
+                    text_entry_clear(&passphrase_entry);
+                    ui_set_screen(SCREEN_MAIN_MENU);
+                    return;
+                }
+                wallet_set_passphrase(passphrase_entry.text,
+                                      (size_t)passphrase_entry.length);
+                text_entry_clear(&passphrase_entry);
+                address_index = 0;
+                ui_set_screen(SCREEN_PASSPHRASE_CONFIRM);
+                return;
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    ui_invalidate();
+}
+
+/* ============================================================================
+ * Passphrase Confirmation
+ *
+ * The one defence against a mistyped passphrase. A wrong passphrase does not
+ * error - it derives a different, perfectly valid, empty-looking wallet - so
+ * the device shows the resulting address and the user compares it with what
+ * they recorded last time.
+ *
+ * Its limitation is worth stating: on first use there is nothing to compare
+ * against. That is exactly why this address must be written down alongside the
+ * seed, not merely glanced at.
+ * ============================================================================ */
+
+static void screen_passphrase_confirm_enter(void)
+{
+    ESP_LOGI(TAG, "Passphrase confirmation screen");
+    /* Derivation runs PBKDF2 over the new passphrase, so this is the slow one. */
+    wallet_info_refresh_address();
+}
+
+static void screen_passphrase_confirm_render(void)
+{
+    oled_clear();
+    oled_draw_string_centered(0, wallet_has_passphrase() ? "Passphrase set"
+                                                         : "No passphrase");
+
+    char line1[17], line2[17], line3[17];
+    strncpy(line1, eth_address.hex, 16);      line1[16] = '\0';
+    strncpy(line2, eth_address.hex + 16, 14); line2[14] = '\0';
+    strncpy(line3, eth_address.hex + 30, 12); line3[12] = '\0';
+    oled_draw_string_centered(2, line1);
+    oled_draw_string_centered(3, line2);
+    oled_draw_string_centered(4, line3);
+
+    oled_draw_string_centered(6, "Match your record");
+    oled_draw_string(7, 0, "RETRY         OK");
+}
+
+static void screen_passphrase_confirm_on_button(button_id_t btn)
+{
+    if (btn == BUTTON_CANCEL) {
+        /* Wrong address means the wrong passphrase. Clear it rather than
+         * leaving a wallet the user did not intend selected. */
+        wallet_clear_passphrase();
+        ui_set_screen(SCREEN_PASSPHRASE);
+        return;
+    }
+    ui_set_screen(SCREEN_WALLET_INFO);
+}
+
+/* ============================================================================
  * Public API
  * ============================================================================ */
 
@@ -2502,6 +2689,8 @@ void ui_init(void)
     screens[SCREEN_WIPE_CONFIRM] = &screen_wipe_confirm;
     screens[SCREEN_MNEMONIC_VERIFY] = &screen_mnemonic_verify;
     screens[SCREEN_SESSION_CONFIRM] = &screen_session_confirm;
+    screens[SCREEN_PASSPHRASE] = &screen_passphrase;
+    screens[SCREEN_PASSPHRASE_CONFIRM] = &screen_passphrase_confirm;
 
     current_screen = SCREEN_BOOT;
     needs_render = true;

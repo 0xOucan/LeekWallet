@@ -145,8 +145,9 @@ to say this at the moment of creation, not in a manual.
 
 | ID | Task | Depends | Done when |
 |----|------|---------|-----------|
-| T38 | On-device passphrase entry screen (full ASCII selector, reuse the mnemonic-entry option pattern) | T3 | host test types a mixed-case passphrase with symbols |
-| T39 | **Wallet fingerprint display** — show master XFP + first address after a passphrase is applied, before any funds view | T38 | fingerprint matches Trezor for the same seed+passphrase |
+| ~~T38~~ ✅ | On-device passphrase entry: full printable ASCII via mode entries in the selector ring | T3 | every printable character reachable; **13.6 presses/char measured**, so a 17-char passphrase costs 231 presses |
+| ~~T39~~ ✅ | Address shown after a passphrase is applied, before anything else, with RETRY to clear a wrong one | T38 | address changes with the passphrase; wrong entry is recoverable |
+| T39b | Add the master XFP alongside the address, as Coldcard does — shorter to write down than 42 hex characters | T39 | XFP matches a reference implementation |
 | T40 | Host-side passphrase entry over the protocol, marked as the lower-security path | T20, T38 | mock device round-trips it |
 | ~~T41~~ ✅ | Interop vectors: BIP39 known-answer seeds with and without passphrase | — | `sim/test_passphrase.c`, both spec vectors match byte-for-byte |
 | T45 | Per-seed accounts: expose `m/44'/60'/account'/0/0` so one seed covers multiple identities, which is the model that should be the default rather than 30 stored seeds | T43 | account selector on the wallet screen |
