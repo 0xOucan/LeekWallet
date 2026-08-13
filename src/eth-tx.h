@@ -1,0 +1,78 @@
+/**
+ * Ethereum transaction encoding and rendering.
+ *
+ * The device builds the signing payload itself from structured fields, hashes
+ * what it built, and displays what it hashed. The host never supplies bytes to
+ * sign — see docs/PROTOCOL.md section 1. That is the whole difference between
+ * a hardware wallet and a very careful USB key.
+ *
+ * EIP-1559 (type 2) only. Legacy transactions would mean a second encoding and
+ * a second thing to get right, and nothing needs them.
+ *
+ * No ESP-IDF dependency, so the host suite drives it against known vectors.
+ */
+
+#ifndef ETH_TX_H
+#define ETH_TX_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/* Big-endian, minimal-length integers as they appear on the wire. Ethereum
+ * quantities are up to 32 bytes and RLP rejects leading zeros. */
+typedef struct {
+    uint8_t bytes[32];
+    size_t  length;
+} EthQuantity;
+
+#define ETH_MAX_DATA 256
+
+typedef struct {
+    uint64_t     chain_id;
+    EthQuantity  nonce;
+    EthQuantity  max_priority_fee;
+    EthQuantity  max_fee;
+    EthQuantity  gas_limit;
+    uint8_t      to[20];
+    bool         has_to;          /* false means contract creation */
+    EthQuantity  value;
+    uint8_t      data[ETH_MAX_DATA];
+    size_t       data_length;
+} EthTx;
+
+/** Set a quantity from a big-endian byte string, stripping leading zeros. */
+bool eth_quantity_set(EthQuantity *q, const uint8_t *bytes, size_t length);
+
+/** Set a quantity from a 64-bit value. */
+void eth_quantity_set_u64(EthQuantity *q, uint64_t value);
+
+/**
+ * Build the EIP-1559 signing payload: 0x02 || rlp([chainId, nonce, ...]).
+ * Returns the length written, or 0 if it does not fit.
+ */
+size_t eth_tx_encode(const EthTx *tx, uint8_t *out, size_t out_capacity);
+
+/** keccak256 of the signing payload — the digest that gets signed. */
+bool eth_tx_hash(const EthTx *tx, uint8_t hash_out[32]);
+
+/* ------------------------------------------------------------- rendering */
+
+/**
+ * Format a value in ether with up to `max_decimals` places, trailing zeros
+ * trimmed.
+ *
+ * Rendering matters as much as hashing here: a user approving "0.5" when the
+ * transaction says 5 has approved the wrong thing, and the signature will be
+ * perfectly valid.
+ */
+bool eth_format_value(const EthQuantity *wei, char *out, size_t out_size,
+                      int max_decimals);
+
+/** "0x1234…ABCD" for a 20-byte address, EIP-55 checksummed. */
+bool eth_format_address(const uint8_t address[20], char *out, size_t out_size);
+
+/** Human-readable chain name, or the number when unknown. */
+const char *eth_chain_name(uint64_t chain_id, char *scratch, size_t scratch_size);
+
+#endif /* ETH_TX_H */

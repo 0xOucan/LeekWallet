@@ -12,7 +12,7 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
@@ -43,6 +43,10 @@ $(BUILD)/test_vault_crypt: test_vault_crypt.c host_stubs.c ../components/leek-wa
                            $(CRYPTO)/aes/aeskey.c $(CRYPTO)/aes/aestab.c \
                            $(CRYPTO)/aes/gf128mul.c $(CRYPTO)/memzero.c \
                            $(CRYPTO)/rand.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+$(BUILD)/test_eth_tx: test_eth_tx.c ../src/eth-tx.c $(CRYPTO)/sha3.c \
+                      $(CRYPTO)/memzero.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD)/test_cbor: test_cbor.c ../src/cbor.c | $(BUILD)
