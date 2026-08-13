@@ -358,13 +358,53 @@ unverified labels.
 
 ---
 
+## 5b. The registry is public, and that changes what is worth doing now
+
+Confirmed from Ledger's dapp-facing documentation, which is the other half of
+the picture and sharpens the staging below.
+
+A protocol author writes a descriptor and opens a pull request against
+**`github.com/ethereum/clear-signing-erc7730-registry`** — the Ethereum
+Foundation's repository, canonical home `clearsigning.org`, not Ledger's.
+Automated checks run first (schema, linting, ABI and deployment consistency),
+then a maintainer reviews; the documented rejection reasons are mismatched
+contract addresses, misleading display labels and schema violations. On merge
+the descriptor "becomes available … in all wallets that support the Clear
+Signing standard, and through the public registry API".
+
+Two things follow, and they point in opposite directions.
+
+**The corpus is ours to read.** It is public, reviewed, and explicitly meant to
+be consumed by any compatible wallet — not a Ledger asset we would be
+borrowing. For the companion app's preview, which is advisory by construction
+anyway (section 3, PROTOCOL.md 6c), a reviewed descriptor is strictly better
+than the four selectors we hardcode: it is the difference between "unknown
+call" and "Supply 100 USDC to Aave v3". That is available now, costs no trust
+we are not already spending, and is most of what a user means when they ask for
+Rabby-style readability.
+
+**It buys the device nothing on its own.** Note what the dapp-side
+documentation does *not* mention anywhere: signing, device trust, or the CAL.
+That silence is consistent — registry review is a *quality* gate run by
+maintainers, and the cryptographic step that lets a Ledger device believe a
+descriptor happens later and elsewhere, under Ledger's key (section 2). A
+descriptor pulled from the registry arrives at our firmware as host-supplied
+data with no signature our device can check, and rendering it on the OLED would
+be precisely the thing PROTOCOL.md 6c forbids. Merged-by-a-maintainer is a
+reason to trust it in a browser window; it is not a signature.
+
+So: read the registry in the app, sign our own subset for the device.
+
 ## 6. Recommendation, staged
 
 ### Now (worth doing, small)
 
-1. **Nothing in the descriptor direction.** Keep exact-or-refuse. Finish T16
-   (the blind-signing gate) as designed — it is the honest hatch and it must
-   ship *with* `signHash`, never after.
+1. **Nothing in the descriptor direction on the device.** Keep exact-or-refuse.
+   Finish T16 (the blind-signing gate) as designed — it is the honest hatch and
+   it must ship *with* `signHash`, never after.
+1b. **Consume the ERC-7730 registry host-side**, in the app's preview only,
+   under the existing advisory framing and never echoed to the device screen.
+   See 5b: it is public, reviewed and meant to be read.
 2. **Make the refusal actionable.** `0x0202` already names the selector it
    refused (commit `c862c70`). The app should turn that into a preview of what
    the call *would* have been — clearly labelled advisory, per 6c — so the user
