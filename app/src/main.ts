@@ -271,7 +271,7 @@ const setConnection = (state: string, label: string): void => {
 };
 
 const busy = (on: boolean): void => {
-  for (const id of ["connect", "unlock", "disconnect", "sign", "signreject"]) {
+  for (const id of ["connect", "unlock", "disconnect", "sign"]) {
     ($(id) as HTMLButtonElement).disabled = on;
   }
 };
@@ -425,16 +425,18 @@ async function loadAddresses(): Promise<void> {
   log(`derived ${addresses.length} addresses`);
 }
 
-async function sign(reject: boolean): Promise<void> {
+/**
+ * Ask the device to sign.
+ *
+ * There is deliberately no "simulate rejection" button any more. It worked by
+ * swapping the live transport for a mock configured to refuse - and never
+ * swapped it back, so every later request went to a fake device while the
+ * badge still read "hardware". A control that silently replaces your hardware
+ * connection is worse than no control; the rejection path is covered by the
+ * mock-device tests, where it belongs.
+ */
+async function sign(): Promise<void> {
   if (!transport || !client) return;
-  // Rebuild the client against a mock configured to refuse, so the rejection
-  // path is exercised rather than described.
-  if (reject) {
-    transport = new MockDevice({ latencyMs: 250, autoApprove: false, startUnlocked: true });
-    client = new Client(transport);
-    await transport.open();
-    await client.call("hello");
-  }
 
   busy(true);
   log("confirm on the device…");
@@ -447,7 +449,14 @@ async function sign(reject: boolean): Promise<void> {
     const sig = r["signature"];
     log(`signed: ${sig instanceof Uint8Array ? sig.length : 0} bytes`);
   } catch (e) {
-    log(e instanceof DeviceError ? `rejected on device (${e.message})` : String(e));
+    if (e instanceof DeviceError && e.code === 0x0001) {
+      log("the device cannot sign yet: it must decode and display a transaction");
+      log("before it signs one, or this would be blind signing");
+    } else if (e instanceof DeviceError) {
+      log(`declined: ${e.message}`);
+    } else {
+      log(String(e));
+    }
   } finally {
     busy(false);
   }
@@ -500,8 +509,7 @@ describeEnvironment();
 $("connect").addEventListener("click", () => void connect());
 $("unlock").addEventListener("click", () => void unlock());
 $("disconnect").addEventListener("click", () => void disconnect());
-$("sign").addEventListener("click", () => void sign(false));
-$("signreject").addEventListener("click", () => void sign(true));
+$("sign").addEventListener("click", () => void sign());
 /* ------------------------------------------------------------------- theme */
 
 /* Three states, not two. "System" has to be reachable, or a user who toggles
