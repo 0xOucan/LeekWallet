@@ -6,8 +6,8 @@ Scope: `src/` (3,367 lines) and `components/colibri-wallet/` (1,253 lines) as of
 Findings are ordered by severity. Each one names the file and line so it can be turned into a
 regression test in `sim/` before it is fixed.
 
-**Status:** S2, S3, S4, S5, S6, S7, S8b, S8c, S8d, S8h, S8i and S8k are **fixed** and covered by
-tests. `ui.c` now runs on the host (T0.2-T0.4), so screen and button behaviour is testable rather
+**Status:** S2, S3, S4, S5, S6, S7, S8a, S8b, S8c, S8d, S8g, S8h, S8i and S8k are **fixed** and
+covered by tests. `ui.c` now runs on the host (T0.2-T0.4), so screen and button behaviour is testable rather
 than argued about.
 
 **S1 is the one that still matters.** Its key derivation and storage encryption are done — salted
@@ -311,7 +311,7 @@ with a resume-on-boot flag.
 | ~~d~~ ✅ | `src/ui.c` | 24-word import: **fixed (T3)**. The import screen now opens with a 12/24 prompt and passes the answer to `mnemonic_entry_reset()`; BACK from the first character returns to it. Covered by the 24-word round-trip in `sim/test_mnemonic_entry.c`, which also pins the boundary — a 24-word phrase must not report itself complete at word 12. |
 | e | `src/ui.c:1557` | "Change PIN" is a live menu item that logs `not yet implemented` and silently does nothing. `pin_change()` exists in `pin.c:269`. |
 | f | `src/ui.c:857` | `screen_wallet_create_on_button` calls `ui_render()` re-entrantly from inside a button handler to paint "Generating...", then the caller invalidates again. Works, but the screen contract now has two render paths. |
-| ~~g~~ ✅ | `src/ui.c:1272-1274` | Wi-Fi AP ships a hardcoded WPA2 password (`leek1234`) and the AP is reachable while the wallet is unlocked. It is a test feature; make it unavailable in release builds rather than a menu item. |
+| ~~g~~ ✅ | `src/ui.c` | **Fixed (T17).** The AP shipped a hardcoded WPA2 password (`leek1234`) and was reachable while the wallet was unlocked. It is now compiled out of the default build entirely, menu entry included, and lives only in `pio run -e esp32s3-wifi`. Two things the fix turned up: the toggle reported "WiFi [ON]" when Wi-Fi was compiled out, and the generated `sdkconfig.esp32s3` was committed and silently outranked `sdkconfig.defaults`, so turning Wi-Fi off had no effect until that file was removed. `sim/test_ui.c` walks the settings menu and asserts the entry is gone. |
 | h | `leek-wallet.c:129` | ~~AES-CBC with zero padding and no MAC~~ **authenticated implementation ready** in `src/vault-crypt.c`: AES-256-GCM, `nonce \|\| ciphertext \|\| tag`, nonce generated internally so it cannot be reused by a caller. Tests confirm a single flipped bit anywhere — nonce, ciphertext or tag — is rejected, where CBC produced a different plaintext and no error. **Wired in as storage format v3 and verified on hardware**: a device holding three v2 wallets migrated on unlock, and the same seeds derive the same addresses afterwards, confirmed by the user and by 20 successful derivations with no decrypt failures in the log. |
 | i | `src/ui.c:1630-1636` | ~~The QR screen maps ACCEPT/DOWN to "reveal seed phrase"~~ **fixed**. Hardware testing hit it: the QR fills the display so there is no footer, and pressing a button to leave the screen instead locked the device and demanded the PIN. Revealing the seed now lives in Settings, labelled, and still re-asks for the PIN. |
 | k | `src/oled.c` | ~~Every character was written straight to the panel, after `oled_clear()` blanked it over I2C~~ **fixed**. Hardware testing reported the screen flickering on every keypress, which was the frame being composed in front of the user: a blank panel, then ~20 separate I2C transactions filling it back in. Drawing now composes into a RAM buffer and the panel changes once per render. |
