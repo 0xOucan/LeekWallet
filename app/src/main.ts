@@ -15,6 +15,9 @@ import {
   derivationsInvalidated, UNKNOWN_STATUS, type DeviceStatus,
 } from "../packages/core/src/device-state.ts";
 import { isTauri, listPorts, TauriSerialTransport } from "./tauri-transport.ts";
+import { createPublicClient, http, parseEther, serializeTransaction, isAddress,
+         type Hex, type Address } from "viem";
+import { sepolia } from "viem/chains";
 import {
   deriveSession, generateKeypair, Session,
 } from "../packages/core/src/session.ts";
@@ -465,42 +468,109 @@ async function loadAddresses(): Promise<void> {
 async function sign(): Promise<void> {
   if (!transport || !client) return;
 
-  busy(true);
-  log("confirm on the device…");
-  try {
-    log("check the transaction on the device — every page — then approve");
+  const toValue = ($("to") as HTMLInputElement).value.trim();
+  const amountValue = ($("amount") as HTMLInputElement).value.trim();
+  $("txresult").textContent = "";
 
-    /* Quantities go as big-endian byte strings, not numbers: values run to
-     * 2^256 and CBOR integers here stop at 32 bits. */
+  if (!isAddress(toValue)) {
+    ($("to") as HTMLInputElement).setAttribute("aria-invalid", "true");
+    log("that is not a valid address");
+    return;
+  }
+  ($("to") as HTMLInputElement).removeAttribute("aria-invalid");
+
+  let value: bigint;
+  try {
+    value = parseEther(amountValue);
+  } catch {
+    ($("amount") as HTMLInputElement).setAttribute("aria-invalid", "true");
+    log("that is not a valid amount");
+    return;
+  }
+  ($("amount") as HTMLInputElement).removeAttribute("aria-invalid");
+
+  busy(true);
+  try {
+    const from = addresses[selectedIndex] as Address | undefined;
+    if (!from) throw new Error("no address selected");
+
+    /* Chain state comes from a public RPC, which is untrusted like any other
+     * host input. A wrong nonce or fee produces a stuck or replaced
+     * transaction, not a stolen one - the device still shows what it signs.
+     * Worth knowing that this query tells the RPC operator which addresses
+     * you are interested in. */
+    /* The endpoint is chosen from a short allowlist that the CSP also permits.
+     * An editable field would mean allowing any host, which is precisely what
+     * a compromised dependency would want. */
+    const endpoint = ($("rpc") as HTMLSelectElement).value;
+    const rpc = createPublicClient({ chain: sepolia, transport: http(endpoint) });
+    log(`fetching nonce and fees via ${new URL(endpoint).host}…`);
+
+    const [nonce, fees] = await Promise.all([
+      rpc.getTransactionCount({ address: from }),
+      rpc.estimateFeesPerGas(),
+    ]);
+    const maxFeePerGas = fees.maxFeePerGas ?? 30000000000n;
+    const maxPriorityFeePerGas = fees.maxPriorityFeePerGas ?? 1000000000n;
+
+    log(`nonce ${nonce}, max fee ${maxFeePerGas} wei`);
+    log("check every page on the device, then approve");
+
     const wei = (v: bigint): Uint8Array => {
+      if (v === 0n) return new Uint8Array(0);
       let hex = v.toString(16);
       if (hex.length % 2) hex = "0" + hex;
       return new Uint8Array((hex.match(/../g) ?? []).map((h) => parseInt(h, 16)));
     };
+    const bytes = (hex: string): Uint8Array =>
+      new Uint8Array(((hex.slice(2).match(/../g)) ?? []).map((h) => parseInt(h, 16)));
 
     const SIGN_TIMEOUT_MS = 150000;   // the device gives the user 120 s
-    /* Sepolia, not mainnet. A demo transaction the user can actually fund and
-     * broadcast is worth more than one they cannot, and a mainnet chain ID on
-     * a test build is an invitation to a costly accident. */
-    const r = await client.call("signTransaction", {
+    const tx = {
+      chainId: sepolia.id,
+      nonce,
+      to: toValue as Address,
+      value,
+      gas: 21000n,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+      type: "eip1559" as const,
+    };
+
+    const reply = await client.call("signTransaction", {
       index: selectedIndex,
-      chainId: 11155111,
-      nonce: 0,
-      to: new Uint8Array(20).fill(0x71),
-      value: wei(500000000000000000n),          // 0.5 ETH
+      chainId: BigInt(sepolia.id) <= 0xffffffffn ? sepolia.id : 0,
+      nonce,
+      to: bytes(toValue),
+      value: wei(value),
       gas: wei(21000n),
-      maxFeePerGas: wei(20000000000n),
-      maxPriorityFeePerGas: wei(1000000000n),
+      maxFeePerGas: wei(maxFeePerGas),
+      maxPriorityFeePerGas: wei(maxPriorityFeePerGas),
     }, SIGN_TIMEOUT_MS);
 
-    const rr = r["r"];
-    const ss = r["s"];
-    if (rr instanceof Uint8Array && ss instanceof Uint8Array) {
-      const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
-      log(`signed by the device: r=${hex(rr).slice(0, 16)}… v=${String(r["v"])}`);
-    } else {
-      log("device returned no signature");
+    const r = reply["r"];
+    const sv = reply["s"];
+    if (!(r instanceof Uint8Array) || !(sv instanceof Uint8Array)) {
+      throw new Error("device returned no signature");
     }
+    const hex = (b: Uint8Array): Hex =>
+      ("0x" + [...b].map((x) => x.toString(16).padStart(2, "0")).join("")) as Hex;
+
+    /* Reassemble here rather than on the device: the signature covers the
+     * digest the device computed from its own parse, so the serialised form
+     * either matches or the network rejects it. */
+    const raw = serializeTransaction(tx, {
+      r: hex(r),
+      s: hex(sv),
+      yParity: Number(reply["v"]) & 1,
+    });
+
+    log("broadcasting…");
+    const hash = await rpc.sendRawTransaction({ serializedTransaction: raw });
+
+    log(`sent: ${hash}`);
+    $("txresult").innerHTML =
+      `Sent. <a href="https://sepolia.etherscan.io/tx/${hash}" target="_blank" rel="noreferrer">View on Etherscan</a>`;
   } catch (e) {
     if (e instanceof DeviceError && e.code === 0x0200) {
       log("rejected on the device");
@@ -509,7 +579,7 @@ async function sign(): Promise<void> {
     } else if (e instanceof DeviceError) {
       log(`declined: ${e.message}`);
     } else {
-      log(String(e));
+      log(String((e as Error).message ?? e));
     }
   } finally {
     busy(false);
@@ -564,6 +634,11 @@ $("connect").addEventListener("click", () => void connect());
 $("unlock").addEventListener("click", () => void unlock());
 $("disconnect").addEventListener("click", () => void disconnect());
 $("sign").addEventListener("click", () => void sign());
+$("usenext").addEventListener("click", () => {
+  // Sending to your own next address is the safest possible live test.
+  const other = addresses[selectedIndex === 0 ? 1 : 0];
+  if (other) ($("to") as HTMLInputElement).value = other;
+});
 /* ------------------------------------------------------------------- theme */
 
 /* Three states, not two. "System" has to be reachable, or a user who toggles

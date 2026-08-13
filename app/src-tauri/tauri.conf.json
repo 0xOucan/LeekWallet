@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://ethereum-sepolia-rpc.publicnode.com https://sepolia.gateway.tenderly.co https://sepolia.drpc.org https://0xrpc.io"
     },
     "withGlobalTauri": true
   },

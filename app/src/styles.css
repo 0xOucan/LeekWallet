@@ -136,3 +136,48 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   color: var(--muted); white-space: pre-wrap;
   max-height: 160px; overflow-y: auto;
 }
+
+/* Inputs. Monospace on the address field for the same reason addresses are
+ * displayed that way: l and 1 must not look alike in a string that decides
+ * where money goes. */
+.field {
+  display: block;
+  margin-bottom: var(--space-3);
+}
+.field > span {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  margin-bottom: var(--space-1);
+}
+.field input {
+  width: 100%;
+  height: 36px;
+  padding: 0 var(--space-3);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.field input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.field input[aria-invalid="true"] { border-color: var(--danger); }
+
+.field select {
+  width: 100%;
+  height: 36px;
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

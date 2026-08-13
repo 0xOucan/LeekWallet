@@ -54,18 +54,40 @@
           <p>
             This preview is drawn by this app and cannot be trusted. Verify the
             fields on the device before approving. The device shows every field on its own
-            screen and will not sign until you have seen all of them.
+            screen and will not sign until you have seen all of them. The RPC
+            you pick learns which addresses you are asking about; it cannot
+            move funds.
           </p>
           <dl class="kv">
             <dt>From</dt><dd id="sfrom">—</dd>
-            <dt>To</dt><dd id="sto">0x71c7…</dd>
-            <dt>Value</dt><dd>0.5 ETH</dd>
-            <dt>Nonce</dt><dd>0</dd>
             <dt>Chain</dt><dd>11155111 (Sepolia)</dd>
           </dl>
+
+          <label class="field">
+            <span>RPC endpoint</span>
+            <select id="rpc" class="addr">
+              <option value="https://ethereum-sepolia-rpc.publicnode.com">publicnode.com</option>
+              <option value="https://sepolia.gateway.tenderly.co">tenderly.co</option>
+              <option value="https://sepolia.drpc.org">drpc.org</option>
+              <option value="https://0xrpc.io/sep">0xrpc.io</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>To</span>
+            <input id="to" class="addr" spellcheck="false"
+                   placeholder="0x…" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Amount (ETH)</span>
+            <input id="amount" class="addr" spellcheck="false"
+                   value="0.0001" autocomplete="off" />
+          </label>
+
           <div class="row" style="margin-top: var(--space-4)">
-            <button class="primary" id="sign">Request signature</button>
+            <button class="primary" id="sign">Sign &amp; send</button>
+            <button id="usenext">Use address 1</button>
           </div>
+          <p id="txresult" class="muted"></p>
         </div>
 
         <div class="panel">
