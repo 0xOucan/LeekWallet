@@ -185,6 +185,44 @@ static void dispatch(const uint8_t *payload, size_t len)
         cbor_write_text(&w, "walletCount");
         cbor_write_uint(&w, status.wallet_count);
 
+    } else if (strcmp(method, "unlock") == 0) {
+        /* Never carries a PIN. It asks the device to prompt, the user types on
+         * the device, and the host learns the outcome by polling getStatus.
+         * A PIN crossing the wire would defeat the point of having one. */
+        if (session_state() != SESSION_ACTIVE) {
+            send_error(ERR_SESSION, "session required");
+            return;
+        }
+
+        if (pin_is_unlocked()) {
+            cbor_write_map(&w, 1);
+            cbor_write_text(&w, "result");
+            cbor_write_map(&w, 1);
+            cbor_write_text(&w, "unlocked");
+            cbor_write_uint(&w, 1);
+        } else {
+            ui_request_unlock();
+            cbor_write_map(&w, 1);
+            cbor_write_text(&w, "result");
+            cbor_write_map(&w, 2);
+            cbor_write_text(&w, "prompted");
+            cbor_write_uint(&w, 1);
+            cbor_write_text(&w, "unlocked");
+            cbor_write_uint(&w, 0);
+        }
+
+    } else if (strcmp(method, "lock") == 0) {
+        if (session_state() != SESSION_ACTIVE) {
+            send_error(ERR_SESSION, "session required");
+            return;
+        }
+        ui_request_lock();
+        cbor_write_map(&w, 1);
+        cbor_write_text(&w, "result");
+        cbor_write_map(&w, 1);
+        cbor_write_text(&w, "unlocked");
+        cbor_write_uint(&w, 0);
+
     } else if (strcmp(method, "getAddress") == 0) {
         /* Behind the session: an address list is not secret, but it is
          * user-specific, and anything plugged into this port should not be able

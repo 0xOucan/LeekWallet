@@ -2465,6 +2465,19 @@ static void screen_mnemonic_verify_on_button(button_id_t btn)
 static volatile bool session_confirm_pending = false;
 static screen_id_t   session_confirm_return = SCREEN_MAIN_MENU;
 
+static volatile bool host_unlock_pending = false;
+static volatile bool host_lock_pending = false;
+
+void ui_request_unlock(void)
+{
+    host_unlock_pending = true;
+}
+
+void ui_request_lock(void)
+{
+    host_lock_pending = true;
+}
+
 void ui_request_session_confirm(void)
 {
     /* Called from the protocol task. Only sets a flag; the UI task owns screen
@@ -2797,9 +2810,33 @@ void ui_task(void *pvParameters)
         if (session_confirm_pending) {
             session_confirm_pending = false;
             if (ui_get_screen() != SCREEN_SESSION_CONFIRM) {
-                session_confirm_return = ui_get_screen();
+                /* Return somewhere useful. Coming back to the boot splash
+                 * after approving a connection reads as the device having
+                 * reset, and leaves the user pressing keys to get anywhere. */
+                screen_id_t here = ui_get_screen();
+                session_confirm_return =
+                    (here == SCREEN_BOOT)
+                        ? (pin_is_unlocked() ? SCREEN_MAIN_MENU : SCREEN_PIN_UNLOCK)
+                        : here;
                 ui_set_screen(SCREEN_SESSION_CONFIRM);
             }
+        }
+
+        if (host_unlock_pending) {
+            host_unlock_pending = false;
+            if (!pin_is_unlocked()) {
+                pending_mnemonic_display = false;
+                ui_set_screen(SCREEN_PIN_UNLOCK);
+            }
+        }
+
+        if (host_lock_pending) {
+            host_lock_pending = false;
+            pin_lock();
+            wallet_lock();
+            memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
+            mnemonic_word_count = 0;
+            ui_set_screen(SCREEN_PIN_UNLOCK);
         }
 
         /* Re-render if needed */

@@ -281,9 +281,22 @@ async function connect(): Promise<void> {
 async function unlock(): Promise<void> {
   if (!client) return;
   busy(true);
-  log("waiting for PIN entry on the device…");
+  log("enter your PIN on the device…");
   try {
-    await client.call("unlock");
+    const reply = await client.call("unlock");
+
+    /* The device only *prompts*; the PIN is typed there and never travels.
+     * So the app waits for the status to change rather than treating the
+     * reply as the answer. */
+    if (reply["unlocked"] !== 1) {
+      const deadline = Date.now() + 120000;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 750));
+        const s = await readStatus();
+        if (s.unlocked) break;
+        if (Date.now() > deadline) throw new Error("timed out waiting for the PIN");
+      }
+    }
     log("device unlocked");
     await loadAddresses();
     $("addrpanel").hidden = false;
@@ -300,7 +313,12 @@ async function unlock(): Promise<void> {
      * acts on a stale address, and rare enough not to keep a BLE link busy. */
     if (!pollTimer) pollTimer = setInterval(() => void poll(), 2000);
   } catch (e) {
-    log(`unlock failed: ${(e as Error).message}`);
+    // Name the thing that failed. "undefined" was the previous message when
+    // the device answered with an error carrying no text.
+    const msg = e instanceof DeviceError ? e.message
+      : e instanceof Error && e.message ? e.message
+      : String(e);
+    log(`unlock failed: ${msg}`);
   } finally {
     busy(false);
     ($("connect") as HTMLButtonElement).disabled = true;

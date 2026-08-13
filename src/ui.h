@@ -115,4 +115,15 @@ void ui_task(void *pvParameters);
  */
 void ui_request_session_confirm(void);
 
+/**
+ * Ask the user to unlock, on behalf of a host request.
+ *
+ * The PIN is entered on the device and never travels. The host polls
+ * `getStatus` to learn whether it worked.
+ */
+void ui_request_unlock(void);
+
+/** Lock on behalf of a host request. */
+void ui_request_lock(void);
+
 #endif /* UI_H */

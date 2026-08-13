@@ -271,7 +271,7 @@ T23 is the highest-leverage item in the plan: it decouples Track D from all firm
 |----|------|---------|-----------|
 | T27a | Design tokens from [docs/DESIGN.md](docs/DESIGN.md) as CSS custom properties + base components (button, field, address, status bar) | — | renders at all 4 breakpoints, both themes |
 | T27b | Tauri v2 shell, desktop targets, capability allowlist | — | empty app builds on Linux |
-| T27c | Device discovery + connect UI (transport picker, pairing, all four async states) | T22, T23, T27a | connects to the mock |
+| ~~T27c~~ ✅ | Discovery, pairing with passkey comparison, unlock, address list, signing — against the mock and against hardware | T22, T23, T27a | verified end to end on a real device |
 | T28 | Transaction construction + send flow (viem) | T24, T27a | testnet transfer signed by the mock |
 | T29 | Android target: `tauri android init`, build, sign | T27b | APK runs on a device |
 | T30 | Android BLE: runtime permissions (`BLUETOOTH_SCAN`/`CONNECT`, location on older APIs), scan/pair flow, reconnect handling | T22, T29 | phone connects and survives a backgrounding |
