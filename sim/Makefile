@@ -12,7 +12,7 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui test_button test_pin_change test_protocol
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui test_button test_pin_change test_protocol test_xfp
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
@@ -52,6 +52,29 @@ $(BUILD)/test_eth_tx: test_eth_tx.c ../src/eth-tx.c $(CRYPTO)/sha3.c \
 $(BUILD)/test_eth_decode: test_eth_decode.c ../src/eth-decode.c ../src/eth-tx.c \
                           $(CRYPTO)/sha3.c $(CRYPTO)/memzero.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
+
+# BIP32/BIP39 only - the wallet wrapper needs an unlocked vault, and that
+# plumbing is covered in test_pin_change.
+$(BUILD)/test_xfp: test_xfp.c host_stubs.c \
+                   $(CRYPTO)/bip32.c $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
+                   $(CRYPTO)/ecdsa.c $(CRYPTO)/bignum.c $(CRYPTO)/secp256k1.c \
+                   $(CRYPTO)/nist256p1.c $(CRYPTO)/curves.c $(CRYPTO)/ripemd160.c \
+                   $(CRYPTO)/base58.c $(CRYPTO)/blake256.c $(CRYPTO)/blake2b.c \
+                   $(CRYPTO)/hasher.c $(CRYPTO)/address.c $(CRYPTO)/segwit_addr.c \
+                   $(CRYPTO)/base32.c $(CRYPTO)/groestl.c \
+                   $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/hmac.c \
+                   $(CRYPTO)/pbkdf2.c $(CRYPTO)/rfc6979.c $(CRYPTO)/hmac_drbg.c \
+                   $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
+                   $(CRYPTO)/ed25519-donna/ed25519.c \
+                   $(CRYPTO)/ed25519-donna/curve25519-donna-32bit.c \
+                   $(CRYPTO)/ed25519-donna/curve25519-donna-helpers.c \
+                   $(CRYPTO)/ed25519-donna/curve25519-donna-scalarmult-base.c \
+                   $(CRYPTO)/ed25519-donna/ed25519-donna-32bit-tables.c \
+                   $(CRYPTO)/ed25519-donna/ed25519-donna-impl-base.c \
+                   $(CRYPTO)/ed25519-donna/modm-donna-32bit.c \
+                   $(CRYPTO)/ed25519-donna/ed25519-sha3.c \
+                   $(CRYPTO)/ed25519-donna/ed25519-keccak.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -o $@ $^
 
 $(BUILD)/test_cbor: test_cbor.c ../src/cbor.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^

@@ -1302,6 +1302,48 @@ bool wallet_verify_password(const char *password, size_t length) {
  * a crash in step 5 leaves the new generation authoritative with dead blobs
  * beside it. Both boot into a device where one PIN opens everything.
  */
+WalletError wallet_get_master_fingerprint(uint32_t *fingerprint_out) {
+    if (!fingerprint_out) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
+    if (!state.initialized) {
+        return WALLET_ERROR_NOT_INITIALIZED;
+    }
+    if (!state.unlocked) {
+        return WALLET_ERROR_LOCKED;
+    }
+    if (!state.has_mnemonic) {
+        return WALLET_ERROR_NO_MNEMONIC;
+    }
+
+    if (!derive_lock_take()) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
+
+    cache_seed_from_mnemonic();
+
+    /* A local node, never state.node.
+     *
+     * state.node is where the last derivation left off, and this runs from the
+     * UI while the protocol task may be signing. Reusing it to compute a
+     * display value is exactly the shape of bug that once signed with a key the
+     * confirmation screen never named. Nothing here touches shared state. */
+    HDNode master;
+    WalletError err = WALLET_OK;
+
+    if (hdnode_from_seed(state.seed, SEED_SIZE, SECP256K1_NAME, &master) != 1) {
+        err = WALLET_ERROR_DERIVATION_FAILED;
+        goto done;
+    }
+    hdnode_fill_public_key(&master);
+    *fingerprint_out = hdnode_fingerprint(&master);
+
+done:
+    memzero(&master, sizeof(master));
+    derive_lock_give();
+    return err;
+}
+
 WalletError wallet_change_password(const char *old_password, size_t old_length,
                                    const char *new_password, size_t new_length,
                                    const uint8_t companion_hash[32],

@@ -162,6 +162,24 @@ void wallet_clear_passphrase(void);
  */
 bool wallet_has_passphrase(void);
 
+/**
+ * Master key fingerprint (BIP32 "XFP"): the first four bytes of
+ * hash160(master public key).
+ *
+ * Eight hex characters instead of forty-two. Coldcard shows it because it is
+ * short enough that people actually write it down and compare it, which is the
+ * whole point of showing an identifier at all - an address nobody checks
+ * protects nobody.
+ *
+ * It also identifies the *seed*, not one address, so it is the cheapest way to
+ * tell whether a passphrase produced the wallet you meant: change the
+ * passphrase and this changes with it.
+ *
+ * NOT a secret, but it is a linkable identifier - the same seed shows the same
+ * XFP everywhere - so treat it as pseudonymous rather than public.
+ */
+WalletError wallet_get_master_fingerprint(uint32_t *fingerprint_out);
+
 // ========== Mnemonic Management ========== //
 
 /**
