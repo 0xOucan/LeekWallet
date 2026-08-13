@@ -193,6 +193,73 @@ static void test_full_phrase_roundtrip(void)
     CHECK(e.word_count == 0 && e.words[0][0] == '\0', "clear() left residue");
 }
 
+/* T3 / S8d. The entry logic always handled 24 words; the device had no way to
+ * ask for them, so every 24-word backup was unimportable. This is the
+ * round-trip the roadmap asks for, and it also pins down the boundary that
+ * makes a wrong length dangerous: a 24-word phrase must NOT report itself
+ * complete at word 12. If it did, the user would import a wallet built from
+ * the first half of their backup and only discover it by finding no funds. */
+static void test_24_word_roundtrip(void)
+{
+    printf("== full 24-word phrase round-trip (T3)\n");
+
+    /* A real 24-word phrase: the all-zeros entropy vector from BIP39. */
+    const char *phrase[24] = {
+        "abandon", "abandon", "abandon", "abandon", "abandon", "abandon",
+        "abandon", "abandon", "abandon", "abandon", "abandon", "abandon",
+        "abandon", "abandon", "abandon", "abandon", "abandon", "abandon",
+        "abandon", "abandon", "abandon", "abandon", "abandon", "art",
+    };
+
+    MnemonicEntry e;
+    mnemonic_entry_reset(&e, 24);
+    CHECK(e.target_words == 24, "reset clamped the target to %d", e.target_words);
+
+    for (int i = 0; i < 24; i++) {
+        const char *got = type_word(&e, phrase[i], NULL);
+        CHECK(got && strcmp(got, phrase[i]) == 0,
+              "word %d: wanted \"%s\", got \"%s\"", i + 1, phrase[i], got ? got : "(nothing)");
+
+        /* The half-way point is the dangerous one. */
+        if (i == 11) {
+            CHECK(e.word_count == 12, "word 12 left a count of %d", e.word_count);
+        }
+    }
+
+    CHECK(e.word_count == 24, "ended with %d words", e.word_count);
+
+    char out[300];
+    mnemonic_entry_build(&e, out, sizeof(out));
+
+    char expect[300] = {0};
+    for (int i = 0; i < 24; i++) {
+        if (i) strcat(expect, " ");
+        strcat(expect, phrase[i]);
+    }
+    CHECK(strcmp(out, expect) == 0, "built \"%s\"", out);
+
+    mnemonic_entry_clear(&e);
+    CHECK(e.word_count == 0 && e.words[0][0] == '\0', "clear() left residue");
+    /* clear() keeps the target on purpose: the length is not a secret, and the
+     * screen re-uses it when the user backs out of a word and starts again. */
+    CHECK(e.target_words == 24, "clear() dropped the chosen length");
+}
+
+/* Anything that is not 12 or 24 is a caller mistake, and the safe reading is
+ * the shorter phrase - never a longer one the user has not been asked for. */
+static void test_target_is_clamped(void)
+{
+    printf("== an out-of-range target falls back to 12\n");
+    MnemonicEntry e;
+
+    mnemonic_entry_reset(&e, 18);
+    CHECK(e.target_words == 12, "18 became %d", e.target_words);
+    mnemonic_entry_reset(&e, 0);
+    CHECK(e.target_words == 12, "0 became %d", e.target_words);
+    mnemonic_entry_reset(&e, 25);
+    CHECK(e.target_words == 12, "25 became %d", e.target_words);
+}
+
 static void test_backspace(void)
 {
     printf("== backspace across word boundaries\n");
@@ -219,6 +286,8 @@ int main(void)
     test_prefix_words();
     test_dead_end_letters_hidden();
     test_full_phrase_roundtrip();
+    test_24_word_roundtrip();
+    test_target_is_clamped();
     test_backspace();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",

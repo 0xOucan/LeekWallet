@@ -445,6 +445,17 @@ static char create_error[32] = {0};
 static MnemonicEntry entry;
 static char entry_error[20] = {0};
 
+/* Import starts by asking how long the phrase is (T3, AUDIT S8d).
+ *
+ * The entry logic has always handled 24 words; there was simply no way to say
+ * so, which made every 24-word backup unimportable. Asking first rather than
+ * inferring: a 24-word phrase typed into a 12-word target silently imports the
+ * wrong wallet at word 12, and the checksum makes that look like a typing
+ * error rather than the wrong question. */
+static bool entry_choosing_length = true;
+static int  entry_length_choice = 12;
+
+
 /* ============================================================================
  * Auto-lock
  *
@@ -1545,13 +1556,29 @@ static void screen_mnemonic_display_on_button(button_id_t btn)
 static void screen_mnemonic_entry_enter(void)
 {
     ESP_LOGI(TAG, "Mnemonic entry screen");
-    mnemonic_entry_reset(&entry, entry.target_words ? entry.target_words : 12);
+    entry_choosing_length = true;
+    entry_length_choice = 12;
+    mnemonic_entry_reset(&entry, entry_length_choice);
     entry_error[0] = '\0';
 }
 
 static void screen_mnemonic_entry_render(void)
 {
     oled_clear();
+
+    if (entry_choosing_length) {
+        oled_draw_string_centered(0, "Import seed");
+        oled_draw_string(2, 0, "How many words?");
+
+        char line[22];
+        snprintf(line, sizeof(line), "%s 12", entry_length_choice == 12 ? ">" : " ");
+        oled_draw_string(4, 0, line);
+        snprintf(line, sizeof(line), "%s 24", entry_length_choice == 24 ? ">" : " ");
+        oled_draw_string(5, 0, line);
+
+        oled_draw_string(7, 0, "UP DN  BCK  SEL");
+        return;
+    }
 
     char header[22];
     snprintf(header, sizeof(header), "Word %d/%d",
@@ -1637,6 +1664,32 @@ static void screen_mnemonic_entry_on_button(button_id_t btn)
 {
     entry_error[0] = '\0';
 
+    if (entry_choosing_length) {
+        switch (btn) {
+            case BUTTON_UP:
+            case BUTTON_DOWN:
+                /* Two options, so either direction is a toggle. */
+                entry_length_choice = (entry_length_choice == 12) ? 24 : 12;
+                break;
+
+            case BUTTON_CANCEL:
+                mnemonic_entry_clear(&entry);
+                ui_set_screen(SCREEN_MAIN_MENU);
+                return;
+
+            case BUTTON_ACCEPT:
+                mnemonic_entry_reset(&entry, entry_length_choice);
+                entry_choosing_length = false;
+                ESP_LOGI(TAG, "Importing a %d-word phrase", entry_length_choice);
+                break;
+
+            default:
+                break;
+        }
+        ui_invalidate();
+        return;
+    }
+
     switch (btn) {
         case BUTTON_UP:
             mnemonic_entry_scroll(&entry, 1);
@@ -1648,8 +1701,12 @@ static void screen_mnemonic_entry_on_button(button_id_t btn)
 
         case BUTTON_CANCEL:
             if (!mnemonic_entry_back(&entry)) {
+                /* Backing out of the first character returns to the length
+                 * question rather than leaving outright, so a wrong choice
+                 * costs one press instead of a restart. */
+                entry_choosing_length = true;
                 mnemonic_entry_clear(&entry);
-                ui_set_screen(SCREEN_MAIN_MENU);
+                mnemonic_entry_reset(&entry, entry_length_choice);
             }
             break;
 
