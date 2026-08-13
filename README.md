@@ -351,20 +351,30 @@ ignored.
 
 Concretely, the outstanding items that make this a testnet device today:
 
-LeekWallet is a work in progress and has **not** been independently audited. A self-audit
-([AUDIT.md](AUDIT.md)) found defects that are disqualifying for a device holding value:
+LeekWallet is a work in progress and has **not** been independently audited. The self-audit in
+[AUDIT.md](AUDIT.md) tracks eight findings; most are closed and covered by tests. What remains:
 
-- **The seed is recoverable from a flash dump.** Storage keys are `SHA256(SHA256(pin))` with no
-  salt and no KDF, the PIN is effectively 4 digits, and flash encryption is not enabled. Anyone
-  with the physical device and `esptool` recovers the seed in seconds. (S1)
-- **~48% of 12-word seeds cannot be imported.** 110 BIP39 words are unreachable in the entry UI.
-  (S3)
-- **The wipe counter can be bypassed** by cutting power at the right moment. (S4)
-- **Plaintext seeds linger in RAM** after the screen showing them is dismissed. (S5)
-- **Seed-generation entropy is unverified** — the S3 hardware RNG's guarantees depend on an RF
-  subsystem being active, and mnemonics are generated with Wi-Fi and BLE off. (S6)
-- **There is no on-device transaction confirmation yet**, so the "what you see is what you sign"
-  property that makes a hardware wallet meaningful does not exist. (ROADMAP T12)
+**Blocking, and the only reason this is not usable with real funds:**
+
+- **The vault can be read off the chip.** Flash encryption and secure boot are not enabled, so
+  anyone with the device runs `esptool read_flash` and attacks the PIN offline. The key
+  derivation is now salted PBKDF2 at ~1 s per attempt and storage is authenticated AES-256-GCM,
+  which turns an instant break into a slow one. **It does not stop the read.** (S1)
+
+**Open, lower severity:**
+
+- **Some seed material lingers in RAM** after use. The screens that display a phrase clear it,
+  but not every exit path does. (S5)
+- **Wiping is not atomic.** The PIN and the wallets are erased by two separate calls, so a power
+  cut between them leaves one without the other. It is confirmed and warns about unverified
+  backups, but a resume-on-boot flag is still missing. (S7)
+- **Assorted robustness items** — see S8.
+
+**Closed since the first audit**, each with a regression test: the four-digit PIN ceiling (S2),
+110 BIP39 words being unreachable so that roughly half of all seeds could not be imported (S3),
+the attempt counter resetting after a power cut (S4), silent entropy degradation (S6), the
+unlabelled seed-reveal shortcut (S8i), and the display composing frames in front of the user
+(S8k).
 
 Progress against these is tracked in [ROADMAP.md](ROADMAP.md). The blocking one is flash
 encryption: until it lands, anyone holding the device can read the encrypted vault off the chip
