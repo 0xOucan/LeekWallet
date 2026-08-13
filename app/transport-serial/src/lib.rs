@@ -112,6 +112,19 @@ impl SerialTransport {
             // app connected.
             .dtr_on_open(false)
             .open()?;
+
+        /* Let the port settle, then drop whatever the device had queued.
+         *
+         * The ESP32-S3's USB-Serial-JTAG hands over its buffered TX shortly
+         * AFTER the host opens the port, so clearing immediately clears
+         * nothing and the stale bytes land on the next read. Since the
+         * protocol has no request IDs, that reply then looks like an answer to
+         * whatever is sent first. */
+        std::thread::sleep(Duration::from_millis(250));
+        let mut port = port;
+        let _ = port.clear(serialport::ClearBuffer::Input);
+        let _ = &mut port;
+
         Ok(Self { port, buffer: Vec::with_capacity(MAX_FRAME) })
     }
 
@@ -127,6 +140,16 @@ impl SerialTransport {
         out.push(body as u8);
         out.push(frame_type);
         out.extend_from_slice(payload);
+
+        /* Drop anything already sitting in the OS buffer before sending.
+         *
+         * There is no request ID, so a reply is matched to whichever request
+         * went out last - which means a leftover reply from an earlier run is
+         * indistinguishable from an answer to this one. That is not
+         * theoretical: it made a device that was correctly silent on USB (BLE
+         * was the selected transport) look like it was answering, and a
+         * transport-exclusivity bug get reported that did not exist. */
+        self.port.clear(serialport::ClearBuffer::Input)?;
 
         self.port.write_all(&out)?;
         self.port.flush()?;
