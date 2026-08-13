@@ -100,7 +100,7 @@ group("a tampered frame is rejected");
   device.confirm();
 
   const sealed = host.encrypt(new TextEncoder().encode("lock"));
-  sealed[0] ^= 0x01;
+  sealed[0] = (sealed[0] ?? 0) ^ 0x01;
 
   let threw = false;
   try { device.decrypt(sealed); } catch { threw = true; }

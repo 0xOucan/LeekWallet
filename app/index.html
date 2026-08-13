@@ -13,6 +13,7 @@
         <span id="conn">Disconnected</span>
         <span class="statusbar__spacer"></span>
         <span class="muted" id="wallet"></span>
+        <span class="badge" id="mode" title="Which backend this window is using">—</span>
         <button class="ghost" id="theme" aria-label="Toggle theme">◐</button>
       </header>
 
@@ -24,12 +25,9 @@
 
         <div class="panel">
           <h1>Device</h1>
-          <p id="devicehint">
-            No device connected. The mock implements the same wire protocol as
-            the firmware, so the interface can be exercised without hardware.
-          </p>
+          <p id="devicehint">Checking for a device…</p>
           <div class="row">
-            <button class="primary" id="connect">Connect mock device</button>
+            <button class="primary" id="connect">Connect</button>
             <button id="unlock" disabled>Unlock</button>
             <button id="disconnect" disabled>Disconnect</button>
           </div>

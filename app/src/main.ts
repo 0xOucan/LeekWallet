@@ -296,6 +296,25 @@ const chunk = (addr: string): string => {
 
 /* ------------------------------------------------------------------- wiring */
 
+/* Say plainly which backend this window uses, before anything is connected.
+ * The label used to read "Connect mock device" unconditionally, so a native
+ * window talking to real hardware still claimed to be a simulation. */
+function describeEnvironment(): void {
+  const tauri = isTauri();
+  const badge = $("mode");
+  badge.textContent = tauri ? "hardware" : "mock";
+  badge.dataset["mode"] = tauri ? "hardware" : "mock";
+
+  ($("connect") as HTMLButtonElement).textContent =
+    tauri ? "Connect device" : "Connect mock device";
+
+  $("devicehint").textContent = tauri
+    ? "Native shell: this will talk to a LeekWallet over USB. Confirm the passkey on the device when asked."
+    : "Browser: no USB access here, so this uses the built-in mock. It speaks the same protocol as the firmware, so the interface behaves identically — but nothing is signed by real hardware.";
+}
+
+describeEnvironment();
+
 $("connect").addEventListener("click", () => void connect());
 $("unlock").addEventListener("click", () => void unlock());
 $("disconnect").addEventListener("click", () => void disconnect());

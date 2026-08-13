@@ -34,6 +34,20 @@ body {
 
 .statusbar__spacer { flex: 1; }
 
+/* Which backend is in use. Small, always visible, and never guessed: an
+ * interface that cannot tell you whether it is talking to real hardware or a
+ * simulation is the wrong interface for signing transactions. */
+.badge {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+.badge[data-mode="hardware"] { color: var(--accent); border-color: var(--accent); }
+.badge[data-mode="mock"] { color: var(--warn); border-color: var(--warn); }
+
 main { flex: 1; width: 100%; max-width: 640px; margin: 0 auto; padding: var(--space-6) var(--space-4); }
 @media (min-width: 1024px) { main { max-width: 960px; } }
 
