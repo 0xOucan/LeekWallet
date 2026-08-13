@@ -83,6 +83,17 @@
                    value="0.0001" autocomplete="off" />
           </label>
 
+          <!-- Advisory preview (T48). Deliberately styled as a note rather
+               than a verdict: nothing in here has been checked by anything the
+               user can trust. See PROTOCOL.md 6c. -->
+          <section class="preview" id="preview" hidden aria-live="polite">
+            <div class="preview__tag">Preview — drawn by this app, not by the device</div>
+            <p class="preview__summary" id="psummary"></p>
+            <dl class="kv" id="pfields"></dl>
+            <ul class="preview__warnings" id="pwarnings"></ul>
+            <p class="preview__authority" id="pauthority"></p>
+          </section>
+
           <div class="row" style="margin-top: var(--space-4)">
             <button class="primary" id="sign">Sign &amp; send</button>
             <button id="usenext">Use address 1</button>

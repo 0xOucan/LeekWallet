@@ -127,6 +127,47 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 }
 .notice--danger { border-left-color: var(--danger); }
 
+/* ------------------------------------------------------- advisory preview */
+
+/* Visually a margin note, not a result. Dashed border and no accent colour on
+ * purpose: the app's confident styling belongs to things the app is entitled
+ * to assert, and its reading of a transaction is not one of them. A green
+ * "checked" card here would be the lie PROTOCOL.md 6c warns about. */
+.preview {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  background: var(--bg);
+}
+.preview__tag {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: var(--space-2);
+}
+.preview__summary {
+  color: var(--text);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-3);
+}
+.preview__warnings { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
+.preview__warnings li {
+  border-left: 2px solid var(--warn);
+  padding: var(--space-1) var(--space-3);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+}
+.preview__warnings li[data-severity="high"] { border-left-color: var(--danger); }
+.preview__authority {
+  margin: var(--space-3) 0 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--text-xs);
+}
+
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2) var(--space-4); font-size: var(--text-sm); }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; font-family: var(--font-mono); word-break: break-all; }

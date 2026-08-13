@@ -21,6 +21,9 @@ import { sepolia } from "viem/chains";
 import {
   deriveSession, generateKeypair, Session,
 } from "../packages/core/src/session.ts";
+import {
+  ADVISORY_NOTICE, interpretTransaction, type TxInterpretation,
+} from "../packages/core/src/tx-interpret.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -455,6 +458,84 @@ async function loadAddresses(): Promise<void> {
   log(`derived ${addresses.length} addresses`);
 }
 
+/* ---------------------------------------------------------------- preview */
+
+/**
+ * Draw the advisory interpretation of whatever is currently in the form.
+ *
+ * It updates as the user types rather than appearing at the moment they press
+ * Sign, so an unlimited approval or a refusal is read while there is still
+ * something to do about it. Everything here is host-side and therefore
+ * untrustworthy by construction: the notice at the bottom is not decoration,
+ * it is the only accurate statement on the card. See PROTOCOL.md 6c.
+ */
+function renderPreview(fee?: { gas: bigint; maxFeePerGas: bigint }): void {
+  const panel = $("preview");
+  const toValue = ($("to") as HTMLInputElement).value.trim();
+  const amountValue = ($("amount") as HTMLInputElement).value.trim();
+
+  let value: bigint;
+  try {
+    value = parseEther(amountValue);
+  } catch {
+    value = 0n;
+  }
+
+  // An incomplete form has nothing worth summarising, and a half-summary of a
+  // half-typed address invites reading it as if it were complete.
+  if (!isAddress(toValue)) {
+    panel.hidden = true;
+    return;
+  }
+
+  const view: TxInterpretation = interpretTransaction({
+    chainId: sepolia.id,
+    to: toValue,
+    value,
+    ...(fee ? { gas: fee.gas, maxFeePerGas: fee.maxFeePerGas } : {}),
+  });
+
+  $("psummary").textContent = view.summary;
+
+  const fields = $("pfields");
+  fields.textContent = "";
+  const row = (label: string, text: string): void => {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = text;
+    fields.append(dt, dd);
+  };
+  row("App reads it as", view.action);
+  if (view.recipient) row("To", chunk(view.recipient));
+  row("Value", `${view.valueEther} ETH`);
+  row("Chain", view.chainName ? `${view.chainId} (${view.chainName})` : String(view.chainId));
+  // Raw units, never scaled: the device cannot call decimals() and neither can
+  // this app claim to know them.
+  if (view.tokenAmountRaw !== undefined) {
+    row("Token amount", `${view.tokenAmountRaw} raw units (decimals unknown)`);
+  }
+  if (view.contract) row("Token contract", chunk(view.contract));
+  row(
+    "Max fee",
+    view.maxFeeEther === undefined
+      ? "not known until fees are fetched"
+      : `up to ${view.maxFeeEther} ETH (${view.maxFeeWei} wei)`,
+  );
+
+  const list = $("pwarnings");
+  list.textContent = "";
+  for (const w of view.warnings) {
+    const li = document.createElement("li");
+    li.dataset["severity"] = w.severity;
+    li.textContent = w.message;
+    list.appendChild(li);
+  }
+
+  $("pauthority").textContent = ADVISORY_NOTICE;
+  panel.hidden = false;
+}
+
 /**
  * Ask the device to sign.
  *
@@ -514,6 +595,16 @@ async function sign(): Promise<void> {
     const maxPriorityFeePerGas = fees.maxPriorityFeePerGas ?? 1000000000n;
 
     log(`nonce ${nonce}, max fee ${maxFeePerGas} wei`);
+
+    /* Re-draw the preview now that the fee ceiling is known, and repeat any
+     * warnings in the log — the panel can be scrolled off, and an unlimited
+     * approval is worth saying twice. Nothing here blocks: refusing to send
+     * would only teach the user that the app decides what is safe. */
+    renderPreview({ gas: 21000n, maxFeePerGas });
+    for (const w of interpretTransaction({ chainId: sepolia.id, to: toValue, value }).warnings) {
+      log(`warning: ${w.message}`);
+    }
+
     log("check every page on the device, then approve");
 
     const wei = (v: bigint): Uint8Array => {
@@ -643,7 +734,12 @@ $("usenext").addEventListener("click", () => {
   // Sending to your own next address is the safest possible live test.
   const other = addresses[selectedIndex === 0 ? 1 : 0];
   if (other) ($("to") as HTMLInputElement).value = other;
+  renderPreview();
 });
+
+for (const id of ["to", "amount"]) {
+  $(id).addEventListener("input", () => renderPreview());
+}
 /* ------------------------------------------------------------------- theme */
 
 /* Three states, not two. "System" has to be reachable, or a user who toggles
