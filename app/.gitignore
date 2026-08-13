@@ -7,3 +7,5 @@ src-tauri/target/
 src-tauri/gen/
 transport-serial/target/
 transport-serial/Cargo.lock
+transport-ble/target/
+transport-ble/Cargo.lock

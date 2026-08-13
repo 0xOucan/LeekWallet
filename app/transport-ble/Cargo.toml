@@ -1,0 +1,25 @@
+[package]
+name = "leek-transport-ble"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "BLE GATT transport for LeekWallet. The same frames as USB, plus chunking."
+
+# Standalone for the same reason as transport-serial: the framing and chunking
+# are the parts worth testing, and they must be testable with no radio in the
+# room. The `ble` feature carries everything that needs an adapter, so
+# `cargo test --no-default-features` exercises the wire logic alone.
+[dependencies]
+btleplug = { version = "0.11", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
+futures = { version = "0.3", optional = true }
+uuid = { version = "1", optional = true }
+
+[features]
+default = ["ble"]
+ble = ["dep:btleplug", "dep:tokio", "dep:futures", "dep:uuid"]
+
+[[bin]]
+name = "leek-ble-probe"
+path = "src/bin/ble-probe.rs"
+required-features = ["ble"]
