@@ -256,7 +256,7 @@ Write the protocol spec first and both sides build against it simultaneously.
 | ~~T23~~ ✅ | **Mock device** implementing the protocol: session, permission tiers, confirmations, rejection, latency | T20 | 10 test groups green; UI can be built with no hardware |
 | T48 | Transaction interpretation in the app (Rabby-style), with unlimited-approval warnings and local selector DB. Advisory only — see [PROTOCOL.md 6c](docs/PROTOCOL.md) | T24 | ERC-20 transfer and approve decoded and labelled as a preview |
 | T49 | WalletConnect project ID: bundled default plus a user override in settings | T32 | app works out of the box and can be pointed at your own project |
-| T24 | viem `toAccount()` adapter | T21 | signs against a testnet using the mock |
+| ~~T24~~ ✅ | viem `toAccount()` adapter — structured fields only, never a serialised payload | T21 | 5 test groups; drops into any walletClient |
 | T25 | Firmware: BLE GATT service + protocol dispatcher | T20 | echoes a ping from a phone |
 | ~~T25b~~ ✅ | Firmware protocol endpoint over USB-Serial-JTAG, sync-marked so it shares the console port. `scripts/probe-device.py` talks to it | T20 | ping/getFeatures/getStatus answered on hardware; key commands correctly refused |
 | ~~T25c~~ ✅ | Session layer wired in: X25519 handshake, on-device passkey comparison screen, encrypted frames, `getAddress` behind a confirmed session | T25b | handshake works on hardware; key commands refused without confirmation |

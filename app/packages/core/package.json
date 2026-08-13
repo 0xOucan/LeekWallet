@@ -6,6 +6,6 @@
   "type": "module",
   "exports": { ".": "./src/index.ts" },
   "scripts": {
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/framing.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/cbor.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/mock-device.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/device-state.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/framing.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/cbor.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/mock-device.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/device-state.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/viem-account.test.ts"
   }
 }

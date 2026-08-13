@@ -10,6 +10,21 @@ app/
 └── src-tauri/         Rust shell: transports, capability allowlist
 ```
 
+## Building the Tauri desktop shell
+
+The web shell runs in any browser against the mock with no extra tooling. The
+**Tauri** build additionally needs GTK and WebKit development packages, which
+are not installed by default on Ubuntu:
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+                 libsoup-3.0-dev libxdo-dev libssl-dev \
+                 libayatana-appindicator3-dev librsvg2-dev
+```
+
+Until those are present, `pnpm dev` and the mock cover everything except the
+native window and the real transports.
+
 ## Setup
 
 Requires **Node 22+** and **pnpm 9+**. Get pnpm through corepack, which ships with Node — no
