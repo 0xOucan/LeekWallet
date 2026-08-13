@@ -43,7 +43,15 @@ typedef struct {
     void (*enter)(void);                    /* Called when screen becomes active */
     void (*render)(void);                   /* Called to draw the screen */
     void (*on_button)(button_id_t btn);     /* Called on button press */
-    void (*exit)(void);                     /* Called when leaving screen */
+    /* Called when leaving the screen, with the screen being moved to.
+     *
+     * The destination is passed because the decision this hook exists for -
+     * whether a secret in a static buffer is still needed - depends on it.
+     * The seed display and the seed verification screen share
+     * `mnemonic_buffer` and hand off to each other in both directions, so a
+     * hook that zeroed unconditionally would break wallet creation rather
+     * than secure it (AUDIT S5). */
+    void (*exit)(screen_id_t next);
 } screen_t;
 
 /**

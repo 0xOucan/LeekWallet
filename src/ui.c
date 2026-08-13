@@ -129,6 +129,11 @@ static void screen_sign_confirm_enter(void);
 static void screen_sign_confirm_render(void);
 static void screen_sign_confirm_on_button(button_id_t btn);
 
+/* Secret-clearing exit hooks (AUDIT S5); defined with the buffers they own. */
+static void forget_mnemonic_unless_needed(screen_id_t next);
+static void forget_mnemonic_entry(screen_id_t next);
+static void forget_pin_entry(screen_id_t next);
+
 static void screen_qr_code_enter(void);
 static void screen_qr_code_render(void);
 static void screen_qr_code_on_button(button_id_t btn);
@@ -145,14 +150,14 @@ static const screen_t screen_pin_setup = {
     .enter = screen_pin_setup_enter,
     .render = screen_pin_setup_render,
     .on_button = screen_pin_setup_on_button,
-    .exit = NULL
+    .exit = forget_pin_entry
 };
 
 static const screen_t screen_pin_unlock = {
     .enter = screen_pin_unlock_enter,
     .render = screen_pin_unlock_render,
     .on_button = screen_pin_unlock_on_button,
-    .exit = NULL
+    .exit = forget_pin_entry
 };
 
 static const screen_t screen_main_menu = {
@@ -173,7 +178,7 @@ static const screen_t screen_wallet_create = {
     .enter = screen_wallet_create_enter,
     .render = screen_wallet_create_render,
     .on_button = screen_wallet_create_on_button,
-    .exit = NULL
+    .exit = forget_mnemonic_unless_needed
 };
 
 static const screen_t screen_wallet_select = {
@@ -187,14 +192,14 @@ static const screen_t screen_mnemonic_display = {
     .enter = screen_mnemonic_display_enter,
     .render = screen_mnemonic_display_render,
     .on_button = screen_mnemonic_display_on_button,
-    .exit = NULL
+    .exit = forget_mnemonic_unless_needed
 };
 
 static const screen_t screen_mnemonic_entry = {
     .enter = screen_mnemonic_entry_enter,
     .render = screen_mnemonic_entry_render,
     .on_button = screen_mnemonic_entry_on_button,
-    .exit = NULL
+    .exit = forget_mnemonic_entry
 };
 
 static const screen_t screen_settings = {
@@ -222,7 +227,7 @@ static const screen_t screen_mnemonic_verify = {
     .enter = screen_mnemonic_verify_enter,
     .render = screen_mnemonic_verify_render,
     .on_button = screen_mnemonic_verify_on_button,
-    .exit = NULL
+    .exit = forget_mnemonic_unless_needed
 };
 
 static const screen_t screen_session_confirm = {
@@ -455,6 +460,60 @@ static char entry_error[20] = {0};
 static bool entry_choosing_length = true;
 static int  entry_length_choice = 12;
 
+/* ============================================================================
+ * Leaving a screen that held a secret (AUDIT S5, T6)
+ *
+ * `wallet_lock()` is careful with the seed; the UI layer above it was not. The
+ * plaintext mnemonic sat in `mnemonic_buffer` from the moment it was displayed
+ * until some later screen happened to overwrite it - across lock, across a
+ * wipe, and into any crash dump or JTAG pause taken in between. "Wipe Device"
+ * left the seed in RAM until the next reboot.
+ *
+ * These hooks close that window at the only moment that is both well-defined
+ * and cheap: the screen transition.
+ * ============================================================================ */
+
+/* The seed-creation flow hands the buffer back and forth between showing the
+ * words and checking the user wrote them down. Within that group the mnemonic
+ * is still live; leaving it, it is not. */
+static bool mnemonic_still_needed_by(screen_id_t next)
+{
+    return next == SCREEN_MNEMONIC_DISPLAY || next == SCREEN_MNEMONIC_VERIFY;
+}
+
+static void forget_mnemonic_unless_needed(screen_id_t next)
+{
+    if (mnemonic_still_needed_by(next)) {
+        return;
+    }
+    memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
+    mnemonic_word_count = 0;
+    mnemonic_page = 0;
+}
+
+/* The import screen's word buffer. Nothing downstream reads it - the built
+ * mnemonic goes straight into the wallet and is zeroed there - so this can go
+ * unconditionally. */
+static void forget_mnemonic_entry(screen_id_t next)
+{
+    (void)next;
+    mnemonic_entry_clear(&entry);
+    memzero(entry_error, sizeof(entry_error));
+    entry_choosing_length = true;
+}
+
+/* The digits as typed. `pin.c` keeps its own verified copy for wallet
+ * encryption and clears that on lock; this is the UI's transcript of the
+ * keypresses and no one needs it after the screen is gone. */
+static void forget_pin_entry(screen_id_t next)
+{
+    (void)next;
+    memzero(pin_entry, sizeof(pin_entry));
+    memzero(pin_first_entry, sizeof(pin_first_entry));
+    pin_cursor = 0;
+    current_digit = 0;
+    pin_confirm_mode = false;
+}
 
 /* ============================================================================
  * Auto-lock
@@ -3096,9 +3155,10 @@ void ui_set_screen(screen_id_t screen)
         return;
     }
 
-    /* Exit current screen */
+    /* Exit current screen. This is where secrets held in static buffers get
+     * zeroed - see the .exit hooks and AUDIT S5. */
     if (screens[current_screen] && screens[current_screen]->exit) {
-        screens[current_screen]->exit();
+        screens[current_screen]->exit(screen);
     }
 
     current_screen = screen;

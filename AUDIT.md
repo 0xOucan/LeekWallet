@@ -6,8 +6,9 @@ Scope: `src/` (3,367 lines) and `components/colibri-wallet/` (1,253 lines) as of
 Findings are ordered by severity. Each one names the file and line so it can be turned into a
 regression test in `sim/` before it is fixed.
 
-**Status:** S2, S3, S4, S6, S8b, S8c, S8h, S8i and S8k are **fixed** and covered by tests. S7 is
-**partially fixed** (confirmation yes, atomicity no).
+**Status:** S2, S3, S4, S6, S7, S8b, S8c, S8d, S8h, S8i and S8k are **fixed** and covered by
+tests. S5 has a fix written but **no test** — `ui.c` cannot run on the host until T0.2 builds the
+GPIO/FreeRTOS shims.
 
 **S1 is the one that still matters.** Its key derivation and storage encryption are done — salted
 PBKDF2 and authenticated AES-GCM — but **flash encryption and secure boot are not enabled**, so
@@ -190,8 +191,15 @@ Still worth adding: a crash-injecting fake NVS (T0.1) so this is a test rather t
 
 ## S5 — Seeds and PINs linger in `.bss` after use
 
-**Where:** `src/ui.c:227` (`mnemonic_buffer[256]`), `src/ui.c:240` (`entry_words`),
-`src/ui.c:1229` (`full_mnemonic[300]`), `src/pin.c:28` (`current_pin`).
+**Where:** `src/ui.c` (`mnemonic_buffer[256]`, the `MnemonicEntry entry`, `full_mnemonic[300]`,
+`pin_entry`/`pin_first_entry`), `src/pin.c:28` (`current_pin`).
+
+**Fix written (T6), not yet tested.** `screen_t.exit` now takes the destination screen and three
+hooks use it: `forget_mnemonic_unless_needed` (kept live only across the display ↔ verify
+hand-off, which shares the buffer in both directions), `forget_mnemonic_entry`, and
+`forget_pin_entry`. `full_mnemonic` was already zeroed on every path. The gap that remains is
+verification: nothing in `sim/` can drive a screen transition, so this is reasoned-about rather
+than demonstrated. It stays open until T0.2.
 
 `wallet_lock()` is careful — it zeroes the mnemonic, passphrase, encryption key, and node
 (`colibri-wallet.c:485-488`). The UI layer above it is not. The plaintext mnemonic sits in the
