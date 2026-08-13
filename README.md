@@ -474,7 +474,9 @@ wagmi/RainbowKit dapp can use it unmodified.
 Visual language — minimal, mono-forward, no pixel art — is specified in
 [docs/DESIGN.md](docs/DESIGN.md).
 
-See [ROADMAP.md](ROADMAP.md) for the detailed, parallelizable task breakdown.
+See [ROADMAP.md](ROADMAP.md) for the detailed task breakdown, and
+[NEXT-SESSION.md](NEXT-SESSION.md) for a cold-start brief covering current
+state, priorities, parallelisable tracks and the traps worth knowing.
 
 ---
 
