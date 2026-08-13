@@ -107,6 +107,84 @@
           <p id="txresult" class="muted"></p>
         </div>
 
+        <!--
+          Dapp connectivity (T32/T49). Deliberately not a browser: there is no
+          address bar here and there will not be one. The dapp stays in the
+          user's own browser and only structured JSON-RPC crosses the relay —
+          see docs/PROTOCOL.md section 6b for why rendering untrusted web
+          content next to a signing device is the thing we are not doing.
+        -->
+        <div class="panel" id="wcpanel">
+          <h2>Dapps (WalletConnect)</h2>
+          <p id="wcstatus" class="muted"></p>
+
+          <details>
+            <summary>Project ID</summary>
+            <p class="muted" id="wcprojecthint"></p>
+            <div class="row">
+              <input id="wcprojectid" class="addr" spellcheck="false"
+                     autocomplete="off" placeholder="32 hex characters" />
+              <button id="wcprojectsave">Save</button>
+            </div>
+          </details>
+
+          <label class="field">
+            <span>Pairing link from the dapp</span>
+            <input id="wcuri" class="addr" spellcheck="false"
+                   autocomplete="off" placeholder="wc:…@2?relay-protocol=irn&amp;symKey=…" />
+          </label>
+          <div class="row">
+            <button class="primary" id="wcpair">Pair</button>
+            <button id="wcscan">Scan QR</button>
+          </div>
+          <p class="muted" id="wcscanhint"></p>
+          <!-- Camera frames are read by the platform barcode detector and
+               discarded; nothing is stored or uploaded. -->
+          <video id="wcvideo" class="wc-video" hidden muted playsinline></video>
+
+          <section class="wc-card" id="wcproposal" hidden>
+            <h3>A dapp wants to connect</h3>
+            <dl class="kv">
+              <dt>Calls itself</dt><dd id="wcpropname"></dd>
+              <dt>At</dt><dd id="wcpropurl"></dd>
+            </dl>
+            <p id="wcpropdetail"></p>
+            <ul class="preview__warnings" id="wcpropwarn"></ul>
+            <div class="row">
+              <button class="primary" id="wcpropapprove">Connect</button>
+              <button id="wcpropreject">Decline</button>
+            </div>
+          </section>
+
+          <section class="wc-card" id="wcrequest" hidden aria-live="polite">
+            <h3>Pending request</h3>
+            <dl class="kv">
+              <dt>From</dt><dd id="wcreqname"></dd>
+              <dt>Method</dt><dd id="wcreqmethod"></dd>
+            </dl>
+            <div id="wcreqbody"></div>
+
+            <!-- The same advisory preview the send form draws, from the same
+                 interpretTransaction. A dapp cannot put a word inside it. -->
+            <section class="preview" id="wcpreview" hidden>
+              <div class="preview__tag">Preview — drawn by this app, not by the device</div>
+              <p class="preview__summary" id="wcpsummary"></p>
+              <dl class="kv" id="wcpfields"></dl>
+              <ul class="preview__warnings" id="wcpwarnings"></ul>
+              <p class="preview__authority" id="wcpauthority"></p>
+            </section>
+
+            <div class="row">
+              <button class="primary" id="wcapprove">Approve on device</button>
+              <button id="wcreject">Reject</button>
+            </div>
+            <p class="muted" id="wcqueue"></p>
+          </section>
+
+          <h3>Connected dapps</h3>
+          <div id="wcsessions" class="wc-sessions"></div>
+        </div>
+
         <div class="panel">
           <h2>Device log</h2>
           <div class="log" id="log">Nothing yet.</div>

@@ -191,6 +191,73 @@ Light, dark, and system, cycled from the status bar and remembered. System is a
 distinct state rather than an initial guess — a user who toggles once must be
 able to get back to following their OS.
 
+## Connecting to dapps (WalletConnect v2)
+
+The dapp stays in your own browser. Pairing over WalletConnect means only
+structured JSON-RPC crosses the relay — `eth_sendTransaction`, `personal_sign`
+and friends — and this app renders none of the dapp's HTML or JavaScript. There
+is deliberately **no built-in dapp browser**, and there will not be one: a
+webview full of untrusted web content inside the process that talks to a signing
+device is the largest security liability mobile wallets carry. See
+[PROTOCOL.md section 6b](../docs/PROTOCOL.md).
+
+### You need a project ID first
+
+WalletConnect's relay refuses connections without one, and this tree does not
+ship a default — see `src/wc/project-id.ts` for why. A project ID committed here
+would either be a fake that fails at the relay with a cryptic error, or a real
+one belonging to somebody whose rate limit every user of this app would spend.
+
+To get your own:
+
+1. Sign in at <https://cloud.reown.com> (formerly WalletConnect Cloud).
+2. Create a project, choosing the WalletKit / wallet product type.
+3. Copy the **Project ID** — 32 hex characters.
+4. Paste it into *Dapps (WalletConnect) → Project ID → Save* in the app. It is
+   stored in `localStorage` and survives restarts.
+
+The ID is a public client identifier, not a secret. It appears in the relay URL
+of every WalletConnect wallet and grants nothing except relay quota. Whoever
+ships a build for other people can instead set `BUNDLED_PROJECT_ID` in
+`src/wc/project-id.ts`; the settings field then overrides it per user.
+
+Until an ID is configured the pairing controls are disabled and the panel says
+so, rather than failing at connect time with a relay error.
+
+### Pairing
+
+Paste the `wc:` link from the dapp's "Connect wallet" dialog, or press **Scan
+QR** where the webview supports it (Android, and Chromium-based desktop builds;
+WebKitGTK has no `BarcodeDetector`, and the panel says so and falls back to
+paste). Unlock the device first — a locked device offers no addresses, and a
+session approved without them is useless.
+
+Connected dapps are listed with a per-session **End session** button.
+
+### What a dapp can and cannot ask for
+
+| Method | Behaviour |
+|---|---|
+| `eth_accounts`, `eth_chainId` | Answered from app state, no prompt |
+| `eth_sendTransaction` | Confirmed on the device, then broadcast by this app |
+| `eth_signTransaction` | Confirmed on the device, raw transaction returned |
+| `personal_sign` | Confirmed on the device; ASCII, ≤120 bytes |
+| `wallet_switchEthereumChain` | Asks the user; unknown chains are refused (4902) |
+| `eth_signTypedData*` | Refused, 4200 — the device has no `signTypedData` yet |
+| `eth_sign` | Refused, 4200 — it is blind signing by construction |
+| `wallet_addEthereumChain` | Refused, 4200 — chains come from the reviewed registry |
+
+Anything the device would refuse at its own confirmation screen — calldata
+outside the decodable set, contract creation, a message the screen cannot
+render — is refused **before** you walk to the device, with a JSON-RPC error the
+dapp can act on. The pending-request card shows the same advisory preview the
+app draws for its own send form, carrying the same disclaimer: it is produced by
+this app, and only what the device displays is what gets signed.
+
+The relay (`wss://relay.walletconnect.org`, in the CSP allowlist by exact name)
+is a third party. It sees that a wallet and a dapp are talking and when; the
+payloads are encrypted end to end, and no key ever leaves the device.
+
 ## Status
 
 Implemented:
