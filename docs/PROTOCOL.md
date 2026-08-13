@@ -94,6 +94,31 @@ A compromised host is entirely unaffected — see §1.
 
 ---
 
+## 3b. One transport at a time
+
+**The device exposes exactly one channel at a time: USB or BLE, never both.**
+Selectable on the device, defaulting to USB.
+
+This is not a preference. Three reasons, in increasing order of how badly they
+bite:
+
+1. **The session layer is single-peer by construction.** There is one session
+   state and one pair of nonce counters (`src/session.c`). Two concurrent peers
+   would advance the same counters and each other's frames would fail to
+   decrypt — the same class of fault that a request colliding with a
+   background poll already produced on a single channel.
+2. **The framing has no request IDs.** A reply belongs to whichever request
+   went out last. Two channels means two "last"s.
+3. **A device listening on BLE while plugged into USB is reachable by someone
+   you cannot see.** The user believes they are on a cable. Advertising should
+   be off — not merely unpaired — whenever BLE is not the selected transport,
+   which is also the honest answer to the privacy question in T56: a wallet
+   that does not advertise announces nothing.
+
+Switching transports tears down any active session. There is no state worth
+carrying across, and pretending otherwise would mean deciding whether a passkey
+confirmed over one channel authorises the other. It does not.
+
 ## 4. Commands
 
 Permission tiers mirror the existing `RPC_PERM_*` model in the pixiecolibri sibling project.
