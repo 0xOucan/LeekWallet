@@ -27,13 +27,28 @@ async function call(
       const f = frames[0];
       if (!f) return;
       const body = decodeCbor(f.payload) as Record<string, CborValue>;
-      if (f.type === FrameType.Error) {
+      /* Both error frame types, or an encrypted error reads as an empty
+       * success - which is the exact client bug the firmware's send_error
+       * comment describes, and which this helper had. */
+      if (f.type === FrameType.Error || f.type === FrameType.EncryptedError) {
         resolve({ error: { code: Number(body["code"]), message: String(body["message"]) } });
       } else {
         resolve({ result: body["result"] as Record<string, CborValue> });
       }
     });
     dev.send(encodeFrame(FrameType.Request, encodeCbor({ method, ...params }))).catch(reject);
+  });
+}
+
+/** The frame TYPE of the reply, for tests that care how an error is carried. */
+async function rawFrame(dev: MockDevice, method: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const decoder = new FrameDecoder();
+    dev.onFrame((frame) => {
+      const f = decoder.push(frame)[0];
+      if (f) resolve(f.type);
+    });
+    dev.send(encodeFrame(FrameType.Request, encodeCbor({ method }))).catch(reject);
   });
 }
 
@@ -49,15 +64,61 @@ async function main(): Promise<void> {
   {
     const dev = new MockDevice();
     await dev.open();
-    const r = await call(dev, "getStatus");
-    check(r.error?.code === ErrorCode.SessionRequired,
-      `expected SessionRequired, got ${JSON.stringify(r)}`);
+
+    /* getStatus is in the "always" tier - PROTOCOL.md section 5 tells the app
+     * to poll it, and the firmware answers it in plaintext with no session. It
+     * is the KEY operations that must be refused, so assert on one of those. */
+    const early = await call(dev, "getAddress", { path: "m/44'/60'/0'/0/0" });
+    check(early.error?.code === ErrorCode.SessionRequired,
+      `expected SessionRequired, got ${JSON.stringify(early)}`);
 
     const hello = await call(dev, "hello");
     check(hello.result?.["passkey"] === "314159", "hello should return a passkey to compare");
 
     const ok = await call(dev, "getStatus");
     check(ok.result !== undefined, "getStatus should work after hello");
+  }
+
+  group("a session is pending until the passkey is compared");
+  {
+    /* The mock used to mark the session established the moment `hello` was
+     * answered, so the passkey comparison - the entire defence against a
+     * machine in the middle - could be skipped and app code still passed.
+     * The firmware goes to PENDING and refuses everything until the user
+     * confirms. Found by running the real protocol.c on the host. */
+    const dev = new MockDevice({ autoConfirmSession: false, startUnlocked: true });
+    await dev.open();
+
+    const hello = await call(dev, "hello");
+    check(hello.result?.["passkey"] === "314159", "hello should offer a passkey");
+    check(dev.session === "pending", `session went to ${dev.session}, not pending`);
+    check(dev.confirmations.some((c) => c.includes("passkey")),
+      "the passkey comparison was never shown");
+
+    const early = await call(dev, "getAddress", { path: "m/44'/60'/0'/0/0" });
+    check(early.error?.code === ErrorCode.SessionRequired,
+      `pending session served a key operation: ${JSON.stringify(early)}`);
+
+    dev.confirmSession();
+    const ok = await call(dev, "getAddress", { path: "m/44'/60'/0'/0/0" });
+    check(ok.result?.["address"] !== undefined, "confirming the passkey did not open the session");
+  }
+
+  group("an in-session error is encrypted, not plaintext");
+  {
+    /* Counters, not secrecy. The device advances its receive counter whenever
+     * a frame decrypts, error or not; the host advances on opening a reply. A
+     * plaintext error leaves them one apart and every later frame fails to
+     * decrypt. The mock answered in plaintext, so a client that mishandled the
+     * encrypted form passed here and desynced against real hardware. */
+    const dev = await connected({ startUnlocked: true });
+    const raw = await rawFrame(dev, "definitelyNotAMethod");
+    check(raw === FrameType.EncryptedError,
+      `error came back as frame type 0x${raw.toString(16)}, expected 0x7e`);
+
+    /* And the channel still works afterwards. */
+    const after = await call(dev, "getStatus");
+    check(after.result !== undefined, "the session did not survive an error");
   }
 
   group("locked device refuses key operations");
@@ -141,6 +202,9 @@ async function main(): Promise<void> {
      * a different hat. */
     const dev = await connected({ startUnlocked: true });
     const to = new Uint8Array(20).fill(0xab);
+    /* Pairing already recorded a passkey comparison, so count from here: what
+     * must not appear is a *signing* prompt. */
+    const before = dev.confirmations.length;
 
     const unknown = await call(dev, "signTransaction", {
       path: "m/44'/60'/0'/0/0", to, chainId: 1,
@@ -148,7 +212,7 @@ async function main(): Promise<void> {
     });
     check(unknown.error?.code === ErrorCode.Undecodable,
       `unknown selector should be refused, got ${JSON.stringify(unknown)}`);
-    check(dev.confirmations.length === 0,
+    check(dev.confirmations.length === before,
       "an undecodable call must not reach the confirmation screen");
 
     const creation = await call(dev, "signTransaction", {
@@ -187,7 +251,8 @@ async function main(): Promise<void> {
     await call(dev, "setPassphrase", { passphrase: "x" });
     await dev.close();
     await dev.open();
-    const r = await call(dev, "getStatus");
+    check(dev.session === "none", "reopening left a session behind");
+    const r = await call(dev, "getAddress", { path: "m/44'/60'/0'/0/0" });
     check(r.error?.code === ErrorCode.SessionRequired, "a new connection needs a new session");
   }
 

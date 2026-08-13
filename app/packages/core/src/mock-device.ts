@@ -29,18 +29,37 @@ export interface MockOptions {
   startUnlocked?: boolean;
   /** How many seeds the device holds. */
   walletCount?: number;
+
+  /**
+   * Whether `hello` completes the passkey comparison by itself.
+   *
+   * Default true, because pairing is not what most tests are about. Set false
+   * to leave the session PENDING and drive `confirmSession()` yourself - that
+   * is the path where a machine in the middle gets caught, so something should
+   * exercise it.
+   */
+  autoConfirmSession?: boolean;
 }
 
 type Handler = (params: Record<string, CborValue>) => CborValue;
 
 const DEVICE_LABEL = "LeekWallet (mock)";
 
+/* Fixed so the pairing UI has something stable to render. A real device
+ * derives this from the handshake; see session.ts. */
+const MOCK_PASSKEY = "314159";
+
 export class MockDevice implements Transport {
   readonly kind = "mock" as const;
   readonly label = DEVICE_LABEL;
 
   private opened = false;
-  private sessionEstablished = false;
+
+  /* Three states, as session.c has them. The mock used to jump straight from
+   * nothing to established on `hello`, which skipped the passkey comparison
+   * entirely - the whole defence against a machine in the middle. Anything
+   * built against that mock would pass without ever exercising it. */
+  private sessionState: "none" | "pending" | "active" = "none";
   private unlocked: boolean;
   private handler: ((frame: Uint8Array) => void) | null = null;
   private readonly decoder = new FrameDecoder();
@@ -51,6 +70,16 @@ export class MockDevice implements Transport {
 
   /** Requests the device is "showing" — inspect in tests. */
   readonly confirmations: string[] = [];
+
+  /** The user confirmed the passkey matches. Nothing encrypted works before. */
+  confirmSession(): void {
+    if (this.sessionState === "pending") this.sessionState = "active";
+  }
+
+  /** Session state, for tests that care about the pending step. */
+  get session(): "none" | "pending" | "active" {
+    return this.sessionState;
+  }
 
   /** Test hook: simulate the device auto-locking on its idle timer. */
   autoLock(): void {
@@ -64,6 +93,7 @@ export class MockDevice implements Transport {
       autoApprove: options.autoApprove ?? true,
       startUnlocked: options.startUnlocked ?? false,
       walletCount: options.walletCount ?? 1,
+      autoConfirmSession: options.autoConfirmSession ?? true,
     };
     this.unlocked = this.opts.startUnlocked;
   }
@@ -74,13 +104,13 @@ export class MockDevice implements Transport {
 
   async open(): Promise<void> {
     this.opened = true;
-    this.sessionEstablished = false;
+    this.sessionState = "none";
     this.decoder.reset();
   }
 
   async close(): Promise<void> {
     this.opened = false;
-    this.sessionEstablished = false;
+    this.sessionState = "none";
     // Disconnect clears session secrets, as the firmware does.
     this.passphraseActive = false;
   }
@@ -132,9 +162,17 @@ export class MockDevice implements Transport {
      * accept requests real hardware ignores. */
     const params = map;
 
-    // Session must be established before anything encrypted.
-    const preSession = method === "hello" || method === "getFeatures";
-    if (!preSession && !this.sessionEstablished) {
+    /* The "always" tier from PROTOCOL.md section 4: answerable with no session
+     * because they reveal nothing. `getStatus` belongs here - section 5 tells
+     * the app to poll it, and the firmware answers it in plaintext - and
+     * `ping` exists on the device and was simply missing here. */
+    const preSession =
+      method === "hello" || method === "getFeatures" ||
+      method === "getStatus" || method === "ping";
+
+    /* PENDING is not established. Until the user has compared the passkey,
+     * the device refuses everything else, and so must this. */
+    if (!preSession && this.sessionState !== "active") {
       return this.error(ErrorCode.SessionRequired, "no session");
     }
 
@@ -165,11 +203,17 @@ export class MockDevice implements Transport {
 
   private readonly handlers: Record<string, Handler> = {
     hello: () => {
-      this.sessionEstablished = true;
-      // A real device shows a passkey here; the mock reports a fixed one so
-      // the pairing UI has something to render.
-      return { version: 1, deviceId: "mock-0001", passkey: "314159" };
+      /* PENDING, not established. The device shows a passkey and waits for the
+       * user to confirm it matches; nothing encrypted is accepted until then. */
+      this.sessionState = "pending";
+      this.confirmations.push(`Compare passkey ${MOCK_PASSKEY}`);
+      if (this.opts.autoConfirmSession) {
+        this.sessionState = "active";
+      }
+      return { version: 1, deviceId: "mock-0001", passkey: MOCK_PASSKEY };
     },
+
+    ping: () => ({ pong: 1 }),
 
     getFeatures: () => ({
       model: "LeekWallet-mock",
@@ -283,7 +327,18 @@ export class MockDevice implements Transport {
   }
 
   private error(code: number, message: string): Uint8Array {
-    return encodeFrame(FrameType.Error, encodeCbor({ code, message }));
+    /* Once a session is active an error is encrypted like any other reply, and
+     * carries its own frame type.
+     *
+     * Not for secrecy - for counters. The device advances its receive counter
+     * the moment a frame decrypts, error or not, while the host only advances
+     * on opening a reply. A plaintext error leaves the two one apart and every
+     * later frame fails to decrypt. The firmware learned this on hardware; the
+     * mock kept answering in plaintext, so a client that mishandled it passed
+     * here and desynced against the real device. */
+    const type =
+      this.sessionState === "active" ? FrameType.EncryptedError : FrameType.Error;
+    return encodeFrame(type, encodeCbor({ code, message }));
   }
 }
 
