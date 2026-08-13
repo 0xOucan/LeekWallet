@@ -255,7 +255,8 @@ async function connect(): Promise<void> {
     $("passkey").textContent = `${passkey.slice(0, 3)} ${passkey.slice(3)}`;
     $("pairing").hidden = false;
     log(`handshake done — compare ${passkey} with the device screen`);
-    setConnection("connecting", "Waiting for approval…");
+    log("press ALLOW on the device to continue");
+    setConnection("connecting", "Confirm on device…");
 
     await client.waitForApproval();
     log("approved on device; channel encrypted");
@@ -288,6 +289,9 @@ async function unlock(): Promise<void> {
     $("addrpanel").hidden = false;
     $("signpanel").hidden = false;
     lastStatus = await readStatus();
+    if (!lastStatus.unlocked) {
+      log("device is locked — press Unlock, then enter your PIN on the device");
+    }
     $("wallet").textContent =
       `wallet ${lastStatus.activeWallet}/${lastStatus.walletCount}` +
       (lastStatus.passphrase ? " + passphrase" : "");

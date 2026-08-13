@@ -102,6 +102,8 @@ export class Session {
    * decrypt, which is how this was found. */
   private readonly sendKey: Uint8Array;
   private readonly recvKey: Uint8Array;
+  /** Host only: hold the send counter back until a reply confirms delivery. */
+  private readonly deferSend: boolean;
   private txCounter = 0;
   private rxCounter = 0;
   private active = false;
@@ -110,6 +112,7 @@ export class Session {
     this.keys = keys;
     this.sendKey = role === "host" ? keys.h2d : keys.d2h;
     this.recvKey = role === "host" ? keys.d2h : keys.h2d;
+    this.deferSend = role === "host";
   }
 
   get passkey(): string {
@@ -120,32 +123,47 @@ export class Session {
     return this.active;
   }
 
-  /** Call once the user has confirmed the passkey on the device. */
+  /**
+   * Mark the session usable, once the user has compared the passkey.
+   *
+   * The host cannot observe the button press, so this is optimistic: it
+   * permits encrypted traffic and the device rejects it until the user
+   * actually approves. That is safe only because a rejected frame does not
+   * advance the send counter - see encrypt().
+   */
   confirm(): void {
     this.active = true;
   }
 
   /**
-   * Seal a request. Does **not** advance the send counter.
+   * Seal an outgoing frame.
    *
-   * The device only advances its receive counter when a frame decrypts, so a
-   * frame it rejects — because the session is not confirmed yet, or the link
-   * dropped it — leaves its counter where it was. Advancing here regardless
-   * desynchronises the two permanently after the first rejection, and every
-   * later frame fails to decrypt with no indication why. Hardware testing
-   * found exactly that: a retry loop waiting for the user to press ALLOW put
-   * the counters one apart before the button was ever touched.
+   * The host defers advancing its send counter until a reply proves the frame
+   * was accepted. The device advances immediately, mirroring `session_encrypt`
+   * in the firmware.
+   *
+   * The asymmetry exists because only the host retries. It polls an encrypted
+   * call while waiting for the user to press ALLOW, and the device rejects
+   * every attempt until then without advancing its receive counter. A host
+   * that advanced on send would be one ahead before the button was touched,
+   * and every later frame would fail to decrypt with nothing to indicate why.
+   * Hardware testing found precisely that.
    */
   encrypt(plaintext: Uint8Array): Uint8Array {
     if (!this.active) throw new Error("session not confirmed");
-    return chacha20poly1305(this.sendKey, nonceFor(this.txCounter)).encrypt(plaintext);
+    const out = chacha20poly1305(this.sendKey, nonceFor(this.txCounter)).encrypt(plaintext);
+    if (!this.deferSend) {
+      this.txCounter++;
+    }
+    return out;
   }
 
   /**
-   * Open a reply, and only then advance both counters.
+   * Open an incoming frame.
    *
-   * A reply proves the device accepted the request, so both ends moved
-   * together. One completed exchange, one step each.
+   * For the host this is also the acknowledgement that its request was
+   * accepted, so the send counter catches up here. For the device only the
+   * receive counter moves, as in the firmware.
    */
   decrypt(ciphertext: Uint8Array): Uint8Array {
     if (!this.active) throw new Error("session not confirmed");
@@ -153,7 +171,9 @@ export class Session {
     // no longer trustworthy, and skipping it and carrying on would be wrong.
     const out = chacha20poly1305(this.recvKey, nonceFor(this.rxCounter)).decrypt(ciphertext);
     this.rxCounter++;
-    this.txCounter++;
+    if (this.deferSend) {
+      this.txCounter++;
+    }
     return out;
   }
 }
