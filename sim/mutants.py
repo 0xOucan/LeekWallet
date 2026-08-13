@@ -85,6 +85,58 @@ MUTANTS = [
      "            /* mutant: no calldata digest */", "blind confirmation hides the calldata"),
     ("src/ui.c", "            sign_page_kind[n++] = SIGN_PAGE_BLIND_WARN;",
      "            /* mutant: no warning page */", "blind confirmation drops the warning"),
+
+    # Job 1: a reply must match the frame type of the request that caused it.
+    # Each of these is the old, state-driven behaviour, or its mirror.
+    ("src/protocol.c",
+     "if (allow_encrypt && reply_encrypted && session_state() == SESSION_ACTIVE) {",
+     "if (allow_encrypt && session_state() == SESSION_ACTIVE) {",
+     "a plaintext request gets an encrypted error"),
+    ("src/protocol.c",
+     "    if (reply_encrypted && session_state() == SESSION_ACTIVE) {\n        int enc = session_encrypt(out, w.length, sizeof(out));",
+     "    if (session_state() == SESSION_ACTIVE) {\n        int enc = session_encrypt(out, w.length, sizeof(out));",
+     "a plaintext request gets an encrypted response"),
+    ("src/protocol.c",
+     "            reply_encrypted = true;\n            dispatch(payload, (size_t)plain);",
+     "            dispatch(payload, (size_t)plain);",
+     "an encrypted request gets a plaintext reply"),
+    ("src/protocol.c",
+     "    return reply_encrypted && session_state() == SESSION_ACTIVE;",
+     "    return session_state() == SESSION_ACTIVE;",
+     "a plaintext frame rides someone else's session"),
+
+    # Job 2: no transport may answer a complete request with silence.
+    ("src/protocol.c", '    send_error_ex(ERR_BUSY, "device busy; resend", false);',
+     "    /* mutant: dropped on the floor */",
+     "a request the transport cannot queue is dropped"),
+    # Not a mutant of the busy path's `false` argument to send_error_ex: that
+    # call is guarded by reply_encrypted as well, so flipping it is equivalent
+    # code and would survive by construction rather than for want of a test.
+    # The two `reply_encrypted = false` clears are not mutated for the same
+    # reason: each is redundant with a guard that already forces plaintext, and
+    # a mutant that cannot change behaviour measures nothing.
+    ("src/protocol.c",
+     "    reply_encrypted = false;\n\n    if (len < 4) {",
+     "    reply_encrypted = true;\n\n    if (len < 4) {",
+     "every reply is encrypted regardless of the request"),
+
+
+    # Job 3: the name bound is what keeps the radio advertising at all.
+    ("src/ble-name.c", "    if (len == 0 || len > BLE_NAME_MAX_LEN) {",
+     "    if (len == 0) {", "an over-long name is accepted"),
+    ("src/ble-name.h", "#define BLE_NAME_MAX_LEN 29", "#define BLE_NAME_MAX_LEN 40",
+     "the bound is raised past the scan response"),
+    ("src/ble-name.c", "        if (c < 0x20 || c > 0x7E) {", "        if (false) {",
+     "control bytes in the advertised name"),
+    ("src/ble-name.c", "    if (ble_name_is_valid(stored)) {",
+     "    if (stored[0] != '\\0') {", "a stored name reaches the radio unchecked"),
+    ("src/ble-name.c", "    if (!ble_name_is_valid(n)) {", "    if (false) {",
+     "ble_name_set stores whatever it is given"),
+
+    # Job 4: the acknowledgement has to mark the screen dirty itself.
+    ("src/ui.c", "     * within 100 ms regardless. */\n    ui_invalidate();",
+     "     * within 100 ms regardless. */",
+     "the Signed acknowledgement never repaints"),
 ]
 
 BINARIES = ["test_protocol", "test_ble_chunk", "test_ui", "test_eth_decode"]

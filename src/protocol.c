@@ -63,6 +63,10 @@ static const char *TAG = "protocol";
 #define ERR_NOT_UNLOCKED 0x0100
 #define ERR_NO_WALLET    0x0300
 #define ERR_SESSION      0x0400
+/* The transport could not take the request in. Distinct from a session error:
+ * nothing was parsed, nothing was decrypted, and retrying is the right move.
+ * Exists so that no transport may answer a complete request with silence. */
+#define ERR_BUSY         0x0401
 #define ERR_USER_REJECTED 0x0200
 #define ERR_USER_TIMEOUT  0x0201
 /* Outside the decodable set: the device will not ask for approval of
@@ -79,6 +83,37 @@ static ProtocolWriter tx_writer = NULL;
 
 /* Whether the USB port is an endpoint at all. Cleared while BLE is selected. */
 static bool rx_enabled = true;
+
+/**
+ * Whether the request currently being handled arrived encrypted.
+ *
+ * A reply belongs to the frame that caused it, not to the state the device
+ * happens to be in. Dispatching on state answered a PLAINTEXT request with an
+ * ENCRYPTED reply whenever a session existed, and that is worse than untidy:
+ *
+ *   - The host that sent it had no session (that is why it was in plaintext),
+ *     so it had no keys, so it CBOR-decoded raw ciphertext and reported
+ *     "unsupported CBOR major type 7" — random bytes spelled out as a data
+ *     format instead of a clean "no session". Seen on hardware.
+ *   - It desynchronises the very counters the encrypt-errors rule protects.
+ *     session_encrypt() advances the device's tx counter; the host advances
+ *     its rx counter only when it opens a reply (session.ts decrypt()). A
+ *     reply the host cannot open leaves the device→host stream one ahead
+ *     forever.
+ *
+ * Replying in kind costs nothing in either direction. A plaintext request
+ * never advanced the device's rx counter — only session_decrypt() does — and
+ * a plaintext reply never advances the host's tx counter, because the host
+ * defers that until it opens a reply (the asymmetry documented in session.ts,
+ * which exists so a request rejected while the user has not pressed ALLOW can
+ * be retried). Both sides therefore stand still, which is exactly right for an
+ * exchange that touched neither key.
+ *
+ * The rule this flag enforces: an ENCRYPTED reply is only ever produced for a
+ * request that was successfully DECRYPTED. Everything else — including errors
+ * about frames that never decrypted — goes back the way it came.
+ */
+static bool reply_encrypted = false;
 
 void protocol_set_rx_enabled(bool enabled)
 {
@@ -138,14 +173,18 @@ static void send_frame(uint8_t type, const uint8_t *payload, size_t len)
 /**
  * Send an error.
  *
- * Once a session is active, application errors are encrypted like any other
- * reply. That is not about secrecy - it is about counters. The device advances
- * its receive counter the moment a frame decrypts, even if the reply is an
- * error, while the host only advances its send counter when it opens a reply.
- * A plaintext error therefore leaves the two one apart, and every later frame
+ * An error answering an ENCRYPTED request is encrypted like any other reply.
+ * That is not about secrecy - it is about counters. The device advances its
+ * receive counter the moment a frame decrypts, even if the reply is an error,
+ * while the host only advances its send counter when it opens a reply. A
+ * plaintext error therefore leaves the two one apart, and every later frame
  * fails to decrypt. Hardware testing walked straight into it: an unimplemented
  * method returned a plaintext error and the next request died with "decrypt
  * failed".
+ *
+ * An error answering a PLAINTEXT request stays in plaintext, for the mirror
+ * reason: nothing decrypted, so no counter moved, and a reply the host cannot
+ * open is the desync rather than the cure. See reply_encrypted above.
  *
  * Session-level errors stay in plaintext, because at that point there is no
  * working channel to send them over.
@@ -166,7 +205,7 @@ static void send_error_ex(uint16_t code, const char *message, bool allow_encrypt
         return;
     }
 
-    if (allow_encrypt && session_state() == SESSION_ACTIVE) {
+    if (allow_encrypt && reply_encrypted && session_state() == SESSION_ACTIVE) {
         int enc = session_encrypt(out, w.length, sizeof(out));
         if (enc > 0) {
             /* A distinct type. Sending an encrypted error as an encrypted
@@ -190,6 +229,47 @@ static void send_error(uint16_t code, const char *message)
 static void send_session_error(uint16_t code, const char *message)
 {
     send_error_ex(code, message, false);
+}
+
+/**
+ * A complete request the transport could not hand to the dispatcher.
+ *
+ * BLE is the only transport with a gate between "frame received" and "frame
+ * dispatched" — a queue, because a signing request blocks on a human and the
+ * NimBLE host task cannot be the thread that waits. USB has no gate: whatever
+ * consume() finds is dispatched inline. That difference is exactly the
+ * divergence this exists to close.
+ *
+ * Plaintext, always: nothing was decrypted, so no counter moved on either
+ * side, and a retry of the identical frame is correct. Silence, by contrast,
+ * is unrecoverable — the host cannot tell a dropped request from a slow one,
+ * and the protocol has no request IDs to resynchronise with (PROTOCOL.md 3b).
+ */
+void protocol_send_transport_busy(void)
+{
+    /* allow_encrypt = false: nothing here was decrypted, so this is a
+     * plaintext reply whatever the session is doing. */
+    send_error_ex(ERR_BUSY, "device busy; resend", false);
+}
+
+/**
+ * Whether the request being handled arrived over the confirmed channel.
+ *
+ * Not "does a session exist" - "did THIS request come through it". The two are
+ * different the moment a plaintext frame arrives while a session is up, and
+ * the difference is the whole authentication story: a plaintext frame proves
+ * nothing about who sent it, so answering one from the session's authority
+ * would let anything plugged into the port ride a passkey the user confirmed
+ * for somebody else. Enumerating a wallet, switching seeds or applying a
+ * passphrase are all reachable that way.
+ *
+ * The old spelling, `session_state() != SESSION_ACTIVE`, performed the
+ * operation for such a frame and merely encrypted the answer - so the reply
+ * was unreadable, but the device had already done as it was told.
+ */
+static bool request_is_authenticated(void)
+{
+    return reply_encrypted && session_state() == SESSION_ACTIVE;
 }
 
 /* Handle the plaintext handshake. Runs before any session exists, so it must
@@ -344,7 +424,7 @@ static void dispatch(const uint8_t *payload, size_t len)
         /* Never carries a PIN. It asks the device to prompt, the user types on
          * the device, and the host learns the outcome by polling getStatus.
          * A PIN crossing the wire would defeat the point of having one. */
-        if (session_state() != SESSION_ACTIVE) {
+        if (!request_is_authenticated()) {
             send_session_error(ERR_SESSION, "session required");
             return;
         }
@@ -367,7 +447,7 @@ static void dispatch(const uint8_t *payload, size_t len)
         }
 
     } else if (strcmp(method, "lock") == 0) {
-        if (session_state() != SESSION_ACTIVE) {
+        if (!request_is_authenticated()) {
             send_session_error(ERR_SESSION, "session required");
             return;
         }
@@ -382,7 +462,7 @@ static void dispatch(const uint8_t *payload, size_t len)
         /* Behind the session: an address list is not secret, but it is
          * user-specific, and anything plugged into this port should not be able
          * to enumerate a wallet without the user confirming a passkey. */
-        if (session_state() != SESSION_ACTIVE) {
+        if (!request_is_authenticated()) {
             send_session_error(ERR_SESSION, "session required");
             return;
         }
@@ -434,7 +514,7 @@ static void dispatch(const uint8_t *payload, size_t len)
         cbor_write_uint(&w, index);
 
     } else if (strcmp(method, "signTransaction") == 0) {
-        if (session_state() != SESSION_ACTIVE) {
+        if (!request_is_authenticated()) {
             send_session_error(ERR_SESSION, "session required");
             return;
         }
@@ -602,7 +682,7 @@ static void dispatch(const uint8_t *payload, size_t len)
          * the preimage itself, renders exactly that, and signs exactly what it
          * rendered. The host supplies the message text and nothing else - never
          * a digest, which is signHash and is off by default. */
-        if (session_state() != SESSION_ACTIVE) {
+        if (!request_is_authenticated()) {
             send_session_error(ERR_SESSION, "session required");
             return;
         }
@@ -704,7 +784,7 @@ static void dispatch(const uint8_t *payload, size_t len)
         /* Which stored seed is active. No confirmation: it reveals nothing and
          * moves nothing, and every operation that does either names its own
          * address on screen afterwards. */
-        if (session_state() != SESSION_ACTIVE) {
+        if (!request_is_authenticated()) {
             send_session_error(ERR_SESSION, "session required");
             return;
         }
@@ -747,7 +827,7 @@ static void dispatch(const uint8_t *payload, size_t len)
          * recognises it - or does not, and the passphrase is dropped. That is
          * why the passphrase is never accepted without the confirmation below,
          * and why a rejection clears it rather than leaving it applied. */
-        if (session_state() != SESSION_ACTIVE) {
+        if (!request_is_authenticated()) {
             send_session_error(ERR_SESSION, "session required");
             return;
         }
@@ -842,7 +922,7 @@ static void dispatch(const uint8_t *payload, size_t len)
         return;
     }
 
-    if (session_state() == SESSION_ACTIVE) {
+    if (reply_encrypted && session_state() == SESSION_ACTIVE) {
         int enc = session_encrypt(out, w.length, sizeof(out));
         if (enc < 0) {
             send_error(ERR_SESSION, "encrypt failed");
@@ -867,6 +947,11 @@ static void dispatch(const uint8_t *payload, size_t len)
  */
 void protocol_handle_frame(uint8_t *frame, size_t len)
 {
+    /* Cleared for every frame, so a reply can never inherit the encryption of
+     * the previous one. Set only between a successful decrypt and the end of
+     * that frame's dispatch. */
+    reply_encrypted = false;
+
     if (len < 4) {
         send_error(ERR_MALFORMED, "short frame");
         return;
@@ -907,9 +992,16 @@ void protocol_handle_frame(uint8_t *frame, size_t len)
         /* Decrypt in place, dispatch, re-encrypt the reply. */
         int plain = session_decrypt(payload, payload_len);
         if (plain < 0) {
+            /* Nothing decrypted, so the receive counter did not move and there
+             * is nothing to keep in step with. Plaintext, and the session is
+             * already gone. */
             send_session_error(ERR_SESSION, "decrypt failed");
         } else {
+            /* From here to the end of dispatch the reply owes the host one
+             * encrypted frame: the receive counter HAS moved. */
+            reply_encrypted = true;
             dispatch(payload, (size_t)plain);
+            reply_encrypted = false;
         }
     } else {
         send_error(ERR_MALFORMED, "unexpected frame type");

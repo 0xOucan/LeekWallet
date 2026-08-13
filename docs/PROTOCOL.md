@@ -151,6 +151,27 @@ bite:
    which is also the honest answer to the privacy question in T56: a wallet
    that does not advertise announces nothing.
 
+### The advertised name (T56)
+
+Whatever the device broadcasts is read by everyone in range, so the owner can
+change it — on the device, in Settings → BLE Name, and nowhere else. There is
+deliberately no protocol method for renaming: a host that could rename the
+device could make it advertise as something else entirely, and the name is one
+of the few things a user can check against their own phone.
+
+The name lives in the **scan response**, not the advertisement. Both together do
+not fit: a legacy advertisement is 31 bytes, 3 go to flags and 18 to the
+complete 128-bit service UUID, and "LeekWallet" needs 12 more than remain.
+NimBLE then rejects the whole set of fields and advertising never starts, which
+on a battery-powered device looks exactly like a device that is working. It
+shipped that way once.
+
+A user-supplied name is therefore bounded at **29 bytes** — 31 minus the 2-byte
+AD header — and one that does not fit is **refused**, never truncated:
+truncation would advertise a device the user never named, and they are the only
+one in a position to notice. The same check is applied to what comes back out of
+storage, since that could have been written by another firmware version.
+
 Switching transports tears down any active session. There is no state worth
 carrying across, and pretending otherwise would mean deciding whether a passkey
 confirmed over one channel authorises the other. It does not.
@@ -177,6 +198,10 @@ Permission tiers mirror the existing `RPC_PERM_*` model in the pixiecolibri sibl
 | `signTypedData` | keys | **yes** |
 | `signTransaction` | keys | **yes** |
 | `signHash` | keys | **yes**, and refused unless blind signing is enabled on-device |
+
+An unknown method is an error frame, never silence, and identical over both
+transports — `sim/test_protocol.c` runs every conformance case down each channel
+and compares the replies.
 
 **Deliberately absent:** there is no host-invokable `wipe`, no `getMnemonic`, and no way to set
 or change the PIN over the wire. Those are device-only, permanently. A protocol that can erase
@@ -346,7 +371,39 @@ state, which is how the original race happened.
 | `0x0201` | Timed out waiting for the user |
 | `0x0300` | No wallet selected |
 | `0x0400` | Session required / nonce reuse |
+| `0x0401` | Transport busy; the request was refused, not acted on — resend it |
 | `0x0202` | Outside the decodable set (section 6bis) |
+
+### A reply matches the frame type of the request that caused it
+
+An **encrypted** reply (`0x12` / `0x7E`) is only ever produced for a request the
+device successfully **decrypted**. A plaintext request gets a plaintext reply,
+even while a session is up.
+
+This is a counter rule, not a style rule. The device advances its receive
+counter the moment a frame decrypts, and the host advances its send counter
+only when it opens a reply, so an error answering an encrypted request *must*
+be encrypted or the two drift apart permanently. The mirror holds just as
+firmly: a plaintext request moved neither counter, and answering it with
+ciphertext the host has no key for leaves the device→host stream one ahead
+forever — as well as handing a host with no session a body it can only try to
+parse as CBOR. (That is exactly what happened on hardware: a host that had lost
+its session sent a plaintext request and reported "unsupported CBOR major type
+7".)
+
+A plaintext frame still proves nothing about who sent it, so every permission
+tier above `getStatus` refuses it with `0x0400` regardless of whether a session
+exists.
+
+### Every complete request is answered
+
+No transport may reply to a complete, well-formed frame with silence. A host
+cannot tell a dropped request from a slow one, and this protocol has no request
+IDs to resynchronise with, so a lost reply pairs every later reply with the
+wrong request. Where a transport has a queue between reception and dispatch —
+BLE does, because a signing request blocks on a human and the NimBLE host task
+cannot be the thread that waits — a full queue is refused with `0x0401` in
+plaintext rather than dropped.
 
 Messages are for developers. Never render a device-supplied string to the user as if it were a
 security statement — that is a phishing vector.

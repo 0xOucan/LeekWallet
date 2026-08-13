@@ -42,6 +42,8 @@
 #include "pin.h"
 #include "ble.h"
 #include "ble-chunk.h"
+#include "ble-name.h"
+#include "nvs.h"
 #include "protocol.h"
 #include "transport.h"
 #include "session.h"
@@ -80,6 +82,7 @@ static int failures = 0;
 #define E_UNDECODABLE  0x0202
 #define E_NO_WALLET    0x0300
 #define E_SESSION      0x0400
+#define E_BUSY         0x0401
 
 /* ------------------------------------------------------------- fake UI */
 
@@ -234,6 +237,13 @@ static void raw_send(const uint8_t *bytes, size_t len)
 {
     fake_usb_host_write(bytes, len);
     protocol__pump_for_test();
+    stash_len += fake_usb_device_read(stash + stash_len, sizeof(stash) - stash_len);
+}
+
+/* Collect whatever the device has written, without sending anything. Needed
+ * for the few paths that emit a frame without a request arriving first. */
+static void collect_output(void)
+{
     stash_len += fake_usb_device_read(stash + stash_len, sizeof(stash) - stash_len);
 }
 
@@ -1764,8 +1774,8 @@ static void ble_send_frame(uint8_t type, const uint8_t *payload, size_t len)
     }
 }
 
-/** Reassemble whatever the device notified back into one frame. */
-static Frame ble_next_reply(void)
+/** Reassemble whatever the device notified back into one frame, undecrypted. */
+static Frame ble_next_frame(void)
 {
     Frame f;
     memset(&f, 0, sizeof(f));
@@ -1782,7 +1792,13 @@ static Frame ble_next_reply(void)
         }
     }
     ble_chunk_count = 0;
+    return f;
+}
 
+/** The next notified frame, decrypted if it is one of the encrypted types. */
+static Frame ble_next_reply(void)
+{
+    Frame f = ble_next_frame();
     if (f.present && (f.type == T_ENC_RESPONSE || f.type == T_ENC_ERROR)) {
         int n = host_open(f.payload, f.len);
         f.len = n < 0 ? 0 : (size_t)n;
@@ -1941,6 +1957,485 @@ static void test_switching_transports_drops_the_session(void)
     CHECK(session_state() == SESSION_IDLE, "switching back left a session");
 }
 
+
+/* ==========================================================================
+ * Two transports, one dispatch (ROADMAP T26)
+ *
+ * The BLE tests above prove that ping is answered over the radio. That is not
+ * the property that matters. Hardware found the one that does: `getMnemonic`,
+ * an unknown method, returned a clean error frame over the cable and produced
+ * NOTHING AT ALL over BLE. A request that goes unanswered is worse than one
+ * that is refused - on an active session the device's receive counter has
+ * moved and the host's send counter has not, so the channel is silently dead
+ * from then on, and with no request IDs in this protocol the host cannot even
+ * tell which request it lost.
+ *
+ * So the two transports are compared by construction rather than by hope:
+ * every case below runs twice, once down each channel, and the reply must
+ * agree in frame type and in decrypted payload. Adding a case covers both
+ * transports whether the author thought about BLE or not, which is the only
+ * version of this that stays true.
+ *
+ * Encrypted replies are compared AFTER opening them: the device's session key
+ * is ephemeral, so the ciphertext legitimately differs between the two runs
+ * while the plaintext must not.
+ * ========================================================================== */
+
+typedef enum { VIA_USB, VIA_BLE } Via;
+
+static const char *via_name(Via v) { return v == VIA_BLE ? "BLE" : "USB"; }
+
+/** A fresh device with `v` as the selected transport, and nothing else. */
+static void via_fresh(Via v)
+{
+    fresh_device();
+    ble_chunk_count = 0;
+    ble_mtu = 23;                  /* the floor, so replies chunk on BLE */
+    if (v == VIA_BLE) {
+        transport_set(TRANSPORT_BLE);
+        protocol_set_writer(ble_writer);
+    } else {
+        transport_set(TRANSPORT_USB);
+    }
+}
+
+static void via_send(Via v, uint8_t type, const uint8_t *payload, size_t len)
+{
+    if (v == VIA_BLE) {
+        ble_send_frame(type, payload, len);
+    } else {
+        send_frame(type, payload, len);
+    }
+}
+
+static void via_send_plain(Via v, const uint8_t *payload, size_t len)
+{
+    via_send(v, T_REQUEST, payload, len);
+}
+
+static void via_send_encrypted(Via v, const uint8_t *payload, size_t len)
+{
+    uint8_t buf[512];
+    memcpy(buf, payload, len);
+    via_send(v, T_ENC_REQUEST, buf, host_seal(buf, len));
+}
+
+/** The reply, with encrypted bodies opened so two runs can be compared. */
+static Frame via_reply(Via v)
+{
+    return v == VIA_BLE ? ble_next_reply() : next_reply();
+}
+
+/** Handshake to PENDING over `v`. The USB-only twin is handshake(). */
+static void via_handshake(Via v, uint8_t seed)
+{
+    host_keypair(seed);
+
+    uint8_t payload[128];
+    CborWriter w;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "hello");
+    cbor_write_text(&w, "hostPubkey");
+    cbor_write_bytes(&w, host_pub, sizeof(host_pub));
+    via_send_plain(v, payload, w.length);
+
+    Frame f = via_reply(v);
+    const uint8_t *body;
+    size_t body_len;
+    CborItem it;
+    char passkey[SESSION_PASSKEY_LEN + 1];
+    if (!f.present || !result_body(&f, &body, &body_len) ||
+        !cbor_map_find(body, body_len, "devicePubkey", &it) ||
+        it.type != CBOR_BYTES || it.value != 32 ||
+        !session_derive(host_priv, it.data, k_h2d, k_d2h, passkey)) {
+        printf("  FAIL: handshake over %s did not produce a session\n", via_name(v));
+        failures++;
+    }
+}
+
+static void via_confirmed_session(Via v, uint8_t seed)
+{
+    via_handshake(v, seed);
+    session_confirm();
+    session_up = true;
+}
+
+/* One conformance case. Each performs its own setup so the two runs share no
+ * state, and returns the device's reply. */
+typedef enum {
+    CASE_PING,
+    CASE_UNKNOWN_METHOD,          /* the getMnemonic that started this */
+    CASE_TIER_NEEDS_SESSION,
+    CASE_TIER_NEEDS_UNLOCK,
+    CASE_UNKNOWN_METHOD_IN_SESSION,
+    CASE_PLAINTEXT_IN_SESSION,
+    CASE_NO_METHOD_KEY,
+    CASE_NOT_CBOR,
+    CASE_UNKNOWN_FRAME_TYPE,
+    CASE_FORGED_TAG,
+    CASE_COUNT
+} ConformanceCase;
+
+static const char *case_name(ConformanceCase c)
+{
+    switch (c) {
+        case CASE_PING:                      return "ping";
+        case CASE_UNKNOWN_METHOD:            return "getMnemonic (unknown method)";
+        case CASE_TIER_NEEDS_SESSION:        return "getAddress with no session";
+        case CASE_TIER_NEEDS_UNLOCK:         return "getAddress while locked";
+        case CASE_UNKNOWN_METHOD_IN_SESSION: return "unknown method in a session";
+        case CASE_PLAINTEXT_IN_SESSION:      return "plaintext request in a session";
+        case CASE_NO_METHOD_KEY:             return "a request with no method";
+        case CASE_NOT_CBOR:                  return "bytes that are not CBOR";
+        case CASE_UNKNOWN_FRAME_TYPE:        return "an unknown frame type";
+        case CASE_FORGED_TAG:                return "a forged tag";
+        default:                             return "?";
+    }
+}
+
+static Frame run_case(Via v, ConformanceCase c)
+{
+    uint8_t payload[96];
+    size_t  len;
+
+    via_fresh(v);
+
+    switch (c) {
+        case CASE_PING:
+            via_send_plain(v, payload, req(payload, sizeof(payload), "ping"));
+            break;
+
+        case CASE_UNKNOWN_METHOD:
+            /* The exact request the BLE probe sends and the cable answered
+             * alone. It must be refused, and it must be refused audibly. */
+            via_send_plain(v, payload, req(payload, sizeof(payload), "getMnemonic"));
+            break;
+
+        case CASE_TIER_NEEDS_SESSION:
+            device_unlocked();
+            via_send_plain(v, payload, req(payload, sizeof(payload), "getAddress"));
+            break;
+
+        case CASE_TIER_NEEDS_UNLOCK:
+            device_has_a_wallet();
+            via_confirmed_session(v, 61);
+            via_send_encrypted(v, payload, req(payload, sizeof(payload), "getAddress"));
+            break;
+
+        case CASE_UNKNOWN_METHOD_IN_SESSION:
+            device_unlocked();
+            via_confirmed_session(v, 62);
+            via_send_encrypted(v, payload,
+                               req(payload, sizeof(payload), "getMnemonic"));
+            break;
+
+        case CASE_PLAINTEXT_IN_SESSION:
+            device_unlocked();
+            via_confirmed_session(v, 63);
+            via_send_plain(v, payload, req(payload, sizeof(payload), "getStatus"));
+            break;
+
+        case CASE_NO_METHOD_KEY: {
+            CborWriter w;
+            cbor_writer_init(&w, payload, sizeof(payload));
+            cbor_write_map(&w, 1);
+            cbor_write_text(&w, "notmethod");
+            cbor_write_uint(&w, 1);
+            via_send_plain(v, payload, w.length);
+            break;
+        }
+
+        case CASE_NOT_CBOR:
+            memset(payload, 0xFF, 16);
+            via_send_plain(v, payload, 16);
+            break;
+
+        case CASE_UNKNOWN_FRAME_TYPE:
+            len = req(payload, sizeof(payload), "ping");
+            via_send(v, 0x55, payload, len);
+            break;
+
+        case CASE_FORGED_TAG: {
+            device_unlocked();
+            via_confirmed_session(v, 64);
+            uint8_t buf[128];
+            len = req(payload, sizeof(payload), "ping");
+            memcpy(buf, payload, len);
+            size_t sealed = host_seal(buf, len);
+            buf[0] ^= 0x01;
+            via_send(v, T_ENC_REQUEST, buf, sealed);
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    return via_reply(v);
+}
+
+static void test_both_transports_answer_the_same(void)
+{
+    printf("== every request is answered identically over USB and BLE (T26)\n");
+
+    for (int c = 0; c < CASE_COUNT; c++) {
+        Frame usb = run_case(VIA_USB, (ConformanceCase)c);
+        Frame ble = run_case(VIA_BLE, (ConformanceCase)c);
+
+        /* Silence is the failure this whole section exists for, so it is
+         * checked first and named for what it costs. */
+        CHECK(usb.present, "%s: the cable did not answer at all",
+              case_name((ConformanceCase)c));
+        CHECK(ble.present,
+              "%s: BLE did not answer at all - the host will time out and, "
+              "inside a session, the counters are now one apart",
+              case_name((ConformanceCase)c));
+        if (!usb.present || !ble.present) continue;
+
+        CHECK(usb.type == ble.type,
+              "%s: USB answered 0x%02X, BLE answered 0x%02X",
+              case_name((ConformanceCase)c), usb.type, ble.type);
+        CHECK(usb.len == ble.len && memcmp(usb.payload, ble.payload, usb.len) == 0,
+              "%s: the two transports disagreed on the body",
+              case_name((ConformanceCase)c));
+
+        /* Every one of these is a refusal except the first two: check that
+         * they carry an error code rather than an empty result, so a mutant
+         * answering everything with a bare "ok" on both transports would
+         * still be caught. */
+        if (c != CASE_PING && c != CASE_PLAINTEXT_IN_SESSION) {
+            uint32_t code = 0;
+            CHECK(error_code(&usb, &code) && code != 0,
+                  "%s: the reply carries no error code",
+                  case_name((ConformanceCase)c));
+        }
+    }
+
+    /* Back to the cable, and back to the USB writer. The last case ran over
+     * BLE, and leaving the radio selected would send the next suite's replies
+     * into a notification buffer nobody reads - which looks exactly like the
+     * silence this test is about. */
+    via_fresh(VIA_USB);
+}
+
+/* ==========================================================================
+ * A reply matches the frame type of the request that caused it
+ *
+ * The device used to decide that on session STATE. Once a session existed, a
+ * PLAINTEXT request came back ENCRYPTED - and the host that sent it had no
+ * session, which is precisely why it was in plaintext. It had no keys, so it
+ * CBOR-decoded raw ciphertext and reported "unsupported CBOR major type 7"
+ * and "32 trailing bytes after CBOR value": random bytes spelled out as a data
+ * format, where the honest answer was "no session".
+ *
+ * The counter argument for encrypting cuts the other way here, and this is the
+ * part worth writing down. session_encrypt() advances the DEVICE's tx counter;
+ * the host advances its rx counter only when it opens a reply (session.ts
+ * decrypt()). An encrypted reply the host cannot open therefore leaves the
+ * device->host stream one ahead forever - the old behaviour was itself a
+ * desync. A plaintext request never advanced the device's rx counter, because
+ * only session_decrypt() does, and a plaintext reply never advances the host's
+ * tx counter, because the host defers that until it opens a reply. Both sides
+ * stand still. That is why this is safe and encrypting was not.
+ *
+ * The rule the firmware now enforces: an encrypted reply is only ever produced
+ * for a request that was successfully decrypted.
+ * ========================================================================== */
+
+static void test_a_reply_matches_its_request(void)
+{
+    printf("== a plaintext request gets a plaintext reply, session or not\n");
+
+    fresh_device();
+    device_unlocked();
+    confirmed_session(70);
+
+    uint8_t payload[64];
+
+    /* One encrypted exchange first, so both directions are off zero and a
+     * drift shows up as a decrypt failure rather than as an accident. */
+    send_encrypted(payload, req(payload, sizeof(payload), "getStatus"));
+    Frame f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE,
+          "the session was not working to begin with");
+
+    /* A host that lost its keys and fell back to plaintext. It cannot decrypt
+     * anything, so an encrypted answer is unreadable by construction. */
+    send_plain(payload, req(payload, sizeof(payload), "getStatus"));
+    f = next_frame();
+    CHECK(f.present, "a plaintext request inside a session went unanswered");
+    CHECK(f.type == T_RESPONSE,
+          "a plaintext request was answered with frame type 0x%02X - the host "
+          "has no keys and will try to parse ciphertext as CBOR", f.type);
+
+    const uint8_t *body;
+    size_t body_len;
+    CborItem it;
+    CHECK(f.present && result_body(&f, &body, &body_len) &&
+          cbor_map_find(body, body_len, "unlocked", &it),
+          "the plaintext reply was not a readable getStatus result");
+
+    /* And an unimplemented method the same way: plaintext in, plaintext out. */
+    send_plain(payload, req(payload, sizeof(payload), "getMnemonic"));
+    expect_error(T_ERROR, E_MALFORMED, "a plaintext unknown method in a session");
+
+    /* The point of all of it: neither counter moved, so the encrypted channel
+     * is still exactly where it was. If the device had encrypted either reply
+     * above, its tx counter would be ahead and this would fail to open. */
+    send_encrypted(payload, req(payload, sizeof(payload), "ping"));
+    f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE && f.len > 0,
+          "answering plaintext desynchronised the encrypted stream");
+
+    /* Belt and braces on the other direction: a key operation still refuses in
+     * plaintext, since a plaintext frame proves nothing about who sent it. */
+    send_plain(payload, req(payload, sizeof(payload), "getAddress"));
+    expect_error(T_ERROR, E_SESSION, "plaintext getAddress inside a session");
+}
+
+/* A complete request a transport cannot hand to the dispatcher is refused, not
+ * dropped. BLE is the only transport with a queue between the two (its worker
+ * cannot be the NimBLE host task, because signing waits on a human), and a
+ * full queue used to be one log line the peer never saw. The queue itself
+ * lives behind CONFIG_BT_NIMBLE_ENABLED and has no radio here; what is
+ * testable, and what matters, is that the refusal it now sends is a real frame
+ * and that it leaves the session alone. */
+static void test_a_busy_transport_refuses_rather_than_drops(void)
+{
+    printf("== a request the transport cannot queue is refused, not dropped\n");
+
+    fresh_device();
+    device_unlocked();
+    confirmed_session(71);
+
+    uint8_t payload[64];
+    send_encrypted(payload, req(payload, sizeof(payload), "getStatus"));
+    Frame f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE,
+          "the session was not working to begin with");
+
+    /* Called directly, because the queue that triggers it on hardware lives
+     * behind CONFIG_BT_NIMBLE_ENABLED. Nothing arrived on the port, so the
+     * pump has to be told to collect what the device wrote. */
+    protocol_send_transport_busy();
+    collect_output();
+    f = next_frame();
+    CHECK(f.present, "a refused request produced no frame - that is the timeout");
+    CHECK(f.type == T_ERROR,
+          "the refusal came back as 0x%02X; nothing was decrypted, so the host "
+          "cannot open an encrypted one", f.type);
+    uint32_t code = 0;
+    CHECK(error_code(&f, &code) && code == E_BUSY,
+          "the refusal reported 0x%04X, not busy", code);
+
+    /* Nothing was decrypted and nothing was encrypted, so the session is
+     * untouched and the host may simply send the request again. */
+    send_encrypted(payload, req(payload, sizeof(payload), "ping"));
+    f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE,
+          "refusing a request broke the session it arrived on");
+}
+
+/* ==========================================================================
+ * The advertised device name (T56)
+ *
+ * The bound is the feature. A legacy scan response holds 31 bytes; overflow it
+ * and NimBLE rejects the whole advertisement, advertising never starts, and a
+ * battery-powered device sits there looking fine while being invisible. That
+ * shipped once already, back when the name shared the advertisement with the
+ * 128-bit service UUID. A user typing a long name must not be able to
+ * reproduce it.
+ * ========================================================================== */
+
+static void test_ble_name_is_bounded_and_persisted(void)
+{
+    printf("== the BLE name is bounded, refused when too long, and persists (T56)\n");
+
+    fake_nvs_reset();
+    ble_name_forget();
+
+    CHECK(strcmp(ble_name_get(), BLE_NAME_DEFAULT) == 0,
+          "a device nobody renamed does not advertise as " BLE_NAME_DEFAULT);
+
+    CHECK(ble_name_set("Groceries"), "a perfectly ordinary name was refused");
+    CHECK(strcmp(ble_name_get(), "Groceries") == 0, "the name did not take");
+
+    /* Exactly at the bound: 2 bytes of AD header + 29 = 31, which fits. */
+    char at_limit[BLE_NAME_MAX_LEN + 1];
+    memset(at_limit, 'A', BLE_NAME_MAX_LEN);
+    at_limit[BLE_NAME_MAX_LEN] = '\0';
+    CHECK(ble_name_set(at_limit), "a name of exactly the maximum length was refused");
+    CHECK(strlen(ble_name_get()) == BLE_NAME_MAX_LEN,
+          "the maximum-length name did not take");
+
+    /* One past it. Refused outright: truncating would advertise a device the
+     * user never named, and they are the only one who could notice. */
+    char too_long[BLE_NAME_MAX_LEN + 8];
+    memset(too_long, 'B', sizeof(too_long) - 1);
+    too_long[sizeof(too_long) - 1] = '\0';
+    CHECK(!ble_name_set(too_long),
+          "an over-long name was accepted - advertising would stop");
+    CHECK(strlen(ble_name_get()) == BLE_NAME_MAX_LEN,
+          "a refused name changed the one already set");
+    CHECK(strchr(ble_name_get(), 'B') == NULL,
+          "an over-long name was silently truncated and stored");
+
+    /* The bound is the one the radio actually has to satisfy, not a number
+     * picked nearby. This is the assertion in ble.c, restated where it can be
+     * checked without a build of the firmware. */
+    CHECK(2 + BLE_NAME_MAX_LEN <= 31,
+          "BLE_NAME_MAX_LEN does not fit a legacy scan response");
+
+    /* Empty is not a name, and neither is anything the device's own keyboard
+     * cannot produce or a scanner render. */
+    CHECK(!ble_name_set(""), "an empty name was accepted");
+    CHECK(!ble_name_set(NULL), "a null name was accepted");
+    CHECK(!ble_name_set("Leek\nWallet"), "a control character was accepted");
+    CHECK(!ble_name_set("Leek\x80Wallet"), "a non-ASCII byte was accepted");
+
+    /* Persistence across a reboot, which is what "set on-device" has to mean. */
+    CHECK(ble_name_set("Toaster"), "could not set a name to reboot with");
+    fake_nvs_reboot();
+    ble_name_forget();
+    CHECK(strcmp(ble_name_get(), "Toaster") == 0, "the name did not survive a reboot");
+
+    /* A stored value this firmware would not have written - a longer name from
+     * another version, or a corrupt read - must not reach the radio either.
+     * The default is the safe answer: it is known to fit. */
+    static const size_t hostile_lengths[] = {
+        BLE_NAME_MAX_LEN + 1,       /* one past the bound, and short enough to
+                                     * be read back — the case that reaches the
+                                     * validity check rather than the read
+                                     * guard */
+        BLE_NAME_MAX_LEN + 40,      /* and one far past it */
+    };
+    for (size_t i = 0; i < sizeof(hostile_lengths) / sizeof(hostile_lengths[0]); i++) {
+        ble_name_forget();
+        fake_nvs_reset();
+
+        nvs_handle_t nvs;
+        char hostile[BLE_NAME_MAX_LEN + 41];
+        memset(hostile, 'C', sizeof(hostile));
+        CHECK(nvs_open("leek_ui", NVS_READWRITE, &nvs) == ESP_OK,
+              "could not stage a bad name");
+        nvs_set_blob(nvs, "ble_name", hostile, hostile_lengths[i]);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+
+        CHECK(strlen(ble_name_get()) <= BLE_NAME_MAX_LEN,
+              "a %zu-byte stored name was handed to the radio", hostile_lengths[i]);
+        CHECK(strcmp(ble_name_get(), BLE_NAME_DEFAULT) == 0,
+              "a %zu-byte stored name did not fall back to the default",
+              hostile_lengths[i]);
+    }
+
+    /* Leave nothing behind for the suites that follow. */
+    fake_nvs_reset();
+    ble_name_forget();
+}
+
 int main(void)
 {
     test_plaintext_ping_and_features();
@@ -1964,6 +2459,10 @@ int main(void)
     test_ble_rejects_hostile_writes();
     test_only_one_transport_is_live();
     test_switching_transports_drops_the_session();
+    test_both_transports_answer_the_same();
+    test_a_reply_matches_its_request();
+    test_a_busy_transport_refuses_rather_than_drops();
+    test_ble_name_is_bounded_and_persisted();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");

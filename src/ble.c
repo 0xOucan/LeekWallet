@@ -10,11 +10,14 @@
  *    to the radio. So a write is reassembled on the host task (cheap, bounded)
  *    and the finished frame is handed to a worker over a one-deep queue.
  *
- * 2. **The queue is one deep and drops when full.** A peer that pipelines
- *    requests gets the extras dropped rather than buffered. There are no
+ * 2. **The queue is one deep and REFUSES when full.** A peer that pipelines
+ *    requests gets the extras refused rather than buffered. There are no
  *    request IDs in this protocol (PROTOCOL.md 3b), so a queue of pending
  *    requests would produce replies nobody can match to a request, and an
- *    unbounded one is just a memory exhaustion primitive.
+ *    unbounded one is just a memory exhaustion primitive. But refusing is not
+ *    the same as dropping: the cable dispatches every complete frame inline
+ *    and always answers, so a queue that swallowed one made the two transports
+ *    disagree — see on_rx_write().
  *
  * 3. **Disconnect tears the session down.** Session state and nonce counters
  *    belong to a connection; carrying them across would let the next peer
@@ -48,12 +51,13 @@
 #include "services/gatt/ble_svc_gatt.h"
 
 #include "ble-chunk.h"
+#include "ble-name.h"
 #include "protocol.h"
 #include "session.h"
 
 static const char *TAG = "ble";
 
-#define BLE_DEVICE_NAME "LeekWallet"
+#define BLE_DEVICE_NAME BLE_NAME_DEFAULT
 
 /* Caught at build time rather than as a log line on a battery-powered device.
  *
@@ -62,6 +66,13 @@ static const char *TAG = "ble";
  * this is the bound that keeps a long one from silently stopping the radio. */
 _Static_assert(2 + sizeof(BLE_DEVICE_NAME) - 1 <= 31,
                "device name too long for a legacy scan response");
+
+/* And the runtime bound is the same bound. ble_name_set() refuses anything
+ * longer, which is what makes a user-supplied name as safe as the compile-time
+ * default above; if the two ever stop agreeing, this stops the build rather
+ * than letting a rename silence the radio. */
+_Static_assert(2 + BLE_NAME_MAX_LEN <= 31,
+               "BLE_NAME_MAX_LEN would overflow a legacy scan response");
 
 /* 6c65656b-7761-6c6c-6574-0000000000NN — "leekwallet" in ASCII, so the UUID is
  * recognisable in a scanner log. NimBLE takes the bytes little-endian. */
@@ -148,6 +159,23 @@ static void ble_work_task(void *arg)
     }
 }
 
+/**
+ * Forget requests nobody is waiting for any more.
+ *
+ * A queued frame outlives the connection it arrived on unless it is thrown
+ * away here, and dispatching it into the NEXT connection is two faults at
+ * once: the new peer gets a reply to a request it never sent — which, with no
+ * request IDs, silently pairs every later reply with the wrong request until
+ * one of them times out — and a stranger's command runs against a session that
+ * connection never established.
+ */
+static void ble_drop_queued_requests(void)
+{
+    if (work_queue) {
+        xQueueReset(work_queue);
+    }
+}
+
 static int on_rx_write(uint16_t conn, uint16_t attr_handle,
                        struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -192,7 +220,24 @@ static int on_rx_write(uint16_t conn, uint16_t attr_handle,
             ble_chunk_reset(&rx);
 
             if (xQueueSend(work_queue, &staged, 0) != pdTRUE) {
-                ESP_LOGW(TAG, "Busy; dropped a request");
+                /* Refused, not dropped.
+                 *
+                 * This is the BLE/USB divergence that was found on hardware:
+                 * an unknown method answered over the cable and produced
+                 * nothing at all over the radio. The cable has no queue —
+                 * consume() dispatches whatever it finds, inline — so on USB
+                 * every complete frame produces a frame back. Here a full
+                 * queue used to be one log line the peer never sees, and a
+                 * request that gets no answer is strictly worse than one that
+                 * gets an error: the host waits out its timeout with no way to
+                 * tell a lost request from a slow one, and no request IDs to
+                 * resynchronise with.
+                 *
+                 * Emitted from the host task, which is safe because it only
+                 * assembles a fixed-size error frame and notifies it. Nothing
+                 * here parses the request or touches the session. */
+                ESP_LOGW(TAG, "Request queue full; refusing rather than dropping");
+                protocol_send_transport_busy();
             }
             return 0;
         }
@@ -261,10 +306,16 @@ static void ble_advertise(void)
         return;
     }
 
+    /* The user's name if they set one, the default otherwise. ble_name_get()
+     * never returns anything longer than BLE_NAME_MAX_LEN, so the size check
+     * ble_gap_adv_rsp_set_fields() performs below cannot fail on account of
+     * it - which is the entire reason that bound exists. */
+    const char *adv_name = ble_name_get();
+
     struct ble_hs_adv_fields rsp;
     memset(&rsp, 0, sizeof(rsp));
-    rsp.name = (uint8_t *)BLE_DEVICE_NAME;
-    rsp.name_len = strlen(BLE_DEVICE_NAME);
+    rsp.name = (uint8_t *)adv_name;
+    rsp.name_len = (uint8_t)strlen(adv_name);
     rsp.name_is_complete = 1;
 
     rc = ble_gap_adv_rsp_set_fields(&rsp);
@@ -296,7 +347,9 @@ static int on_gap_event(struct ble_gap_event *event, void *arg)
                 conn_handle = event->connect.conn_handle;
                 ble_chunk_reset(&rx);
                 /* A new peer starts from nothing. Whatever the last one
-                 * negotiated is not theirs to continue. */
+                 * negotiated - or left half-asked - is not theirs to
+                 * continue. */
+                ble_drop_queued_requests();
                 session_reset();
                 /* The MTU is logged at connect and again if it changes: the
                  * host cannot read the negotiated value on any btleplug
@@ -314,6 +367,7 @@ static int on_gap_event(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "Disconnected: %d", event->disconnect.reason);
             conn_handle = BLE_HS_CONN_HANDLE_NONE;
             ble_chunk_reset(&rx);
+            ble_drop_queued_requests();
             session_reset();
             if (running) {
                 ble_advertise();
@@ -389,7 +443,7 @@ bool ble_transport_start(void)
 
     ble_svc_gap_init();
     ble_svc_gatt_init();
-    ble_svc_gap_device_name_set(BLE_DEVICE_NAME);
+    ble_svc_gap_device_name_set(ble_name_get());
 
     int rc = ble_gatts_count_cfg(gatt_services);
     if (rc == 0) {
@@ -402,6 +456,7 @@ bool ble_transport_start(void)
     }
 
     ble_chunk_reset(&rx);
+    ble_drop_queued_requests();
     conn_handle = BLE_HS_CONN_HANDLE_NONE;
     running = true;
 
@@ -410,8 +465,24 @@ bool ble_transport_start(void)
         host_task_started = true;
     }
 
-    ESP_LOGI(TAG, "BLE transport up, advertising as '%s'", BLE_DEVICE_NAME);
+    ESP_LOGI(TAG, "BLE transport up, advertising as '%s'", ble_name_get());
     return true;
+}
+
+void ble_transport_refresh_name(void)
+{
+    if (!running) {
+        return;     /* nothing on air; the next start reads the new name */
+    }
+
+    /* The GAP name and the scan response are two separate copies of the same
+     * string, and a rename that updated only one would leave a device calling
+     * itself two things depending on how you looked at it. Stopping first is
+     * required: NimBLE will not accept new advertising data while advertising,
+     * so a rename without this would silently keep the old name. */
+    ble_svc_gap_device_name_set(ble_name_get());
+    ble_gap_adv_stop();
+    ble_advertise();
 }
 
 void ble_transport_stop(void)
@@ -427,6 +498,7 @@ void ble_transport_stop(void)
         conn_handle = BLE_HS_CONN_HANDLE_NONE;
     }
     ble_chunk_reset(&rx);
+    ble_drop_queued_requests();
 
     nimble_port_stop();
     nimble_port_deinit();
@@ -450,6 +522,9 @@ static bool running;
 bool ble_transport_start(void)   { running = true;  return true; }
 void ble_transport_stop(void)    { running = false; }
 bool ble_transport_running(void) { return running; }
+/* No radio to re-advertise on; the name itself is real and tested directly
+ * (src/ble-name.c, sim/test_protocol.c). */
+void ble_transport_refresh_name(void) { }
 void ble_transport_write_frame(const uint8_t *frame, size_t len)
 {
     (void)frame; (void)len;
@@ -462,6 +537,7 @@ void ble_transport_write_frame(const uint8_t *frame, size_t len)
 bool ble_transport_start(void)   { return false; }
 void ble_transport_stop(void)    { }
 bool ble_transport_running(void) { return false; }
+void ble_transport_refresh_name(void) { }
 void ble_transport_write_frame(const uint8_t *frame, size_t len)
 {
     (void)frame; (void)len;

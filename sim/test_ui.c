@@ -84,6 +84,21 @@ static void go(screen_id_t screen)
     ui_render();
 }
 
+/* One turn of ui_task's loop with nothing pressed: repaint ONLY if something
+ * marked the screen dirty.
+ *
+ * Everything else in this file calls ui_render() unconditionally, which is
+ * exactly why a missing ui_invalidate() could never fail a test here - and how
+ * the "Signed" acknowledgement shipped never appearing on hardware. Anything
+ * the protocol task changes while the screen is already up has to be checked
+ * through this, not through press() or go(). */
+static void idle_pump(void)
+{
+    if (ui_needs_render()) {
+        ui_render();
+    }
+}
+
 /* Power-on: empty flash, cleared RAM, registered screens. */
 static void boot_device(void)
 {
@@ -1039,12 +1054,65 @@ static void test_host_passphrase_confirmation(void)
     ui_sign_clear();
 }
 
+
+/* The acknowledgement after signing (reported on hardware).
+ *
+ * ui_sign_report() is called from the PROTOCOL task the moment
+ * wallet_sign_hash_at_path() returns, and on the WalletConnect path there is
+ * no button press afterwards - approval was the last one. The UI task only
+ * repaints inside `if (ui_needs_render())`, so without an invalidate the
+ * "Signing..." frame drawn on entry stayed the last frame drawn and the
+ * two-second auto-dismiss moved on to the address list. The device signed and
+ * never said so.
+ *
+ * The whole test is therefore about idle_pump(): render unconditionally and it
+ * passes against the broken code, which is how this was verified green once
+ * already. */
+static void test_the_signed_acknowledgement_actually_appears(void)
+{
+    printf("== the result screen repaints itself when the signature lands\n");
+    boot_unlocked_with_seed();
+
+    /* Entering the screen before the signature exists - what the approval
+     * press does. */
+    go(SCREEN_SIGN_RESULT);
+    CHECK_SCREEN(fake_oled_contains("Signing"),
+                 "the result screen does not say it is working");
+    CHECK(!ui_needs_render(), "setup: the screen was left dirty");
+
+    /* The protocol task reports success. No press follows. */
+    ui_sign_report(true);
+    CHECK(ui_needs_render(),
+          "ui_sign_report did not mark the screen dirty - the UI task will "
+          "never repaint and the user will never see the acknowledgement");
+    idle_pump();
+
+    CHECK_SCREEN(fake_oled_contains("Signed"),
+                 "the screen never said the transaction was signed");
+    CHECK_SCREEN(!fake_oled_contains("Signing"),
+                 "the screen is still showing the in-progress frame");
+
+    /* A failure has to reach the screen the same way, and must not read as
+     * success: "nothing was sent" is the fact the user needs. */
+    ui_sign_clear();
+    go(SCREEN_SIGN_RESULT);
+    ui_sign_report(false);
+    CHECK(ui_needs_render(), "a failed signature did not mark the screen dirty");
+    idle_pump();
+    CHECK_SCREEN(fake_oled_contains("NOT signed"),
+                 "a failed signature was not reported");
+    CHECK_SCREEN(!fake_oled_contains("Handed to host"),
+                 "a failure claimed the signature went to the host");
+    ui_sign_clear();
+}
+
 int main(void)
 {
     test_blind_signing_takes_a_deliberate_act();
     test_blind_confirmation_is_marked_and_shows_the_digest();
     test_a_decoded_call_is_not_marked_blind();
     test_message_confirmation_shows_all_of_it();
+    test_the_signed_acknowledgement_actually_appears();
     test_host_passphrase_confirmation();
     test_harness_sees_the_screen();
 
