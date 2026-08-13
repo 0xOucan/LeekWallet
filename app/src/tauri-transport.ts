@@ -13,10 +13,23 @@ import { FrameType } from "../packages/core/src/framing.ts";
 
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
-/** Tauri injects this global; its absence is how we know we are in a browser. */
+/**
+ * Locate Tauri's invoke function.
+ *
+ * Tauri v2 does **not** expose `window.__TAURI__` unless `withGlobalTauri` is
+ * set in `tauri.conf.json`; the documented path is importing from
+ * `@tauri-apps/api`. Without that flag the native window looks exactly like a
+ * browser to this check, and the app quietly runs against the mock while
+ * sitting on top of a working USB backend.
+ *
+ * Both shapes are accepted because v2 moved invoke under `core` and older
+ * builds put it at the top level.
+ */
 function invoker(): Invoke | null {
-  const w = window as unknown as { __TAURI__?: { core?: { invoke?: Invoke } } };
-  return w.__TAURI__?.core?.invoke ?? null;
+  const w = window as unknown as {
+    __TAURI__?: { core?: { invoke?: Invoke }; invoke?: Invoke };
+  };
+  return w.__TAURI__?.core?.invoke ?? w.__TAURI__?.invoke ?? null;
 }
 
 export function isTauri(): boolean {
