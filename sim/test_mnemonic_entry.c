@@ -23,6 +23,44 @@ static int failures = 0;
     }                                                \
 } while (0)
 
+/* Walk the selector onto option `to` and count the presses it takes.
+ *
+ * Models a real user: scroll whichever way is shorter (the ring wraps, so a
+ * forward-only model would over-charge every option past the halfway mark),
+ * and when the list is split into blocks, scroll to the block, open it, then
+ * scroll inside it. */
+static int scroll_to(MnemonicEntry *e, int to)
+{
+    int presses = 0;
+
+    if (mnemonic_entry_on_group(e)) {
+        int g = e->group_size;
+        int blocks = (e->option_count + g - 1) / g;
+        int want = to / g;
+        while (e->option_index / g != want) {
+            int forward = ((want - e->option_index / g) % blocks + blocks) % blocks;
+            mnemonic_entry_scroll(e, (forward * 2 <= blocks) ? 1 : -1);
+            presses++;
+        }
+        mnemonic_entry_accept(e);   /* open the block */
+        presses++;
+    }
+
+    int start = 0, span = e->option_count;
+    if (e->group_size > 0) {
+        start = (e->option_index / e->group_size) * e->group_size;
+        span = e->option_count - start;
+        if (span > e->group_size) span = e->group_size;
+    }
+
+    while (e->option_index != to) {
+        int forward = ((to - e->option_index) % span + span) % span;
+        mnemonic_entry_scroll(e, (forward * 2 <= span) ? 1 : -1);
+        presses++;
+    }
+    return presses;
+}
+
 /**
  * Type `target` on the 4-button UI and return what actually got committed.
  *
@@ -43,6 +81,29 @@ static const char *type_word(MnemonicEntry *e, const char *target, int *keystrok
     while (presses < 200) {
         char want;
 
+        /* Word phase: pick the word itself rather than typing more letters. */
+        if (e->word_mode) {
+            int found = -1;
+            int here = e->option_index;
+            for (int i = 0; i < e->option_count; i++) {
+                e->option_index = i;
+                const char *w = mnemonic_entry_selected_word(e);
+                if (w && strcmp(w, target) == 0) { found = i; break; }
+            }
+            e->option_index = here;
+            if (found < 0) {
+                return NULL;  /* the word we want is not on offer - dead end */
+            }
+            presses += scroll_to(e, found);
+            mnemonic_entry_accept(e);
+            presses++;
+            if (e->word_count > before) {
+                if (keystrokes) *keystrokes = presses;
+                return e->words[before];
+            }
+            return NULL;
+        }
+
         if (next < strlen(target)) {
             want = target[next];
         } else {
@@ -58,10 +119,7 @@ static const char *type_word(MnemonicEntry *e, const char *target, int *keystrok
         if (found < 0) {
             return NULL;  /* the letter we need is not offered - dead end */
         }
-        while (e->option_index != found) {
-            mnemonic_entry_scroll(e, 1);
-            presses++;
-        }
+        presses += scroll_to(e, found);
 
         if (want != MNEMONIC_ENTRY_COMMIT) {
             next++;
@@ -113,6 +171,52 @@ static void test_every_word_reachable(void)
     printf("  worst case: %d button presses (\"%s\")\n", worst, worst_word);
 }
 
+/* T44. Entry cost is the thing people actually abandon, so it is measured
+ * rather than eyeballed: every word, counted in button presses, with a ceiling
+ * that fails the build if a future selector change makes typing slower again.
+ *
+ * The budgets sit one press above what the selector achieves today (19 worst,
+ * 12.00 average, down from 38 and 19.80 before the block and word phases), so
+ * a regression trips them while ordinary refactoring does not. */
+#define WORST_CASE_BUDGET   20
+#define AVERAGE_CASE_BUDGET 12.5
+
+static void test_press_budget(void)
+{
+    printf("== presses per word stay inside budget (T44)\n");
+
+    int worst = 0, total = 0;
+    const char *worst_word = "";
+
+    for (int i = 0; i < 2048; i++) {
+        const char *word = mnemonic_get_word(i);
+
+        MnemonicEntry e;
+        mnemonic_entry_reset(&e, 12);
+
+        int presses = 0;
+        const char *got = type_word(&e, word, &presses);
+        CHECK(got && strcmp(got, word) == 0, "\"%s\" is not typeable", word);
+        if (!got) continue;
+
+        total += presses;
+        if (presses > worst) {
+            worst = presses;
+            worst_word = word;
+        }
+    }
+
+    double average = (double)total / 2048.0;
+    printf("  worst %d presses (\"%s\"), average %.2f\n", worst, worst_word, average);
+
+    CHECK(worst <= WORST_CASE_BUDGET,
+          "worst case %d presses (\"%s\") exceeds the %d-press budget",
+          worst, worst_word, WORST_CASE_BUDGET);
+    CHECK(average <= AVERAGE_CASE_BUDGET,
+          "average %.2f presses exceeds the %.1f-press budget",
+          average, AVERAGE_CASE_BUDGET);
+}
+
 /* The specific words S3 made unreachable: each is extended by a longer word. */
 static void test_prefix_words(void)
 {
@@ -136,29 +240,77 @@ static void test_prefix_words(void)
     }
 }
 
-static void test_dead_end_letters_hidden(void)
+/* How many BIP39 words start with `prefix`. */
+static int matches_for(const char *prefix)
 {
-    printf("== selector never offers a dead-end letter\n");
+    int n = 0;
+    for (int i = 0; i < 2048; i++) {
+        if (strncmp(mnemonic_get_word(i), prefix, strlen(prefix)) == 0) n++;
+    }
+    return n;
+}
 
-    MnemonicEntry e;
-    mnemonic_entry_reset(&e, 12);
+/* Every option the selector shows must lead somewhere. The word phase made
+ * this worth re-testing from scratch: a stale candidate list would offer a
+ * word that does not match what the user typed, which is the same class of bug
+ * as a dead-end letter and strictly worse in its consequences. */
+static void test_no_dead_end_options(void)
+{
+    printf("== selector never offers a dead end\n");
 
-    /* "zo" leads only to "zone"/"zoo", so after "zo" the only letters that can
-     * appear are 'n' and 'o'. */
-    for (const char *p = "zo"; *p; p++) {
-        int idx = -1;
-        for (int i = 0; i < e.option_count; i++) if (e.options[i] == *p) idx = i;
-        CHECK(idx >= 0, "letter '%c' not offered", *p);
-        if (idx < 0) return;
-        e.option_index = idx;
-        mnemonic_entry_accept(&e);
+    int bad = 0;
+
+    for (int w = 0; w < 2048 && bad < 5; w++) {
+        MnemonicEntry e;
+        mnemonic_entry_reset(&e, 12);
+        const char *target = mnemonic_get_word(w);
+
+        /* Walk the states this word passes through. */
+        for (size_t step = 0; step <= strlen(target); step++) {
+            for (int i = 0; i < e.option_count && bad < 5; i++) {
+                if (e.word_mode) {
+                    e.option_index = i;
+                    const char *cand = mnemonic_entry_selected_word(&e);
+                    if (!cand || strncmp(cand, e.prefix, (size_t)e.prefix_len) != 0) {
+                        printf("  candidate \"%s\" does not match prefix \"%s\"\n",
+                               cand ? cand : "(null)", e.prefix);
+                        bad++;
+                    }
+                    continue;
+                }
+
+                char c = e.options[i];
+                if (c == MNEMONIC_ENTRY_COMMIT) {
+                    if (mnemonic_find_word(e.prefix) < 0 && matches_for(e.prefix) != 1) {
+                        printf("  OK offered on \"%s\", which is not a word\n", e.prefix);
+                        bad++;
+                    }
+                    continue;
+                }
+
+                char probe[MNEMONIC_ENTRY_WORD_LEN + 1];
+                snprintf(probe, sizeof(probe), "%s%c", e.prefix, c);
+                if (matches_for(probe) == 0) {
+                    printf("  dead-end option '%c' after \"%s\"\n", c, e.prefix);
+                    bad++;
+                }
+            }
+            e.option_index = 0;
+
+            if (e.word_mode || step == strlen(target)) break;
+
+            /* Advance one character the way the UI would. */
+            int idx = -1;
+            for (int i = 0; i < e.option_count; i++) {
+                if (e.options[i] == target[step]) { idx = i; break; }
+            }
+            if (idx < 0) break;
+            scroll_to(&e, idx);
+            mnemonic_entry_accept(&e);
+        }
     }
 
-    for (int i = 0; i < e.option_count; i++) {
-        char c = e.options[i];
-        CHECK(c == 'n' || c == 'o' || c == MNEMONIC_ENTRY_COMMIT,
-              "after \"zo\", unexpected option '%c'", c);
-    }
+    CHECK(bad == 0, "%d dead-end options offered", bad);
 }
 
 static void test_full_phrase_roundtrip(void)
@@ -283,8 +435,9 @@ static void test_backspace(void)
 int main(void)
 {
     test_every_word_reachable();
+    test_press_budget();
     test_prefix_words();
-    test_dead_end_letters_hidden();
+    test_no_dead_end_options();
     test_full_phrase_roundtrip();
     test_24_word_roundtrip();
     test_target_is_clamped();

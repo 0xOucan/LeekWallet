@@ -221,7 +221,7 @@ one physical board.
 | ~~T6~~ ✅ | Wire the unused `screen_t.exit` hook; `memzero()` seed buffers ([S5](AUDIT.md)) | T0.2 | buffer is zero after leaving the screen, and *not* zeroed across the display ↔ verify hand-off; removing the hook fails 6 assertions, over-correcting fails 9 |
 | ~~T7~~ ✅ | Error display separated from `eth_address.hex` ([S8a](AUDIT.md)) | T0.3 | error screen says "Error" and names the reason; QR refuses to encode anything that is not a 42-character address |
 | T43 | Account/address-index selector — the wallet core already derives any BIP44 path, the UI hardcodes index 0 | T0.3 | can view `m/44'/60'/0'/0/n` for arbitrary n |
-| T44 | Faster word selector — verification costs up to 49 presses per word; a two-axis or coarse-jump selector would cut it | T0.4 | worst-case presses per word measured and reduced |
+| ~~T44~~ ✅ | Faster word selector: letters offered as coarse blocks, and the selector switches to whole candidate words once ≤8 still match | T0.4 | measured over all 2048 words in `sim/test_mnemonic_entry.c`: worst case 38 → 19 presses, average 19.8 → 12.0, with both figures budgeted so a regression fails the suite |
 | ~~T8~~ ✅ | Button queue backpressure ([S8j](AUDIT.md)) | T0.4 | no dropped events across a simulated 800 ms stall; queue size derived from the stall budget and the debounce floor, overflow drops the oldest and is counted |
 
 ### Track B — firmware security (parallel after T0)

@@ -1665,6 +1665,37 @@ static void screen_mnemonic_entry_enter(void)
     entry_error[0] = '\0';
 }
 
+/*
+ * One line describing what ACCEPT would do right now, shared by the import and
+ * verify screens so the two can never drift into showing different things.
+ *
+ * The selector has three shapes: a block of letters ("ord[a-f]"), a single
+ * letter ("ord[i]"), and - once few enough words still match - the whole word,
+ * which is shown in full because that is what a press would commit.
+ */
+static void entry_selector_line(char *out, size_t len)
+{
+    const char *word = mnemonic_entry_selected_word(&entry);
+    if (word) {
+        snprintf(out, len, "OK:%s", word);
+        return;
+    }
+
+    char label[MNEMONIC_ENTRY_WORD_LEN + 8];
+    mnemonic_entry_option_label(&entry, label, sizeof(label));
+
+    if (mnemonic_entry_option(&entry) == MNEMONIC_ENTRY_COMMIT &&
+        !mnemonic_entry_on_group(&entry)) {
+        /* Name the word OK would accept. "pos[OK]" tells the user nothing;
+         * "OK:position" lets them catch a wrong turn before committing it. */
+        const char *target = mnemonic_entry_suggestion(&entry);
+        snprintf(out, len, "OK:%s", target ? target : entry.prefix);
+        return;
+    }
+
+    snprintf(out, len, "%s[%s]", entry.prefix, label);
+}
+
 static void screen_mnemonic_entry_render(void)
 {
     oled_clear();
@@ -1688,42 +1719,41 @@ static void screen_mnemonic_entry_render(void)
              entry.current_word + 1, entry.target_words);
     oled_draw_string_centered(0, header);
 
-    /* Prefix typed so far, plus the highlighted selector option. The selector
-     * only offers letters that can still lead to a real BIP39 word, and offers
-     * "OK" once the prefix is a complete word. */
-    /* Name the word OK would accept. "pos[OK]" tells the user nothing;
-     * "OK: position" lets them catch a wrong turn before committing it. */
-    char option = mnemonic_entry_option(&entry);
-    char prefix_display[MNEMONIC_ENTRY_WORD_LEN + 8];
-
-    if (option == MNEMONIC_ENTRY_COMMIT) {
-        const char *target = mnemonic_entry_suggestion(&entry);
-        snprintf(prefix_display, sizeof(prefix_display), "OK:%s",
-                 target ? target : entry.prefix);
-    } else {
-        snprintf(prefix_display, sizeof(prefix_display), "%s%c", entry.prefix, option);
-    }
+    char prefix_display[MNEMONIC_ENTRY_WORD_LEN + 24];
+    entry_selector_line(prefix_display, sizeof(prefix_display));
     oled_draw_string(2, 0, "Type:");
     oled_draw_string(2, 36, prefix_display);
 
     if (entry_error[0] != '\0') {
         oled_draw_string(4, 0, entry_error);
     } else {
-        const char *suggestion = mnemonic_entry_suggestion(&entry);
-        if (suggestion) {
-            int n = mnemonic_entry_match_count(&entry, 100);
-            char line[22];
-            if (n > 1) {
-                snprintf(line, sizeof(line), "%s +%d", suggestion, n - 1);
-            } else {
-                snprintf(line, sizeof(line), "%s", suggestion);
+        char line[22];
+        if (entry.word_mode) {
+            /* The selector is already naming a whole word, so repeating the
+             * first match would point at a different word than ACCEPT takes.
+             * Show the position in the shortlist instead. */
+            snprintf(line, sizeof(line), "%d of %d",
+                     entry.option_index + 1, entry.option_count);
+            oled_draw_string(4, 0, "Choice:");
+            oled_draw_string(4, 48, line);
+        } else {
+            const char *suggestion = mnemonic_entry_suggestion(&entry);
+            if (suggestion) {
+                int n = mnemonic_entry_match_count(&entry, 100);
+                if (n > 1) {
+                    snprintf(line, sizeof(line), "%s +%d", suggestion, n - 1);
+                } else {
+                    snprintf(line, sizeof(line), "%s", suggestion);
+                }
+                oled_draw_string(4, 0, "Match:");
+                oled_draw_string(4, 42, line);
             }
-            oled_draw_string(4, 0, "Match:");
-            oled_draw_string(4, 42, line);
         }
     }
 
-    oled_draw_string(7, 0, "UP DN  DEL  SEL");
+    /* With a block open, BACK closes it instead of deleting a character, so
+     * the hint has to say which one the next press will do. */
+    oled_draw_string(7, 0, entry.in_group ? "UP DN  BCK  SEL" : "UP DN  DEL  SEL");
 }
 
 /* Import the phrase now held in `entry`. Always clears it before returning. */
@@ -2522,28 +2552,32 @@ static void screen_mnemonic_verify_render(void)
              (word_no < 1 || word_no > 24) ? 1 : word_no);
     oled_draw_string_centered(1, prompt);
 
-    char option = mnemonic_entry_option(&entry);
-    char typed[MNEMONIC_ENTRY_WORD_LEN + 8];
-    if (option == MNEMONIC_ENTRY_COMMIT) {
-        const char *target = mnemonic_entry_suggestion(&entry);
-        snprintf(typed, sizeof(typed), "OK:%s", target ? target : entry.prefix);
-    } else {
-        snprintf(typed, sizeof(typed), "%s%c", entry.prefix, option);
-    }
+    char typed[MNEMONIC_ENTRY_WORD_LEN + 24];
+    entry_selector_line(typed, sizeof(typed));
     oled_draw_string(3, 0, "Type:");
     oled_draw_string(3, 36, typed);
 
     if (verify_last_wrong) {
         oled_draw_string(5, 0, "Wrong - try again");
     } else {
-        const char *suggestion = mnemonic_entry_suggestion(&entry);
-        if (suggestion) {
-            oled_draw_string(5, 0, "Match:");
-            oled_draw_string(5, 42, suggestion);
+        if (entry.word_mode) {
+            char line[22];
+            snprintf(line, sizeof(line), "%d of %d",
+                     entry.option_index + 1, entry.option_count);
+            oled_draw_string(5, 0, "Choice:");
+            oled_draw_string(5, 48, line);
+        } else {
+            const char *suggestion = mnemonic_entry_suggestion(&entry);
+            if (suggestion) {
+                oled_draw_string(5, 0, "Match:");
+                oled_draw_string(5, 42, suggestion);
+            }
         }
     }
 
-    oled_draw_string(7, 0, "UP DN  DEL  SEL");
+    /* With a block open, BACK closes it instead of deleting a character, so
+     * the hint has to say which one the next press will do. */
+    oled_draw_string(7, 0, entry.in_group ? "UP DN  BCK  SEL" : "UP DN  DEL  SEL");
 }
 
 static void screen_mnemonic_verify_on_button(button_id_t btn)
