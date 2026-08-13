@@ -200,6 +200,31 @@ Derivation is plain BIP39 — `PBKDF2-HMAC-SHA512(mnemonic, "mnemonic" + passphr
 is verified against the spec's known-answer vectors in `sim/test_passphrase.c`. Any seed and
 passphrase produce the same wallet here as on Trezor, Ledger, Coldcard or Sparrow.
 
+### What the companion app must do about it
+
+The device drops the passphrase on lock, wallet switch and disconnect. The host
+has to mirror that, and the reason is sharper than tidiness.
+
+Addresses derived under a passphrase belong to a wallet the device can no longer
+produce once that passphrase is gone. Left on screen they look exactly like
+valid ones. So:
+
+- **Derived state is valid only for the exact `(unlocked, wallet, passphrase)`
+  tuple it was derived under.** Any change discards it, including a fresh
+  unlock — the user may have entered a different passphrase, or none.
+- **The app must poll**, not merely react to its own commands. The device
+  auto-locks on its own timer and the user can switch wallets by hand; neither
+  passes through the app. `getStatus` returns `unlocked`, `activeWallet` and a
+  boolean `passphrase`, which is enough to detect every case.
+- **Never persist derived addresses.** A passphrase wallet leaves no trace on
+  the device by design, and writing its addresses into host storage undoes
+  precisely that: anyone reading the app's data learns a hidden wallet exists,
+  which is the fact being protected. Memory only.
+
+Note the status flag says *whether* a passphrase is applied, never which one,
+and it is session state rather than something stored — so it reveals nothing
+about a device sitting locked.
+
 ### Session lifetime
 
 The passphrase lives in RAM only and is cleared on: device lock, PIN re-entry, wallet switch,

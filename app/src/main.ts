@@ -11,6 +11,9 @@ import { encodeCbor, decodeCbor, type CborValue } from "../packages/core/src/cbo
 import { encodeFrame, FrameDecoder, FrameType } from "../packages/core/src/framing.ts";
 import { MockDevice } from "../packages/core/src/mock-device.ts";
 import { DeviceError, type Transport } from "../packages/core/src/transport.ts";
+import {
+  derivationsInvalidated, UNKNOWN_STATUS, type DeviceStatus,
+} from "../packages/core/src/device-state.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -68,6 +71,62 @@ let client: Client | null = null;
 let selectedIndex = 0;
 const addresses: string[] = [];
 
+/* Last known device state, and a poll to notice changes the app did not cause
+ * - an auto-lock on the device's own timer, or a wallet switched by hand. */
+let lastStatus: DeviceStatus = UNKNOWN_STATUS;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+async function readStatus(): Promise<DeviceStatus> {
+  const s = await (client as Client).call("getStatus");
+  return {
+    unlocked: s["unlocked"] === 1,
+    walletCount: Number(s["walletCount"] ?? 0),
+    activeWallet: Number(s["activeWallet"] ?? 0),
+    passphrase: s["passphrase"] === 1,
+  };
+}
+
+/**
+ * Forget everything derived.
+ *
+ * Called whenever the device state moves in a way that changes derivation. The
+ * addresses on screen would otherwise belong to a wallet the device can no
+ * longer produce, and nothing about them would look wrong.
+ */
+function invalidateDerived(reason: string): void {
+  addresses.length = 0;
+  $("addrs").textContent = "";
+  $("addrpanel").hidden = true;
+  $("signpanel").hidden = true;
+  $("sfrom").textContent = "—";
+  log(`derived addresses cleared: ${reason}`);
+}
+
+async function poll(): Promise<void> {
+  if (!client) return;
+  try {
+    const now = await readStatus();
+    if (derivationsInvalidated(lastStatus, now)) {
+      invalidateDerived(
+        !now.unlocked ? "device locked"
+          : now.activeWallet !== lastStatus.activeWallet ? "wallet changed on device"
+          : "passphrase changed on device",
+      );
+      if (now.unlocked) {
+        await loadAddresses();
+        $("addrpanel").hidden = false;
+        $("signpanel").hidden = false;
+      }
+    }
+    lastStatus = now;
+    $("wallet").textContent = now.unlocked
+      ? `wallet ${now.activeWallet}/${now.walletCount}${now.passphrase ? " + passphrase" : ""}`
+      : "locked";
+  } catch {
+    /* A poll failing is not itself news; the connection state covers it. */
+  }
+}
+
 const setConnection = (state: string, label: string): void => {
   $("dot").dataset["state"] = state;
   $("conn").textContent = label;
@@ -115,8 +174,14 @@ async function unlock(): Promise<void> {
     await loadAddresses();
     $("addrpanel").hidden = false;
     $("signpanel").hidden = false;
-    const status = await client.call("getStatus");
-    $("wallet").textContent = `wallet ${status["activeWallet"]}/${status["walletCount"]}`;
+    lastStatus = await readStatus();
+    $("wallet").textContent =
+      `wallet ${lastStatus.activeWallet}/${lastStatus.walletCount}` +
+      (lastStatus.passphrase ? " + passphrase" : "");
+
+    /* Two seconds is frequent enough that a lock is noticed before the user
+     * acts on a stale address, and rare enough not to keep a BLE link busy. */
+    if (!pollTimer) pollTimer = setInterval(() => void poll(), 2000);
   } catch (e) {
     log(`unlock failed: ${(e as Error).message}`);
   } finally {
@@ -186,6 +251,8 @@ async function sign(reject: boolean): Promise<void> {
 }
 
 async function disconnect(): Promise<void> {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  lastStatus = UNKNOWN_STATUS;
   await transport?.close();
   transport = null;
   client = null;

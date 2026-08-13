@@ -51,6 +51,12 @@ export class MockDevice implements Transport {
   /** Requests the device is "showing" — inspect in tests. */
   readonly confirmations: string[] = [];
 
+  /** Test hook: simulate the device auto-locking on its idle timer. */
+  autoLock(): void {
+    this.unlocked = false;
+    this.passphraseActive = false;
+  }
+
   constructor(options: MockOptions = {}) {
     this.opts = {
       latencyMs: options.latencyMs ?? 0,
@@ -184,6 +190,9 @@ export class MockDevice implements Transport {
 
     lock: () => {
       this.unlocked = false;
+      /* The passphrase dies with the session, as it does on the device. A host
+       * that kept deriving addresses from it would be showing a wallet the
+       * device can no longer produce. */
       this.passphraseActive = false;
       return {};
     },
