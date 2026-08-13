@@ -12,6 +12,14 @@
 
 #define BIP39_WORDS 2048
 
+/* See mnemonic_entry_set_blocks(). Defaults off: the simpler control is the
+ * one that cannot be misread, and a seed phrase is typed too rarely for a mode
+ * to ever become familiar. */
+static bool blocks_enabled = false;
+
+void mnemonic_entry_set_blocks(bool enabled) { blocks_enabled = enabled; }
+bool mnemonic_entry_blocks_enabled(void) { return blocks_enabled; }
+
 /* Count words matching `prefix`, stopping once `cap` is reached.
  * Writes the first match to *first when non-NULL. */
 static int count_matches(const char *prefix, int len, int cap, const char **first)
@@ -131,7 +139,7 @@ static void rebuild_options(MnemonicEntry *e)
 
     /* Split a long list into blocks of about sqrt(n), which is the size that
      * minimises "scroll to the block" plus "scroll inside it". */
-    if (e->option_count > MNEMONIC_ENTRY_GROUP_MIN) {
+    if (blocks_enabled && e->option_count > MNEMONIC_ENTRY_GROUP_MIN) {
         int g = 1;
         while (g * g < e->option_count) {
             g++;

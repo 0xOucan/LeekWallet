@@ -559,6 +559,7 @@ static int64_t  last_activity_us = 0;
 #define UI_NVS_NAMESPACE "leek_ui"
 #define UI_KEY_LOCK_TIMEOUT "lock_to"
 #define UI_KEY_BRIGHTNESS   "bright"
+#define UI_KEY_ENTRY_BLOCKS "wblocks"
 
 /* Four steps rather than a slider: the OLED is legible across the whole range,
  * so fine control buys nothing and costs presses. Low is genuinely useful -
@@ -594,6 +595,9 @@ static void settings_load(void)
         stored < BRIGHTNESS_COUNT) {
         brightness_choice = (int)stored;
     }
+    if (nvs_get_u8(nvs, UI_KEY_ENTRY_BLOCKS, &stored) == ESP_OK) {
+        mnemonic_entry_set_blocks(stored != 0);
+    }
     nvs_close(nvs);
 }
 
@@ -604,6 +608,20 @@ static void brightness_apply_and_save(void)
     nvs_handle_t nvs;
     if (nvs_open(UI_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
         nvs_set_u8(nvs, UI_KEY_BRIGHTNESS, (uint8_t)brightness_choice);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+}
+
+/* Which selector the seed-entry screen uses. Persisted because the answer is a
+ * preference about how the buttons behave, and re-choosing it every time would
+ * be its own small tax. */
+static void entry_blocks_save(void)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(UI_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, UI_KEY_ENTRY_BLOCKS,
+                   mnemonic_entry_blocks_enabled() ? 1 : 0);
         nvs_commit(nvs);
         nvs_close(nvs);
     }
@@ -670,6 +688,7 @@ typedef enum {
     SET_PASSPHRASE,
     SET_BRIGHTNESS,
     SET_AUTOLOCK,
+    SET_ENTRY_STYLE,
     SET_CHANGE_PIN,
 /* The Wi-Fi AP is a test fixture, not a feature (AUDIT S8g). It brings up an
  * access point with a hardcoded password on a device holding seeds, so it is
@@ -692,6 +711,7 @@ static const char *settings_items[SETTINGS_ITEMS] = {
     "Passphrase",
     "Brightness",
     "Auto-lock",
+    "Word entry",
     "Change PIN",
 #ifdef CONFIG_ESP_WIFI_ENABLED
     "WiFi Test",
@@ -2324,6 +2344,10 @@ static void screen_settings_render(void)
             snprintf(line, sizeof(line), "%s Bright %s",
                      item_idx == settings_selection ? ">" : " ",
                      brightness_label(brightness_choice));
+        } else if (item_idx == SET_ENTRY_STYLE) {
+            snprintf(line, sizeof(line), "%s Entry %s",
+                     item_idx == settings_selection ? ">" : " ",
+                     mnemonic_entry_blocks_enabled() ? "Blocks" : "Simple");
         } else if (item_idx == SET_AUTOLOCK) {
             snprintf(line, sizeof(line), "%s Lock %s",
                      item_idx == settings_selection ? ">" : " ",
@@ -2376,6 +2400,13 @@ static void screen_settings_on_button(button_id_t btn)
                 case SET_PASSPHRASE:
                     ui_set_screen(SCREEN_PASSPHRASE);
                     break;
+                case SET_ENTRY_STYLE:
+                    mnemonic_entry_set_blocks(!mnemonic_entry_blocks_enabled());
+                    entry_blocks_save();
+                    ESP_LOGI(TAG, "Word entry: %s",
+                             mnemonic_entry_blocks_enabled() ? "blocks" : "simple");
+                    break;
+
                 case SET_BRIGHTNESS:
                     brightness_choice = (brightness_choice + 1) % (int)BRIGHTNESS_COUNT;
                     brightness_apply_and_save();

@@ -181,9 +181,9 @@ static void test_every_word_reachable(void)
 #define WORST_CASE_BUDGET   20
 #define AVERAGE_CASE_BUDGET 12.5
 
-static void test_press_budget(void)
+static void measure_budget(bool blocks, int worst_budget, double avg_budget)
 {
-    printf("== presses per word stay inside budget (T44)\n");
+    mnemonic_entry_set_blocks(blocks);
 
     int worst = 0, total = 0;
     const char *worst_word = "";
@@ -207,14 +207,36 @@ static void test_press_budget(void)
     }
 
     double average = (double)total / 2048.0;
-    printf("  worst %d presses (\"%s\"), average %.2f\n", worst, worst_word, average);
+    printf("  %-7s worst %d presses (\"%s\"), average %.2f\n",
+           blocks ? "blocks" : "simple", worst, worst_word, average);
 
-    CHECK(worst <= WORST_CASE_BUDGET,
-          "worst case %d presses (\"%s\") exceeds the %d-press budget",
-          worst, worst_word, WORST_CASE_BUDGET);
-    CHECK(average <= AVERAGE_CASE_BUDGET,
-          "average %.2f presses exceeds the %.1f-press budget",
-          average, AVERAGE_CASE_BUDGET);
+    CHECK(worst <= worst_budget,
+          "%s: worst case %d presses (\"%s\") exceeds the %d-press budget",
+          blocks ? "blocks" : "simple", worst, worst_word, worst_budget);
+    CHECK(average <= avg_budget,
+          "%s: average %.2f presses exceeds the %.1f-press budget",
+          blocks ? "blocks" : "simple", average, avg_budget);
+}
+
+/* Both selectors are measured, because both ship.
+ *
+ * "simple" is the default and the one the ecosystem uses - a flat scroll that
+ * narrows, plus a shortlist once few words remain, which is roughly what Ledger
+ * and Jade do. "blocks" is faster and modal, and is offered as a setting rather
+ * than imposed: on four unlabelled buttons a mode is a real cost, and a seed
+ * phrase is typed too rarely for one to become familiar.
+ *
+ * The budgets exist so neither silently regresses. They are ceilings, not
+ * targets. */
+static void test_press_budget(void)
+{
+    printf("== presses per word stay inside budget, both selectors (T44)\n");
+
+    measure_budget(false, 29, 16.0);
+    measure_budget(true,  WORST_CASE_BUDGET, AVERAGE_CASE_BUDGET);
+
+    /* Leave the default as the rest of the suite expects to find it. */
+    mnemonic_entry_set_blocks(false);
 }
 
 /* The specific words S3 made unreachable: each is extended by a longer word. */

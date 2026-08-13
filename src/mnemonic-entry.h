@@ -88,6 +88,20 @@ typedef enum {
     MNEMONIC_ENTRY_ALL_DONE,   /* target_words reached */
 } MnemonicEntryResult;
 
+/**
+ * Choose whether the selector uses the two-level block scan.
+ *
+ * Blocks cut a word from ~28 presses to ~19, but they make ACCEPT and BACK mean
+ * different things at each level, and a modal control on four unlabelled
+ * buttons is a poor trade when the thing being typed is a seed phrase. So this
+ * is the user's call, not ours; the device offers both.
+ *
+ * Off means one letter per press, ACCEPT always commits, BACK always deletes.
+ * The word phase is unaffected either way - it adds no mode.
+ */
+void mnemonic_entry_set_blocks(bool enabled);
+bool mnemonic_entry_blocks_enabled(void);
+
 /** Reset to an empty phrase. target_words is clamped to 12 or 24. */
 void mnemonic_entry_reset(MnemonicEntry *e, int target_words);
 
