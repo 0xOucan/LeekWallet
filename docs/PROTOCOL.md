@@ -518,7 +518,7 @@ deciding which side is right is a protocol question, not a bug fix.
 | # | Divergence | Which side is right | Status |
 |---|---|---|---|
 | 1 | `unlock` is asynchronous on the device (`{prompted:1, unlocked:0}`, host polls); the mock unlocks synchronously | Device. An app built on the mock believes unlocking is instant | **Closed** — mock prompts and stays locked until `enterPin()`; app polls `getStatus` |
-| 2 | `selectWallet`, `setPassphrase`, `signMessage` exist in the mock, not in the firmware | Mock — these are specified in section 4 and the firmware has not caught up | Open (firmware) |
+| 2 | `selectWallet`, `setPassphrase`, `signMessage` exist in the mock, not in the firmware | Mock — these are specified in section 4 and the firmware has not caught up | **Closed** — all three implemented on the device; shapes below |
 | 3 | `signTransaction` returns `{index, r, s, yParity}` on the device, `{signature, path}` in the mock | Device. Nothing that parses one parses the other | **Closed** — mock emits `{index, r, s, yParity}`; the host reassembles `r ‖ s ‖ yParity` |
 | 4 | `getAddress` returns `{address, index}` on the device, `{path, address}` in the mock | **Device: `{address, index}`** (see below) | **Closed** |
 | 5 | `chainId` is mandatory on the device (`0x0001` if absent), ignored by the mock | Device. Signing without knowing the chain is a replay waiting to happen | **Closed** — mock requires an unsigned integer `chainId` |
@@ -544,6 +544,44 @@ Returning both was rejected for the same reason the rest of this section exists:
 a field present in the mock and absent from the firmware is a field app code can
 come to depend on, and the ripple is discovered on hardware. The app builds the
 path itself when it needs one to display — it is the side that chose it.
+
+### The three methods as implemented (divergence 2, closed)
+
+The shapes the device now speaks, so the mock can be made to match rather than
+guessed at:
+
+| Command | Request | Reply |
+|---|---|---|
+| `signMessage` | `{ message: text, index \| path }` | `{ index, r, s, yParity }` — the same shape as `signTransaction` |
+| `selectWallet` | `{ index: 1-based }` | `{ activeWallet }`, `0x0300` if there is no such wallet |
+| `setPassphrase` | `{ passphrase: text }` | `{ address, passphrase: 1 }` after the on-device confirm |
+
+Four decisions inside those, each of which the mock has to copy to stay no more
+permissive than the device:
+
+- **`signMessage` refuses a message it cannot render.** The digest is the
+  EIP-191 one — `keccak256("\x19Ethereum Signed Message:\n" || decimal_length ||
+  message)` — and the device displays the message in full on the confirmation
+  screen before signing it. So the message must be printable ASCII (0x20–0x7E,
+  no newlines or tabs) and at most 120 bytes, the six twenty-character rows the
+  screen has. Anything else is `0x0202`, refused *before* any prompt. Showing a
+  mangled rendering of what is being signed, or a hash beside "undisplayable
+  content", is the same bargain as blind signing (6bis) — the confirmation would
+  carry no information. Non-ASCII messages are a real limitation and belong in
+  the honest-refusal column, not in a workaround.
+- **`setPassphrase` answers with the first address, not an XFP.** The device has
+  no fingerprint API today, and inventing an eight-hex-digit value that is not a
+  BIP32 fingerprint would be worse than showing the thing the user actually
+  compares. The same string is on the screen and in the reply; a rejection or a
+  timeout clears the passphrase, so a wrong one is recoverable rather than
+  silently a different wallet. Empty passphrases are `0x0001` — clearing is
+  `clearPassphrase`'s job and is not implemented yet.
+- **`selectWallet` drops the passphrase**, because a passphrase belongs to the
+  seed it was entered against (section 5).
+- Neither `selectWallet` nor `setPassphrase` accepts an index or a passphrase
+  the device's own UI could not produce: indices are bounded before the cast to
+  `uint8_t` (257 must not become 1), and passphrases are printable ASCII, so no
+  wallet exists that is reachable from the app and not from the device.
 
 **The sync marker is a documentation bug, not a mock bug.** `protocol.c` requires
 and emits `'L','K'` before every frame because it shares the port with console

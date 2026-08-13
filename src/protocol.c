@@ -33,6 +33,7 @@
 #include "esp_log.h"
 
 #include "cbor.h"
+#include "memzero.h"
 #include "leek-wallet.h"
 #include "pin.h"
 #include "session.h"
@@ -181,6 +182,60 @@ static bool handle_hello(const uint8_t *payload, size_t len,
     }
     *out_len = w.length;
     return true;
+}
+
+/**
+ * The address index a request names, from "index" or the tail of "path".
+ *
+ * Both spellings exist because the client thinks in BIP44 paths and the device
+ * in indices; reading only "index" once meant every path-bearing request
+ * silently derived address zero. Returns false when neither is present, so the
+ * caller can decide whether that is a default or a refusal.
+ */
+static bool request_index(const uint8_t *payload, size_t len, uint32_t *out)
+{
+    CborItem item;
+    if (cbor_map_find(payload, len, "index", &item) && item.type == CBOR_UINT) {
+        *out = item.value;
+        return true;
+    }
+    if (cbor_map_find(payload, len, "path", &item) && item.type == CBOR_TEXT) {
+        char path_str[40];
+        if (cbor_text_copy(&item, path_str, sizeof(path_str))) {
+            const char *last = strrchr(path_str, '/');
+            if (last && last[1] != '\0') {
+                *out = (uint32_t)strtoul(last + 1, NULL, 10);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * Block until the user answers the prompt on screen, or long enough that
+ * nobody is going to.
+ *
+ * Shared by every confirmation - transaction, message, passphrase - because a
+ * second copy of this loop is a second place for a request to be answered
+ * without anyone having looked at the device. Returns the outcome; the caller
+ * owns whatever it has to undo on anything but SIGN_APPROVED.
+ */
+static SignOutcome wait_for_user(void)
+{
+    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(120000);
+    for (;;) {
+        SignOutcome outcome = ui_sign_outcome();
+        if (outcome != SIGN_PENDING) {
+            ui_sign_clear();
+            return outcome;
+        }
+        if (xTaskGetTickCount() > deadline) {
+            ui_sign_clear();
+            return SIGN_PENDING;        /* nobody answered */
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 }
 
 /* Handle one decoded request. */
@@ -388,16 +443,10 @@ static void dispatch(const uint8_t *payload, size_t len)
         }
 
         uint32_t sign_index = 0;
-        if (cbor_map_find(payload, len, "index", &item) && item.type == CBOR_UINT) {
-            sign_index = item.value;
-        } else if (cbor_map_find(payload, len, "path", &item) && item.type == CBOR_TEXT) {
-            char path_str[40];
-            if (cbor_text_copy(&item, path_str, sizeof(path_str))) {
-                const char *last = strrchr(path_str, '/');
-                if (last && last[1] != '\0') {
-                    sign_index = (uint32_t)strtoul(last + 1, NULL, 10);
-                }
-            }
+        request_index(payload, len, &sign_index);
+        if (sign_index > 0x7FFFFFFFu) {
+            send_error(ERR_MALFORMED, "address index out of range");
+            return;
         }
 
         /* Refuse what cannot be explained (T50).
@@ -430,22 +479,11 @@ static void dispatch(const uint8_t *payload, size_t len)
          * signed cannot differ. */
         ui_request_sign(&tx, sign_index, from_addr.hex);
 
-        const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(120000);
-        SignOutcome outcome;
-        for (;;) {
-            outcome = ui_sign_outcome();
-            if (outcome != SIGN_PENDING) {
-                break;
-            }
-            if (xTaskGetTickCount() > deadline) {
-                ui_sign_clear();
-                send_error(ERR_USER_TIMEOUT, "no answer on the device");
-                return;
-            }
-            vTaskDelay(pdMS_TO_TICKS(50));
+        SignOutcome outcome = wait_for_user();
+        if (outcome == SIGN_PENDING) {
+            send_error(ERR_USER_TIMEOUT, "no answer on the device");
+            return;
         }
-        ui_sign_clear();
-
         if (outcome != SIGN_APPROVED) {
             send_error(ERR_USER_REJECTED, "rejected on device");
             return;
@@ -488,6 +526,239 @@ static void dispatch(const uint8_t *payload, size_t len)
          * exactly that and leave nothing to infer. */
         cbor_write_text(&w, "yParity");
         cbor_write_uint(&w, (sig.v >= 27) ? (uint32_t)(sig.v - 27) : (uint32_t)(sig.v & 1));
+
+    } else if (strcmp(method, "signMessage") == 0) {
+        /* EIP-191 personal_sign. Same rule as a transaction: the device builds
+         * the preimage itself, renders exactly that, and signs exactly what it
+         * rendered. The host supplies the message text and nothing else - never
+         * a digest, which is signHash and is off by default. */
+        if (session_state() != SESSION_ACTIVE) {
+            send_session_error(ERR_SESSION, "session required");
+            return;
+        }
+        if (!pin_is_unlocked()) {
+            send_error(ERR_NOT_UNLOCKED, "device is locked");
+            return;
+        }
+
+        /* Text only. Accepting a byte string as well would give one message two
+         * spellings, and the device would have to guess which of them the user
+         * was shown. */
+        if (!cbor_map_find(payload, len, "message", &item) || item.type != CBOR_TEXT) {
+            send_error(ERR_MALFORMED, "message required");
+            return;
+        }
+
+        uint8_t message[ETH_MAX_MESSAGE];
+        size_t  message_len = item.value;
+        if (message_len > sizeof(message)) {
+            send_error(ERR_MALFORMED, "message too long to display");
+            return;
+        }
+        memcpy(message, item.data, message_len);
+
+        /* A message the screen cannot render honestly is refused rather than
+         * mangled.
+         *
+         * Control bytes and anything above ASCII have no glyph on a 128x64
+         * OLED, so showing them means showing a different string than the one
+         * being hashed - which is blind signing wearing a costume (PROTOCOL.md
+         * 6bis). The alternative on offer, a hash next to "undisplayable
+         * content", asks for a confirmation that carries no information. Same
+         * error code as undecodable calldata, for the same reason: the device
+         * cannot say what this does. */
+        if (!eth_message_is_displayable(message, message_len)) {
+            send_error(ERR_UNDECODABLE,
+                       "this device cannot display that message");
+            return;
+        }
+
+        uint32_t msg_index = 0;
+        request_index(payload, len, &msg_index);
+        if (msg_index > 0x7FFFFFFFu) {
+            send_error(ERR_MALFORMED, "address index out of range");
+            return;
+        }
+
+        HDPath msg_path = HDPATH_ETH_DEFAULT;
+        msg_path.address_index = msg_index;
+        EthAddress msg_from;
+        if (wallet_get_address_at_path(&msg_path, &msg_from) != WALLET_OK) {
+            send_error(ERR_NO_WALLET, "derivation failed");
+            return;
+        }
+
+        ui_request_sign_message((const char *)message, message_len,
+                                msg_index, msg_from.hex);
+
+        SignOutcome msg_outcome = wait_for_user();
+        if (msg_outcome == SIGN_PENDING) {
+            send_error(ERR_USER_TIMEOUT, "no answer on the device");
+            return;
+        }
+        if (msg_outcome != SIGN_APPROVED) {
+            send_error(ERR_USER_REJECTED, "rejected on device");
+            return;
+        }
+
+        uint8_t msg_digest[32];
+        if (!eth_message_hash(message, message_len, msg_digest)) {
+            send_error(ERR_MALFORMED, "could not hash the message");
+            return;
+        }
+
+        EthSignature msg_sig;
+        if (wallet_sign_hash_at_path(&msg_path, msg_digest, &msg_sig) != WALLET_OK) {
+            send_error(ERR_NO_WALLET, "signing failed");
+            return;
+        }
+
+        /* Same shape as signTransaction. One reply format for one kind of
+         * answer; a client that parses one parses the other. */
+        cbor_write_map(&w, 1);
+        cbor_write_text(&w, "result");
+        cbor_write_map(&w, 4);
+        cbor_write_text(&w, "index");
+        cbor_write_uint(&w, msg_index);
+        cbor_write_text(&w, "r");
+        cbor_write_bytes(&w, msg_sig.r, sizeof(msg_sig.r));
+        cbor_write_text(&w, "s");
+        cbor_write_bytes(&w, msg_sig.s, sizeof(msg_sig.s));
+        cbor_write_text(&w, "yParity");
+        cbor_write_uint(&w, (msg_sig.v >= 27) ? (uint32_t)(msg_sig.v - 27)
+                                              : (uint32_t)(msg_sig.v & 1));
+
+    } else if (strcmp(method, "selectWallet") == 0) {
+        /* Which stored seed is active. No confirmation: it reveals nothing and
+         * moves nothing, and every operation that does either names its own
+         * address on screen afterwards. */
+        if (session_state() != SESSION_ACTIVE) {
+            send_session_error(ERR_SESSION, "session required");
+            return;
+        }
+        if (!pin_is_unlocked()) {
+            send_error(ERR_NOT_UNLOCKED, "device is locked");
+            return;
+        }
+
+        if (!cbor_map_find(payload, len, "index", &item) || item.type != CBOR_UINT) {
+            send_error(ERR_MALFORMED, "index required");
+            return;
+        }
+        /* 1-based, and bounded before the cast: wallet_select_wallet takes a
+         * uint8_t, so 257 would arrive as 1 and quietly select a wallet the
+         * host did not ask for. */
+        if (item.value < 1 || item.value > 0xFF ||
+            wallet_select_wallet((uint8_t)item.value) != WALLET_OK) {
+            send_error(ERR_NO_WALLET, "no such wallet");
+            return;
+        }
+
+        /* Switching seeds drops the passphrase (PROTOCOL.md 5). A passphrase
+         * belongs to the seed it was entered against; carrying it across would
+         * silently land the user in a third wallet nobody named. */
+        wallet_clear_passphrase();
+
+        cbor_write_map(&w, 1);
+        cbor_write_text(&w, "result");
+        cbor_write_map(&w, 1);
+        cbor_write_text(&w, "activeWallet");
+        cbor_write_uint(&w, item.value);
+
+    } else if (strcmp(method, "setPassphrase") == 0) {
+        /* The app as a secure keyboard (PROTOCOL.md 5).
+         *
+         * This is the weaker of the two entry paths and it is not close: a
+         * compromised host reads the passphrase as it is typed, before any
+         * encryption applies. What makes it survivable is that the device
+         * derives the resulting wallet and shows its address, and the user
+         * recognises it - or does not, and the passphrase is dropped. That is
+         * why the passphrase is never accepted without the confirmation below,
+         * and why a rejection clears it rather than leaving it applied. */
+        if (session_state() != SESSION_ACTIVE) {
+            send_session_error(ERR_SESSION, "session required");
+            return;
+        }
+        if (!pin_is_unlocked()) {
+            send_error(ERR_NOT_UNLOCKED, "device is locked");
+            return;
+        }
+
+        if (!cbor_map_find(payload, len, "passphrase", &item) ||
+            item.type != CBOR_TEXT) {
+            send_error(ERR_MALFORMED, "passphrase required");
+            return;
+        }
+
+        char passphrase[64];
+        size_t pass_len = item.value;
+        /* An empty passphrase is the base wallet, not a passphrase. Making it
+         * mean "clear" here would give one method two outcomes, one of which
+         * changes wallets on an empty field. */
+        if (pass_len == 0 || pass_len >= sizeof(passphrase)) {
+            send_error(ERR_MALFORMED, "passphrase length out of range");
+            return;
+        }
+        for (size_t i = 0; i < pass_len; i++) {
+            /* Printable ASCII, matching what the device's own keyboard can
+             * produce. A passphrase enterable from the app but not from the
+             * device is a wallet the user cannot reach without the app. */
+            if (item.data[i] < 0x20 || item.data[i] > 0x7E) {
+                memzero(passphrase, sizeof(passphrase));
+                send_error(ERR_MALFORMED, "passphrase must be printable ASCII");
+                return;
+            }
+        }
+        memcpy(passphrase, item.data, pass_len);
+        passphrase[pass_len] = '\0';
+
+        WalletError perr = wallet_set_passphrase(passphrase, pass_len);
+        /* Gone from this frame the moment the wallet has it. It lives in RAM
+         * for the session inside the wallet layer and nowhere else, and it is
+         * never written to flash or logged. */
+        memzero(passphrase, sizeof(passphrase));
+        if (perr != WALLET_OK) {
+            wallet_clear_passphrase();
+            send_error(ERR_NO_WALLET, "could not apply the passphrase");
+            return;
+        }
+
+        /* The fingerprint the user compares. Deriving it here, on the task that
+         * applied the passphrase, is the same rule as T47: the screen must name
+         * what the device actually did. */
+        HDPath pass_path = HDPATH_ETH_DEFAULT;
+        EthAddress pass_addr;
+        if (wallet_get_address_at_path(&pass_path, &pass_addr) != WALLET_OK) {
+            wallet_clear_passphrase();
+            send_error(ERR_NO_WALLET, "derivation failed");
+            return;
+        }
+
+        ui_request_passphrase_confirm(pass_addr.hex);
+
+        SignOutcome pass_outcome = wait_for_user();
+        if (pass_outcome != SIGN_APPROVED) {
+            /* Recoverable by construction: the device goes back to the wallet
+             * it was in, and the host can try again. Leaving an unconfirmed
+             * passphrase applied is how a user ends up signing from a wallet
+             * they never agreed to. */
+            wallet_clear_passphrase();
+            send_error(pass_outcome == SIGN_PENDING ? ERR_USER_TIMEOUT
+                                                    : ERR_USER_REJECTED,
+                       pass_outcome == SIGN_PENDING ? "no answer on the device"
+                                                    : "rejected on device");
+            return;
+        }
+
+        /* The address, never the passphrase or anything derived from it beyond
+         * what a public address already reveals. */
+        cbor_write_map(&w, 1);
+        cbor_write_text(&w, "result");
+        cbor_write_map(&w, 2);
+        cbor_write_text(&w, "address");
+        cbor_write_text(&w, pass_addr.hex);
+        cbor_write_text(&w, "passphrase");
+        cbor_write_uint(&w, 1);
 
     } else {
         send_error(ERR_MALFORMED, "unknown or not yet implemented");

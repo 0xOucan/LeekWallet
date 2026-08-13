@@ -34,6 +34,7 @@ typedef enum {
     SCREEN_PASSPHRASE,
     SCREEN_PASSPHRASE_CONFIRM,
     SCREEN_SIGN_CONFIRM,
+    SCREEN_HOST_PASSPHRASE_CONFIRM,
     SCREEN_COUNT
 } screen_id_t;
 
@@ -150,6 +151,31 @@ void ui_request_lock(void);
  * Returns immediately. The protocol task polls ui_sign_outcome().
  */
 void ui_request_sign(const EthTx *tx, uint32_t address_index, const char *from);
+
+/**
+ * Show a message and ask the user to approve signing it (EIP-191).
+ *
+ * Same machinery as ui_request_sign(): one pending request at a time, one
+ * outcome, polled by the protocol task. The message is rendered in full — the
+ * caller has already refused anything that could not be (eth_message_is_
+ * displayable), because a message shown mangled is a message signed blind.
+ *
+ * `from` is the checksummed source address, derived by the caller at the same
+ * path the signature will be taken at (T47).
+ */
+void ui_request_sign_message(const char *message, size_t length,
+                             uint32_t address_index, const char *from);
+
+/**
+ * Show the wallet a host-supplied passphrase produced, and ask the user to
+ * confirm it is theirs (PROTOCOL.md 5).
+ *
+ * A mistyped or substituted passphrase does not error — it derives a different,
+ * perfectly valid wallet — so recognising this address is the only thing that
+ * catches it. Rejection is the recoverable path: the caller clears the
+ * passphrase.
+ */
+void ui_request_passphrase_confirm(const char *address);
 
 typedef enum {
     SIGN_PENDING,
