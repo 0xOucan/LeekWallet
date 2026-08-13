@@ -559,11 +559,16 @@ async function sign(): Promise<void> {
     /* Reassemble here rather than on the device: the signature covers the
      * digest the device computed from its own parse, so the serialised form
      * either matches or the network rejects it. */
-    const raw = serializeTransaction(tx, {
-      r: hex(r),
-      s: hex(sv),
-      yParity: Number(reply["v"]) & 1,
-    });
+    /* The device sends yParity directly. Deriving it from a legacy v by
+     * masking the low bit inverts the value, which produces a signature that
+     * recovers to an address with no funds - a failure that reads as "you
+     * are broke" rather than "the signature is wrong". */
+    const yParity = reply["yParity"];
+    if (yParity !== 0 && yParity !== 1) {
+      throw new Error(`device returned yParity ${String(yParity)}, expected 0 or 1`);
+    }
+
+    const raw = serializeTransaction(tx, { r: hex(r), s: hex(sv), yParity });
 
     log("broadcasting…");
     const hash = await rpc.sendRawTransaction({ serializedTransaction: raw });

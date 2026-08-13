@@ -451,8 +451,16 @@ static void dispatch(const uint8_t *payload, size_t len)
         cbor_write_bytes(&w, sig.r, sizeof(sig.r));
         cbor_write_text(&w, "s");
         cbor_write_bytes(&w, sig.s, sizeof(sig.s));
-        cbor_write_text(&w, "v");
-        cbor_write_uint(&w, sig.v);
+        /* Emit yParity, 0 or 1, not the legacy 27+parity form.
+         *
+         * wallet_sign_hash returns the legacy convention, and a client that
+         * masks the low bit of that inverts it: 27 becomes 1 and 28 becomes 0.
+         * The signature then recovers to an address nobody owns, and the
+         * network rejects it for having no funds - which looks like a funding
+         * problem rather than a signing one. EIP-1559 wants yParity, so send
+         * exactly that and leave nothing to infer. */
+        cbor_write_text(&w, "yParity");
+        cbor_write_uint(&w, (sig.v >= 27) ? (uint32_t)(sig.v - 27) : (uint32_t)(sig.v & 1));
 
     } else {
         send_error(ERR_MALFORMED, "unknown or not yet implemented");
