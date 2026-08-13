@@ -10,7 +10,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "pnpm -r test",
+    "test": "pnpm -r test && node --experimental-strip-types --disable-warning=ExperimentalWarning test/wc-uri.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/wc-requests.test.ts",
     "dev": "vite --port 1420 --strictPort",
     "build": "vite build",
     "preview": "vite preview",
@@ -26,6 +26,7 @@
     "vite": "^8.2.1"
   },
   "dependencies": {
+    "@walletconnect/sign-client": "2.23.10",
     "viem": "^2.55.13"
   }
 }

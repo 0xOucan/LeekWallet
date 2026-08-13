@@ -286,3 +286,51 @@ main {
    * equally weighted choices, and one of these is "sign". */
   .row > button { flex: 1 1 100%; }
 }
+
+/* ---------------------------------------------------------- walletconnect */
+
+/* A pending request is a card with a border, not a modal. A modal would train
+ * "dismiss the thing in the way", and this is the screen a user is meant to
+ * read before walking to the device. */
+.wc-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin: var(--space-4) 0;
+  background: var(--bg);
+}
+.wc-card h3 { margin: 0 0 var(--space-2); font-size: var(--text-sm); }
+
+/* The message, verbatim and monospaced. Same characters the device will show,
+ * wrapped rather than truncated: a message shortened with an ellipsis is not
+ * the message you would be signing. */
+.wc-message {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-2);
+  margin: var(--space-2) 0;
+}
+
+.wc-sessions { display: grid; gap: var(--space-2); }
+.wc-session {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-1) var(--space-3);
+  align-items: center;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+/* The dapp's own name and URL span the first column; the button sits beside. */
+.wc-session > strong, .wc-session > span { grid-column: 1; overflow-wrap: anywhere; }
+.wc-session > button { grid-column: 2; grid-row: 1 / span 3; }
+
+.wc-video { width: 100%; max-width: 320px; border-radius: var(--radius); margin: var(--space-3) 0; }
+
+/* An unset project ID is not an error the user caused, so it is not styled as
+ * one — but it does stop the panel working, so it is not muted away either. */
+#wcprojecthint[data-problem="yes"] { color: var(--text); }

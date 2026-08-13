@@ -20,15 +20,16 @@ import {
 import { BleTransport, scanBle, BLE_NOT_FOUND } from "./ble-transport.ts";
 import { createPublicClient, defineChain, http, parseEther, serializeTransaction,
          isAddress, type Chain, type Hex, type Address } from "viem";
-import {
-  CHAINS, TOKEN_HINT_NOTICE, formatUnits, getChain, tokenHint, type ChainInfo,
-} from "../packages/core/src/chains.ts";
+import { CHAINS, getChain, type ChainInfo } from "../packages/core/src/chains.ts";
 import {
   deriveSession, generateKeypair, Session,
 } from "../packages/core/src/session.ts";
 import {
-  ADVISORY_NOTICE, interpretTransaction, type TxInterpretation,
+  interpretTransaction, type TxInterpretation,
 } from "../packages/core/src/tx-interpret.ts";
+import { chunk, renderInterpretation } from "./interpretation-view.ts";
+import { initWalletConnect, type WalletBridge } from "./wc/ui.ts";
+import type { PlannedTx } from "./wc/requests.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -263,6 +264,8 @@ function invalidateDerived(reason: string): void {
   $("signpanel").hidden = true;
   $("sfrom").textContent = "—";
   log(`derived addresses cleared: ${reason}`);
+  // A locked device offers no accounts, so a proposal on screen has to say so.
+  walletConnect.accountsChanged();
 }
 
 let polling = false;
@@ -538,6 +541,7 @@ async function loadAddresses(): Promise<void> {
 
   $("sfrom").textContent = `m/44'/60'/0'/0/${selectedIndex}`;
   log(`derived ${addresses.length} addresses`);
+  walletConnect.accountsChanged();
 }
 
 /* ------------------------------------------------------------------ chains */
@@ -628,6 +632,9 @@ function initChainSelector(): void {
     localStorage.setItem(CHAIN_KEY, String(chainId));
     applyChain(picked);
     log(`chain: ${picked.name} (${picked.id})`);
+    // Sessions are told, or a connected dapp keeps building transactions for
+    // the chain this wallet has just left.
+    walletConnect.chainChanged(picked.id);
   });
   applyChain(activeChain());
 }
@@ -669,59 +676,16 @@ function renderPreview(fee?: { gas: bigint; maxFeePerGas: bigint }): void {
     ...(fee ? { gas: fee.gas, maxFeePerGas: fee.maxFeePerGas } : {}),
   });
 
-  $("psummary").textContent = view.summary;
-
-  const fields = $("pfields");
-  fields.textContent = "";
-  const row = (label: string, text: string): void => {
-    const dt = document.createElement("dt");
-    dt.textContent = label;
-    const dd = document.createElement("dd");
-    dd.textContent = text;
-    fields.append(dt, dd);
-  };
-  row("App reads it as", view.action);
-  if (view.recipient) row("To", chunk(view.recipient));
-  row("Value", `${view.valueEther} ${activeChain().nativeCurrency.symbol}`);
-  row("Chain", view.chainName ? `${view.chainId} (${view.chainName})` : String(view.chainId));
-  // Raw units, never scaled: the device cannot call decimals() and neither can
-  // this app claim to know them.
-  if (view.tokenAmountRaw !== undefined) {
-    row("Token amount", `${view.tokenAmountRaw} raw units (decimals unknown)`);
-  }
-  /* The contract address comes first and is never replaced by a name. A hint,
-   * if there is one, is an extra line that says out loud that nothing checked
-   * it — a host-supplied symbol relabelling a worthless contract is exactly
-   * the attack PROTOCOL.md 6d describes, and this app is that host. */
-  if (view.contract) {
-    row("Token contract", chunk(view.contract));
-    const hint = tokenHint(view.chainId, view.contract);
-    if (hint) {
-      row(
-        "Possibly (UNVERIFIED)",
-        view.tokenAmountRaw === undefined
-          ? `${hint.symbol}?`
-          : `${formatUnits(view.tokenAmountRaw, hint.decimals)} ${hint.symbol}? — ${TOKEN_HINT_NOTICE}`,
-      );
-    }
-  }
-  row(
-    "Max fee",
-    view.maxFeeEther === undefined
-      ? "not known until fees are fetched"
-      : `up to ${view.maxFeeEther} ETH (${view.maxFeeWei} wei)`,
+  renderInterpretation(
+    {
+      summary: $("psummary"),
+      fields: $("pfields"),
+      warnings: $("pwarnings"),
+      authority: $("pauthority"),
+    },
+    view,
+    activeChain().nativeCurrency.symbol,
   );
-
-  const list = $("pwarnings");
-  list.textContent = "";
-  for (const w of view.warnings) {
-    const li = document.createElement("li");
-    li.dataset["severity"] = w.severity;
-    li.textContent = w.message;
-    list.appendChild(li);
-  }
-
-  $("pauthority").textContent = ADVISORY_NOTICE;
   panel.hidden = false;
 }
 
@@ -800,15 +764,6 @@ async function sign(): Promise<void> {
 
     log("check every page on the device, then approve");
 
-    const wei = (v: bigint): Uint8Array => {
-      if (v === 0n) return new Uint8Array(0);
-      let hex = v.toString(16);
-      if (hex.length % 2) hex = "0" + hex;
-      return new Uint8Array((hex.match(/../g) ?? []).map((h) => parseInt(h, 16)));
-    };
-    const bytes = (hex: string): Uint8Array =>
-      new Uint8Array(((hex.slice(2).match(/../g)) ?? []).map((h) => parseInt(h, 16)));
-
     const SIGN_TIMEOUT_MS = 150000;   // the device gives the user 120 s
     const tx = {
       chainId: chain.id,
@@ -825,11 +780,11 @@ async function sign(): Promise<void> {
       index: selectedIndex,
       chainId: chain.id,
       nonce,
-      to: bytes(toValue),
-      value: wei(value),
-      gas: wei(21000n),
-      maxFeePerGas: wei(maxFeePerGas),
-      maxPriorityFeePerGas: wei(maxPriorityFeePerGas),
+      to: hexBytes(toValue),
+      value: weiBytes(value),
+      gas: weiBytes(21000n),
+      maxFeePerGas: weiBytes(maxFeePerGas),
+      maxPriorityFeePerGas: weiBytes(maxPriorityFeePerGas),
     }, SIGN_TIMEOUT_MS);
 
     const r = reply["r"];
@@ -837,9 +792,6 @@ async function sign(): Promise<void> {
     if (!(r instanceof Uint8Array) || !(sv instanceof Uint8Array)) {
       throw new Error("device returned no signature");
     }
-    const hex = (b: Uint8Array): Hex =>
-      ("0x" + [...b].map((x) => x.toString(16).padStart(2, "0")).join("")) as Hex;
-
     /* Reassemble here rather than on the device: the signature covers the
      * digest the device computed from its own parse, so the serialised form
      * either matches or the network rejects it. */
@@ -852,7 +804,7 @@ async function sign(): Promise<void> {
       throw new Error(`device returned yParity ${String(yParity)}, expected 0 or 1`);
     }
 
-    const raw = serializeTransaction(tx, { r: hex(r), s: hex(sv), yParity });
+    const raw = serializeTransaction(tx, { r: toHex(r), s: toHex(sv), yParity });
 
     log("broadcasting…");
     const hash = await rpc.sendRawTransaction({ serializedTransaction: raw });
@@ -875,6 +827,178 @@ async function sign(): Promise<void> {
   }
 }
 
+/* ----------------------------------------------------- walletconnect bridge
+ *
+ * The only route from a dapp to the hardware. Everything a dapp can cause is
+ * one of the three methods below, which is what makes the question "what can a
+ * connected dapp do?" answerable by reading one screen of code.
+ *
+ * Note what is *not* here: no path that hands the device a pre-built hash, no
+ * path that bypasses the device confirmation, and no path that lets a dapp pick
+ * an RPC endpoint. The endpoint always comes from the registry, so a dapp
+ * cannot use this app as a proxy to an arbitrary host.
+ */
+
+/** Minimal-length big-endian bytes, as the wire format wants. */
+const weiBytes = (v: bigint): Uint8Array => {
+  if (v === 0n) return new Uint8Array(0);
+  let hexDigits = v.toString(16);
+  if (hexDigits.length % 2) hexDigits = "0" + hexDigits;
+  return new Uint8Array((hexDigits.match(/../g) ?? []).map((h) => parseInt(h, 16)));
+};
+
+const hexBytes = (hex: string): Uint8Array =>
+  new Uint8Array((hex.replace(/^0x/, "").match(/../g) ?? []).map((h) => parseInt(h, 16)));
+
+const toHex = (b: Uint8Array): Hex =>
+  ("0x" + [...b].map((x) => x.toString(16).padStart(2, "0")).join("")) as Hex;
+
+/** Index of an address in the derived list, or -1. Case-insensitive. */
+function addressIndex(address: string): number {
+  const want = address.toLowerCase();
+  return addresses.findIndex((a) => a.toLowerCase() === want);
+}
+
+/**
+ * Reassemble the device's `{r, s, yParity}` into a 65-byte signature.
+ *
+ * The mock still answers `signMessage` with a flat `{signature}` (divergence 2
+ * in PROTOCOL.md 6e is closed for the firmware but not in the mock), so both
+ * shapes are accepted rather than letting the app work against one and break
+ * against the other.
+ */
+function signatureFrom(reply: Record<string, CborValue>): Hex {
+  const flat = reply["signature"];
+  if (flat instanceof Uint8Array && flat.length === 65) return toHex(flat);
+
+  const r = reply["r"];
+  const s = reply["s"];
+  const yParity = reply["yParity"];
+  if (!(r instanceof Uint8Array) || !(s instanceof Uint8Array)) {
+    throw new Error("device returned no signature");
+  }
+  if (yParity !== 0 && yParity !== 1) {
+    throw new Error(`device returned yParity ${String(yParity)}, expected 0 or 1`);
+  }
+  // v = 27 + yParity, the encoding every EIP-191 verifier expects.
+  return (toHex(r) + toHex(s).slice(2) + (27 + yParity).toString(16)) as Hex;
+}
+
+/**
+ * Sign a transaction a dapp asked for, and broadcast it if it asked for that.
+ *
+ * Nonce and fees are filled from the registry's RPC when the dapp left them
+ * out. A dapp-supplied nonce or fee is honoured — getting either wrong costs a
+ * stuck transaction, not funds, and the device still shows what it signs.
+ */
+async function signPlannedTransaction(tx: PlannedTx, broadcast: boolean): Promise<string> {
+  if (!client) throw new Error("no device connected");
+  const index = addressIndex(tx.from);
+  if (index < 0) throw new Error("that address is not one this device has derived");
+
+  const info = getChain(tx.chainId);
+  if (!info) throw new Error(`this wallet has no RPC for chain ${tx.chainId}`);
+  const endpoint = info.rpcUrls[0] as string;
+  const rpc = createPublicClient({
+    chain: viemChain(info, endpoint),
+    transport: http(endpoint),
+  });
+
+  const from = addresses[index] as Address;
+  const nonce = tx.nonce ?? (await rpc.getTransactionCount({ address: from }));
+
+  let maxFeePerGas = tx.maxFeePerGas;
+  let maxPriorityFeePerGas = tx.maxPriorityFeePerGas;
+  if (maxFeePerGas === undefined || maxPriorityFeePerGas === undefined) {
+    const fees = await rpc.estimateFeesPerGas();
+    maxFeePerGas = maxFeePerGas ?? fees.maxFeePerGas ?? 30000000000n;
+    maxPriorityFeePerGas = maxPriorityFeePerGas ?? fees.maxPriorityFeePerGas ?? 1000000000n;
+  }
+
+  /* Estimating is a query to the RPC, which learns what is about to be signed.
+   * That is the same disclosure the nonce lookup already makes, and the
+   * alternative — guessing a gas limit for arbitrary calldata — produces
+   * transactions that revert after spending the gas. */
+  const gas = tx.gas ?? (await rpc.estimateGas({
+    account: from,
+    to: tx.to as Address,
+    value: tx.value,
+    data: tx.data as Hex,
+  }));
+
+  log("check every page on the device, then approve");
+  const reply = await client.call("signTransaction", {
+    index,
+    chainId: tx.chainId,
+    nonce,
+    to: hexBytes(tx.to),
+    value: weiBytes(tx.value),
+    data: hexBytes(tx.data),
+    gas: weiBytes(gas),
+    maxFeePerGas: weiBytes(maxFeePerGas),
+    maxPriorityFeePerGas: weiBytes(maxPriorityFeePerGas),
+  }, 150000);
+
+  const r = reply["r"];
+  const s = reply["s"];
+  const yParity = reply["yParity"];
+  if (!(r instanceof Uint8Array) || !(s instanceof Uint8Array)) {
+    throw new Error("device returned no signature");
+  }
+  if (yParity !== 0 && yParity !== 1) {
+    throw new Error(`device returned yParity ${String(yParity)}, expected 0 or 1`);
+  }
+
+  const raw = serializeTransaction(
+    {
+      chainId: tx.chainId,
+      nonce,
+      to: tx.to as Address,
+      value: tx.value,
+      data: tx.data as Hex,
+      gas,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+      type: "eip1559" as const,
+    },
+    { r: toHex(r), s: toHex(s), yParity },
+  );
+
+  if (!broadcast) return raw;
+  log(`broadcasting via ${new URL(endpoint).host}…`);
+  return await rpc.sendRawTransaction({ serializedTransaction: raw });
+}
+
+/** EIP-191 message signing. The device renders the message and signs its own digest. */
+async function signPlannedMessage(address: string, message: string): Promise<string> {
+  if (!client) throw new Error("no device connected");
+  const index = addressIndex(address);
+  if (index < 0) throw new Error("that address is not one this device has derived");
+  const reply = await client.call("signMessage", { index, message }, 150000);
+  return signatureFrom(reply);
+}
+
+const walletBridge: WalletBridge = {
+  // Locked means no accounts, which is what stops a dapp asking for a
+  // signature the device could not produce anyway.
+  accounts: () => [...addresses],
+  chainId: () => chainId,
+  setChainId: (id: number) => {
+    const picked = getChain(id);
+    if (!picked) return;
+    chainId = picked.id;
+    localStorage.setItem(CHAIN_KEY, String(chainId));
+    ($("chain") as HTMLSelectElement).value = String(chainId);
+    applyChain(picked);
+    log(`chain: ${picked.name} (${picked.id})`);
+  },
+  signTransaction: signPlannedTransaction,
+  signMessage: signPlannedMessage,
+  log,
+};
+
+const walletConnect = initWalletConnect(walletBridge);
+
 async function disconnect(): Promise<void> {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   lastStatus = UNKNOWN_STATUS;
@@ -895,12 +1019,6 @@ async function disconnect(): Promise<void> {
   ($("disconnect") as HTMLButtonElement).disabled = true;
   log("disconnected; session secrets cleared");
 }
-
-/** Group into fours so a human can actually compare two addresses. */
-const chunk = (addr: string): string => {
-  const body = addr.replace(/^0x/, "").match(/.{1,4}/g) ?? [];
-  return `0x ${body.join(" ")}`;
-};
 
 /* ------------------------------------------------------------------- wiring */
 
