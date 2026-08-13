@@ -125,19 +125,35 @@ export class Session {
     this.active = true;
   }
 
+  /**
+   * Seal a request. Does **not** advance the send counter.
+   *
+   * The device only advances its receive counter when a frame decrypts, so a
+   * frame it rejects — because the session is not confirmed yet, or the link
+   * dropped it — leaves its counter where it was. Advancing here regardless
+   * desynchronises the two permanently after the first rejection, and every
+   * later frame fails to decrypt with no indication why. Hardware testing
+   * found exactly that: a retry loop waiting for the user to press ALLOW put
+   * the counters one apart before the button was ever touched.
+   */
   encrypt(plaintext: Uint8Array): Uint8Array {
     if (!this.active) throw new Error("session not confirmed");
-    const out = chacha20poly1305(this.sendKey, nonceFor(this.txCounter)).encrypt(plaintext);
-    this.txCounter++;
-    return out;
+    return chacha20poly1305(this.sendKey, nonceFor(this.txCounter)).encrypt(plaintext);
   }
 
+  /**
+   * Open a reply, and only then advance both counters.
+   *
+   * A reply proves the device accepted the request, so both ends moved
+   * together. One completed exchange, one step each.
+   */
   decrypt(ciphertext: Uint8Array): Uint8Array {
     if (!this.active) throw new Error("session not confirmed");
     // A failed tag throws. That is correct: a forged frame means the channel is
     // no longer trustworthy, and skipping it and carrying on would be wrong.
     const out = chacha20poly1305(this.recvKey, nonceFor(this.rxCounter)).decrypt(ciphertext);
     this.rxCounter++;
+    this.txCounter++;
     return out;
   }
 }

@@ -85,9 +85,25 @@ group("encryption round-trips, and only after confirmation");
   const opened = device.decrypt(sealed);
   check(new TextDecoder().decode(opened) === "getStatus", "round trip failed");
 
-  // Counters advance, so the same plaintext must not produce the same bytes.
+  /* A full exchange advances both ends: request out, reply back. Only after
+   * the host has opened a reply does its next request use a fresh nonce. */
+  const reply = device.encrypt(new TextEncoder().encode("ok"));
+  check(new TextDecoder().decode(host.decrypt(reply)) === "ok", "reply did not decrypt");
+
   const again = host.encrypt(message);
-  check(hex(sealed) !== hex(again), "a nonce was reused across messages");
+  check(hex(sealed) !== hex(again), "a nonce was reused after a completed exchange");
+
+  const retryHost = new Session(deriveSession(a.privateKey, b.publicKey), "host");
+  retryHost.confirm();
+  const first = retryHost.encrypt(message);
+  const retried = retryHost.encrypt(message);
+  check(hex(first) === hex(retried),
+    "a retry advanced the counter; the peer never saw the first frame");
+
+  const freshDevice = new Session(deriveSession(b.privateKey, a.publicKey), "device");
+  freshDevice.confirm();
+  check(new TextDecoder().decode(freshDevice.decrypt(retried)) === "getStatus",
+    "a retried frame did not decrypt at the peer");
 }
 
 group("a tampered frame is rejected");
