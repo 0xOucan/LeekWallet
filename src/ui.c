@@ -1129,18 +1129,16 @@ static void screen_wallet_info_enter(void)
         }
     }
 
-    /* m/44'/60'/0'/0/<address_index> */
+    /* m/44'/60'/0'/0/<address_index>, under the derivation lock.
+     *
+     * This runs on entering the wallet screen, which is exactly where the UI
+     * lands after approving a transaction - so an unlocked select here
+     * re-derives to the *browsing* index while the protocol task is signing,
+     * and the device signs with a key the confirmation screen never named. */
     HDPath eth_path = HDPATH_ETH_DEFAULT;
     eth_path.address_index = address_index;
-    WalletError err = wallet_select_path(&eth_path);
-    if (err != WALLET_OK) {
-        ESP_LOGE(TAG, "Failed to select path: %d", err);
-        strcpy(eth_address.hex, "Path failed");
-        return;
-    }
 
-    /* Get ETH address, under the derivation lock */
-    err = wallet_get_address_at_path(&eth_path, &eth_address);
+    WalletError err = wallet_get_address_at_path(&eth_path, &eth_address);
     if (err != WALLET_OK) {
         ESP_LOGE(TAG, "Failed to get address: %d", err);
         strcpy(eth_address.hex, "Addr failed");
@@ -2032,8 +2030,8 @@ static void screen_qr_code_enter(void)
                     wallet_select_wallet(1);
                 }
                 HDPath eth_path = HDPATH_ETH_DEFAULT;
-                wallet_select_path(&eth_path);
-                wallet_get_eth_address(&eth_address);
+                eth_path.address_index = address_index;
+                wallet_get_address_at_path(&eth_path, &eth_address);
             }
         }
     }
