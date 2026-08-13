@@ -12,7 +12,7 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
@@ -33,6 +33,16 @@ $(BUILD)/test_session: test_session.c host_stubs.c ../src/session.c \
 	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -o $@ $^
 
 $(BUILD)/test_text_entry: test_text_entry.c ../src/text-entry.c $(CRYPTO)/memzero.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# AES_VAR selects the variable-key-length entry point that gcm_init_and_key
+# calls; without it aes_encrypt_key is compiled out and the link fails.
+$(BUILD)/test_vault_crypt: CFLAGS += -DAES_VAR
+$(BUILD)/test_vault_crypt: test_vault_crypt.c host_stubs.c ../src/vault-crypt.c \
+                           $(CRYPTO)/aes/aesgcm.c $(CRYPTO)/aes/aescrypt.c \
+                           $(CRYPTO)/aes/aeskey.c $(CRYPTO)/aes/aestab.c \
+                           $(CRYPTO)/aes/gf128mul.c $(CRYPTO)/memzero.c \
+                           $(CRYPTO)/rand.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD)/test_cbor: test_cbor.c ../src/cbor.c | $(BUILD)
