@@ -335,7 +335,20 @@ function planTransaction(args: unknown[], ctx: WalletContext, broadcast: boolean
    * own decodable set, so this is predicting a refusal, not making one. */
   if (interpretation.deviceWillRefuse) {
     const why = interpretation.warnings.find((w) => w.code === "device-will-refuse");
-    return { kind: "error", error: deviceCannotDisplay(why?.message ?? "it is outside the decodable set.") };
+
+    /* Name the selector that was refused.
+     *
+     * "Outside the decodable set" tells the user nothing they can act on and
+     * tells us nothing about what to support next. The first four bytes are
+     * the function being called, so a refusal that quotes them turns "this
+     * dapp does not work" into a specific, answerable question. It costs one
+     * line and it is how the set grows from evidence rather than guesswork. */
+    const selector =
+      typeof data === "string" && data.length >= 10 ? data.slice(0, 10) : undefined;
+    const detail = selector
+      ? `${why?.message ?? "it is outside the decodable set."} (function selector ${selector})`
+      : (why?.message ?? "it is outside the decodable set.");
+    return { kind: "error", error: deviceCannotDisplay(detail) };
   }
   if (!isHexAddress(to)) {
     // Unreachable via deviceWillRefuse above, but the type needs it and a
