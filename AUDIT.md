@@ -264,7 +264,18 @@ are not atomic: a power cut between them leaves ciphertext with no PIN, or a PIN
 wallet. Neither the settings wipe nor the failed-PIN wipe asks for confirmation, so a
 mis-navigation in a 3-item menu destroys the wallet outright.
 
-**Confirmation is fixed; atomicity is not.**
+**Confirmation is fixed. Atomicity is now fixed too (T5).**
+
+`device_wipe()` in `src/device-wipe.c` writes an intent marker to a third
+namespace (`leek_wipe`) before touching anything, erases the wallet namespace
+first and the PIN second, and clears the marker only once both have committed.
+`device_wipe_resume()` runs at boot, before the UI can unlock, and finishes any
+wipe the power cut interrupted. All three UI call sites now go through it.
+
+Covered by `sim/test_device_wipe.c`: seven groups, each cutting power at a
+different point. Reversing the erase order fails three of them and removing the
+marker fails eight, so the suite is holding the property up rather than
+describing it.
 
 A live hardware test destroyed a wallet by selecting "Wipe Device" while scrolling a three-item
 menu. `SCREEN_WIPE_CONFIRM` had been declared in the enum but never implemented, so the menu

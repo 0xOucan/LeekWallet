@@ -37,6 +37,7 @@
 #include "oled.h"
 #include "button.h"
 #include "ui.h"
+#include "device-wipe.h"
 #include "protocol.h"
 
 static const char *TAG = "leekwallet";
@@ -60,6 +61,15 @@ void app_main(void)
 
     /* Initialize wallet subsystem */
     wallet_init();
+
+    /* Finish any wipe that power interrupted, before anything can unlock
+     * (T5). A device that comes back half-wiped and usable is a device whose
+     * owner thinks their seed is gone when it is not. */
+    if (device_wipe_resume()) {
+        ESP_LOGW(TAG, "Completed a wipe that was interrupted by a power cut");
+        wallet_init();
+    }
+
     WalletStatus status = wallet_get_status();
     ESP_LOGI(TAG, "Wallet status: initialized=%d, password_set=%d, unlocked=%d",
              status.initialized, status.password_set, status.unlocked);

@@ -23,6 +23,7 @@
 #include "text-entry.h"
 #include "eth-tx.h"
 #include "eth-decode.h"
+#include "device-wipe.h"
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "nvs.h"
@@ -748,8 +749,7 @@ static void screen_boot_on_button(button_id_t btn)
          * power was cut between the two. Finish it now, before offering any
          * further attempts, otherwise a reboot resets the counter. */
         ESP_LOGW(TAG, "Resuming interrupted wipe");
-        pin_wipe();
-        wallet_wipe();
+        device_wipe();
         wallet_init();
         ui_set_screen(SCREEN_PIN_SETUP);
     } else {
@@ -981,8 +981,7 @@ static void screen_pin_unlock_on_button(button_id_t btn)
 
                     if (pin_should_wipe()) {
                         /* Wipe device and reset */
-                        pin_wipe();
-                        wallet_wipe();
+                        device_wipe();
                         ui_set_screen(SCREEN_PIN_SETUP);
                     }
                 }
@@ -2243,8 +2242,7 @@ static void screen_wipe_confirm_on_button(button_id_t btn)
     if (btn == BUTTON_ACCEPT) {
         if (++wipe_confirm_count >= required) {
             ESP_LOGW(TAG, "Wipe confirmed by user");
-            pin_wipe();
-            wallet_wipe();
+            device_wipe();
             wallet_init();
             memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
             mnemonic_word_count = 0;
