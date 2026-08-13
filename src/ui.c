@@ -345,8 +345,17 @@ static void menu_rebuild(void)
     if (status.wallet_count > 1) {
         menu_actions[menu_item_count++] = MENU_SELECT_WALLET;
     }
-    menu_actions[menu_item_count++] = MENU_NEW_WALLET;
-    menu_actions[menu_item_count++] = MENU_IMPORT_WALLET;
+
+    /* Creating or importing a seed is only a top-level action on a device that
+     * has none. Once one exists, those entries sit one careless press from
+     * generating a wallet the user then mistakes for theirs, and no established
+     * hardware wallet offers them from the home screen either - you reset the
+     * device instead. They remain available under Settings. */
+    if (status.wallet_count == 0) {
+        menu_actions[menu_item_count++] = MENU_NEW_WALLET;
+        menu_actions[menu_item_count++] = MENU_IMPORT_WALLET;
+    }
+
     menu_actions[menu_item_count++] = MENU_SETTINGS;
 
     if (menu_selection >= menu_item_count) {
@@ -486,14 +495,31 @@ static bool lock_check_timeout(void)
     return true;
 }
 
-/* Settings state */
-#define SETTINGS_ITEMS 7
+/* Settings, ordered by how often they are wanted and how much they cost when
+ * chosen by accident: wallet actions first, diagnostics next, wipe last. */
+typedef enum {
+    SET_SHOW_SEED,
+    SET_NEW_WALLET,
+    SET_IMPORT_WALLET,
+    SET_AUTOLOCK,
+    SET_CHANGE_PIN,
+    SET_WIFI,
+    SET_BLE,
+    SET_USB,
+    SET_WIPE,
+    SET_BACK,
+    SETTINGS_ITEMS
+} SettingsAction;
+
 static const char *settings_items[SETTINGS_ITEMS] = {
+    "Show Seed",
+    "New Wallet",
+    "Import Wallet",
+    "Auto-lock",
+    "Change PIN",
     "WiFi Test",
     "BLE Test",
     "USB HID Test",
-    "Auto-lock",
-    "Change PIN",
     "Wipe Device",
     "Back"
 };
@@ -1770,19 +1796,19 @@ static void screen_settings_render(void)
         char line[22];
 
         /* Show status for toggles */
-        if (item_idx == 0) {  /* WiFi */
+        if (item_idx == SET_WIFI) {
             if (item_idx == settings_selection) {
                 snprintf(line, sizeof(line), "> WiFi %s", wifi_enabled ? "[ON]" : "[OFF]");
             } else {
                 snprintf(line, sizeof(line), "  WiFi %s", wifi_enabled ? "[ON]" : "[OFF]");
             }
-        } else if (item_idx == 1) {  /* BLE */
+        } else if (item_idx == SET_BLE) {
             if (item_idx == settings_selection) {
                 snprintf(line, sizeof(line), "> BLE %s", ble_enabled ? "[ON]" : "[OFF]");
             } else {
                 snprintf(line, sizeof(line), "  BLE %s", ble_enabled ? "[ON]" : "[OFF]");
             }
-        } else if (item_idx == 3) {  /* Auto-lock */
+        } else if (item_idx == SET_AUTOLOCK) {
             snprintf(line, sizeof(line), "%s Lock %s",
                      item_idx == settings_selection ? ">" : " ",
                      lock_timeout_label(lock_timeout_choice));
@@ -1817,30 +1843,39 @@ static void screen_settings_on_button(button_id_t btn)
             break;
 
         case BUTTON_ACCEPT:
-            switch (settings_selection) {
-                case 0: /* WiFi Test */
-                    wifi_test_toggle();
+            switch ((SettingsAction)settings_selection) {
+                case SET_SHOW_SEED:
+                    /* Re-entering the PIN is the point: this reveals the seed,
+                     * so it must not ride on a session unlocked minutes ago. */
+                    pending_mnemonic_display = true;
+                    pin_lock();
+                    ui_set_screen(SCREEN_PIN_UNLOCK);
                     break;
-                case 1: /* BLE Test */
-                    ble_test_toggle();
+                case SET_NEW_WALLET:
+                    ui_set_screen(SCREEN_ENTROPY);
                     break;
-                case 2: /* USB HID Test */
-                    usb_hid_test();
+                case SET_IMPORT_WALLET:
+                    ui_set_screen(SCREEN_MNEMONIC_ENTRY);
                     break;
-                case 3: /* Auto-lock - cycle the timeout */
+                case SET_AUTOLOCK:
                     lock_timeout_choice = (lock_timeout_choice + 1) % (int)LOCK_TIMEOUT_COUNT;
                     lock_timeout_save();
                     ESP_LOGI(TAG, "Auto-lock set to %s",
                              lock_timeout_label(lock_timeout_choice));
                     break;
-                case 4: /* Change PIN */
+                case SET_CHANGE_PIN:
                     ESP_LOGI(TAG, "Change PIN not yet implemented");
                     break;
-                case 5: /* Wipe Device - confirm first */
+                case SET_WIFI: wifi_test_toggle(); break;
+                case SET_BLE:  ble_test_toggle();  break;
+                case SET_USB:  usb_hid_test();     break;
+                case SET_WIPE:
                     ui_set_screen(SCREEN_WIPE_CONFIRM);
                     break;
-                case 6: /* Back */
+                case SET_BACK:
                     ui_set_screen(SCREEN_MAIN_MENU);
+                    break;
+                default:
                     break;
             }
             break;
@@ -1904,10 +1939,14 @@ static void screen_qr_code_on_button(button_id_t btn)
 
         case BUTTON_ACCEPT:
         case BUTTON_DOWN:
-            /* Show seed phrase (requires PIN) */
-            pending_mnemonic_display = true;
-            pin_lock();  /* Force re-entry of PIN */
-            ui_set_screen(SCREEN_PIN_UNLOCK);
+            /* Also just goes back.
+             *
+             * This used to mean "reveal the seed phrase", which locked the
+             * device and demanded the PIN. The QR fills the display, so there
+             * was no footer to say so, and pressing a button to leave a screen
+             * instead locked you out of it. Revealing the seed now lives in
+             * Settings, where it is labelled. */
+            ui_set_screen(SCREEN_WALLET_INFO);
             break;
 
         default:
@@ -2112,6 +2151,7 @@ static void screen_wipe_confirm_on_button(button_id_t btn)
 
 #define VERIFY_CHALLENGES 3
 
+static bool verify_done = false;
 static int  verify_indices[VERIFY_CHALLENGES];
 static int  verify_current = 0;
 static int  verify_failures = 0;
@@ -2148,12 +2188,21 @@ static void screen_mnemonic_verify_enter(void)
     verify_current = 0;
     verify_failures = 0;
     verify_last_wrong = false;
+    verify_done = false;
     mnemonic_entry_reset(&entry, 12);
 }
 
 static void screen_mnemonic_verify_render(void)
 {
     oled_clear();
+
+    if (verify_done) {
+        oled_draw_string_centered(1, "Backup verified");
+        oled_draw_string_centered(3, "Keep the phrase");
+        oled_draw_string_centered(4, "somewhere safe.");
+        oled_draw_string(7, 0, "            DONE");
+        return;
+    }
 
     char header[22];
     snprintf(header, sizeof(header), "Verify %d/%d",
@@ -2192,6 +2241,13 @@ static void screen_mnemonic_verify_render(void)
 
 static void screen_mnemonic_verify_on_button(button_id_t btn)
 {
+    if (verify_done) {
+        /* Any button continues; the device stays unlocked, since verifying a
+         * backup is not a reason to make the user authenticate again. */
+        ui_set_screen(SCREEN_WALLET_INFO);
+        return;
+    }
+
     verify_last_wrong = false;
 
     switch (btn) {
@@ -2251,7 +2307,12 @@ static void screen_mnemonic_verify_on_button(button_id_t btn)
                 memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
                 mnemonic_word_count = 0;
                 mnemonic_entry_clear(&entry);
-                ui_set_screen(SCREEN_WALLET_INFO);
+
+                /* Say it passed before moving on. Jumping straight to the
+                 * address screen leaves the user unsure whether the check
+                 * succeeded or the device simply gave up on them. */
+                verify_done = true;
+                ui_invalidate();
                 return;
             }
             break;

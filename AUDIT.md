@@ -284,7 +284,7 @@ with a resume-on-boot flag.
 | f | `src/ui.c:857` | `screen_wallet_create_on_button` calls `ui_render()` re-entrantly from inside a button handler to paint "Generating...", then the caller invalidates again. Works, but the screen contract now has two render paths. |
 | g | `src/ui.c:1272-1274` | Wi-Fi AP ships a hardcoded WPA2 password (`leek1234`) and the AP is reachable while the wallet is unlocked. It is a test feature; make it unavailable in release builds rather than a menu item. |
 | h | `colibri-wallet.c:129` | AES-CBC with zero padding and no MAC. Recovery relies on the plaintext being a NUL-terminated string, and nothing detects tampering with the ciphertext. Move to AES-GCM (already vendored under `components/trezor-crypto/aes/aesgcm.c`). |
-| i | `src/ui.c:1630-1636` | The QR screen maps ACCEPT/DOWN to "reveal seed phrase". An undocumented shortcut from an address display to the secret, one button press plus PIN. At minimum label it. |
+| i | `src/ui.c:1630-1636` | ~~The QR screen maps ACCEPT/DOWN to "reveal seed phrase"~~ **fixed**. Hardware testing hit it: the QR fills the display so there is no footer, and pressing a button to leave the screen instead locked the device and demanded the PIN. Revealing the seed now lives in Settings, labelled, and still re-asks for the PIN. |
 | j | `src/button.c:71` | `xQueueSend(..., 0)` drops button events when the 8-slot queue is full. Silent input loss during a slow render (PBKDF2 takes ~800 ms and blocks the UI task). Consider blocking briefly, or draining stale input after long operations. |
 
 ---
