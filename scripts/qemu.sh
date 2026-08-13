@@ -6,7 +6,7 @@
 # can be exercised without hardware. See docs/QEMU.md.
 set -euo pipefail
 
-BUILD_DIR=".pio/build/esp32s3"
+BUILD_DIR=".pio/build/esp32s3-qemu"
 IMAGE="${BUILD_DIR}/qemu-flash.bin"
 # Must match partitions.csv and sdkconfig. A smaller image makes the bootloader
 # reject the partition table outright: "offset 0x10000 size 0x400000 exceeds
@@ -33,7 +33,7 @@ MSG
 fi
 
 echo "==> Building"
-pio run -e esp32s3
+pio run -e esp32s3-qemu
 
 echo "==> Merging flash image"
 # ESP32-S3 boots from offset 0x0, unlike the original ESP32 at 0x1000.

@@ -8,7 +8,7 @@
 # deleted and the whole thing re-run.
 set -euo pipefail
 
-BUILD_DIR=".pio/build/esp32s3-secure"
+BUILD_DIR=".pio/build/esp32s3-secure-qemu"
 IMAGE="${BUILD_DIR}/qemu-flash.bin"
 EFUSE="${BUILD_DIR}/qemu-efuse.bin"
 FLASH_SIZE="16MB"
@@ -25,7 +25,7 @@ if [[ "${1:-}" == "--fresh" ]]; then
 fi
 
 echo "==> Building the secure target"
-pio run -e esp32s3-secure
+pio run -e esp32s3-secure-qemu
 
 echo "==> Merging flash image (signed binaries)"
 # Secure boot means the *signed* artefacts, not the plain ones. Merging the

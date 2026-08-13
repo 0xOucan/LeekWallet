@@ -1,10 +1,25 @@
 # LeekWallet Partition Table - SECURE TARGET (16MB Flash)
 #
-# Offsets differ from partitions.csv because a signed bootloader is 0xB000 and
-# pushes the partition table from 0x8000 out to 0xF000. Everything after it
-# shifts to match.
+# Offsets differ from partitions.csv for two compounding reasons, and both are
+# silent bricks if they are got wrong.
+#
+# 1. A signed bootloader is 0xB000 (0xA000 of code padded to a sector boundary,
+#    plus a 0x1000 signature sector) and so pushes the partition table from the
+#    default 0x8000 out to 0xF000.
+#
+# 2. Secure boot v2 signs the partition table too, so the table occupies
+#    0x2000, not the usual 0x1000: partitions-signed.bin is 8192 bytes. With
+#    the table at 0xF000 it spans 0xF000-0x11000, which means the old nvs
+#    offset of 0x10000 sat UNDER the table's own signature sector. Flashing
+#    that image writes the signature over the first 4 KB of the vault - and it
+#    boots anyway, because a freshly formatted NVS has nothing there to lose.
+#    It would have started eating wallet data on a provisioned board. Caught by
+#    scripts/preflight-secure.sh, not by any build error.
+#
+# nvs therefore starts at 0x12000, leaving a 4 KB margin below it. The app
+# stays at 0x20000 because app partitions must be 64 KB aligned.
 #
 # Name,   Type, SubType, Offset,   Size,    Flags
-nvs,      data, nvs,     0x10000,  0x6000,
-phy_init, data, phy,     0x16000,  0x1000,
+nvs,      data, nvs,     0x12000,  0x6000,
+phy_init, data, phy,     0x18000,  0x1000,
 factory,  app,  factory, 0x20000,  0x400000,

@@ -247,9 +247,33 @@ incident.
 | T9c | Iteration tuning to ~500 ms | T9b | measured on QEMU, confirmed on hardware |
 | T9d | Crash-safe v1→v2 migration | T9b | crash-injection test at every write point |
 | T14 | AES-GCM storage, tamper rejection | T9b | flipped ciphertext bit is rejected |
-| T11a | Flash encryption in QEMU, release mode | — | `read_flash` yields no plaintext |
-| T11b | Secure boot v2, signing key handling documented | T11a | unsigned image refuses to boot |
-| T11c | Hardware burn procedure + the irreversibility warnings | T11a, T11b | a second person can follow it |
+| T11a | Flash encryption in QEMU, development mode | — | **DONE (QEMU)** — `qemu-read-flash.sh` passes on the encrypted image; entropy ~7.95 bits/byte throughout |
+| T11b | Secure boot v2, signing key handling documented | T11a | **DONE (QEMU)** — key digest burns, RSA-PSS verifies, a flipped ciphertext bit gives `No bootable app partitions` forever |
+| T11c | Hardware burn procedure + the irreversibility warnings | T11a, T11b | **WRITTEN, UNEXECUTED** — [BURN-PROCEDURE.md](BURN-PROCEDURE.md) + `scripts/preflight-secure.sh`; done when a second person has followed it on a sacrificial board |
 
 T9a-T9d and T14 are pure firmware and fully host-testable. T11* needs QEMU and then a board you
 are willing to lose.
+
+### Where T11 actually stands
+
+The whole burn sequence — secure boot v2 key digest, AES-256-XTS key, encrypt-in-place, and a
+normal boot afterwards — **runs to completion under QEMU**, on the same eFuse model the hardware
+uses. Espressif's QEMU does emulate ESP32-S3 flash encryption; the earlier note in
+[QEMU.md](QEMU.md) that it might not was wrong, and the "stall" behind that guess was the
+emulator having no USB-Serial-JTAG device model, so the firmware was booting in silence.
+
+That closes the *scheme* risk, which was the expensive one: a wrong eFuse scheme would have been
+a whole batch of bricks rather than one. It does not close the *silicon* risk. QEMU accepts every
+eFuse write without modelling the coding scheme
+([espressif/qemu#143](https://github.com/espressif/qemu/issues/143)), does not emulate the RTC
+watchdog, and cannot say anything about brownout during encrypt-in-place or about whether read
+protection holds under a glitch.
+
+So [S1](../AUDIT.md) is **not yet closed**. It closes when a real board has been through
+`docs/BURN-PROCEDURE.md`, and `esptool read_flash` on that board returns ciphertext where the
+seed used to be. Until then the honest statement is: the design is proven, the burn is not.
+
+Note also that the threat table at the top of this document does not move. Emulated proof of
+flash encryption changes the first three rows from "planned" to "implemented and rehearsed"; the
+fourth row — a funded lab with the physical device — still reads *probably still wins*, and
+nothing in this work touched it.
