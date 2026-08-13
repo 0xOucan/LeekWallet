@@ -339,6 +339,9 @@ sends your change to an attacker. Solana is the natural second coin.
 | T53 | Solana support | T52 | signs a testnet transfer |
 | T54 | Bitcoin support, including change-output verification | T52 | signs a testnet PSBT; a foreign change address is refused |
 | T55 | Monero — research spike first, scope before committing | T54 | a written assessment, not code |
+| T58 | **Airgapped QR signing.** Needs a camera; the display half already exists (`src/qrcode.c`). Unlocks two things at once: a genuine airgap — the device never electrically touches the host — and MetaMask's QR keyring, which [BROWSER-INTEGRATION.md](docs/BROWSER-INTEGRATION.md) found is the one route into MetaMask open to any vendor without their cooperation, and which was ranked out *solely* for lack of a camera. Needs animated QR (UR / BC-UR, as Keystone uses): a 128x64 screen caps a single frame near version 10-14, far short of a signed EIP-1559 transaction | T12 | a transaction is signed with no cable and no radio, and MetaMask drives it |
+| T58a | Research spike before committing: verify ERC-4527's current shape and the UR encoding, and **measure** whether decode fits in RAM at a usable frame rate. A camera that cannot decode fast enough to be pleasant is worse than none. A scanner module that decodes onboard and speaks UART/I2C sidesteps the framebuffer and the decoder entirely and should be costed first | — | measured, not assumed |
+| T59 | **USB transport on Android**, alongside BLE. Android cannot open `/dev/ttyACM*` unrooted; it needs the USB Host API through a Kotlin driver. The route is the one T30 proved — a Tauri mobile plugin whose Gradle project `tauri-build` wires in automatically — not hand-rolled JNI. A cable takes the radio out of the threat model, which some users will prefer | T30 | the same signing flow over a C-to-C cable |
 
 ## Critical path to the PoC
 
