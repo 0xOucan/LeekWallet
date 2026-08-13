@@ -32,8 +32,25 @@ function invoker(): Invoke | null {
   return w.__TAURI__?.core?.invoke ?? w.__TAURI__?.invoke ?? null;
 }
 
+/**
+ * Is a *serial* backend available?
+ *
+ * Callers use this as the hardware-or-mock switch, so it has to mean "there is
+ * a transport", not merely "this is a native window". The Android build ships
+ * no transport at all — serial is compiled out (Android has no ports) and BLE
+ * is not written yet — so a native Android window has an `invoke` bridge and
+ * nothing behind it. Returning true there would make the badge read "hardware"
+ * on a phone connected to nothing, which is the one lie a wallet UI must never
+ * tell, and would send `connect()` down the handshake path to fail.
+ *
+ * Platform is read from the user agent rather than asked of the backend
+ * because the callers are synchronous, and every Android WebView UA contains
+ * "Android". When BLE lands (T22c/T30) this becomes a real capability query
+ * against the backend instead.
+ */
 export function isTauri(): boolean {
-  return invoker() !== null;
+  if (invoker() === null) return false;
+  return !/Android/i.test(navigator.userAgent);
 }
 
 export interface SerialPortInfo {

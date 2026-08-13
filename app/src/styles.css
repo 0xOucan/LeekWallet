@@ -90,10 +90,16 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 /* Mono, chunked and never truncated where it must be verified. Proportional
  * fonts make l/1 and 0/O ambiguous, which matters when the string is the
  * difference between your funds and someone else's. */
+/* `anywhere` rather than `break-all`: addresses are rendered in groups of four
+ * and must wrap *between* groups, not through them. On a phone the string no
+ * longer fits on one line, and a group split across two lines is exactly the
+ * kind of misread this chunking exists to prevent. With `anywhere` the browser
+ * uses the spaces first and only breaks inside a run when it has no choice —
+ * which is what an unchunked hash needs. */
 .addr {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-  word-break: break-all;
+  overflow-wrap: anywhere;
   letter-spacing: 0.02em;
 }
 
@@ -174,7 +180,7 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2) var(--space-4); font-size: var(--text-sm); }
 .kv dt { color: var(--muted); }
-.kv dd { margin: 0; font-family: var(--font-mono); word-break: break-all; }
+.kv dd { margin: 0; font-family: var(--font-mono); overflow-wrap: anywhere; }
 
 .log {
   font-family: var(--font-mono); font-size: var(--text-xs);
@@ -226,3 +232,57 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   cursor: pointer;
 }
 .field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* --------------------------------------------------------------- handheld */
+
+/* The layout was drawn for a desktop window; these rules are what it needs to
+ * survive a 360px phone. Kept in one block, and keyed on width rather than on
+ * "is Android", because a narrow desktop window has the same problem. */
+
+/* Phones with a notch or a gesture bar: the sticky header and the last panel
+ * would otherwise sit underneath them. `env()` is 0 everywhere else, so `max()`
+ * leaves desktop untouched. */
+.statusbar { padding-top: max(var(--space-3), env(safe-area-inset-top)); }
+main {
+  padding-left: max(var(--space-4), env(safe-area-inset-left));
+  padding-right: max(var(--space-4), env(safe-area-inset-right));
+  padding-bottom: max(var(--space-6), env(safe-area-inset-bottom));
+}
+
+/* Fingers, not cursors. Android's guidance is 48dp and these controls are
+ * 36px; on a signing screen a mis-tap is not a cosmetic defect. Keyed on the
+ * pointer type so desktop keeps its tighter, denser controls. */
+@media (pointer: coarse) {
+  button { height: 44px; }
+  .field input, .field select { height: 44px; }
+  /* Address rows are the tap target for choosing where funds come from, so
+   * they get room even though their height is content-driven. */
+  .addr-item { padding: var(--space-3); }
+}
+
+@media (max-width: 480px) {
+  main {
+    padding: var(--space-4) max(var(--space-3), env(safe-area-inset-right))
+             max(var(--space-4), env(safe-area-inset-bottom))
+             max(var(--space-3), env(safe-area-inset-left));
+  }
+  .panel { padding: var(--space-3); }
+
+  /* Two long strings and three controls do not fit on one 360px line. Let the
+   * bar wrap instead of pushing the theme button off-screen. */
+  .statusbar { flex-wrap: wrap; gap: var(--space-2); }
+  /* A flex item will not shrink below its content by default, so without this
+   * a long wallet label alone widens the bar and scrolls the whole page
+   * sideways. */
+  #conn, #wallet { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* `max-content 1fr` gives the label whatever it asks for; at this width that
+   * leaves a hash a few characters per line. Stack instead, so the value gets
+   * the full width it needs to stay comparable against the device screen. */
+  .kv { grid-template-columns: 1fr; gap: var(--space-1); }
+  .kv dd { margin-bottom: var(--space-2); }
+
+  /* Full-width buttons: a wrapped row of half-width buttons reads as a grid of
+   * equally weighted choices, and one of these is "sign". */
+  .row > button { flex: 1 1 100%; }
+}
