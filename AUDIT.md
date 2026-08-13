@@ -6,8 +6,14 @@ Scope: `src/` (3,367 lines) and `components/colibri-wallet/` (1,253 lines) as of
 Findings are ordered by severity. Each one names the file and line so it can be turned into a
 regression test in `sim/` before it is fixed.
 
-**Status:** S3, S4, S6, S8b and S8c are **fixed** and covered by tests. S2 is **fixed** (entry
-side; the KDF behind it is still S1). S1, S5, S7 and the rest of S8 stand.
+**Status:** S2, S3, S4, S6, S8b, S8c, S8h, S8i and S8k are **fixed** and covered by tests. S7 is
+**partially fixed** (confirmation yes, atomicity no).
+
+**S1 is the one that still matters.** Its key derivation and storage encryption are done — salted
+PBKDF2 and authenticated AES-GCM — but **flash encryption and secure boot are not enabled**, so
+an attacker with the device still reads the vault off the chip and attacks the PIN offline. The
+KDF turns that from instant into days. It does not stop the read. S5 and the remainder of S8
+also stand.
 
 ---
 
@@ -283,7 +289,7 @@ with a resume-on-boot flag.
 | e | `src/ui.c:1557` | "Change PIN" is a live menu item that logs `not yet implemented` and silently does nothing. `pin_change()` exists in `pin.c:269`. |
 | f | `src/ui.c:857` | `screen_wallet_create_on_button` calls `ui_render()` re-entrantly from inside a button handler to paint "Generating...", then the caller invalidates again. Works, but the screen contract now has two render paths. |
 | g | `src/ui.c:1272-1274` | Wi-Fi AP ships a hardcoded WPA2 password (`leek1234`) and the AP is reachable while the wallet is unlocked. It is a test feature; make it unavailable in release builds rather than a menu item. |
-| h | `leek-wallet.c:129` | ~~AES-CBC with zero padding and no MAC~~ **authenticated implementation ready** in `src/vault-crypt.c`: AES-256-GCM, `nonce \|\| ciphertext \|\| tag`, nonce generated internally so it cannot be reused by a caller. Tests confirm a single flipped bit anywhere — nonce, ciphertext or tag — is rejected, where CBC produced a different plaintext and no error. **Not yet wired into `leek-wallet.c`**: that is a storage-format change needing a v2→v3 migration, tracked as T14b. |
+| h | `leek-wallet.c:129` | ~~AES-CBC with zero padding and no MAC~~ **authenticated implementation ready** in `src/vault-crypt.c`: AES-256-GCM, `nonce \|\| ciphertext \|\| tag`, nonce generated internally so it cannot be reused by a caller. Tests confirm a single flipped bit anywhere — nonce, ciphertext or tag — is rejected, where CBC produced a different plaintext and no error. **Wired in as storage format v3 and verified on hardware**: a device holding three v2 wallets migrated on unlock, and the same seeds derive the same addresses afterwards, confirmed by the user and by 20 successful derivations with no decrypt failures in the log. |
 | i | `src/ui.c:1630-1636` | ~~The QR screen maps ACCEPT/DOWN to "reveal seed phrase"~~ **fixed**. Hardware testing hit it: the QR fills the display so there is no footer, and pressing a button to leave the screen instead locked the device and demanded the PIN. Revealing the seed now lives in Settings, labelled, and still re-asks for the PIN. |
 | k | `src/oled.c` | ~~Every character was written straight to the panel, after `oled_clear()` blanked it over I2C~~ **fixed**. Hardware testing reported the screen flickering on every keypress, which was the frame being composed in front of the user: a blank panel, then ~20 separate I2C transactions filling it back in. Drawing now composes into a RAM buffer and the panel changes once per render. |
 | j | `src/button.c:71` | `xQueueSend(..., 0)` drops button events when the 8-slot queue is full. Silent input loss during a slow render (PBKDF2 takes ~800 ms and blocks the UI task). Consider blocking briefly, or draining stale input after long operations. |

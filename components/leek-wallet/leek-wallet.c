@@ -797,9 +797,11 @@ WalletError wallet_init(void) {
      * wallet before anyone has authenticated, which is what lets it offer to
      * open one. */
     load_wallet_metadata();
+    load_vault_params();
 
-    ESP_LOGI(TAG, "Wallet initialized, password_set=%d, wallets=%d, active=%d",
-             state.password_set, state.wallet_count, state.active_wallet_index);
+    ESP_LOGI(TAG, "Wallet initialized, password_set=%d, wallets=%d, active=%d, vault=v%d",
+             state.password_set, state.wallet_count, state.active_wallet_index,
+             (int)vault_version);
     return WALLET_OK;
 }
 
@@ -904,6 +906,9 @@ WalletError wallet_unlock(const char *password, size_t length) {
 
     /* An older vault just proved its password, which is the only moment it can
      * be re-encrypted. Do so now. */
+    ESP_LOGI(TAG, "Unlock complete: vault is v%d, current is v%d",
+             (int)vault_version, (int)VAULT_KDF_CURRENT);
+
     if (vault_version != VAULT_KDF_CURRENT) {
         WalletError merr = migrate_vault_to_current(password, length);
         if (merr != WALLET_OK) {
