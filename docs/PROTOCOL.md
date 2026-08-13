@@ -515,16 +515,35 @@ inside a session being encrypted). The rest are recorded here rather than
 quietly patched, because most of them are the **firmware** being behind, and
 deciding which side is right is a protocol question, not a bug fix.
 
-| # | Divergence | Which side is right |
-|---|---|---|
-| 1 | `unlock` is asynchronous on the device (`{prompted:1, unlocked:0}`, host polls); the mock unlocks synchronously | Device. An app built on the mock believes unlocking is instant |
-| 2 | `selectWallet`, `setPassphrase`, `signMessage` exist in the mock, not in the firmware | Mock — these are specified in section 4 and the firmware has not caught up |
-| 3 | `signTransaction` returns `{index, r, s, yParity}` on the device, `{signature, path}` in the mock | Device. Nothing that parses one parses the other |
-| 4 | `getAddress` returns `{address, index}` on the device, `{path, address}` in the mock | Unresolved — pick one and make both match |
-| 5 | `chainId` is mandatory on the device (`0x0001` if absent), ignored by the mock | Device. Signing without knowing the chain is a replay waiting to happen |
-| 6 | Device refuses calldata longer than `ETH_MAX_DATA` (256) before checking decodability; the mock has no bound | Device |
-| 7 | Device rejects an address index above `0x7FFFFFFF`; the mock accepts any non-negative integer | Device |
-| 8 | `getFeatures` includes `initialized` in the mock only; `lock` returns `{}` in the mock, `{unlocked:0}` on the device | Cosmetic, but pick one |
+| # | Divergence | Which side is right | Status |
+|---|---|---|---|
+| 1 | `unlock` is asynchronous on the device (`{prompted:1, unlocked:0}`, host polls); the mock unlocks synchronously | Device. An app built on the mock believes unlocking is instant | **Closed** — mock prompts and stays locked until `enterPin()`; app polls `getStatus` |
+| 2 | `selectWallet`, `setPassphrase`, `signMessage` exist in the mock, not in the firmware | Mock — these are specified in section 4 and the firmware has not caught up | Open (firmware) |
+| 3 | `signTransaction` returns `{index, r, s, yParity}` on the device, `{signature, path}` in the mock | Device. Nothing that parses one parses the other | **Closed** — mock emits `{index, r, s, yParity}`; the host reassembles `r ‖ s ‖ yParity` |
+| 4 | `getAddress` returns `{address, index}` on the device, `{path, address}` in the mock | **Device: `{address, index}`** (see below) | **Closed** |
+| 5 | `chainId` is mandatory on the device (`0x0001` if absent), ignored by the mock | Device. Signing without knowing the chain is a replay waiting to happen | **Closed** — mock requires an unsigned integer `chainId` |
+| 6 | Device refuses calldata longer than `ETH_MAX_DATA` (256) before checking decodability; the mock has no bound | Device | **Closed** — and in that order, so the code is `0x0001` and not `0x0202` |
+| 7 | Device rejects an address index above `0x7FFFFFFF`; the mock accepts any non-negative integer | Device | **Closed** — on `getAddress` and `signTransaction` alike |
+| 8 | `getFeatures` includes `initialized` in the mock only; `lock` returns `{}` in the mock, `{unlocked:0}` on the device | Cosmetic, but pick one | **Closed** — device's wording in both: no `initialized`, `lock` answers `{unlocked:0}` |
+
+### #4 resolved: `getAddress` answers `{address, index}`
+
+The device's shape wins, and the mock no longer echoes the requested `path`.
+
+The argument for keeping `path` is that the host asked in paths and viem thinks
+in paths. The argument against is stronger: **the device never retains the
+path.** It reads the trailing component into a `uint32` and discards the rest —
+`m/44'/60'/0'/0/7` and `m/9999'/1'/2'/3/7` derive the same key today. A reply
+echoing the path back would therefore be the host reading its own request and
+concluding the device agreed with it, which is precisely the class of confusion
+that produced ten identical addresses the last time (#4's neighbour in this
+table). `index` is the only field the device can honestly attest to, so it is
+the only one it sends.
+
+Returning both was rejected for the same reason the rest of this section exists:
+a field present in the mock and absent from the firmware is a field app code can
+come to depend on, and the ripple is discovered on hardware. The app builds the
+path itself when it needs one to display — it is the side that chose it.
 
 **The sync marker is a documentation bug, not a mock bug.** `protocol.c` requires
 and emits `'L','K'` before every frame because it shares the port with console

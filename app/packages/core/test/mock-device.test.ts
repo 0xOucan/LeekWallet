@@ -129,17 +129,77 @@ async function main(): Promise<void> {
       `locked getAddress should fail, got ${JSON.stringify(r)}`);
 
     await call(dev, "unlock");
+    dev.enterPin();
     const ok = await call(dev, "getAddress", { path: "m/44'/60'/0'/0/0" });
     check(typeof ok.result?.["address"] === "string", "unlocked getAddress should return one");
   }
 
   group("the PIN never crosses the wire");
   {
-    const dev = await connected();
+    const dev = await connected({ autoPin: false });
     const r = await call(dev, "unlock", { pin: "1234" } as Record<string, CborValue>);
-    check(r.result?.["unlocked"] === 1, "unlock should succeed");
+    check(r.result?.["prompted"] === 1, "unlock should prompt");
     check(dev.confirmations.some((c) => c.includes("Enter PIN on device")),
       "unlock must prompt on the device rather than accept a PIN parameter");
+  }
+
+  group("unlock only prompts; the host learns the outcome by polling");
+  {
+    /* The device calls ui_request_unlock() and answers {prompted:1,unlocked:0}
+     * immediately - the user has not touched the keypad yet. The mock used to
+     * unlock synchronously and answer {unlocked:1}, so anything built against
+     * it believed unlocking was instantaneous and had no polling path at all. */
+    const dev = await connected({ autoPin: false });
+
+    const r = await call(dev, "unlock");
+    check(r.result?.["prompted"] === 1, `unlock did not report a prompt: ${JSON.stringify(r)}`);
+    check(r.result?.["unlocked"] === 0,
+      `unlock claimed success before the user typed anything: ${JSON.stringify(r)}`);
+
+    // Still locked, and key operations still refused, while the pad is up.
+    check((await call(dev, "getStatus")).result?.["unlocked"] === 0,
+      "the device reported itself unlocked before the PIN was entered");
+    const early = await call(dev, "getAddress", { index: 0 });
+    check(early.error?.code === ErrorCode.NotUnlocked,
+      `a prompting device served a key operation: ${JSON.stringify(early)}`);
+
+    // The PIN is typed on the device. Nothing crosses the wire; the host only
+    // finds out by asking again.
+    dev.enterPin();
+    check((await call(dev, "getStatus")).result?.["unlocked"] === 1,
+      "the status poll never reported the unlock");
+
+    // Already unlocked is the one case with an immediate answer, and no prompt.
+    const again = await call(dev, "unlock");
+    check(again.result?.["unlocked"] === 1 && again.result?.["prompted"] === undefined,
+      `unlock on an unlocked device should answer {unlocked:1}: ${JSON.stringify(again)}`);
+
+    // lock says what it did rather than answering an empty map.
+    check((await call(dev, "lock")).result?.["unlocked"] === 0,
+      "lock must report the new state");
+  }
+
+  group("a simulated user eventually types the PIN");
+  {
+    const dev = await connected({ autoPin: true, pinEntryMs: 20 });
+    await call(dev, "unlock");
+    check((await call(dev, "getStatus")).result?.["unlocked"] === 0,
+      "autoPin unlocked the device synchronously, which is the bug being fixed");
+    await new Promise((r) => setTimeout(r, 60));
+    check((await call(dev, "getStatus")).result?.["unlocked"] === 1,
+      "the simulated user never finished typing");
+  }
+
+  group("getFeatures invents nothing the device does not send");
+  {
+    const dev = await connected();
+    const r = await call(dev, "getFeatures");
+    check(r.result?.["blindSigning"] === 0, "blind signing must be off by default");
+    check(typeof r.result?.["model"] === "string", "getFeatures names no model");
+    /* `initialized` existed only here, so app code could branch on a field real
+     * hardware never sends. protocol.c writes exactly three keys. */
+    check(!("initialized" in (r.result ?? {})),
+      `getFeatures invented a field: ${JSON.stringify(r.result)}`);
   }
 
   group("addresses vary by path, wallet and passphrase");
@@ -177,9 +237,112 @@ async function main(): Promise<void> {
       to: new Uint8Array(20).fill(0xab),
       chainId: 1,
     });
-    check(r.result?.["signature"] instanceof Uint8Array, "should return a signature");
     check(dev.confirmations.some((c) => c.includes("m/44'/60'/0'/0/3")),
       "the confirmation must name the signing path, not just the destination");
+
+    /* {index, r, s, yParity} - the device's shape. The mock used to answer
+     * {signature, path}, and nothing that parses one parses the other. */
+    check(r.result?.["r"] instanceof Uint8Array && (r.result["r"] as Uint8Array).length === 32,
+      `r is not 32 bytes: ${JSON.stringify(r.result)}`);
+    check(r.result?.["s"] instanceof Uint8Array && (r.result["s"] as Uint8Array).length === 32,
+      `s is not 32 bytes: ${JSON.stringify(r.result)}`);
+    check(r.result?.["index"] === 3, `the reply names index ${String(r.result?.["index"])}, not 3`);
+    /* 0 or 1, never 27/28: a client masking the low bit of the legacy form
+     * inverts it and recovers an address nobody owns. */
+    const y = r.result?.["yParity"];
+    check(y === 0 || y === 1, `yParity is ${String(y)} - that is the legacy v`);
+    check(!("signature" in (r.result ?? {})), "the old 65-byte blob is still being sent");
+  }
+
+  group("getAddress answers {address, index}, as the device does");
+  {
+    const dev = await connected({ startUnlocked: true });
+    const r = await call(dev, "getAddress", { path: "m/44'/60'/0'/0/7" });
+    check(r.result?.["index"] === 7,
+      `the trailing path component was ignored: ${JSON.stringify(r.result)}`);
+    check(typeof r.result?.["address"] === "string" &&
+      (r.result["address"] as string).length === 42, "address is not a 42-character string");
+    /* No `path` echo. The device keeps only the index, so a host reading a path
+     * back would be reading its own request and believing the device agreed. */
+    check(!("path" in (r.result ?? {})), `getAddress echoed a path: ${JSON.stringify(r.result)}`);
+
+    // A bare index is accepted too, and wins over a path, as protocol.c reads them.
+    const byIndex = await call(dev, "getAddress", { index: 4, path: "m/44'/60'/0'/0/9" });
+    check(byIndex.result?.["index"] === 4, "index must take precedence over path");
+  }
+
+  group("chainId is mandatory for signing");
+  {
+    /* The same address exists on every EVM chain, so a signature made without
+     * knowing the chain is a replay waiting to happen. The device answers
+     * 0x0001 rather than defaulting to mainnet; the mock used to ignore the
+     * field entirely. */
+    const dev = await connected({ startUnlocked: true });
+    const to = new Uint8Array(20).fill(0xab);
+    const before = dev.confirmations.length;
+
+    const missing = await call(dev, "signTransaction", { index: 0, to });
+    check(missing.error?.code === ErrorCode.MalformedFrame,
+      `a chainless transaction was accepted: ${JSON.stringify(missing)}`);
+
+    const notAnInt = await call(dev, "signTransaction", { index: 0, to, chainId: "1" });
+    check(notAnInt.error?.code === ErrorCode.MalformedFrame,
+      `chainId as text was accepted: ${JSON.stringify(notAnInt)}`);
+
+    check(dev.confirmations.length === before,
+      "a transaction with no usable chain reached the confirmation screen");
+  }
+
+  group("oversized calldata is malformed, and is refused before decoding");
+  {
+    /* ETH_MAX_DATA is 256 bytes. The bound comes *before* the decodability
+     * check because that is the order protocol.c applies them: an oversized
+     * blob is 0x0001, not 0x0202, and a host that distinguishes the two has to
+     * see the same code the device sends. */
+    const dev = await connected({ startUnlocked: true });
+    const to = new Uint8Array(20).fill(0xab);
+    const before = dev.confirmations.length;
+
+    const big = await call(dev, "signTransaction", {
+      index: 0, to, chainId: 1, data: new Uint8Array(257).fill(0xcc),
+    });
+    check(big.error?.code === ErrorCode.MalformedFrame,
+      `257 bytes of calldata should be 0x0001, got ${JSON.stringify(big)}`);
+
+    // Same length, sent as a hex string: the bound is on bytes, not encoding.
+    const bigHex = await call(dev, "signTransaction", {
+      index: 0, to, chainId: 1, data: "0x" + "cc".repeat(257),
+    });
+    check(bigHex.error?.code === ErrorCode.MalformedFrame,
+      `hex calldata escaped the bound: ${JSON.stringify(bigHex)}`);
+
+    check(dev.confirmations.length === before,
+      "calldata the device cannot hold reached the confirmation screen");
+  }
+
+  group("an address index above 0x7FFFFFFF is refused");
+  {
+    /* Above 0x7FFFFFFF is a hardened index, which BIP32 encodes differently.
+     * The device refuses rather than deriving something else quietly; the mock
+     * accepted any non-negative integer. */
+    const dev = await connected({ startUnlocked: true });
+    const hardened = 0x80000000;
+
+    const addr = await call(dev, "getAddress", { index: hardened });
+    check(addr.error?.code === ErrorCode.MalformedFrame,
+      `getAddress accepted a hardened index: ${JSON.stringify(addr)}`);
+
+    const before = dev.confirmations.length;
+    const sig = await call(dev, "signTransaction", {
+      index: hardened, to: new Uint8Array(20).fill(0xab), chainId: 1,
+    });
+    check(sig.error?.code === ErrorCode.MalformedFrame,
+      `signTransaction accepted a hardened index: ${JSON.stringify(sig)}`);
+    check(dev.confirmations.length === before, "an unreachable index reached the screen");
+
+    // The boundary itself is still valid.
+    const edge = await call(dev, "getAddress", { index: 0x7fffffff });
+    check(edge.result?.["index"] === 0x7fffffff, "0x7FFFFFFF should still derive");
   }
 
   group("user rejection surfaces as an error");
@@ -231,7 +394,7 @@ async function main(): Promise<void> {
       chainId: 1,
       data: "0x095ea7b3" + "0".repeat(24) + "cc".repeat(20) + "f".repeat(64),
     });
-    check(r.result?.["signature"] instanceof Uint8Array, "approval should be signable");
+    check(r.result?.["r"] instanceof Uint8Array, "approval should be signable");
     check(dev.confirmations.some((c) => c.includes("UNLIMITED")),
       `the confirmation must warn: ${JSON.stringify(dev.confirmations)}`);
   }

@@ -7,7 +7,9 @@
  * silent failure.
  */
 
-import { createLeekAccount, type SigningDevice } from "../src/viem-account.ts";
+import {
+  assembleSignature, createLeekAccount, type SigningDevice,
+} from "../src/viem-account.ts";
 import type { Address, Hex } from "viem";
 
 let failures = 0;
@@ -35,7 +37,8 @@ function fakeDevice(rejectAll = false): { device: SigningDevice; log: Recorded }
       async signTransaction(req) {
         log.transactions.push(req);
         if (rejectAll) reject();
-        return "0xdeadbeef" as Hex;
+        // The device's shape: two 32-byte halves and a parity bit.
+        return { r: `0x${"11".repeat(32)}` as Hex, s: `0x${"22".repeat(32)}` as Hex, yParity: 1 };
       },
       async signMessage(msg) {
         log.messages.push(msg);
@@ -66,7 +69,7 @@ async function main() {
     const { device, log } = fakeDevice();
     const account = await createLeekAccount(device, { index: 1 });
 
-    await account.signTransaction({
+    const signed = await account.signTransaction({
       chainId: 8453,
       nonce: 7,
       to: "0x71C7656EC7ab88b098defB751B7401B5f6d8976F",
@@ -85,6 +88,44 @@ async function main() {
     // signed, which is exactly what the device exists to prevent.
     check(!("serialized" in (sent ?? {})), "a serialised blob was sent");
     check(!("hash" in (sent ?? {})), "a pre-computed hash was sent");
+
+    // r ‖ s ‖ yParity, reassembled from the three fields the device sends.
+    check(signed === `0x${"11".repeat(32)}${"22".repeat(32)}01`,
+      `assembled signature is ${signed}`);
+  }
+
+  group("the parity byte is taken as sent, never masked down");
+  {
+    const r = `0x${"11".repeat(32)}` as Hex;
+    const s = `0x${"22".repeat(32)}` as Hex;
+
+    check(assembleSignature({ r, s, yParity: 0 }).endsWith("00"), "yParity 0 was not written");
+    check(assembleSignature({ r, s, yParity: 1 }).endsWith("01"), "yParity 1 was not written");
+    check(assembleSignature({ r, s, yParity: 1 }).length === 2 + 130,
+      "the compact form must be 65 bytes");
+
+    /* 27 is the legacy v. Masking its low bit gives 1, which is the *opposite*
+     * parity, and the signature then recovers to an address nobody owns - a
+     * failure that reads as "you have no funds". Refuse rather than normalise:
+     * a device speaking the legacy form is a bug to find, not to paper over. */
+    for (const bad of [27, 28, -1, 2]) {
+      let threw = false;
+      try {
+        assembleSignature({ r, s, yParity: bad });
+      } catch {
+        threw = true;
+      }
+      check(threw, `yParity ${bad} was accepted`);
+    }
+
+    // A short half is a truncated signature, not something to pad.
+    let threw = false;
+    try {
+      assembleSignature({ r: "0x1122" as Hex, s, yParity: 0 });
+    } catch {
+      threw = true;
+    }
+    check(threw, "a 2-byte r was accepted as 32 bytes");
   }
 
   group("string and raw messages stay distinguishable");
