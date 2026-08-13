@@ -20,15 +20,11 @@
 #[cfg(not(target_os = "android"))]
 mod serial;
 
-// BLE is compiled out on Android for a different reason than serial, and not a
-// permanent one. btleplug does support Android, but only through a JVM-side
-// driver class that has to be added to the generated Gradle project — which
-// Tauri regenerates and which this repo does not track (see ANDROID.md). Until
-// that side exists, a compiled-in BLE transport would fail at the first call
-// with a class-not-found from the JNI layer. Absent beats present-and-broken:
-// Android keeps reporting no transport and the UI keeps using the mock, which
-// is at least true.
-#[cfg(not(target_os = "android"))]
+// BLE, in contrast, is present on every platform. `leek-transport-ble` has two
+// radio backends behind one API — btleplug on desktop, `tauri-plugin-blec` on
+// Android — so this module is the same code on both and the commands below are
+// the same commands. See that crate's `android.rs` for why Android needs a
+// different Bluetooth stack rather than a different transport.
 mod ble;
 
 /// Which transports this build actually has behind it.
@@ -40,13 +36,20 @@ mod ble;
 /// phone connected to nothing is the one lie a wallet UI must never tell.
 #[tauri::command]
 fn transports() -> Vec<&'static str> {
+    // Android has no serial, but it does have BLE now. Claiming "ble" here is
+    // a claim that the commands behind it will work, so it is only true
+    // because the Kotlin driver ships inside `tauri-plugin-blec` and is linked
+    // into the APK by Tauri's own project generation — not because the Rust
+    // happens to compile. A scan can still come back empty (permission denied,
+    // radio off, device on USB); those are runtime answers with their own
+    // messages, not reasons to deny the capability.
     #[cfg(not(target_os = "android"))]
     {
         vec!["usb", "ble"]
     }
     #[cfg(target_os = "android")]
     {
-        Vec::new()
+        vec!["ble"]
     }
 }
 
@@ -56,12 +59,23 @@ fn transports() -> Vec<&'static str> {
 /// the attribute expands to nothing and `main.rs` calls this directly.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().manage(ble::Connection::default());
+
+    // Registering the plugin is what installs the Android plugin handle the
+    // blec backend calls through; without it every BLE call panics with
+    // "plugin handle not initialized". Deliberately absent on desktop, where
+    // our own btleplug code talks to the adapter directly and a second BLE
+    // stack in the process would only be one more thing to go wrong.
+    //
+    // Nothing is added to `capabilities/default.json` for it: the plugin's own
+    // JS commands are never invoked from the webview, only from Rust, so the
+    // window is granted no new surface.
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_blec::init());
 
     #[cfg(not(target_os = "android"))]
     let builder = builder
         .manage(serial::Connection::default())
-        .manage(ble::Connection::default())
         .invoke_handler(tauri::generate_handler![
             transports,
             serial::ports,
@@ -75,7 +89,13 @@ pub fn run() {
         ]);
 
     #[cfg(target_os = "android")]
-    let builder = builder.invoke_handler(tauri::generate_handler![transports]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        transports,
+        ble::ble_scan,
+        ble::ble_connect,
+        ble::ble_disconnect,
+        ble::ble_request
+    ]);
 
     builder
         .run(tauri::generate_context!())

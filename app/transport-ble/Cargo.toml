@@ -10,14 +10,29 @@ description = "BLE GATT transport for LeekWallet. The same frames as USB, plus c
 # room. The `ble` feature carries everything that needs an adapter, so
 # `cargo test --no-default-features` exercises the wire logic alone.
 [dependencies]
+# Not optional: `ids` holds the service and characteristic UUIDs, which are
+# protocol constants both backends and any future one must agree on, so they
+# are compiled even with no radio backend at all.
+uuid = "1"
+
+# Desktop backend.
 btleplug = { version = "0.11", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
 futures = { version = "0.3", optional = true }
-uuid = { version = "1", optional = true }
+
+# Android backend. A Tauri mobile plugin rather than btleplug's own Android
+# support, because it ships the required Kotlin inside the crate where Tauri's
+# project generation can find it — see `src/android.rs` for the full reasoning.
+tauri-plugin-blec = { version = "0.12", optional = true }
+
+# Needed by both backends, for timeouts and channels.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"], optional = true }
 
 [features]
 default = ["ble"]
-ble = ["dep:btleplug", "dep:tokio", "dep:futures", "dep:uuid"]
+# Two names for one transport, and mutually exclusive: `lib.rs` refuses a build
+# that turns on both rather than silently picking a Bluetooth stack.
+ble = ["dep:btleplug", "dep:tokio", "dep:futures"]
+blec = ["dep:tauri-plugin-blec", "dep:tokio"]
 
 [[bin]]
 name = "leek-ble-probe"
