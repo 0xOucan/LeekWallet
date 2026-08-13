@@ -14,6 +14,7 @@ import { DeviceError, type Transport } from "../packages/core/src/transport.ts";
 import {
   derivationsInvalidated, UNKNOWN_STATUS, type DeviceStatus,
 } from "../packages/core/src/device-state.ts";
+import { isTauri, listPorts, TauriSerialTransport } from "./tauri-transport.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -66,7 +67,7 @@ class Client {
 
 /* ------------------------------------------------------------------- state */
 
-let transport: MockDevice | null = null;
+let transport: Transport | null = null;
 let client: Client | null = null;
 let selectedIndex = 0;
 const addresses: string[] = [];
@@ -141,9 +142,25 @@ const busy = (on: boolean): void => {
 /* ----------------------------------------------------------------- actions */
 
 async function connect(): Promise<void> {
-  // Latency is deliberate: a mock that answers instantly hides every place the
-  // UI forgot to show that it is waiting.
-  transport = new MockDevice({ latencyMs: 250, walletCount: 1 });
+  /* Real hardware when the Tauri backend is present, the mock otherwise. The
+   * two are interchangeable by construction - if they were not, everything
+   * built against the mock would need revisiting the first time a device was
+   * plugged in. */
+  if (isTauri()) {
+    const ports = await listPorts();
+    const port = ports.find((p) => p.likely_device) ?? ports[0];
+    if (!port) {
+      setConnection("error", "No device found");
+      log("no USB serial ports; check the cable and the dialout group");
+      return;
+    }
+    transport = new TauriSerialTransport(port.name);
+    log(`found ${port.name} — ${port.description}`);
+  } else {
+    // Latency is deliberate: a mock that answers instantly hides every place
+    // the UI forgot to show that it is waiting.
+    transport = new MockDevice({ latencyMs: 250, walletCount: 1 });
+  }
   client = new Client(transport);
 
   setConnection("connecting", "Connecting…");
@@ -151,7 +168,11 @@ async function connect(): Promise<void> {
   await transport.open();
 
   const hello = await client.call("hello");
-  $("passkey").textContent = String(hello["passkey"] ?? "");
+  /* The mock reports a fixed passkey; real firmware derives one from the ECDH
+   * shared secret and shows it on the OLED for the user to compare. */
+  const passkey = hello["passkey"];
+  $("passkey").textContent =
+    typeof passkey === "string" ? passkey : "compare the code on the device";
   $("pairing").hidden = false;
   log(`session established with ${transport.label}`);
 

@@ -17,13 +17,28 @@ The web shell runs in any browser against the mock with no extra tooling. The
 are not installed by default on Ubuntu:
 
 ```bash
-sudo apt install libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
-                 libsoup-3.0-dev libxdo-dev libssl-dev \
-                 libayatana-appindicator3-dev librsvg2-dev
+sudo apt install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libssl-dev librsvg2-dev
 ```
 
-Until those are present, `pnpm dev` and the mock cover everything except the
+One line on purpose. A backslash-continued command loses its continuations when
+pasted through some terminals, and the shell then reads the remaining package
+names as commands — `libssl-dev: command not found` rather than anything that
+suggests a paste problem.
+
+`libxdo-dev` and `libayatana-appindicator3-dev` are only needed for global
+shortcuts and a tray icon, neither of which this app uses.
+
+**Rust 1.88 or newer** is also required — Tauri's dependency tree moved past
+what Ubuntu's packaged `rustc` provides. `rustup default stable` is enough; a
+distro Rust will fail with `rustc 1.85.1 is not supported by the following
+packages`.
+
+Without any of this, `pnpm dev` and the mock still cover everything except the
 native window and the real transports.
+
+```bash
+cd src-tauri && cargo build     # native shell
+```
 
 ## Setup
 
