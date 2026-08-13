@@ -839,7 +839,10 @@ function describeEnvironment(): void {
 
   $("devicehint").textContent = tauri
     ? "Native shell: this will talk to a LeekWallet over USB. Confirm the passkey on the device when asked."
-    : "Browser: no USB access here, so this uses the built-in mock. It speaks the same protocol as the firmware, so the interface behaves identically — but nothing is signed by real hardware.";
+    /* Reaches a browser tab and an Android window alike, so it cannot name a
+     * cause it does not know. What matters is the same either way: nothing
+     * here is signed by a device. */
+    : "No device transport available, so this uses the built-in mock. It speaks the same protocol as the firmware and the interface behaves identically — but nothing is signed by real hardware, and no address shown here is one you should send funds to.";
 }
 
 describeEnvironment();
