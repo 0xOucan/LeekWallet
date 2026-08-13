@@ -1,0 +1,58 @@
+# Everything checkable without a board.
+#
+# The stages call scripts/check.sh rather than repeating its commands, so a
+# green run here means the same thing as a green run on a developer's machine.
+# They are separate jobs because the C suites finish in seconds and the ESP-IDF
+# toolchain download does not — a broken firmware invariant should be visible
+# long before the build job has finished fetching a compiler.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  sim:
+    name: Host suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check.sh sim
+
+  app:
+    name: App
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          # The TypeScript here is type-stripped, not transpiled, so the Node
+          # version is load-bearing rather than a preference.
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm --dir app install --frozen-lockfile
+      - run: ./scripts/check.sh app
+
+  firmware:
+    name: Firmware build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # ~/.platformio holds the toolchain and the ESP-IDF checkout. Without
+      # this the job spends most of its time downloading a compiler it already
+      # downloaded last run.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'sdkconfig.defaults') }}
+          restore-keys: pio-${{ runner.os }}-
+      - run: pip install --upgrade platformio
+      - run: ./scripts/check.sh firmware

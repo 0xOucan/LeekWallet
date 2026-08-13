@@ -202,7 +202,7 @@ shared TypeScript core, D is the apps, E is hardware/docs.
 | ~~T0.2~~ ✅ | Fake `esp_log`, GPIO, FreeRTOS queue shims | — | `ui.c` links on host |
 | ~~T0.3~~ ✅ | Fake `oled.c` → 128x64 bit buffer, ASCII dump | — | `fake_oled_row_contains()` works; text is asserted as text, pixels kept secondary |
 | ~~T0.4~~ ✅ | Scripted button driver + golden-screen diffing | T0.2, T0.3 | `sim/test_ui.c`, 11 groups; scripted PIN and import sessions pass |
-| T0.5 | CI: `make -C sim test` on push | T0.4 | red on the S3 test, green after its fix |
+| ~~T0.5~~ ✅ | CI: `make -C sim test` on push | T0.4 | `scripts/check.sh` runs host suites, app tests, typecheck and the firmware build; `.github/workflows/ci.yml` calls the same script in three jobs. **The workflow has never run** — this repo has no remote yet, so only the script itself is verified, including that it exits non-zero on failure |
 
 `sim/` already contains a working example (`test_mnemonic_entry.c`) and the Makefile.
 Everything else in T0 follows its shape. **Do this first** — it is what makes the rest of the

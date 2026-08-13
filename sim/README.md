@@ -10,8 +10,12 @@ ESP-IDF symbols they touch. Millisecond runs, ordinary `gdb`, ASan and UBSan ava
 emulator in the loop.
 
 ```bash
-make -C sim test
+make -C sim test        # just these suites
+./scripts/check.sh      # everything checkable without a board
 ```
+
+`scripts/check.sh` is what CI runs, so a green run locally and a green run in CI
+cannot disagree about what green means.
 
 This is where the PIN state machine, the mnemonic entry logic, the screen graph, and the
 wallet's encrypt/decrypt round-trip belong. What is already here:
