@@ -303,6 +303,7 @@ what the device says, and the device is the authority. Folded into T12.
 | `0x0201` | Timed out waiting for the user |
 | `0x0300` | No wallet selected |
 | `0x0400` | Session required / nonce reuse |
+| `0x0202` | Outside the decodable set (section 6bis) |
 
 Messages are for developers. Never render a device-supplied string to the user as if it were a
 security statement — that is a phishing vector.
@@ -378,6 +379,38 @@ turn blind signing on, once, having read what it costs.
 The decodable set should grow deliberately — native transfer, ERC-20
 `transfer`/`approve`, EIP-712 typed data — and everything outside it should be a
 refusal, not a shrug. Tracked as T50.
+
+#### The decodable set as implemented
+
+`src/eth-decode.c`, mirrored host-side in `app/packages/core/src/eth-decode.ts`
+so the mock refuses exactly what the device refuses:
+
+| calldata | shown as |
+|---|---|
+| empty | native transfer: amount, chain, recipient |
+| `transfer(address,uint256)` | recipient, raw amount, token contract |
+| `approve(address,uint256)` | spender, raw amount **or** an unlimited warning, token contract |
+| anything else | `0x0202`, refused before the confirmation screen |
+
+Contract creation is refused too — there is no recipient to name and no code the
+device can describe.
+
+Three details that are load-bearing:
+
+- **Decoding is exact, not best-effort.** A recognised selector with a short
+  argument block, trailing bytes, or non-zero padding in the address word is
+  `0x0202`, not a guess. Half-understanding a call and rendering it confidently
+  is worse than refusing it.
+- **Token amounts are raw units.** The device cannot call `decimals()` on the
+  contract, so the screen says "raw units" rather than implying a scale. The app
+  may show a scaled figure from a token list; that is advisory (section 6c).
+- **Unlimited approvals get their own screen.** Anything from 2^255 up is an
+  allowance nobody spends through and the pattern behind most drain incidents,
+  so it is named in words instead of printed as a 78-digit number nobody reads.
+
+EIP-712 typed data is in the set as designed and not yet implemented — the
+device has no `signTypedData` today. When it lands it needs a renderer, not just
+a decoder; a recognised type that cannot be displayed is still blind signing.
 
 ### Session model: unlock once, confirm every time
 

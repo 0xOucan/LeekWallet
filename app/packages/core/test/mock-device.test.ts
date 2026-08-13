@@ -124,9 +124,52 @@ async function main(): Promise<void> {
   group("user rejection surfaces as an error");
   {
     const dev = await connected({ startUnlocked: true, autoApprove: false });
-    const r = await call(dev, "signTransaction", { path: "m/44'/60'/0'/0/0" });
+    const r = await call(dev, "signTransaction", {
+      path: "m/44'/60'/0'/0/0",
+      to: new Uint8Array(20).fill(0xab),
+      chainId: 1,
+    });
     check(r.error?.code === ErrorCode.UserRejected,
       `expected UserRejected, got ${JSON.stringify(r)}`);
+  }
+
+  group("undecodable calls are refused before any confirmation");
+  {
+    /* The mock must be no more permissive than the firmware (T50), and the
+     * refusal has to come *before* the prompt: asking the user to approve
+     * something the device will then reject is the blind-signing habit wearing
+     * a different hat. */
+    const dev = await connected({ startUnlocked: true });
+    const to = new Uint8Array(20).fill(0xab);
+
+    const unknown = await call(dev, "signTransaction", {
+      path: "m/44'/60'/0'/0/0", to, chainId: 1,
+      data: "0x" + "deadbeef" + "0".repeat(128),
+    });
+    check(unknown.error?.code === ErrorCode.Undecodable,
+      `unknown selector should be refused, got ${JSON.stringify(unknown)}`);
+    check(dev.confirmations.length === 0,
+      "an undecodable call must not reach the confirmation screen");
+
+    const creation = await call(dev, "signTransaction", {
+      path: "m/44'/60'/0'/0/0", chainId: 1, data: "0x60806040",
+    });
+    check(creation.error?.code === ErrorCode.Undecodable,
+      `contract creation should be refused, got ${JSON.stringify(creation)}`);
+  }
+
+  group("an unlimited approval is named as such on the device");
+  {
+    const dev = await connected({ startUnlocked: true });
+    const r = await call(dev, "signTransaction", {
+      path: "m/44'/60'/0'/0/0",
+      to: new Uint8Array(20).fill(0xab),
+      chainId: 1,
+      data: "0x095ea7b3" + "0".repeat(24) + "cc".repeat(20) + "f".repeat(64),
+    });
+    check(r.result?.["signature"] instanceof Uint8Array, "approval should be signable");
+    check(dev.confirmations.some((c) => c.includes("UNLIMITED")),
+      `the confirmation must warn: ${JSON.stringify(dev.confirmations)}`);
   }
 
   group("malformed input is rejected, not guessed at");

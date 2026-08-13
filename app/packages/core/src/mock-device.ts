@@ -18,6 +18,7 @@
 import { encodeCbor, decodeCbor, type CborValue } from "./cbor.ts";
 import { encodeFrame, FrameDecoder, FrameType } from "./framing.ts";
 import { ErrorCode, type Transport } from "./transport.ts";
+import { describeCall, isDecodable } from "./eth-decode.ts";
 
 export interface MockOptions {
   /** Milliseconds each command takes. Real key derivation costs ~1 s. */
@@ -246,9 +247,21 @@ export class MockDevice implements Transport {
       const path = String(p["path"] ?? "m/44'/60'/0'/0/0");
       const to = p["to"];
       const toHex = to instanceof Uint8Array ? "0x" + hex(to) : String(to ?? "");
+
+      /* Refuse what the firmware refuses (T50), and never less. A mock that is
+       * more permissive than the device certifies code the device rejects -
+       * which has happened twice. */
+      const { ok, call } = isDecodable({ to, data: p["data"] });
+      if (!ok) {
+        throw new MockRejection(
+          ErrorCode.Undecodable,
+          "this device cannot show what that call does",
+        );
+      }
+
       // The confirmation names the source as well as the destination: a host
       // that quietly changes the path must be visible on the device (T47).
-      this.confirm(`Sign from ${path} to ${toHex}`);
+      this.confirm(`Sign ${describeCall(call)} from ${path} to ${toHex}`);
       return { signature: new Uint8Array(65).fill(0x11), path };
     },
 

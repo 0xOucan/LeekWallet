@@ -233,14 +233,14 @@ one physical board.
 | T11 | Flash encryption + secure boot v2 (must ship together — see [docs/VAULT.md](docs/VAULT.md)) | — | `read_flash` yields no plaintext; unsigned image refuses to boot |
 | T11b | Migration path for wallets encrypted under the old KDF | T9 | existing device upgrades without seed loss |
 | ~~T12~~ ✅ | On-device EIP-1559 decode, three-page confirmation, sign only what was displayed | T0.3 | 6 test groups on encoding and rendering; signs on hardware |
-| T12b | ERC-20 transfer and approve decoding, and EIP-712 typed data | T12, T50 | a token transfer shows the contract address and amount |
+| T12b | ERC-20 transfer and approve decoding ✅, and EIP-712 typed data (pending — needs a `signTypedData` command first) | T12, T50 | a token transfer shows the contract address and amount |
 | ~~T13~~ ✅ | Address and amount presentation: EIP-55 casing, one wei never rounds to zero, unknown chains show a number | T0.3 | covered by `sim/test_eth_tx.c` |
 | T14 | AES-GCM instead of unauthenticated CBC ([S8h](AUDIT.md)) | T9 | tampered ciphertext is rejected |
 | ~~T15~~ ✅ | Entropy gate ([S6](AUDIT.md)): bootloader RNG + SP 800-90B health tests, fails closed | — | `sim/test_entropy.c` green; **dieharder run on hardware still pending** |
 | ~~T15b~~ ✅ | User entropy pool: button-timing collection screen, hashed with hardware entropy | T15 | 5 pool tests green; worst-case user cannot weaken output |
-| T16 | Gate `signHash` behind a default-off blind-signing setting | T12 | off by default, warns when enabled |
+| T16 | Gate `signHash` behind a default-off blind-signing setting | T12 | off by default, warns when enabled. **Currently vacuous**: the device has no `signHash` method and `getFeatures` reports `blindSigning: 0`. The gate must be built *with* the method, never after |
 | T51 | Chain-agnostic EVM: chain ID displayed on-device, per-chain RPC config in the app, Uniswap-format token lists (CoinGecko) as an app-side advisory layer with a small device-verified list of major contracts. See [PROTOCOL.md 6d](docs/PROTOCOL.md) | T50 | signs on two chains; a token transfer shows a contract address, not a host-supplied symbol |
-| T50 | Define the decodable transaction set (native transfer, ERC-20 transfer/approve, EIP-712) and **refuse** anything outside it unless blind signing is on. See [PROTOCOL.md 6bis](docs/PROTOCOL.md) | T12 | undecodable calldata is refused with a clear reason, not shown as a hash |
+| ~~T50~~ ✅ | Define the decodable transaction set (native transfer, ERC-20 transfer/approve, EIP-712) and **refuse** anything outside it unless blind signing is on. See [PROTOCOL.md 6bis](docs/PROTOCOL.md) | T12 | `sim/test_eth_decode.c` + `eth-decode.test.ts`; `0x0202` before any prompt, and the mock refuses identically. EIP-712 waits on a `signTypedData` command |
 | T17 | Strip Wi-Fi AP from release builds ([S8g](AUDIT.md)) | — | absent from the settings menu in release |
 
 ### Track C — protocol + shared core (parallel after T0, no firmware dependency)

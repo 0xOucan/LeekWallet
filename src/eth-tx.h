@@ -69,6 +69,15 @@ bool eth_tx_hash(const EthTx *tx, uint8_t hash_out[32]);
 bool eth_format_value(const EthQuantity *wei, char *out, size_t out_size,
                       int max_decimals);
 
+/**
+ * Format a quantity as a plain decimal integer, no scaling.
+ *
+ * For raw token units, where the device has no way to learn the contract's
+ * decimals and must not imply a scale it does not know. Fails rather than
+ * truncates — a shortened number is a different number.
+ */
+bool eth_format_integer(const EthQuantity *q, char *out, size_t out_size);
+
 /** "0x1234…ABCD" for a 20-byte address, EIP-55 checksummed. */
 bool eth_format_address(const uint8_t address[20], char *out, size_t out_size);
 

@@ -37,6 +37,7 @@
 #include "pin.h"
 #include "session.h"
 #include "eth-tx.h"
+#include "eth-decode.h"
 #include "ui.h"
 
 static const char *TAG = "protocol";
@@ -62,6 +63,9 @@ static const char *TAG = "protocol";
 #define ERR_SESSION      0x0400
 #define ERR_USER_REJECTED 0x0200
 #define ERR_USER_TIMEOUT  0x0201
+/* Outside the decodable set: the device will not ask for approval of
+ * something it cannot describe. See eth-decode.h. */
+#define ERR_UNDECODABLE   0x0202
 
 static uint8_t rx_buf[MAX_FRAME];
 static size_t  rx_len = 0;
@@ -394,6 +398,19 @@ static void dispatch(const uint8_t *payload, size_t len)
                     sign_index = (uint32_t)strtoul(last + 1, NULL, 10);
                 }
             }
+        }
+
+        /* Refuse what cannot be explained (T50).
+         *
+         * The alternative is to render a hash and ask for a signature that
+         * means nothing to the person giving it. Every other wallet that took
+         * that road ended up shipping a blind-signing toggle; better to say no
+         * and grow the decodable set deliberately. */
+        EthCall call;
+        if (!eth_tx_is_decodable(&tx, &call)) {
+            send_error(ERR_UNDECODABLE,
+                       "this device cannot show what that call does");
+            return;
         }
 
         /* Show it and wait. The screen renders these exact fields and the hash

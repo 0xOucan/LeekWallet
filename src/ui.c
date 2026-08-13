@@ -22,6 +22,7 @@
 #include "session.h"
 #include "text-entry.h"
 #include "eth-tx.h"
+#include "eth-decode.h"
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "nvs.h"
@@ -2698,16 +2699,36 @@ static void screen_passphrase_confirm_on_button(button_id_t btn)
  * sends another is visible here, which is the only place it can be.
  *
  * Paged, because 128x64 cannot hold a 42-character address, an amount, a chain
- * and a source path at a legible size. Every page must be seen before the
+ * and a source address at a legible size. Every page must be seen before the
  * approve option appears - scrolling past is the point, not an obstacle.
+ *
+ * Which pages exist depends on what the device could decode. A token transfer
+ * has a different set of facts worth reading than a native one, and the
+ * protocol task has already refused anything outside the decodable set (T50),
+ * so no page here ever has to render "unknown".
  * ============================================================================ */
 
-#define SIGN_PAGES 3
+typedef enum {
+    SIGN_PAGE_VALUE,        /* amount in ether, and the chain */
+    SIGN_PAGE_TO,           /* recipient of a native transfer */
+    SIGN_PAGE_ACTION,       /* what the token call does, and for how much */
+    SIGN_PAGE_PARTY,        /* the token recipient or the approved spender */
+    SIGN_PAGE_CONTRACT,     /* the token contract being called, and the chain */
+    SIGN_PAGE_FROM          /* the address that will sign (T47) */
+} SignPageKind;
+
+#define SIGN_MAX_PAGES 4
 
 static EthTx        sign_tx;
+static EthCall      sign_call;
 static uint32_t     sign_index;
 static int          sign_page;
-static bool         sign_seen[SIGN_PAGES];
+static SignPageKind sign_page_kind[SIGN_MAX_PAGES] = {SIGN_PAGE_FROM};
+/* Never zero: the button handler takes a modulus by it, so reaching this
+ * screen without a request must be a blank page, not a divide-by-zero.
+ * ui_request_sign() overwrites both before the screen can be shown. */
+static int          sign_page_count = 1;
+static bool         sign_seen[SIGN_MAX_PAGES];
 static volatile SignOutcome sign_outcome = SIGN_PENDING;
 static volatile bool sign_request_pending = false;
 
@@ -2728,11 +2749,12 @@ void ui_sign_clear(void)
 {
     sign_outcome = SIGN_PENDING;
     memzero(&sign_tx, sizeof(sign_tx));
+    memzero(&sign_call, sizeof(sign_call));
 }
 
 static bool sign_all_seen(void)
 {
-    for (int i = 0; i < SIGN_PAGES; i++) {
+    for (int i = 0; i < sign_page_count; i++) {
         if (!sign_seen[i]) return false;
     }
     return true;
@@ -2740,10 +2762,32 @@ static bool sign_all_seen(void)
 
 static void screen_sign_confirm_enter(void)
 {
-    ESP_LOGI(TAG, "Sign confirmation screen");
+    ESP_LOGI(TAG, "Sign confirmation screen (%s)", eth_call_name(sign_call.kind));
     sign_page = 0;
     memset(sign_seen, 0, sizeof(sign_seen));
     sign_seen[0] = true;
+}
+
+/* An address across three rows, never truncated: the user compares it against
+ * what they intended, and a shortened address compares equal to one that is
+ * not the same. */
+static void sign_draw_address(int row, const char *hex42)
+{
+    char part[17];
+
+    /* Anything that is not a full address is a derivation that failed. Say so
+     * rather than slicing a short string into three misleading rows. */
+    if (!hex42 || strlen(hex42) < 42) {
+        oled_draw_string(row, 0, "(unavailable)");
+        return;
+    }
+
+    snprintf(part, sizeof(part), "%.16s", hex42);
+    oled_draw_string(row, 0, part);
+    snprintf(part, sizeof(part), "%.14s", hex42 + 16);
+    oled_draw_string(row + 1, 0, part);
+    snprintf(part, sizeof(part), "%.12s", hex42 + 30);
+    oled_draw_string(row + 2, 0, part);
 }
 
 static void screen_sign_confirm_render(void)
@@ -2752,13 +2796,13 @@ static void screen_sign_confirm_render(void)
 
     char line[24];
     snprintf(line, sizeof(line), "Sign?  %u/%u",
-             (unsigned)(sign_page + 1), (unsigned)SIGN_PAGES);
+             (unsigned)(sign_page + 1), (unsigned)sign_page_count);
     oled_draw_string_centered(0, line);
 
     char scratch[32];
 
-    switch (sign_page) {
-        case 0: {
+    switch (sign_page_kind[sign_page]) {
+        case SIGN_PAGE_VALUE: {
             /* Amount and chain. The two fields that decide what it costs. */
             char value[40];
             if (!eth_format_value(&sign_tx.value, value, sizeof(value), 8)) {
@@ -2783,22 +2827,69 @@ static void screen_sign_confirm_render(void)
                 eth_chain_name(sign_tx.chain_id, scratch, sizeof(scratch)));
             break;
         }
-        case 1: {
-            /* Recipient, in full. Never truncated: the whole point is that the
-             * user can compare it against what they intended. */
+        case SIGN_PAGE_TO: {
             char addr[43];
             if (sign_tx.has_to && eth_format_address(sign_tx.to, addr, sizeof(addr))) {
                 oled_draw_string(2, 0, "To");
-                char part[15];
-                for (int i = 0; i < 3; i++) {
-                    strncpy(part, addr + 2 + i * 14, 14);
-                    part[14] = '\0';
-                    oled_draw_string(3 + i, 0, part);
-                }
+                sign_draw_address(3, addr);
             } else {
+                /* Refused upstream (T50); shown plainly if it ever gets here. */
                 oled_draw_string(2, 0, "Contract creation");
                 oled_draw_string(4, 0, "No recipient!");
             }
+            break;
+        }
+        case SIGN_PAGE_ACTION: {
+            /* What the call actually does, in words.
+             *
+             * Amounts are raw token units: the device cannot call decimals()
+             * on the contract, and printing "12.5" from a scale it guessed
+             * would be a confident lie about the thing being signed. */
+            bool approve = (sign_call.kind == ETH_CALL_ERC20_APPROVE);
+            oled_draw_string(2, 0, approve ? "Approve spending" : "Send tokens");
+
+            if (approve && sign_call.unlimited) {
+                /* The pattern behind most drain incidents: an allowance the
+                 * user never revisits and an attacker can empty at leisure. */
+                oled_draw_string(4, 0, "UNLIMITED amount");
+                oled_draw_string(5, 0, "Spender can take");
+                oled_draw_string(6, 0, "all of this token");
+            } else {
+                char amount[80];
+                if (!eth_format_integer(&sign_call.amount, amount, sizeof(amount))) {
+                    snprintf(amount, sizeof(amount), "?");
+                }
+                /* Long numbers wrap rather than truncate. */
+                size_t alen = strlen(amount);
+                for (int i = 0; i < 2 && (size_t)(i * 21) < alen; i++) {
+                    char part[22];
+                    snprintf(part, sizeof(part), "%.21s", amount + i * 21);
+                    oled_draw_string(4 + i, 0, part);
+                }
+                oled_draw_string(6, 0, "raw units");
+            }
+            break;
+        }
+        case SIGN_PAGE_PARTY: {
+            char addr[43];
+            oled_draw_string(2, 0,
+                sign_call.kind == ETH_CALL_ERC20_APPROVE ? "Spender" : "To");
+            if (eth_format_address(sign_call.address, addr, sizeof(addr))) {
+                sign_draw_address(3, addr);
+            }
+            break;
+        }
+        case SIGN_PAGE_CONTRACT: {
+            /* Which token. An amount and a spender mean nothing without it:
+             * the same approval against a different contract is a different
+             * thing to lose. */
+            char addr[43];
+            oled_draw_string(1, 0, "Token contract");
+            if (eth_format_address(sign_tx.to, addr, sizeof(addr))) {
+                sign_draw_address(2, addr);
+            }
+            oled_draw_string(6, 0,
+                eth_chain_name(sign_tx.chain_id, scratch, sizeof(scratch)));
             break;
         }
         default: {
@@ -2831,11 +2922,11 @@ static void screen_sign_confirm_on_button(button_id_t btn)
 {
     switch (btn) {
         case BUTTON_UP:
-            sign_page = (sign_page + SIGN_PAGES - 1) % SIGN_PAGES;
+            sign_page = (sign_page + sign_page_count - 1) % sign_page_count;
             sign_seen[sign_page] = true;
             break;
         case BUTTON_DOWN:
-            sign_page = (sign_page + 1) % SIGN_PAGES;
+            sign_page = (sign_page + 1) % sign_page_count;
             sign_seen[sign_page] = true;
             break;
 

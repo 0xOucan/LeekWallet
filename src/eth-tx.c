@@ -202,6 +202,37 @@ static bool is_zero(const uint8_t *v, size_t len)
     return true;
 }
 
+bool eth_format_integer(const EthQuantity *q, char *out, size_t out_size)
+{
+    if (!q || !out || out_size < 2) {
+        return false;
+    }
+
+    uint8_t work[32];
+    memzero(work, sizeof(work));
+    memcpy(work + (sizeof(work) - q->length), q->bytes, q->length);
+
+    char digits[80];
+    int n = 0;
+    if (is_zero(work, sizeof(work))) {
+        digits[n++] = '0';
+    } else {
+        while (!is_zero(work, sizeof(work)) && n < (int)sizeof(digits)) {
+            digits[n++] = (char)('0' + divmod_small(work, sizeof(work), 10));
+        }
+    }
+    memzero(work, sizeof(work));
+
+    if ((size_t)n + 1 > out_size) {
+        return false;   /* never a truncated number: see eth_format_value */
+    }
+    for (int i = 0; i < n; i++) {
+        out[i] = digits[n - 1 - i];
+    }
+    out[n] = '\0';
+    return true;
+}
+
 bool eth_format_value(const EthQuantity *wei, char *out, size_t out_size,
                       int max_decimals)
 {
