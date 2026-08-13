@@ -27,3 +27,7 @@ sdkconfig.esp32s3-*
 # Agent worktrees. These are full checkouts of this repo on other branches;
 # committing one would nest the repository inside itself.
 .claude/worktrees/
+
+# Internal notes: research that is not part of the published design.
+# Ignored deliberately — see docs/internal/README if one exists.
+docs/internal/
