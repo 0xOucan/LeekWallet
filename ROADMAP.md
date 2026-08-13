@@ -216,7 +216,7 @@ one physical board.
 | ~~T1~~ ✅ | Fix mnemonic autocomplete ([S3](AUDIT.md)) — commit only on unique completion, use `mnemonic_word_completion_mask()` to constrain the letter selector | T0.1 | `test_mnemonic_entry` reports 0/2048 wrong |
 | ~~T2~~ ✅ | Explicit PIN submit ([S2](AUDIT.md)); support 4-8 digits | T0.4 | golden test enters a 6-digit PIN |
 | ~~T3~~ ✅ | 24-word import ([S8d](AUDIT.md)) — word-count selector on entry screen | T1 | 24-word round-trip test passes; a length prompt precedes typing, BACK returns to it |
-| T4 | Implement "Change PIN" ([S8e](AUDIT.md)) — `pin_change()` already exists | T2 | re-encrypts wallets under the new PIN |
+| ~~T4~~ ✅ | Implement "Change PIN" ([S8e](AUDIT.md)) — `pin_change()` already exists | T2 | re-encrypts wallets under the new PIN, atomically: generation-scoped slots and one blob carrying both the generation and the verifier. Crash-swept at all 132 write points in each of the normal and legacy layouts |
 | ~~T5~~ ✅ | Unified `device_wipe()`, idempotent + confirmation screen ([S7](AUDIT.md)) | T0.1 | crash-injection test leaves no half state — `sim/test_device_wipe.c`, 7 groups, marker + resume-on-boot |
 | ~~T6~~ ✅ | Wire the unused `screen_t.exit` hook; `memzero()` seed buffers ([S5](AUDIT.md)) | T0.2 | buffer is zero after leaving the screen, and *not* zeroed across the display ↔ verify hand-off; removing the hook fails 6 assertions, over-correcting fails 9 |
 | ~~T7~~ ✅ | Error display separated from `eth_address.hex` ([S8a](AUDIT.md)) | T0.3 | error screen says "Error" and names the reason; QR refuses to encode anything that is not a 42-character address |
@@ -239,7 +239,7 @@ one physical board.
 | ~~T15~~ ✅ | Entropy gate ([S6](AUDIT.md)): bootloader RNG + SP 800-90B health tests, fails closed | — | `sim/test_entropy.c` green; **dieharder run on hardware still pending** |
 | ~~T15b~~ ✅ | User entropy pool: button-timing collection screen, hashed with hardware entropy | T15 | 5 pool tests green; worst-case user cannot weaken output |
 | T16 | Gate `signHash` behind a default-off blind-signing setting | T12 | off by default, warns when enabled. **Currently vacuous**: the device has no `signHash` method and `getFeatures` reports `blindSigning: 0`. The gate must be built *with* the method, never after |
-| T51 | Chain-agnostic EVM: chain ID displayed on-device, per-chain RPC config in the app, Uniswap-format token lists (CoinGecko) as an app-side advisory layer with a small device-verified list of major contracts. See [PROTOCOL.md 6d](docs/PROTOCOL.md) | T50 | signs on two chains; a token transfer shows a contract address, not a host-supplied symbol |
+| ~~T51~~ ✅ | Chain-agnostic EVM: chain ID displayed on-device, per-chain RPC config in the app, Uniswap-format token lists (CoinGecko) as an app-side advisory layer with a small device-verified list of major contracts. See [PROTOCOL.md 6d](docs/PROTOCOL.md) | T50 | signs on two chains; a token transfer shows a contract address, not a host-supplied symbol |
 | ~~T50~~ ✅ | Define the decodable transaction set (native transfer, ERC-20 transfer/approve, EIP-712) and **refuse** anything outside it unless blind signing is on. See [PROTOCOL.md 6bis](docs/PROTOCOL.md) | T12 | `sim/test_eth_decode.c` + `eth-decode.test.ts`; `0x0202` before any prompt, and the mock refuses identically. EIP-712 waits on a `signTypedData` command |
 | ~~T17~~ ✅ | Strip Wi-Fi AP from release builds ([S8g](AUDIT.md)) | — | absent from the settings menu in release; 43 KB of flash and 480 bytes of RAM back. `pio run -e esp32s3-wifi` still builds it for testing |
 
@@ -263,7 +263,7 @@ Write the protocol spec first and both sides build against it simultaneously.
 | ~~T25b~~ ✅ | Firmware protocol endpoint over USB-Serial-JTAG, sync-marked so it shares the console port. `scripts/probe-device.py` talks to it | T20 | ping/getFeatures/getStatus answered on hardware; key commands correctly refused |
 | ~~T25c~~ ✅ | Session layer wired in: X25519 handshake, on-device passkey comparison screen, encrypted frames, `getAddress` behind a confirmed session | T25b | handshake works on hardware; key commands refused without confirmation |
 | T56 | Configurable BLE device name, as Ledger allows. Affects advertising, so it is also a privacy control: a name is broadcast to anyone scanning | T25 | name set on-device, persists, appears in the advertisement |
-| T26 | Conformance suite against mock, BLE firmware, USB firmware | T23, T25, T25b | all three identical — this is what keeps the two transports honest |
+| T26 | Conformance suite against mock, BLE firmware, USB firmware | T23, T25, T25b | all three identical — this is what keeps the two transports honest. **USB half done**: `sim/test_protocol.c` runs the real `protocol.c` on the host and found 12 divergences ([PROTOCOL.md 6e](docs/PROTOCOL.md)); BLE waits on T25 |
 
 T23 is the highest-leverage item in the plan: it decouples Track D from all firmware work.
 

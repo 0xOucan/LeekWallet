@@ -505,6 +505,34 @@ Practical notes for whoever builds it:
 - Unlimited-approval detection is the single highest-value warning to implement
   first. It is the pattern behind most drain incidents.
 
+## 6e. Where the firmware and the mock still disagree
+
+`sim/test_protocol.c` runs the real `src/protocol.c` on the host, which is what
+makes "the mock must never be more permissive than the device" checkable instead
+of aspirational. Running it the first time turned up twelve divergences. Two
+were the mock being weaker and are fixed (the passkey-pending state, and errors
+inside a session being encrypted). The rest are recorded here rather than
+quietly patched, because most of them are the **firmware** being behind, and
+deciding which side is right is a protocol question, not a bug fix.
+
+| # | Divergence | Which side is right |
+|---|---|---|
+| 1 | `unlock` is asynchronous on the device (`{prompted:1, unlocked:0}`, host polls); the mock unlocks synchronously | Device. An app built on the mock believes unlocking is instant |
+| 2 | `selectWallet`, `setPassphrase`, `signMessage` exist in the mock, not in the firmware | Mock — these are specified in section 4 and the firmware has not caught up |
+| 3 | `signTransaction` returns `{index, r, s, yParity}` on the device, `{signature, path}` in the mock | Device. Nothing that parses one parses the other |
+| 4 | `getAddress` returns `{address, index}` on the device, `{path, address}` in the mock | Unresolved — pick one and make both match |
+| 5 | `chainId` is mandatory on the device (`0x0001` if absent), ignored by the mock | Device. Signing without knowing the chain is a replay waiting to happen |
+| 6 | Device refuses calldata longer than `ETH_MAX_DATA` (256) before checking decodability; the mock has no bound | Device |
+| 7 | Device rejects an address index above `0x7FFFFFFF`; the mock accepts any non-negative integer | Device |
+| 8 | `getFeatures` includes `initialized` in the mock only; `lock` returns `{}` in the mock, `{unlocked:0}` on the device | Cosmetic, but pick one |
+
+**The sync marker is a documentation bug, not a mock bug.** `protocol.c` requires
+and emits `'L','K'` before every frame because it shares the port with console
+output; section 2 above describes the frame starting at `len:u16`, and
+`framing.ts` implements it that way. The Rust transport adds and strips the
+marker, so both are correct at their own layer — but section 2 should say so,
+because anything else bridging to real hardware has to know.
+
 ## 7. Versioning
 
 `Hello` carries a major version. Mismatch is a hard failure with an upgrade prompt, not a
