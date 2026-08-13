@@ -574,6 +574,104 @@ static void test_settings_has_no_wifi_entry(void)
     CHECK(seen_back, "never reached the end of the settings menu");
 }
 
+/* ============================================================================
+ * T4 / AUDIT S8e - Change PIN is wired up and asks for three PINs
+ * ============================================================================ */
+
+/* Type a PIN on the selector and submit it. */
+static bool type_pin(const char *pin)
+{
+    for (const char *p = pin; *p; p++) {
+        if (!pin_pick(*p - '0')) {
+            return false;
+        }
+    }
+    return pin_pick(PIN_SUBMIT_OPTION);
+}
+
+static void test_change_pin_is_reachable_and_works(void)
+{
+    printf("== Change PIN asks for the old PIN then the new one twice (T4)\n");
+    boot_unlocked_with_seed();
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "setup: vault would not unlock");
+
+    /* Reach it the way a user does, by walking the settings menu. */
+    go(SCREEN_SETTINGS);
+    bool found = false;
+    for (int i = 0; i < 40 && !found; i++) {
+        /* The cursor, not merely the text: several entries are on screen at
+         * once, and pressing ACCEPT acts on the selected one. */
+        if (fake_oled_contains("> Change PIN")) {
+            press(BUTTON_ACCEPT);
+            found = ui_get_screen() == SCREEN_PIN_CHANGE;
+            break;
+        }
+        press(BUTTON_DOWN);
+    }
+    CHECK(found, "Change PIN did not open its screen (screen %d)", ui_get_screen());
+    CHECK_SCREEN(fake_oled_row_contains(0, "Current PIN"),
+                 "header reads \"%s\"", fake_oled_row(0));
+
+    CHECK(type_pin("1234"), "could not enter the current PIN");
+    CHECK_SCREEN(fake_oled_row_contains(0, "New PIN"), "header reads \"%s\"",
+                 fake_oled_row(0));
+
+    CHECK(type_pin("8765"), "could not enter the new PIN");
+    CHECK_SCREEN(fake_oled_row_contains(0, "Confirm"), "header reads \"%s\"",
+                 fake_oled_row(0));
+
+    CHECK(type_pin("8765"), "could not confirm the new PIN");
+    CHECK(ui_get_screen() == SCREEN_SETTINGS,
+          "a completed change did not return to settings (screen %d)",
+          ui_get_screen());
+
+    pin_lock();
+    CHECK(pin_verify("8765"), "the new PIN does not unlock the device");
+    pin_reset_attempts();
+    CHECK(!pin_verify("1234"), "the old PIN still unlocks the device");
+}
+
+static void test_change_pin_rejects_a_wrong_current_pin(void)
+{
+    printf("== a wrong current PIN is refused and said so on screen (T4)\n");
+    boot_unlocked_with_seed();
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "setup: vault would not unlock");
+
+    go(SCREEN_PIN_CHANGE);
+    CHECK(type_pin("9999"), "could not enter a wrong current PIN");
+    CHECK(type_pin("8765"), "could not enter the new PIN");
+    CHECK(type_pin("8765"), "could not confirm the new PIN");
+
+    CHECK(ui_get_screen() == SCREEN_PIN_CHANGE,
+          "a wrong current PIN was accepted (screen %d)", ui_get_screen());
+    CHECK_SCREEN(fake_oled_contains("Wrong current PIN"),
+                 "the refusal does not say why");
+
+    pin_lock();
+    pin_reset_attempts();
+    CHECK(pin_verify("1234"), "the original PIN stopped working");
+}
+
+static void test_change_pin_catches_a_mismatch(void)
+{
+    printf("== a mistyped confirmation restarts at the new PIN (T4)\n");
+    boot_unlocked_with_seed();
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "setup: vault would not unlock");
+
+    go(SCREEN_PIN_CHANGE);
+    CHECK(type_pin("1234"), "could not enter the current PIN");
+    CHECK(type_pin("8765"), "could not enter the new PIN");
+    CHECK(type_pin("8760"), "could not enter the mismatched confirmation");
+
+    CHECK_SCREEN(fake_oled_contains("don't match"), "the mismatch is not stated");
+    CHECK_SCREEN(fake_oled_row_contains(0, "New PIN"),
+                 "did not return to the new PIN (header \"%s\")", fake_oled_row(0));
+
+    pin_lock();
+    pin_reset_attempts();
+    CHECK(pin_verify("1234"), "the PIN changed despite the mismatch");
+}
+
 int main(void)
 {
     test_harness_sees_the_screen();
@@ -597,6 +695,10 @@ int main(void)
     test_passphrase_confirmation_needs_an_address();
 
     test_settings_has_no_wifi_entry();
+
+    test_change_pin_is_reachable_and_works();
+    test_change_pin_rejects_a_wrong_current_pin();
+    test_change_pin_catches_a_mismatch();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");

@@ -104,6 +104,39 @@ void wallet_lock(void);
  */
 bool wallet_verify_password(const char *password, size_t length);
 
+/** Progress during a re-encryption, so the UI can show something moving. */
+typedef void (*WalletProgressFn)(uint8_t done, uint8_t total);
+
+/**
+ * Change the vault password, re-encrypting every stored mnemonic.
+ *
+ * The encryption key is derived from the password, so a new password means new
+ * ciphertext for every wallet. Both passwords are required because that is the
+ * only moment both keys can be derived; there is no way to finish this later.
+ *
+ * Atomic: the vault either opens entirely with the new password or entirely
+ * with the old one, whatever happens to the power. Every wallet is proved
+ * readable before anything is written, so a corrupt slot aborts the change
+ * with the vault untouched (WALLET_ERROR_STORAGE_FAILED).
+ *
+ * @param companion_hash Optional 32 bytes stored inside the same atomic record.
+ *                       src/pin.c uses it to keep its own PIN verifier from
+ *                       drifting out of step with the vault. May be NULL.
+ * @param progress       Optional; called as slots are verified and rewritten.
+ * @return WALLET_OK, or WALLET_ERROR_WRONG_PASSWORD if the old password is
+ *         wrong or the new one is too short.
+ */
+WalletError wallet_change_password(const char *old_password, size_t old_length,
+                                   const char *new_password, size_t new_length,
+                                   const uint8_t companion_hash[32],
+                                   WalletProgressFn progress);
+
+/**
+ * Read the companion verifier from the authoritative vault record.
+ * @return false if no record exists or it carries no companion.
+ */
+bool wallet_get_companion_hash(uint8_t hash_out[32]);
+
 // ========== BIP39 Passphrase ========== //
 
 /**

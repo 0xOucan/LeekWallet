@@ -11,6 +11,7 @@
 #include "sha2.h"
 #include "memzero.h"
 #include "esp_log.h"
+#include "leek-wallet.h"
 
 static const char *TAG = "pin";
 
@@ -27,6 +28,10 @@ static bool pin_initialized = false;
 static uint8_t remaining_attempts = PIN_MAX_ATTEMPTS;
 static char current_pin[PIN_MAX_LENGTH + 1] = {0};
 static bool pin_verified = false;
+
+/* Set by the UI so a re-encryption that takes seconds can show progress
+ * instead of a frozen screen. NULL everywhere else. */
+static WalletProgressFn pin_change_progress = NULL;
 
 /**
  * Hash PIN for storage using SHA256 with key stretching
@@ -55,6 +60,7 @@ void pin__reset_static_state_for_test(void)
 {
     pin_initialized    = false;
     pin_verified       = false;
+    pin_change_progress = NULL;
     remaining_attempts = PIN_MAX_ATTEMPTS;
     memzero(current_pin, sizeof(current_pin));
 }
@@ -105,6 +111,11 @@ bool pin_init(void)
 
     pin_initialized = true;
     pin_verified = false;
+
+    /* A PIN change interrupted after the vault flipped leaves this module's
+     * hash behind. Catch up before anyone is asked to type a PIN. */
+    pin_reconcile_with_vault();
+
     ESP_LOGI(TAG, "Initialized, attempts=%d", remaining_attempts);
 
     return true;
@@ -186,6 +197,9 @@ bool pin_verify(const char *pin)
     }
 
     ESP_LOGI(TAG, "Verify: start");
+
+    /* Cheap, and pin_init() may have run before the vault's NVS was up. */
+    pin_reconcile_with_vault();
 
     if (!pin_is_valid_format(pin)) {
         ESP_LOGW(TAG, "Verify: invalid format");
@@ -295,15 +309,91 @@ void pin_wipe(void)
     ESP_LOGI(TAG, "Wiped");
 }
 
+/**
+ * Adopt the PIN verifier carried inside the vault's atomic record.
+ *
+ * A PIN change flips the vault - generation and password verifier in one
+ * write - and only afterwards rewrites this module's own hash. Power lost in
+ * between would leave the vault opening with the new PIN while this hash still
+ * demanded the old one, and the user locked out of a vault that is perfectly
+ * intact. The vault record is therefore the authority, and this catches up to
+ * it at boot. Idempotent, and a no-op on devices that have never had their PIN
+ * changed.
+ */
+void pin_reconcile_with_vault(void)
+{
+    uint8_t authoritative[PIN_HASH_SIZE];
+    if (!wallet_get_companion_hash(authoritative)) {
+        return;
+    }
+
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        memzero(authoritative, sizeof(authoritative));
+        return;
+    }
+
+    uint8_t stored[PIN_HASH_SIZE];
+    size_t len = PIN_HASH_SIZE;
+    esp_err_t err = nvs_get_blob(nvs, KEY_PIN_HASH, stored, &len);
+
+    if (err != ESP_OK || len != PIN_HASH_SIZE ||
+        memcmp(stored, authoritative, PIN_HASH_SIZE) != 0) {
+        nvs_set_blob(nvs, KEY_PIN_HASH, authoritative, PIN_HASH_SIZE);
+        nvs_commit(nvs);
+        ESP_LOGW(TAG, "PIN hash resynced from the vault record");
+    }
+
+    nvs_close(nvs);
+    memzero(stored, sizeof(stored));
+    memzero(authoritative, sizeof(authoritative));
+}
+
 bool pin_change(const char *current_pin_str, const char *new_pin)
 {
-    /* Verify current PIN first */
+    if (!pin_is_valid_format(new_pin)) {
+        return false;
+    }
+
+    /* Verify current PIN first. Costs an attempt, refunded on success. */
     if (!pin_verify(current_pin_str)) {
         return false;
     }
 
-    /* Set new PIN */
+    /* The PIN is the vault password: every stored mnemonic is encrypted under
+     * a key derived from it. Setting a new PIN hash without re-encrypting them
+     * would leave every seed locked under a key nobody can derive again -
+     * silent, total loss of funds - so the vault moves first and this module's
+     * hash follows.
+     *
+     * The new hash is handed to the vault so it lands inside the same atomic
+     * record as the generation flip; pin_reconcile_with_vault() recovers the
+     * gap between that flip and the pin_set() below. */
+    uint8_t new_hash[PIN_HASH_SIZE];
+    hash_pin(new_pin, new_hash);
+
+    WalletStatus status = wallet_get_status();
+    if (status.password_set) {
+        WalletError err = wallet_change_password(current_pin_str, strlen(current_pin_str),
+                                                 new_pin, strlen(new_pin),
+                                                 new_hash, pin_change_progress);
+        if (err != WALLET_OK) {
+            ESP_LOGE(TAG, "Vault re-encryption failed (%d); PIN unchanged", (int)err);
+            memzero(new_hash, sizeof(new_hash));
+            return false;
+        }
+    }
+
+    memzero(new_hash, sizeof(new_hash));
+
+    /* Storage is already consistent at this point; this only saves the next
+     * boot a resync. */
     return pin_set(new_pin);
+}
+
+void pin_set_change_progress(WalletProgressFn fn)
+{
+    pin_change_progress = fn;
 }
 
 bool pin_is_valid_format(const char *pin)

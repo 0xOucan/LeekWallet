@@ -36,6 +36,9 @@ static struct {
     bool has_passphrase;
 } w;
 
+/* Recorded so the PIN-change path has a real "wrong current PIN" to hit. */
+static char fake_password[16] = {0};
+
 /* Valid phrases from the BIP39 test vectors, so the checksum path is genuine. */
 static const char *FAKE_12 =
     "legal winner thank year wave sausage worth useful legal winner thank yellow";
@@ -46,6 +49,7 @@ static const char *FAKE_24 =
 void fake_wallet_reset(void)
 {
     memset(&w, 0, sizeof(w));
+    memzero(fake_password, sizeof(fake_password));
     fake_wallet_fail_derivation(false);
 }
 
@@ -88,20 +92,22 @@ WalletStatus wallet_get_status(void)
 
 WalletError wallet_set_password(const char *password, size_t length)
 {
-    (void)password;
-    if (length == 0) {
+    if (length == 0 || length >= sizeof(fake_password)) {
         return WALLET_ERROR_WRONG_PASSWORD;
     }
+    memcpy(fake_password, password, length);
+    fake_password[length] = '\0';
     w.password_set = true;
     return WALLET_OK;
 }
 
 WalletError wallet_unlock(const char *password, size_t length)
 {
-    (void)password;
-    if (length == 0) {
+    if (length == 0 || length >= sizeof(fake_password)) {
         return WALLET_ERROR_WRONG_PASSWORD;
     }
+    memcpy(fake_password, password, length);
+    fake_password[length] = '\0';
     w.initialized = true;
     w.password_set = true;
     w.unlocked = true;
@@ -226,4 +232,52 @@ WalletError wallet_get_address_at_path(const HDPath *path, EthAddress *address_o
              "0x%02x%02x%s", w.active, (unsigned)(path->address_index & 0xFF),
              "aaaaaaaabbbbbbbbccccccccddddddddeeee");
     return WALLET_OK;
+}
+
+/* ---------------------------------------------------- PIN change surface */
+
+/* The UI only needs to know whether the change succeeded and that progress was
+ * reported; the crash-safety of the real re-encryption is tested against the
+ * real leek-wallet.c in test_pin_change.c, not here. */
+
+WalletError wallet_change_password(const char *old_password, size_t old_length,
+                                   const char *new_password, size_t new_length,
+                                   const uint8_t companion_hash[32],
+                                   WalletProgressFn progress)
+{
+    (void)companion_hash;
+
+    if (!w.password_set) {
+        return WALLET_ERROR_WRONG_PASSWORD;
+    }
+    if (fake_password[0] != '\0' &&
+        (old_length != strlen(fake_password) ||
+         memcmp(old_password, fake_password, old_length) != 0)) {
+        return WALLET_ERROR_WRONG_PASSWORD;
+    }
+    if (!new_password || new_length == 0 || new_length >= sizeof(fake_password)) {
+        return WALLET_ERROR_WRONG_PASSWORD;
+    }
+
+    if (progress) {
+        progress(1, 1);
+    }
+    memcpy(fake_password, new_password, new_length);
+    fake_password[new_length] = '\0';
+    return WALLET_OK;
+}
+
+bool wallet_verify_password(const char *password, size_t length)
+{
+    if (!w.password_set || fake_password[0] == '\0') {
+        return false;
+    }
+    return length == strlen(fake_password) &&
+           memcmp(password, fake_password, length) == 0;
+}
+
+bool wallet_get_companion_hash(uint8_t hash_out[32])
+{
+    (void)hash_out;
+    return false;
 }

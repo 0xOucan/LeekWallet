@@ -160,6 +160,18 @@ static const screen_t screen_pin_unlock = {
     .exit = forget_pin_entry
 };
 
+static void screen_pin_change_enter(void);
+static void screen_pin_change_render(void);
+static void screen_pin_change_on_button(button_id_t btn);
+static void screen_pin_change_exit(screen_id_t next);
+
+static const screen_t screen_pin_change = {
+    .enter = screen_pin_change_enter,
+    .render = screen_pin_change_render,
+    .on_button = screen_pin_change_on_button,
+    .exit = screen_pin_change_exit
+};
+
 static const screen_t screen_main_menu = {
     .enter = screen_main_menu_enter,
     .render = screen_main_menu_render,
@@ -1063,6 +1075,204 @@ static void screen_pin_unlock_on_button(button_id_t btn)
                         ui_set_screen(SCREEN_PIN_SETUP);
                     }
                 }
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    ui_invalidate();
+}
+
+/* ============================================================================
+ * PIN Change Screen
+ *
+ * Three entries: the current PIN, then the new one twice. The current PIN is
+ * needed for more than authorisation - it derives the key every stored
+ * mnemonic is encrypted under, and re-encrypting them needs both keys at once.
+ * ============================================================================ */
+
+typedef enum {
+    PIN_CHANGE_CURRENT = 0,
+    PIN_CHANGE_NEW,
+    PIN_CHANGE_CONFIRM,
+} PinChangePhase;
+
+static PinChangePhase pin_change_phase = PIN_CHANGE_CURRENT;
+static char pin_change_current[PIN_MAX_LENGTH + 1] = {0};
+static char pin_change_message[22] = {0};
+
+static void pin_change_clear_secrets(void)
+{
+    memzero(pin_change_current, sizeof(pin_change_current));
+    memzero(pin_first_entry, sizeof(pin_first_entry));
+    pin_entry_reset();
+}
+
+/* Re-encryption is seconds of PBKDF2 and AES with no button polling in
+ * between, so without this the device looks hung at exactly the moment the
+ * user must not pull the power. */
+static void pin_change_progress_cb(uint8_t done, uint8_t total)
+{
+    oled_clear();
+    oled_draw_string_centered(1, "Changing PIN");
+    oled_draw_string_centered(3, "Re-encrypting...");
+
+    char line[22];
+    snprintf(line, sizeof(line), "%d of %d", (int)done, (int)total);
+    oled_draw_string_centered(5, line);
+    oled_draw_string_centered(7, "Do not power off");
+    oled_flush();
+}
+
+static void screen_pin_change_enter(void)
+{
+    ESP_LOGI(TAG, "PIN change screen");
+    pin_change_phase = PIN_CHANGE_CURRENT;
+    pin_change_message[0] = '\0';
+    pin_change_clear_secrets();
+}
+
+static void screen_pin_change_exit(screen_id_t next)
+{
+    (void)next;
+    pin_change_clear_secrets();
+    pin_set_change_progress(NULL);
+}
+
+static void screen_pin_change_render(void)
+{
+    oled_clear();
+
+    switch (pin_change_phase) {
+        case PIN_CHANGE_CURRENT: oled_draw_string_centered(0, "Current PIN"); break;
+        case PIN_CHANGE_NEW:     oled_draw_string_centered(0, "New PIN");     break;
+        case PIN_CHANGE_CONFIRM: oled_draw_string_centered(0, "Confirm New PIN"); break;
+    }
+
+    char digit_line[22];
+    pin_option_label(digit_line, sizeof(digit_line));
+    oled_draw_string_centered(2, digit_line);
+
+    char display[PIN_DISPLAY_LEN + 3];
+    display[0] = '[';
+    for (int i = 0; i < PIN_DISPLAY_LEN; i++) {
+        display[i + 1] = (i < pin_cursor) ? '*' : '_';
+    }
+    display[PIN_DISPLAY_LEN + 1] = ']';
+    display[PIN_DISPLAY_LEN + 2] = '\0';
+    oled_draw_string_centered(4, display);
+
+    if (pin_change_message[0] != '\0') {
+        oled_draw_string_centered(5, pin_change_message);
+    } else if (pin_can_submit()) {
+        oled_draw_string_centered(5, "Pick OK when done");
+    } else {
+        char progress[22];
+        snprintf(progress, sizeof(progress), "%d of %d min", pin_cursor, PIN_MIN_LENGTH);
+        oled_draw_string_centered(5, progress);
+    }
+
+    oled_draw_string(7, 0, "UP DN  DEL  SEL");
+}
+
+/* The whole change, once all three PINs are in hand. */
+static void pin_change_commit(void)
+{
+    pin_set_change_progress(pin_change_progress_cb);
+    bool ok = pin_change(pin_change_current, pin_first_entry);
+    pin_set_change_progress(NULL);
+
+    if (ok) {
+        ESP_LOGI(TAG, "PIN changed");
+        pin_change_clear_secrets();
+        ui_set_screen(SCREEN_SETTINGS);
+        return;
+    }
+
+    /* Say which failure it was. "Wrong PIN" and "a wallet would not decrypt"
+     * call for completely different reactions from the user, and a device that
+     * refuses without explaining leaves them retyping a PIN that was right.
+     * Asking the vault afterwards is safe: it costs no attempt, and the answer
+     * is one the user just proved they are entitled to. */
+    if (wallet_verify_password(pin_change_current, strlen(pin_change_current))) {
+        strncpy(pin_change_message, "Wallet unreadable", sizeof(pin_change_message) - 1);
+        ESP_LOGE(TAG, "PIN change refused: a wallet failed verification");
+    } else {
+        strncpy(pin_change_message, "Wrong current PIN", sizeof(pin_change_message) - 1);
+    }
+    pin_change_message[sizeof(pin_change_message) - 1] = '\0';
+
+    /* Nothing was written, so start over rather than leaving half the entries
+     * standing. */
+    pin_change_phase = PIN_CHANGE_CURRENT;
+    pin_change_clear_secrets();
+
+    if (pin_should_wipe()) {
+        device_wipe();
+        ui_set_screen(SCREEN_PIN_SETUP);
+    }
+}
+
+static void screen_pin_change_on_button(button_id_t btn)
+{
+    switch (btn) {
+        case BUTTON_UP:
+            pin_option_scroll(1);
+            break;
+
+        case BUTTON_DOWN:
+            pin_option_scroll(-1);
+            break;
+
+        case BUTTON_CANCEL:
+            if (pin_cursor > 0) {
+                pin_entry_backspace();
+                current_digit = 0;
+            } else {
+                pin_change_clear_secrets();
+                ui_set_screen(SCREEN_SETTINGS);
+                return;
+            }
+            break;
+
+        case BUTTON_ACCEPT:
+            if (current_digit != PIN_OPTION_SUBMIT) {
+                if (pin_cursor < PIN_MAX_LENGTH) {
+                    pin_entry_add_digit(current_digit);
+                }
+                current_digit = 0;
+                break;
+            }
+
+            if (!pin_can_submit()) {
+                break;
+            }
+            current_digit = 0;
+            pin_change_message[0] = '\0';
+
+            if (pin_change_phase == PIN_CHANGE_CURRENT) {
+                strncpy(pin_change_current, pin_entry, PIN_MAX_LENGTH);
+                pin_change_current[PIN_MAX_LENGTH] = '\0';
+                pin_entry_reset();
+                pin_change_phase = PIN_CHANGE_NEW;
+            } else if (pin_change_phase == PIN_CHANGE_NEW) {
+                strncpy(pin_first_entry, pin_entry, PIN_MAX_LENGTH);
+                pin_first_entry[PIN_MAX_LENGTH] = '\0';
+                pin_entry_reset();
+                pin_change_phase = PIN_CHANGE_CONFIRM;
+            } else {
+                if (strcmp(pin_first_entry, pin_entry) != 0) {
+                    strncpy(pin_change_message, "PINs don't match",
+                            sizeof(pin_change_message) - 1);
+                    pin_entry_reset();
+                    memzero(pin_first_entry, sizeof(pin_first_entry));
+                    pin_change_phase = PIN_CHANGE_NEW;
+                    break;
+                }
+                pin_change_commit();
+                return;
             }
             break;
 
@@ -2149,7 +2359,7 @@ static void screen_settings_on_button(button_id_t btn)
                              lock_timeout_label(lock_timeout_choice));
                     break;
                 case SET_CHANGE_PIN:
-                    ESP_LOGI(TAG, "Change PIN not yet implemented");
+                    ui_set_screen(SCREEN_PIN_CHANGE);
                     break;
 #ifdef CONFIG_ESP_WIFI_ENABLED
                 case SET_WIFI: wifi_test_toggle(); break;
@@ -3192,6 +3402,7 @@ void ui_init(void)
     screens[SCREEN_BOOT] = &screen_boot;
     screens[SCREEN_PIN_SETUP] = &screen_pin_setup;
     screens[SCREEN_PIN_UNLOCK] = &screen_pin_unlock;
+    screens[SCREEN_PIN_CHANGE] = &screen_pin_change;
     screens[SCREEN_MAIN_MENU] = &screen_main_menu;
     screens[SCREEN_WALLET_INFO] = &screen_wallet_info;
     screens[SCREEN_MNEMONIC_ENTRY] = &screen_mnemonic_entry;
@@ -3412,6 +3623,9 @@ void ui__reset_static_state_for_test(void)
     pin_cursor = 0;
     current_digit = 0;
     pin_confirm_mode = false;
+    pin_change_phase = PIN_CHANGE_CURRENT;
+    memzero(pin_change_current, sizeof(pin_change_current));
+    memzero(pin_change_message, sizeof(pin_change_message));
 
     verify_done = false;
     verify_current = 0;

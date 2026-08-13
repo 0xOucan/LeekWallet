@@ -219,6 +219,32 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *len)
     return load(h, key, out, len);
 }
 
+esp_err_t nvs_erase_key(nvs_handle_t handle, const char *key)
+{
+    if (handle == 0 || handle > MAX_HANDLES || !handles[handle - 1].used) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (crashed) {
+        return ESP_OK;
+    }
+
+    write_count++;
+    if (crash_at > 0 && write_count > crash_at) {
+        crashed = true;
+        return ESP_OK;
+    }
+
+    for (int i = 0; i < MAX_ENTRIES; i++) {
+        if (entries[i].used &&
+            strcmp(entries[i].ns, handles[handle - 1].ns) == 0 &&
+            strcmp(entries[i].key, key) == 0) {
+            memset(&entries[i], 0, sizeof(entries[i]));
+            return ESP_OK;
+        }
+    }
+    return ESP_ERR_NVS_NOT_FOUND;
+}
+
 esp_err_t nvs_erase_all(nvs_handle_t handle)
 {
     if (handle == 0 || handle > MAX_HANDLES || !handles[handle - 1].used) {

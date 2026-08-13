@@ -33,6 +33,7 @@
 #include "mbedtls/aes.h"
 
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 static const char *TAG = "wallet";
@@ -45,7 +46,8 @@ static const char *TAG = "wallet";
 #define KEY_KDF_VERSION "kdf_ver"    // absent => legacy v1
 #define KEY_KDF_SALT "kdf_salt"      // 16 bytes, per device
 #define KEY_BACKUP_OK "backup_ok"    // bitmask: wallet N verified
-// Indexed keys: mnemonic_1, mnemonic_2, ..., iv_1, iv_2, ...
+#define KEY_VAULT_REC "vault_rec"    // generation + verifiers, see VaultRecord
+// Indexed keys: m<gen>_1, m<gen>_2, ..., iv<gen>_1, ... (legacy: m_1, iv_1)
 
 // Limits
 #define MAX_MNEMONIC_LENGTH 256
@@ -115,12 +117,211 @@ static void invalidate_seed_cache(void) {
 
 // ========== Indexed Storage Helpers ========== //
 
+// ========== Generation-Scoped Slots ========== //
+//
+// Changing the PIN changes the key every mnemonic is encrypted under, so every
+// mnemonic has to be rewritten. Rewriting them in place is not crash-safe: cut
+// power halfway and half the vault is under the old key and half under the new,
+// and whichever PIN the user types afterwards opens only half their wallets.
+//
+// So slots are generation-scoped instead. The re-encryption writes into the
+// generation that is *not* live, leaving the live one untouched, and a single
+// record then names which generation is authoritative. Until that one write
+// lands the old generation is still the vault; after it lands the new one is.
+// There is no in-between state to be interrupted in.
+//
+// Two generations are enough: at any moment there is the live one and the one
+// being built.
+//
+// The record carries the password verifier as well, and that pairing is the
+// whole point. A generation stored separately from the hash that opens it can
+// be updated separately, which is the bug this design exists to remove.
+
+#define VAULT_REC_VERSION 1
+
+typedef struct {
+    uint8_t version;
+    uint8_t generation;         // 0 or 1
+    uint8_t reserved[2];
+    uint8_t password_hash[HASH_SIZE];
+    /* An opaque verifier owned by src/pin.c. It rides along because the PIN
+     * and the vault password are the same secret, and two verifiers for one
+     * secret updated by two writes can disagree across a power cut. */
+    uint8_t companion_hash[HASH_SIZE];
+    uint8_t has_companion;
+} VaultRecord;
+
+/* Which slots the read/write helpers currently address. Swapped around
+ * individual load/save calls during a re-encryption, the same way
+ * vault_version is. */
+typedef struct {
+    bool    legacy;   // un-suffixed m_N / iv_N, from before generations existed
+    uint8_t gen;
+} VaultLayout;
+
+static VaultLayout active_layout = { .legacy = true, .gen = 0 };
+static bool    vault_rec_present = false;
+static bool    vault_rec_loaded  = false;
+static uint8_t vault_stored_hash[HASH_SIZE] = {0};
+static bool    vault_stored_hash_valid = false;
+static uint8_t vault_companion_hash[HASH_SIZE] = {0};
+static bool    vault_companion_valid = false;
+
+// Read the authoritative record, falling back to the pre-generation layout.
+//
+// A device that has never had its PIN changed has no record: its mnemonics sit
+// under un-suffixed keys and its verifier under pwd_hash. That vault must keep
+// opening, so its absence is a valid state rather than an error - it is simply
+// read as the legacy layout until the first PIN change moves it.
+static void load_vault_record(void) {
+    if (vault_rec_loaded) {
+        return;
+    }
+    vault_rec_loaded = true;
+
+    active_layout.legacy = true;
+    active_layout.gen = 0;
+    vault_rec_present = false;
+    vault_stored_hash_valid = false;
+    vault_companion_valid = false;
+
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return;
+    }
+
+    VaultRecord rec;
+    size_t len = sizeof(rec);
+    esp_err_t err = nvs_get_blob(nvs, KEY_VAULT_REC, &rec, &len);
+    if (err == ESP_OK && len == sizeof(rec) &&
+        rec.version == VAULT_REC_VERSION && rec.generation <= 1) {
+        vault_rec_present = true;
+        active_layout.legacy = false;
+        active_layout.gen = rec.generation;
+        memcpy(vault_stored_hash, rec.password_hash, HASH_SIZE);
+        vault_stored_hash_valid = true;
+        if (rec.has_companion) {
+            memcpy(vault_companion_hash, rec.companion_hash, HASH_SIZE);
+            vault_companion_valid = true;
+        }
+    } else {
+        size_t hlen = HASH_SIZE;
+        if (nvs_get_blob(nvs, KEY_PASSWORD_HASH, vault_stored_hash, &hlen) == ESP_OK &&
+            hlen == HASH_SIZE) {
+            vault_stored_hash_valid = true;
+        }
+    }
+    memzero(&rec, sizeof(rec));
+    nvs_close(nvs);
+}
+
+// The entire atomicity of a PIN change: one blob, one commit. Generation and
+// verifier flip together or neither does.
+static WalletError write_vault_record(uint8_t generation,
+                                      const uint8_t password_hash[HASH_SIZE],
+                                      const uint8_t companion_hash[HASH_SIZE]) {
+    VaultRecord rec;
+    memzero(&rec, sizeof(rec));
+    rec.version = VAULT_REC_VERSION;
+    rec.generation = generation;
+    memcpy(rec.password_hash, password_hash, HASH_SIZE);
+    if (companion_hash) {
+        memcpy(rec.companion_hash, companion_hash, HASH_SIZE);
+        rec.has_companion = 1;
+    }
+
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        memzero(&rec, sizeof(rec));
+        return WALLET_ERROR_STORAGE_FAILED;
+    }
+    esp_err_t err = nvs_set_blob(nvs, KEY_VAULT_REC, &rec, sizeof(rec));
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+
+    if (err != ESP_OK) {
+        memzero(&rec, sizeof(rec));
+        return WALLET_ERROR_STORAGE_FAILED;
+    }
+
+    vault_rec_loaded = true;
+    vault_rec_present = true;
+    active_layout.legacy = false;
+    active_layout.gen = generation;
+    memcpy(vault_stored_hash, password_hash, HASH_SIZE);
+    vault_stored_hash_valid = true;
+    if (companion_hash) {
+        memcpy(vault_companion_hash, companion_hash, HASH_SIZE);
+        vault_companion_valid = true;
+    } else {
+        vault_companion_valid = false;
+    }
+    memzero(&rec, sizeof(rec));
+    return WALLET_OK;
+}
+
+static void slot_key(const char *prefix, uint8_t index, char *key, size_t key_size) {
+    load_vault_record();
+    if (active_layout.legacy) {
+        snprintf(key, key_size, "%s_%d", prefix, index);
+    } else {
+        snprintf(key, key_size, "%s%u_%d", prefix, (unsigned)active_layout.gen, index);
+    }
+}
+
 static void get_mnemonic_key(uint8_t index, char *key, size_t key_size) {
-    snprintf(key, key_size, "m_%d", index);
+    slot_key("m", index, key, key_size);
 }
 
 static void get_iv_key(uint8_t index, char *key, size_t key_size) {
-    snprintf(key, key_size, "iv_%d", index);
+    slot_key("iv", index, key, key_size);
+}
+
+// Erase everything the authoritative record does not point at.
+//
+// Best-effort by design. A crash before the flip leaves a half-written
+// generation nobody reads; a crash after it leaves the previous generation
+// orphaned. Both are harmless - stale ciphertext under a key the user no
+// longer types - so this runs at boot and after a change, and failing is fine.
+static void erase_stale_slots(void) {
+    load_vault_record();
+
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+
+    for (uint8_t i = 1; i <= MAX_WALLETS; i++) {
+        char key[16];
+        if (!active_layout.legacy) {
+            /* The record is authoritative, so the pre-generation slots are
+             * dead weight - and leaving old ciphertext behind is worse than
+             * pointless, it is a copy of the seed under a retired key. */
+            snprintf(key, sizeof(key), "m_%d", i);   nvs_erase_key(nvs, key);
+            snprintf(key, sizeof(key), "iv_%d", i);  nvs_erase_key(nvs, key);
+        }
+        for (uint8_t g = 0; g <= 1; g++) {
+            if (!active_layout.legacy && g == active_layout.gen) {
+                continue;
+            }
+            snprintf(key, sizeof(key), "m%u_%d", (unsigned)g, i);  nvs_erase_key(nvs, key);
+            snprintf(key, sizeof(key), "iv%u_%d", (unsigned)g, i); nvs_erase_key(nvs, key);
+        }
+    }
+
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
+bool wallet_get_companion_hash(uint8_t hash_out[32]) {
+    load_vault_record();
+    if (!vault_companion_valid || !hash_out) {
+        return false;
+    }
+    memcpy(hash_out, vault_companion_hash, HASH_SIZE);
+    return true;
 }
 
 // ========== Helper Functions ========== //
@@ -725,24 +926,39 @@ static WalletError migrate_vault_to_current(const char *password, size_t length)
     // retry on the next unlock picks up where this one stopped.
     compute_password_hash(password, length, state.password_hash);
 
-    nvs_handle_t nvs;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
-        memzero(old_key, sizeof(old_key));
-        memzero(new_key, sizeof(new_key));
-        return WALLET_ERROR_STORAGE_FAILED;
+    /* Same generation - a KDF migration rewrites blobs in place - but the
+     * verifier must travel with whichever record is authoritative, or the new
+     * hash and the generation it belongs to end up in different places. */
+    load_vault_record();
+    WalletError nerr;
+    if (vault_rec_present) {
+        nerr = write_vault_record(active_layout.gen, state.password_hash,
+                                  vault_companion_valid ? vault_companion_hash : NULL);
+    } else {
+        nvs_handle_t nvs;
+        if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+            memzero(old_key, sizeof(old_key));
+            memzero(new_key, sizeof(new_key));
+            return WALLET_ERROR_STORAGE_FAILED;
+        }
+        esp_err_t werr = nvs_set_blob(nvs, KEY_PASSWORD_HASH, state.password_hash, HASH_SIZE);
+        if (werr == ESP_OK) {
+            werr = nvs_commit(nvs);
+        }
+        nvs_close(nvs);
+        if (werr == ESP_OK) {
+            memcpy(vault_stored_hash, state.password_hash, HASH_SIZE);
+            vault_stored_hash_valid = true;
+        }
+        nerr = (werr == ESP_OK) ? WALLET_OK : WALLET_ERROR_STORAGE_FAILED;
     }
-    esp_err_t nerr = nvs_set_blob(nvs, KEY_PASSWORD_HASH, state.password_hash, HASH_SIZE);
-    if (nerr == ESP_OK) {
-        nvs_commit(nvs);
-    }
-    nvs_close(nvs);
 
     memzero(old_key, sizeof(old_key));
     memzero(resume_key, sizeof(resume_key));
     memcpy(state.encryption_key, new_key, sizeof(new_key));
     memzero(new_key, sizeof(new_key));
 
-    if (nerr != ESP_OK) {
+    if (nerr != WALLET_OK) {
         return WALLET_ERROR_STORAGE_FAILED;
     }
 
@@ -834,6 +1050,24 @@ WalletError wallet_get_address_at_path(const HDPath *path, EthAddress *address_o
     return err;
 }
 
+#ifdef LEEK_HOST_TEST
+/* Host tests only: drop every byte of RAM state so wallet_init() re-reads
+ * storage, which is the only way to simulate a reboot in-process. Compiled out
+ * of firmware builds entirely. */
+void wallet__reset_static_state_for_test(void) {
+    memzero(&state, sizeof(state));
+    vault_rec_loaded = false;
+    vault_rec_present = false;
+    vault_stored_hash_valid = false;
+    vault_companion_valid = false;
+    vault_params_loaded = false;
+    active_layout.legacy = true;
+    active_layout.gen = 0;
+    memzero(vault_stored_hash, sizeof(vault_stored_hash));
+    memzero(vault_companion_hash, sizeof(vault_companion_hash));
+}
+#endif
+
 // ========== Public API ========== //
 
 WalletError wallet_init(void) {
@@ -852,15 +1086,10 @@ WalletError wallet_init(void) {
         return WALLET_ERROR_STORAGE_FAILED;
     }
 
-    // Check if password hash exists
-    nvs_handle_t nvs;
-    err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
-    if (err == ESP_OK) {
-        size_t hash_len = HASH_SIZE;
-        err = nvs_get_blob(nvs, KEY_PASSWORD_HASH, NULL, &hash_len);
-        state.password_set = (err == ESP_OK && hash_len == HASH_SIZE);
-        nvs_close(nvs);
-    }
+    // Whether a password exists, and which generation opens it, come from the
+    // same record - asking two sources is how they get to disagree.
+    load_vault_record();
+    state.password_set = vault_stored_hash_valid;
 
     state.initialized = true;
     state.unlocked = false;
@@ -873,6 +1102,10 @@ WalletError wallet_init(void) {
      * open one. */
     load_wallet_metadata();
     load_vault_params();
+
+    /* Sweep up whatever an interrupted PIN change left behind. Safe at any
+     * boot because the record already decided which generation is real. */
+    erase_stale_slots();
 
     ESP_LOGI(TAG, "Wallet initialized, password_set=%d, wallets=%d, active=%d, vault=v%d",
              state.password_set, state.wallet_count, state.active_wallet_index,
@@ -914,21 +1147,37 @@ WalletError wallet_set_password(const char *password, size_t length) {
     compute_password_hash(password, length, state.password_hash);
     derive_key_from_password(password, length, state.encryption_key);
 
-    // Save password hash
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
-    if (err != ESP_OK) {
-        return WALLET_ERROR_STORAGE_FAILED;
-    }
+    /* A vault that already has a password and no record is a pre-generation
+     * device, and its mnemonics live under un-suffixed keys. Publishing a
+     * record here would silently repoint the vault at an empty generation, so
+     * that case keeps the old key. Moving it is the PIN change's job, which
+     * re-encrypts before it flips. */
+    load_vault_record();
+    bool keep_legacy = active_layout.legacy && vault_stored_hash_valid;
 
-    err = nvs_set_blob(nvs, KEY_PASSWORD_HASH, state.password_hash, HASH_SIZE);
-    if (err != ESP_OK) {
+    if (!keep_legacy) {
+        WalletError rerr = write_vault_record(active_layout.legacy ? 0 : active_layout.gen,
+                                              state.password_hash, NULL);
+        if (rerr != WALLET_OK) {
+            return rerr;
+        }
+    } else {
+        nvs_handle_t nvs;
+        esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+        if (err != ESP_OK) {
+            return WALLET_ERROR_STORAGE_FAILED;
+        }
+        err = nvs_set_blob(nvs, KEY_PASSWORD_HASH, state.password_hash, HASH_SIZE);
+        if (err == ESP_OK) {
+            err = nvs_commit(nvs);
+        }
         nvs_close(nvs);
-        return WALLET_ERROR_STORAGE_FAILED;
+        if (err != ESP_OK) {
+            return WALLET_ERROR_STORAGE_FAILED;
+        }
+        memcpy(vault_stored_hash, state.password_hash, HASH_SIZE);
+        vault_stored_hash_valid = true;
     }
-
-    nvs_commit(nvs);
-    nvs_close(nvs);
 
     state.password_set = true;
     state.unlocked = true;
@@ -949,21 +1198,9 @@ WalletError wallet_unlock(const char *password, size_t length) {
     uint8_t hash[HASH_SIZE];
     compute_password_hash(password, length, hash);
 
-    // Load stored hash
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
-    if (err != ESP_OK) {
-        return WALLET_ERROR_STORAGE_FAILED;
-    }
-
-    uint8_t stored_hash[HASH_SIZE];
-    size_t hash_len = HASH_SIZE;
-    err = nvs_get_blob(nvs, KEY_PASSWORD_HASH, stored_hash, &hash_len);
-    nvs_close(nvs);
-
-    if (err != ESP_OK || memcmp(hash, stored_hash, HASH_SIZE) != 0) {
+    load_vault_record();
+    if (!vault_stored_hash_valid || memcmp(hash, vault_stored_hash, HASH_SIZE) != 0) {
         memzero(hash, sizeof(hash));
-        memzero(stored_hash, sizeof(stored_hash));
         return WALLET_ERROR_WRONG_PASSWORD;
     }
 
@@ -972,7 +1209,6 @@ WalletError wallet_unlock(const char *password, size_t length) {
     derive_key_from_password(password, length, state.encryption_key);
 
     memzero(hash, sizeof(hash));
-    memzero(stored_hash, sizeof(stored_hash));
 
     state.unlocked = true;
 
@@ -1030,23 +1266,167 @@ bool wallet_verify_password(const char *password, size_t length) {
     uint8_t hash[HASH_SIZE];
     compute_password_hash(password, length, hash);
 
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
-    if (err != ESP_OK) {
-        return false;
-    }
-
-    uint8_t stored_hash[HASH_SIZE];
-    size_t hash_len = HASH_SIZE;
-    err = nvs_get_blob(nvs, KEY_PASSWORD_HASH, stored_hash, &hash_len);
-    nvs_close(nvs);
-
-    bool match = (err == ESP_OK && memcmp(hash, stored_hash, HASH_SIZE) == 0);
+    load_vault_record();
+    bool match = vault_stored_hash_valid &&
+                 memcmp(hash, vault_stored_hash, HASH_SIZE) == 0;
 
     memzero(hash, sizeof(hash));
-    memzero(stored_hash, sizeof(stored_hash));
 
     return match;
+}
+
+// ========== Change Password ========== //
+
+/**
+ * Re-encrypt the whole vault under a new password.
+ *
+ * This is the one moment both keys can exist: the caller has just supplied
+ * both passwords. There is no resuming it later from one PIN and two keys, so
+ * it cannot be made restartable - it has to be made atomic instead, which is
+ * what the generation split above buys.
+ *
+ * Order:
+ *   1. verify the old password;
+ *   2. prove every wallet is readable under the old key, writing nothing;
+ *   3. copy each wallet into the other generation under the new key;
+ *   4. flip the record - one blob, one commit, generation and verifier
+ *      together;
+ *   5. erase the generation nobody reads any more.
+ *
+ * Step 2 matters as much as step 4: converting a vault with one corrupt slot
+ * would turn "one wallet is broken" into "the PIN opens a vault missing a
+ * wallet", and the user would find out much later. Aborting leaves the vault
+ * exactly as it was.
+ *
+ * A crash in step 3 leaves the old generation and old verifier authoritative;
+ * a crash in step 5 leaves the new generation authoritative with dead blobs
+ * beside it. Both boot into a device where one PIN opens everything.
+ */
+WalletError wallet_change_password(const char *old_password, size_t old_length,
+                                   const char *new_password, size_t new_length,
+                                   const uint8_t companion_hash[32],
+                                   WalletProgressFn progress) {
+    if (!state.initialized) {
+        return WALLET_ERROR_NOT_INITIALIZED;
+    }
+    if (!state.password_set) {
+        return WALLET_ERROR_WRONG_PASSWORD;
+    }
+    if (!new_password || new_length < MIN_PASSWORD_LENGTH) {
+        return WALLET_ERROR_WRONG_PASSWORD;
+    }
+    if (!wallet_verify_password(old_password, old_length)) {
+        return WALLET_ERROR_WRONG_PASSWORD;
+    }
+
+    load_vault_record();
+    const VaultLayout from_layout = active_layout;
+    const VaultLayout to_layout = {
+        .legacy = false,
+        /* From the legacy layout, generation 0 is free by definition: nothing
+         * has ever been written to a suffixed slot. */
+        .gen = active_layout.legacy ? 0 : (uint8_t)(active_layout.gen ^ 1u),
+    };
+
+    uint8_t old_key[32], new_key[32], new_hash[HASH_SIZE];
+    derive_key_from_password(old_password, old_length, old_key);
+    derive_key_from_password(new_password, new_length, new_key);
+    compute_password_hash(new_password, new_length, new_hash);
+
+    /* Saved so a failure anywhere below can put the caller's session back the
+     * way it was, rather than leaving it holding a key for a vault that was
+     * never written. */
+    uint8_t saved_key[32];
+    memcpy(saved_key, state.encryption_key, sizeof(saved_key));
+
+    /* The legacy CBC read path sets the active index as a side effect, and the
+     * loops below walk every slot. Without this the user's selected wallet
+     * silently becomes the last one. */
+    const uint8_t saved_active = state.active_wallet_index;
+
+    WalletError result = WALLET_OK;
+    const uint8_t total = (state.wallet_count <= MAX_WALLETS) ? state.wallet_count
+                                                              : MAX_WALLETS;
+
+    // Pass 1: read-only proof. Nothing has been written yet, so any failure
+    // here costs the user nothing.
+    for (uint8_t i = 1; i <= total; i++) {
+        active_layout = from_layout;
+        memcpy(state.encryption_key, old_key, sizeof(old_key));
+        if (load_encrypted_mnemonic_at_index(i) != WALLET_OK) {
+            ESP_LOGE(TAG, "Wallet %d unreadable; refusing to change the password", i);
+            result = WALLET_ERROR_STORAGE_FAILED;
+            goto done;
+        }
+        if (progress) {
+            progress(i, (uint8_t)(total * 2));
+        }
+    }
+
+    // Pass 2: one wallet at a time, old generation to new. Only a single
+    // plaintext mnemonic is ever in RAM - buffering all 30 would park every
+    // seed the device holds in .bss for the duration.
+    for (uint8_t i = 1; i <= total; i++) {
+        active_layout = from_layout;
+        memcpy(state.encryption_key, old_key, sizeof(old_key));
+        if (load_encrypted_mnemonic_at_index(i) != WALLET_OK) {
+            result = WALLET_ERROR_STORAGE_FAILED;
+            goto done;
+        }
+
+        active_layout = to_layout;
+        memcpy(state.encryption_key, new_key, sizeof(new_key));
+        WalletError serr = save_encrypted_mnemonic_at_index(i);
+        if (serr != WALLET_OK) {
+            ESP_LOGE(TAG, "Failed to write wallet %d; vault unchanged", i);
+            result = serr;
+            goto done;
+        }
+        if (progress) {
+            progress((uint8_t)(total + i), (uint8_t)(total * 2));
+        }
+    }
+
+    // The flip. Everything before this was invisible; everything after is
+    // cleanup.
+    result = write_vault_record(to_layout.gen, new_hash, companion_hash);
+    if (result != WALLET_OK) {
+        ESP_LOGE(TAG, "Could not publish the new vault record; vault unchanged");
+        goto done;
+    }
+
+    memcpy(state.password_hash, new_hash, HASH_SIZE);
+    memcpy(state.encryption_key, new_key, sizeof(new_key));
+    memcpy(saved_key, new_key, sizeof(new_key));
+    state.active_wallet_index = saved_active;
+
+    erase_stale_slots();
+
+    /* Reload through the new generation so the session is not still holding a
+     * mnemonic read out of storage that no longer exists. */
+    if (state.wallet_count > 0 && state.active_wallet_index > 0) {
+        load_encrypted_mnemonic_at_index(state.active_wallet_index);
+    }
+
+    ESP_LOGW(TAG, "Vault re-encrypted into generation %u", (unsigned)to_layout.gen);
+
+done:
+    if (result != WALLET_OK) {
+        /* The record still names the old generation, so restoring the layout
+         * and key is all that is needed - nothing durable changed. */
+        active_layout = from_layout;
+        memcpy(state.encryption_key, saved_key, sizeof(saved_key));
+        state.active_wallet_index = saved_active;
+        if (state.wallet_count > 0 && state.active_wallet_index > 0) {
+            load_encrypted_mnemonic_at_index(state.active_wallet_index);
+        }
+    }
+
+    memzero(old_key, sizeof(old_key));
+    memzero(new_key, sizeof(new_key));
+    memzero(new_hash, sizeof(new_hash));
+    memzero(saved_key, sizeof(saved_key));
+    return result;
 }
 
 // ========== BIP39 Passphrase ========== //
@@ -1582,8 +1962,19 @@ WalletError wallet_wipe(void) {
         nvs_close(nvs);
     }
 
-    // Reset state
+    // Reset state, including the cached record - storage is empty now, and a
+    // stale generation cached in RAM would send the next write to a slot the
+    // next boot does not look at.
     memzero(&state, sizeof(state));
+    vault_rec_loaded = false;
+    vault_rec_present = false;
+    vault_stored_hash_valid = false;
+    vault_companion_valid = false;
+    vault_params_loaded = false;
+    active_layout.legacy = true;
+    active_layout.gen = 0;
+    memzero(vault_stored_hash, sizeof(vault_stored_hash));
+    memzero(vault_companion_hash, sizeof(vault_companion_hash));
 
     ESP_LOGI(TAG, "Wallet wiped");
     return WALLET_OK;
