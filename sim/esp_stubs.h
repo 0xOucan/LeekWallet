@@ -50,6 +50,21 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *v, size_t le
 esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *len);
 esp_err_t nvs_erase_all(nvs_handle_t handle);
 
+/* ----------------------------------------------------------------- clock */
+
+/* A clock the test drives, not one that drifts with wall time: auto-lock is a
+ * timeout, and a timeout you cannot fast-forward is a timeout you cannot test. */
+int64_t esp_timer_get_time(void);
+void    fake_clock_advance_us(int64_t us);
+void    fake_clock_reset(void);
+
+/* -------------------------------------------------------------------- RNG */
+
+/* Deterministic so a failing UI test replays identically. Never key material -
+ * the only firmware caller here picks which words to quiz the user on. */
+uint32_t esp_random(void);
+void     esp_fill_random(void *buf, size_t len);
+
 /* --------------------------------------------------------------- logging */
 
 extern int leek_log_quiet;

@@ -12,7 +12,7 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
@@ -75,6 +75,26 @@ $(BUILD)/test_device_wipe: test_device_wipe.c esp_stubs.c ../src/device-wipe.c .
 $(BUILD)/test_pin: test_pin.c esp_stubs.c ../src/pin.c \
                    $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c | $(BUILD)
 	$(CC) $(CFLAGS) -DLEEK_HOST_TEST -o $@ $^
+
+# The UI layer, against a framebuffer OLED and a fake wallet (see fake_wallet.c
+# for why the real one is not linked here). The Wi-Fi/BLE/USB blocks in ui.c are
+# all behind CONFIG_* macros that stay undefined on the host, so they vanish.
+$(BUILD)/test_ui: test_ui.c esp_stubs.c host_stubs.c fake_oled.c fake_wallet.c \
+                  fake_input.c ../src/ui.c ../src/pin.c ../src/mnemonic-entry.c \
+                  ../src/entropy.c ../src/session.c ../src/text-entry.c \
+                  ../src/eth-tx.c ../src/eth-decode.c ../src/device-wipe.c \
+                  $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
+                  $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
+                  $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
+                  $(CRYPTO)/ed25519-donna/curve25519-donna-scalarmult-base.c \
+                  $(CRYPTO)/ed25519-donna/curve25519-donna-32bit.c \
+                  $(CRYPTO)/ed25519-donna/curve25519-donna-helpers.c \
+                  $(CRYPTO)/ed25519-donna/ed25519-donna-32bit-tables.c \
+                  $(CRYPTO)/chacha20poly1305/chacha20poly1305.c \
+                  $(CRYPTO)/chacha20poly1305/chacha_merged.c \
+                  $(CRYPTO)/chacha20poly1305/poly1305-donna.c \
+                  $(CRYPTO)/chacha20poly1305/rfc7539.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST -o $@ $^
 
 $(BUILD):
 	mkdir -p $(BUILD)

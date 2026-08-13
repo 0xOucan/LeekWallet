@@ -242,6 +242,32 @@ esp_err_t nvs_erase_all(nvs_handle_t handle)
     return ESP_OK;
 }
 
+/* ----------------------------------------------------------------- clock */
+
+static int64_t fake_now_us = 0;
+
+int64_t esp_timer_get_time(void)      { return fake_now_us; }
+void    fake_clock_advance_us(int64_t us) { fake_now_us += us; }
+void    fake_clock_reset(void)        { fake_now_us = 0; }
+
+/* -------------------------------------------------------------------- RNG */
+
+static uint32_t rng_state = 0xC0FFEE11u;
+
+uint32_t esp_random(void)
+{
+    rng_state = rng_state * 1664525u + 1013904223u;
+    return rng_state;
+}
+
+void esp_fill_random(void *buf, size_t len)
+{
+    uint8_t *p = (uint8_t *)buf;
+    for (size_t i = 0; i < len; i++) {
+        p[i] = (uint8_t)(esp_random() >> 24);
+    }
+}
+
 /* --------------------------------------------------------------- logging */
 
 int leek_log_quiet = 1;

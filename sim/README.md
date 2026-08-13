@@ -21,6 +21,10 @@ wallet's encrypt/decrypt round-trip belong. What is already here:
   [AUDIT.md S3](../AUDIT.md).
 - `test_pin.c` — `src/pin.c` against the fake NVS, including the two power-cut scenarios from
   [S4](../AUDIT.md).
+- `test_ui.c` — the real `src/ui.c`, driven by scripted button presses against a framebuffer
+  OLED. Covers the 12/24 word-count prompt on the import screen, the seed buffer's lifetime
+  across the display/verify handoff ([S5](../AUDIT.md)), and PIN entry's explicit-submit
+  selector.
 - `esp_stubs.c` + `shim/` — in-memory NVS and logging; `shim/` shadows the ESP-IDF headers so
   firmware sources compile unmodified.
 - `host_stubs.c` — deterministic `random32()` so runs repeat.
@@ -36,24 +40,32 @@ Two tools make the ordering bugs testable:
   left to drop — which is a good reminder that a passing crash test is not the same as a
   correct ordering.
 
-To extend coverage to `ui.c` and `colibri-wallet.c`, the remaining fakes are:
+The fakes standing in for ESP-IDF and for the parts of the firmware a UI test has no business
+running:
 
-| ESP-IDF surface | Fake |
+| Surface | Fake |
 |---|---|
-| `nvs_flash.h` / `nvs.h` | ✅ done — `esp_stubs.c` |
-| `esp_log.h` | ✅ done — `esp_stubs.c` |
-| `driver/gpio.h`, FreeRTOS queue/task | still to do (T0.2): scripted button sequence feeding `ui_handle_button()` directly |
+| `nvs_flash.h` / `nvs.h`, `esp_log.h`, `esp_timer.h`, `esp_random.h` | `esp_stubs.c` |
+| FreeRTOS queue/task, `button.h` | `fake_input.c` |
+| `oled.h` | `fake_oled.c` — 8×21 character grid plus a 128×64 bit buffer |
+| `leek-wallet.h` | `fake_wallet.c` — deterministic addresses, real BIP39 checksum |
 
-Then add a fake `oled.c` that writes into a 128x64 bit buffer instead of pushing I2C, and dump
-it as ASCII or PGM. Now a test can assert on what the user actually sees:
+Wi-Fi, BLE and TinyUSB need no fakes at all: every such block in `ui.c` sits behind a
+`CONFIG_*` macro that is simply undefined on the host.
+
+A UI test therefore reads as a sequence of presses and a claim about the screen:
 
 ```c
-press(BUTTON_ACCEPT); press(BUTTON_UP); press(BUTTON_ACCEPT);
-assert_screen_contains("Enter PIN");
+go(SCREEN_MNEMONIC_ENTRY);
+press(BUTTON_DOWN); press(BUTTON_ACCEPT);
+CHECK(fake_oled_row_contains(0, "Word 1/24"), ...);
 ```
 
-Golden-file those dumps and UI regressions become a diff. This is also the only practical way
-to test the QR renderer.
+**Assert on text, not pixels.** `fake_oled_row(page)` returns what the firmware drew on that
+row. A pixel golden fails on every cosmetic tweak and does not say which one; "row 0 says
+Word 24/24" fails only when the device is actually wrong. `fake_oled_dump_pixels()` exists for
+the cases that really are geometric — the QR renderer above all — and `fake_oled_dump()` prints
+the character grid, which is what a failing assertion shows you.
 
 ## Tier 2 — ESP-IDF Linux target
 

@@ -6,9 +6,9 @@ Scope: `src/` (3,367 lines) and `components/colibri-wallet/` (1,253 lines) as of
 Findings are ordered by severity. Each one names the file and line so it can be turned into a
 regression test in `sim/` before it is fixed.
 
-**Status:** S2, S3, S4, S6, S7, S8b, S8c, S8d, S8h, S8i and S8k are **fixed** and covered by
-tests. S5 has a fix written but **no test** — `ui.c` cannot run on the host until T0.2 builds the
-GPIO/FreeRTOS shims.
+**Status:** S2, S3, S4, S5, S6, S7, S8b, S8c, S8d, S8h, S8i and S8k are **fixed** and covered by
+tests. `ui.c` now runs on the host (T0.2-T0.4), so screen and button behaviour is testable rather
+than argued about.
 
 **S1 is the one that still matters.** Its key derivation and storage encryption are done — salted
 PBKDF2 and authenticated AES-GCM — but **flash encryption and secure boot are not enabled**, so
@@ -194,12 +194,16 @@ Still worth adding: a crash-injecting fake NVS (T0.1) so this is a test rather t
 **Where:** `src/ui.c` (`mnemonic_buffer[256]`, the `MnemonicEntry entry`, `full_mnemonic[300]`,
 `pin_entry`/`pin_first_entry`), `src/pin.c:28` (`current_pin`).
 
-**Fix written (T6), not yet tested.** `screen_t.exit` now takes the destination screen and three
+**Fixed (T6), covered by `sim/test_ui.c`.** `screen_t.exit` now takes the destination screen and three
 hooks use it: `forget_mnemonic_unless_needed` (kept live only across the display ↔ verify
 hand-off, which shares the buffer in both directions), `forget_mnemonic_entry`, and
-`forget_pin_entry`. `full_mnemonic` was already zeroed on every path. The gap that remains is
-verification: nothing in `sim/` can drive a screen transition, so this is reasoned-about rather
-than demonstrated. It stays open until T0.2.
+`forget_pin_entry`. `full_mnemonic` was already zeroed on every path.
+
+The test covers both directions of the mistake, which is the point: leaving the seed flow must
+zero all 256 bytes (checked from the display screen *and* the verify screen, so it cannot pass
+with the hook missing on one of them), and moving between display and verify must **not** zero it,
+because those two share the buffer and hand off in both directions. Deleting the hook fails 6
+assertions; making it zero unconditionally fails 9.
 
 `wallet_lock()` is careful — it zeroes the mnemonic, passphrase, encryption key, and node
 (`colibri-wallet.c:485-488`). The UI layer above it is not. The plaintext mnemonic sits in the

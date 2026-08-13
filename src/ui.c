@@ -3283,3 +3283,81 @@ void ui_task(void *pvParameters)
         }
     }
 }
+
+/* ============================================================================
+ * Test-only accessors (sim/test_ui.c)
+ *
+ * The interesting invariants here are about state that is deliberately private:
+ * whether the seed buffer is zero after leaving the seed flow, and whether the
+ * typed PIN survives a screen change. Both are unobservable from the outside,
+ * which is why they went unnoticed in the first place. Same precedent as
+ * pin__reset_static_state_for_test(): compiled out of the firmware entirely.
+ * ============================================================================ */
+
+#ifdef LEEK_HOST_TEST
+
+const char *ui__mnemonic_buffer_for_test(void)     { return mnemonic_buffer; }
+size_t      ui__mnemonic_buffer_size_for_test(void) { return sizeof(mnemonic_buffer); }
+int         ui__mnemonic_word_count_for_test(void)  { return mnemonic_word_count; }
+
+const char *ui__pin_entry_for_test(void)  { return pin_entry; }
+int         ui__pin_cursor_for_test(void) { return pin_cursor; }
+int         ui__pin_option_for_test(void) { return current_digit; }
+
+const MnemonicEntry *ui__entry_for_test(void)  { return &entry; }
+bool ui__entry_choosing_length_for_test(void)  { return entry_choosing_length; }
+int  ui__entry_length_choice_for_test(void)    { return entry_length_choice; }
+
+/* Back to power-on state. Covers everything the tests observe; screens with
+ * purely cosmetic state (entropy meter, QR page) reinitialise in enter(). */
+void ui__reset_static_state_for_test(void)
+{
+    current_screen = SCREEN_BOOT;
+    needs_render = true;
+
+    menu_selection = 0;
+    menu_item_count = 0;
+    settings_selection = 0;
+    wallet_list_selection = 0;
+
+    address_index = 0;
+    memzero(&eth_address, sizeof(eth_address));
+    memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
+    mnemonic_word_count = 0;
+    mnemonic_page = 0;
+    pending_mnemonic_display = false;
+
+    create_word_count = 12;
+    create_show_mnemonic = false;
+    memzero(create_error, sizeof(create_error));
+
+    mnemonic_entry_clear(&entry);
+    memzero(entry_error, sizeof(entry_error));
+    entry_choosing_length = true;
+    entry_length_choice = 12;
+
+    memzero(pin_entry, sizeof(pin_entry));
+    memzero(pin_first_entry, sizeof(pin_first_entry));
+    pin_cursor = 0;
+    current_digit = 0;
+    pin_confirm_mode = false;
+
+    verify_done = false;
+    verify_current = 0;
+    verify_failures = 0;
+    verify_last_wrong = false;
+    memset(verify_indices, 0, sizeof(verify_indices));
+
+    session_confirm_pending = false;
+    session_confirm_return = SCREEN_MAIN_MENU;
+    host_unlock_pending = false;
+    host_lock_pending = false;
+    sign_request_pending = false;
+    sign_outcome = SIGN_PENDING;
+
+    lock_timeout_choice = 1;
+    brightness_choice = 2;
+    last_activity_us = 0;
+}
+
+#endif /* LEEK_HOST_TEST */
