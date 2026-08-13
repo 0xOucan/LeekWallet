@@ -222,7 +222,7 @@ one physical board.
 | ~~T7~~ ✅ | Error display separated from `eth_address.hex` ([S8a](AUDIT.md)) | T0.3 | error screen says "Error" and names the reason; QR refuses to encode anything that is not a 42-character address |
 | T43 | Account/address-index selector — the wallet core already derives any BIP44 path, the UI hardcodes index 0 | T0.3 | can view `m/44'/60'/0'/0/n` for arbitrary n |
 | T44 | Faster word selector — verification costs up to 49 presses per word; a two-axis or coarse-jump selector would cut it | T0.4 | worst-case presses per word measured and reduced |
-| T8 | Button queue backpressure ([S8j](AUDIT.md)) | T0.4 | no dropped events across a simulated 800 ms stall |
+| ~~T8~~ ✅ | Button queue backpressure ([S8j](AUDIT.md)) | T0.4 | no dropped events across a simulated 800 ms stall; queue size derived from the stall budget and the debounce floor, overflow drops the oldest and is counted |
 
 ### Track B — firmware security (parallel after T0)
 
