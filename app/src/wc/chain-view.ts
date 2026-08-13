@@ -14,13 +14,13 @@
  * is a single place a reviewer can check that no dapp-facing screen names a
  * chain without its caveat.
  *
- * TODO(chains): when `resolveChain`, `chainLabelDetailed` and
- * `CUSTOM_CHAIN_NOTICE` land in packages/core/src/chains.ts, replace the two
- * bodies below with them and delete this note. The rest of the WalletConnect
- * code needs no change.
  */
 
-import { chainLabel, getChain, type ChainInfo } from "../../packages/core/src/chains.ts";
+import {
+  chainLabelDetailed, resolveChain, CUSTOM_CHAIN_NOTICE, type ChainInfo,
+} from "../../packages/core/src/chains.ts";
+
+export { CUSTOM_CHAIN_NOTICE };
 
 /**
  * The chain, or undefined.
@@ -31,10 +31,21 @@ import { chainLabel, getChain, type ChainInfo } from "../../packages/core/src/ch
  * which is the exact failure worth engineering against.
  */
 export function resolveChainForDapp(chainId: number): ChainInfo | undefined {
-  return getChain(chainId);
+  /* Curated and user-added alike. A custom chain the user deliberately added
+   * is a chain they can sign for; what must not happen is the *name* being
+   * presented as though the app vouched for it - see chainText below. */
+  return resolveChain(chainId);
 }
 
 /** How to name a chain on screen. Pre-qualified; callers must not re-word it. */
 export function chainText(chainId: number): string {
-  return chainLabel(chainId);
+  /* `.text` already carries "(custom, unverified)" where it applies. Reading
+   * `.name` instead would drop exactly the qualifier that makes a
+   * user-supplied name safe to display. */
+  return chainLabelDetailed(chainId).text;
+}
+
+/** True when the chain's name is the user's word rather than a reviewed one. */
+export function chainIsCustom(chainId: number): boolean {
+  return chainLabelDetailed(chainId).source === "custom";
 }

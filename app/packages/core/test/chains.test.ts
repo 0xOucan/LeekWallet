@@ -139,7 +139,23 @@ group("the CSP allowlist still bounds the registry, by exact origin");
   check(!connect.includes("*"), `connect-src contains a wildcard: ${connect}`);
   check(!/https:(\s|$)/.test(connect), "connect-src allows any https origin");
   const allowed = new Set(connect.trim().split(/\s+/));
+
+  /* Entries that are legitimately in the allowlist and are not chain RPCs.
+   *
+   * Named one by one on purpose. The two checks below - https-only, and no
+   * origin that no chain uses - exist so that nothing reaches the allowlist
+   * without a human deciding it should. A blanket exemption for "anything not
+   * an RPC" would defeat both; an explicit list keeps the property and makes
+   * each addition a visible diff. Adding to it is a security decision.
+   *
+   * The WalletConnect relay is a websocket, so it is the one entry allowed to
+   * be wss:// rather than https://. */
+  const NON_RPC_ALLOWED = new Set([
+    "wss://relay.walletconnect.org",   // WalletConnect v2 relay (PROTOCOL.md 6b)
+  ]);
+
   for (const entry of allowed) {
+    if (NON_RPC_ALLOWED.has(entry)) continue;
     check(
       entry === "'self'" || entry.startsWith("https://"),
       `non-https entry in connect-src: ${entry}`,
@@ -151,7 +167,7 @@ group("the CSP allowlist still bounds the registry, by exact origin");
   // An allowlisted origin nothing asks for is either a stale entry or an
   // endpoint reached from outside the registry; both want a human's attention.
   for (const entry of allowed) {
-    if (entry === "'self'") continue;
+    if (entry === "'self'" || NON_RPC_ALLOWED.has(entry)) continue;
     check(known.has(entry), `CSP allows an origin no chain uses: ${entry}`);
   }
 
@@ -165,11 +181,13 @@ group("the CSP allowlist still bounds the registry, by exact origin");
   }
 
   const missing = origins.filter((o) => !allowed.has(o));
+
+  /* Hard again. The gap this reported is closed, so a curated chain whose
+   * origin is not allowlisted is now a failure rather than a note: it would
+   * otherwise sit in the selector looking usable and fail at runtime. */
+  check(missing.length === 0,
+        `${missing.length} curated RPC origin(s) are not allowlisted`);
   if (missing.length > 0) {
-    /* FIXME(csp): these origins must be appended to connect-src in
-     * src-tauri/tauri.conf.json. Until then the chains using them are listed
-     * in the selector but their RPC calls are blocked at runtime. */
-    console.log(`  CSP GAP: ${missing.length} curated RPC origin(s) are not allowlisted.`);
     console.log(`  Append to connect-src: ${missing.join(" ")}`);
     console.log(
       `  Chains affected: ${CHAINS.filter((c) => c.rpcUrls.some((u) => missing.includes(new URL(u).origin)))
