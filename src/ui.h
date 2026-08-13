@@ -40,6 +40,8 @@ typedef enum {
      * the settings list, because switching off a protection should cost more
      * than one press and should not be possible without reading why. */
     SCREEN_BLIND_WARN,
+    /* Renaming the device for BLE advertising (T56). */
+    SCREEN_BLE_NAME,
     SCREEN_COUNT
 } screen_id_t;
 

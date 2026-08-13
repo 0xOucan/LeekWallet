@@ -33,6 +33,16 @@ void ble_transport_stop(void);
 /** True while the radio is up. False means not advertising, not connectable. */
 bool ble_transport_running(void);
 
+/**
+ * Re-read the device name and put it back on air (T56).
+ *
+ * A rename has to reach both the GAP name and the scan response, and NimBLE
+ * will not take new advertising data while advertising, so this stops and
+ * restarts it. A no-op while the radio is down: the next start reads the name
+ * anyway.
+ */
+void ble_transport_refresh_name(void);
+
 /** ProtocolWriter: chunk one frame into notifications. */
 void ble_transport_write_frame(const uint8_t *frame, size_t len);
 

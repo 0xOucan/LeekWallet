@@ -27,6 +27,15 @@ void protocol_start(void);
  */
 void protocol_handle_frame(uint8_t *frame, size_t len);
 
+/**
+ * Refuse a complete request the transport could not hand over, in plaintext.
+ *
+ * For transports that queue rather than dispatch inline. Every complete frame
+ * must produce a reply of some kind; a transport that drops one silently
+ * disagrees with the cable, which is the class of bug this exists to prevent.
+ */
+void protocol_send_transport_busy(void);
+
 /** Sink for outgoing frames, in the same marker-free form. */
 typedef void (*ProtocolWriter)(const uint8_t *frame, size_t len);
 

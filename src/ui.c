@@ -27,6 +27,8 @@
 #include "sha3.h"
 #include "device-wipe.h"
 #include "transport.h"
+#include "ble.h"
+#include "ble-name.h"
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "nvs.h"
@@ -127,6 +129,10 @@ static void screen_session_confirm_on_button(button_id_t btn);
 static void screen_passphrase_enter(void);
 static void screen_passphrase_render(void);
 static void screen_passphrase_on_button(button_id_t btn);
+
+static void screen_ble_name_enter(void);
+static void screen_ble_name_render(void);
+static void screen_ble_name_on_button(button_id_t btn);
 
 static void screen_passphrase_confirm_enter(void);
 static void screen_passphrase_confirm_render(void);
@@ -278,6 +284,13 @@ static const screen_t screen_passphrase = {
     .enter = screen_passphrase_enter,
     .render = screen_passphrase_render,
     .on_button = screen_passphrase_on_button,
+    .exit = NULL
+};
+
+static const screen_t screen_ble_name = {
+    .enter = screen_ble_name_enter,
+    .render = screen_ble_name_render,
+    .on_button = screen_ble_name_on_button,
     .exit = NULL
 };
 
@@ -723,6 +736,7 @@ typedef enum {
     SET_WIFI,
 #endif
     SET_TRANSPORT,
+    SET_BLE_NAME,
     SET_USB,
     /* Next to Wipe, and for the same reason: both are things you should have
      * to scroll past everything else to reach. */
@@ -745,6 +759,7 @@ static const char *settings_items[SETTINGS_ITEMS] = {
     "WiFi Test",
 #endif
     "Link",
+    "BLE Name",
     "USB HID Test",
     "Blind sign",
     "Wipe Device",
@@ -2238,6 +2253,15 @@ static void screen_settings_render(void)
             snprintf(line, sizeof(line), "%s Link %s",
                      item_idx == settings_selection ? ">" : " ",
                      transport_label(transport_get()));
+        } else if (item_idx == SET_BLE_NAME) {
+            /* The name is on the menu line for the same reason the blind
+             * signing state is: it is broadcast to everyone in range, so it
+             * should be visible without going looking for it. Truncated for
+             * the 21-column display only - what goes on air is whatever
+             * ble_name_get() returns. */
+            snprintf(line, sizeof(line), "%s %.14s",
+                     item_idx == settings_selection ? ">" : " ",
+                     ble_name_get());
         } else if (item_idx == SET_BRIGHTNESS) {
             snprintf(line, sizeof(line), "%s Bright %s",
                      item_idx == settings_selection ? ">" : " ",
@@ -2334,6 +2358,9 @@ static void screen_settings_on_button(button_id_t btn)
                      * session; transport.c is the only place that may. */
                     transport_toggle();
                     entropy_set_rf_active(transport_get() == TRANSPORT_BLE);
+                    break;
+                case SET_BLE_NAME:
+                    ui_set_screen(SCREEN_BLE_NAME);
                     break;
                 case SET_USB:  usb_hid_test();     break;
                 case SET_BLIND:
@@ -3082,6 +3109,143 @@ static void screen_passphrase_on_button(button_id_t btn)
 }
 
 /* ============================================================================
+ * BLE Device Name (T56)
+ *
+ * "LeekWallet" broadcast to every scanner in range tells a room that someone
+ * in it is carrying a hardware wallet. This is where that stops being true.
+ *
+ * Set here and nowhere else. There is deliberately no protocol method for it:
+ * a host that could rename the device could make it advertise as something
+ * else entirely, and the name is one of the few things a user can check
+ * against their own phone.
+ * ============================================================================ */
+
+static TextEntry ble_name_entry;
+/* Set when a name was refused, so the screen can say so rather than appearing
+ * to ignore the press. Cleared on the next edit. */
+static bool ble_name_rejected = false;
+
+static void screen_ble_name_enter(void)
+{
+    ESP_LOGI(TAG, "BLE name screen");
+    text_entry_reset(&ble_name_entry);
+    ble_name_rejected = false;
+}
+
+static void screen_ble_name_render(void)
+{
+    oled_clear();
+    oled_draw_string_centered(0, "BLE Name");
+
+    /* The tail of what has been typed, same as the passphrase screen and for
+     * the same reason: a name the user cannot see is a name they cannot
+     * check. Copied by hand rather than through %s because -Werror=
+     * format-truncation is on and a truncating snprintf would misreport what
+     * was typed. */
+    const char *text = ble_name_entry.text;
+    int len = ble_name_entry.length;
+    const char *tail = (len > 18) ? text + (len - 18) : text;
+    char shown[24];
+    size_t out = 0;
+    if (len > 18) {
+        shown[out++] = '<';
+    }
+    for (size_t i = 0; tail[i] != '\0' && out < sizeof(shown) - 1; i++) {
+        shown[out++] = tail[i];
+    }
+    shown[out] = '\0';
+    oled_draw_string(2, 0, len ? shown : ble_name_get());
+
+    int n = text_entry_option_count(&ble_name_entry);
+    int idx = ble_name_entry.option_index;
+    char sa[4], sb[4], sc[4];
+    const char *prev = text_entry_option_label(
+        text_entry_option_at(&ble_name_entry, ((idx - 1) % n + n) % n), sa, sizeof(sa));
+    const char *cur = text_entry_option_label(
+        text_entry_option_at(&ble_name_entry, idx), sb, sizeof(sb));
+    const char *next = text_entry_option_label(
+        text_entry_option_at(&ble_name_entry, (idx + 1) % n), sc, sizeof(sc));
+
+    char sel[22];
+    snprintf(sel, sizeof(sel), "%s <%s> %s", prev, cur, next);
+    oled_draw_string_centered(4, sel);
+
+    if (ble_name_rejected) {
+        /* Says the limit rather than "invalid": the user has to be able to act
+         * on it, and the alternative to saying no here is a device that stops
+         * advertising with no explanation at all. */
+        char why[22];
+        snprintf(why, sizeof(why), "Max %d chars", BLE_NAME_MAX_LEN);
+        oled_draw_string_centered(5, why);
+    } else {
+        char count[22];
+        snprintf(count, sizeof(count), "%u/%u chars",
+                 (unsigned)len & 0x7F, (unsigned)BLE_NAME_MAX_LEN);
+        oled_draw_string_centered(5, count);
+    }
+
+    oled_draw_string(7, 0, "UP DN  BCK  SEL");
+}
+
+static void screen_ble_name_on_button(button_id_t btn)
+{
+    switch (btn) {
+        case BUTTON_UP:   text_entry_scroll(&ble_name_entry, 1);  break;
+        case BUTTON_DOWN: text_entry_scroll(&ble_name_entry, -1); break;
+
+        case BUTTON_CANCEL:
+            ble_name_rejected = false;
+            if (!text_entry_backspace(&ble_name_entry)) {
+                text_entry_clear(&ble_name_entry);
+                ui_set_screen(SCREEN_SETTINGS);
+                return;
+            }
+            break;
+
+        case BUTTON_ACCEPT: {
+            ble_name_rejected = false;
+            TextEntryResult r = text_entry_accept(&ble_name_entry);
+            if (r == TEXT_ENTRY_CANCELLED) {
+                text_entry_clear(&ble_name_entry);
+                ui_set_screen(SCREEN_SETTINGS);
+                return;
+            }
+            if (r == TEXT_ENTRY_DONE) {
+                /* An empty entry means "leave it alone", not "clear it": a
+                 * nameless device is not something the user can ask for by
+                 * pressing OK on a blank field by accident. */
+                if (ble_name_entry.length == 0) {
+                    ui_set_screen(SCREEN_SETTINGS);
+                    return;
+                }
+                /* The refusal that keeps the radio alive. TEXT_ENTRY_MAX is
+                 * 64 and the scan response holds 29, so this screen CAN
+                 * produce a name that would stop advertising - and the answer
+                 * is to say no and stay put, not to silently store a prefix of
+                 * a name the user would never see again. */
+                if (!ble_name_set(ble_name_entry.text)) {
+                    ble_name_rejected = true;
+                    break;
+                }
+                ESP_LOGI(TAG, "BLE name set (%d chars)", ble_name_entry.length);
+                /* Put it on air now if the radio is up; otherwise the next
+                 * start reads it. */
+                ble_transport_refresh_name();
+                text_entry_clear(&ble_name_entry);
+                ui_set_screen(SCREEN_SETTINGS);
+                return;
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    ui_invalidate();
+}
+
+/* ============================================================================
  * Passphrase Confirmation
  *
  * The one defence against a mistyped passphrase. A wrong passphrase does not
@@ -3355,6 +3519,27 @@ void ui_sign_report(bool ok)
     sign_result_ok = ok;
     sign_result_ready = true;
     sign_result_until_us = esp_timer_get_time() + SIGN_RESULT_HOLD_US;
+
+    /* Without this the acknowledgement never appears.
+     *
+     * The UI task only repaints inside `if (ui_needs_render())`, and every
+     * other thing that changes the screen is either a button press or a screen
+     * transition, both of which set the flag. This is neither: it is called
+     * from the protocol task the moment wallet_sign_hash_at_path() returns,
+     * and on the path that matters - approve, sign, done - there is no press
+     * afterwards. So the "Signing..." frame drawn on entry stayed the last
+     * frame drawn, the two-second auto-dismiss then moved on, and the device
+     * dropped back to the address list without ever saying it had signed.
+     * Reported on hardware against a WalletConnect transaction. The simple
+     * send flow looked correct only because unrelated activity happened to
+     * mark the screen dirty in time.
+     *
+     * Safe from another task for the same reason ui_request_sign() is: this
+     * sets a flag and nothing else. Screen transitions stay the UI task's, and
+     * a render that races this call paints either the old frame or the new one
+     * - both are frames the device is entitled to draw, and the loop repaints
+     * within 100 ms regardless. */
+    ui_invalidate();
 }
 
 static void screen_sign_result_enter(void)
@@ -3882,6 +4067,7 @@ void ui_init(void)
     screens[SCREEN_MNEMONIC_VERIFY] = &screen_mnemonic_verify;
     screens[SCREEN_SESSION_CONFIRM] = &screen_session_confirm;
     screens[SCREEN_PASSPHRASE] = &screen_passphrase;
+    screens[SCREEN_BLE_NAME] = &screen_ble_name;
     screens[SCREEN_PASSPHRASE_CONFIRM] = &screen_passphrase_confirm;
     screens[SCREEN_SIGN_CONFIRM] = &screen_sign_confirm;
     screens[SCREEN_SIGN_RESULT] = &screen_sign_result;
@@ -3992,6 +4178,12 @@ void ui_task(void *pvParameters)
          * screen: the host is waiting, and the user needs to compare a code. */
         if (session_confirm_pending) {
             session_confirm_pending = false;
+            /* Same class of omission as ui_sign_report(): a second handshake
+             * while this screen is already up derives a NEW passkey, and
+             * without a repaint the user would compare the app's code against
+             * the previous handshake's digits and see a mismatch that is not
+             * one. ui_set_screen() covers the other branch. */
+            ui_invalidate();
             if (ui_get_screen() != SCREEN_SESSION_CONFIRM) {
                 /* Return somewhere useful. Coming back to the boot splash
                  * after approving a connection reads as the device having
