@@ -178,6 +178,64 @@ bool eth_tx_hash(const EthTx *tx, uint8_t hash_out[32])
     return true;
 }
 
+/* ------------------------------------------------------ personal_sign */
+
+bool eth_message_is_displayable(const uint8_t *message, size_t length)
+{
+    if (length > ETH_MAX_MESSAGE) {
+        return false;
+    }
+    /* Printable ASCII only, and no newlines or tabs either: the OLED renders a
+     * fixed 5x7 glyph per byte and has no notion of a line break, so anything
+     * outside this range would be drawn as some other character - or as
+     * nothing. Signing a message while showing a mangled version of it is the
+     * same bargain as signing a bare hash (PROTOCOL.md 6bis), so the device
+     * refuses instead. */
+    for (size_t i = 0; i < length; i++) {
+        if (message[i] < 0x20 || message[i] > 0x7E) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool eth_message_hash(const uint8_t *message, size_t length, uint8_t hash_out[32])
+{
+    if (!message && length) {
+        return false;
+    }
+    if (length > ETH_MAX_MESSAGE) {
+        return false;
+    }
+
+    /* EIP-191 version 0x45: keccak256("\x19Ethereum Signed Message:\n" ||
+     * decimal_length || message).
+     *
+     * The length is the *byte* count in ASCII decimal, with no padding and no
+     * separator. Getting this wrong does not fail loudly - it produces a
+     * perfectly valid signature over a different message, which the user
+     * cannot detect and cannot revoke. Hence the explicit construction rather
+     * than a printf into a shared buffer. */
+    static const char PREFIX[] = "\x19" "Ethereum Signed Message:\n";
+    char decimal[8];
+    int  dlen = snprintf(decimal, sizeof(decimal), "%zu", length);
+    if (dlen <= 0 || (size_t)dlen >= sizeof(decimal)) {
+        return false;
+    }
+
+    SHA3_CTX ctx;
+    keccak_256_Init(&ctx);
+    sha3_Update(&ctx, (const uint8_t *)PREFIX, sizeof(PREFIX) - 1);
+    sha3_Update(&ctx, (const uint8_t *)decimal, (size_t)dlen);
+    if (length) {
+        sha3_Update(&ctx, message, length);
+    }
+    keccak_Final(&ctx, hash_out);
+
+    memzero(&ctx, sizeof(ctx));
+    return true;
+}
+
 /* ------------------------------------------------------------ rendering */
 
 /* Divide a big-endian byte string by a small number, in place. Returns the

@@ -56,6 +56,35 @@ size_t eth_tx_encode(const EthTx *tx, uint8_t *out, size_t out_capacity);
 /** keccak256 of the signing payload — the digest that gets signed. */
 bool eth_tx_hash(const EthTx *tx, uint8_t hash_out[32]);
 
+/* ------------------------------------------------------ personal_sign */
+
+/* The longest message this device will sign.
+ *
+ * Bounded by what the confirmation screen can render in full — six rows of
+ * twenty characters — not by what the buffer could hold. A message the user
+ * cannot read on the device is a message they cannot approve, and scrolling
+ * past an unread remainder is the habit this whole design is trying not to
+ * teach. */
+#define ETH_MAX_MESSAGE 120
+
+/**
+ * True if the message can be rendered honestly on the device's display:
+ * printable ASCII, no control bytes, and short enough to fit on screen.
+ *
+ * Anything else is refused rather than mangled — see the note in the .c.
+ */
+bool eth_message_is_displayable(const uint8_t *message, size_t length);
+
+/**
+ * EIP-191 personal_sign digest:
+ *   keccak256("\x19Ethereum Signed Message:\n" || decimal_length || message)
+ *
+ * The decimal length is the byte count in ASCII. A wrong prefix yields a valid
+ * signature over something the user never saw, so this is deliberately the
+ * only place it is constructed.
+ */
+bool eth_message_hash(const uint8_t *message, size_t length, uint8_t hash_out[32]);
+
 /* ------------------------------------------------------------- rendering */
 
 /**

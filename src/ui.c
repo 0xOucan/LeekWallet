@@ -3138,6 +3138,7 @@ static void screen_passphrase_confirm_on_button(button_id_t btn)
  * ============================================================================ */
 
 typedef enum {
+    SIGN_PAGE_MESSAGE,      /* the full text of an EIP-191 personal_sign */
     SIGN_PAGE_VALUE,        /* amount in ether, and the chain */
     SIGN_PAGE_TO,           /* recipient of a native transfer */
     SIGN_PAGE_ACTION,       /* what the token call does, and for how much */
@@ -3162,8 +3163,50 @@ static bool         sign_seen[SIGN_MAX_PAGES];
 static volatile SignOutcome sign_outcome = SIGN_PENDING;
 static volatile bool sign_request_pending = false;
 
+/* A personal_sign request rides the same screen, the same paging and the same
+ * outcome as a transaction. A second approval path would be a second place for
+ * "what was displayed" and "what was signed" to drift apart, which is the one
+ * thing this screen exists to prevent. */
+static bool sign_is_message = false;
+static char sign_message[ETH_MAX_MESSAGE + 1];
+
+void ui_request_sign_message(const char *message, size_t length,
+                             uint32_t address_index, const char *from)
+{
+    memzero(&sign_tx, sizeof(sign_tx));
+    memzero(&sign_call, sizeof(sign_call));
+    memzero(sign_message, sizeof(sign_message));
+
+    /* Truncation here would show less than is signed, so refuse the whole
+     * request rather than display a prefix. The protocol task has already
+     * bounded it; this is the belt to that pair of braces. */
+    if (!message || length > ETH_MAX_MESSAGE) {
+        sign_outcome = SIGN_REJECTED;
+        return;
+    }
+    memcpy(sign_message, message, length);
+    sign_message[length] = '\0';
+
+    sign_is_message = true;
+    sign_index = address_index;
+    if (from) {
+        snprintf(sign_from, sizeof(sign_from), "%s", from);
+    } else {
+        sign_from[0] = '\0';
+    }
+
+    sign_page_kind[0] = SIGN_PAGE_MESSAGE;
+    sign_page_kind[1] = SIGN_PAGE_FROM;
+    sign_page_count = 2;
+
+    sign_outcome = SIGN_PENDING;
+    sign_request_pending = true;
+}
+
 void ui_request_sign(const EthTx *tx, uint32_t address_index, const char *from)
 {
+    sign_is_message = false;
+    memzero(sign_message, sizeof(sign_message));
     memcpy(&sign_tx, tx, sizeof(sign_tx));
     sign_index = address_index;
 
@@ -3214,6 +3257,8 @@ void ui_sign_clear(void)
     memzero(&sign_tx, sizeof(sign_tx));
     memzero(&sign_call, sizeof(sign_call));
     memzero(sign_from, sizeof(sign_from));
+    memzero(sign_message, sizeof(sign_message));
+    sign_is_message = false;
 }
 
 static bool sign_all_seen(void)
@@ -3259,13 +3304,32 @@ static void screen_sign_confirm_render(void)
     oled_clear();
 
     char line[24];
-    snprintf(line, sizeof(line), "Sign?  %u/%u",
+    snprintf(line, sizeof(line), "%s  %u/%u",
+             sign_is_message ? "Sign msg?" : "Sign?",
              (unsigned)(sign_page + 1), (unsigned)sign_page_count);
     oled_draw_string_centered(0, line);
 
     char scratch[32];
 
     switch (sign_page_kind[sign_page]) {
+        case SIGN_PAGE_MESSAGE: {
+            /* The whole message, wrapped over the six free rows, never cut.
+             * Anything that would not fit, or that is not printable ASCII, was
+             * refused before this screen was ever reached (eth_message_is_
+             * displayable) — so what is on screen is the entire preimage. */
+            size_t mlen = strlen(sign_message);
+            for (int row = 0; row < 6; row++) {
+                size_t off = (size_t)row * 20;
+                if (off >= mlen) break;
+                char part[21];
+                snprintf(part, sizeof(part), "%.20s", sign_message + off);
+                oled_draw_string(1 + row, 0, part);
+            }
+            if (mlen == 0) {
+                oled_draw_string(2, 0, "(empty message)");
+            }
+            break;
+        }
         case SIGN_PAGE_VALUE: {
             /* Amount and chain. The two fields that decide what it costs. */
             char value[40];
@@ -3367,7 +3431,11 @@ static void screen_sign_confirm_render(void)
             oled_draw_string(1, 0, line);
             sign_draw_address(2, sign_from);
 
-            if (sign_call.kind == ETH_CALL_EMPTY) {
+            if (sign_is_message) {
+                /* No value, no chain: a personal_sign moves nothing by itself.
+                 * Saying so stops the page reading as "+0 ETH transfer". */
+                oled_draw_string(6, 0, "Message signature");
+            } else if (sign_call.kind == ETH_CALL_EMPTY) {
                 oled_draw_string(6, 0, "Plain transfer");
             } else {
                 char value[40];
@@ -3427,6 +3495,79 @@ static void screen_sign_confirm_on_button(button_id_t btn)
 }
 
 /* ============================================================================
+ * Host-supplied Passphrase Confirmation (PROTOCOL.md 5)
+ *
+ * The app can act as a keyboard for the passphrase, which is a real
+ * convenience and a real downgrade: a compromised host sees the passphrase
+ * before encryption ever touches it. What makes the trade survivable is this
+ * screen. A wrong or substituted passphrase derives a different, perfectly
+ * valid wallet rather than failing, so the address shown here is the only
+ * signal that anything went wrong — and rejecting it must put the device back
+ * where it was, not leave a wallet nobody chose selected.
+ *
+ * Separate from SCREEN_PASSPHRASE_CONFIRM (the on-device entry path) for two
+ * reasons: it answers a waiting host through the sign-outcome channel, and it
+ * has to say out loud that the passphrase came from the host. Sharing a screen
+ * would mean the weaker path borrowing the stronger one's wording.
+ * ============================================================================ */
+
+static volatile bool host_passphrase_pending = false;
+static char host_passphrase_address[43];
+
+void ui_request_passphrase_confirm(const char *address)
+{
+    snprintf(host_passphrase_address, sizeof(host_passphrase_address), "%s",
+             address ? address : "");
+    sign_outcome = SIGN_PENDING;
+    host_passphrase_pending = true;
+}
+
+static void screen_host_passphrase_enter(void)
+{
+    ESP_LOGI(TAG, "Host passphrase confirmation screen");
+}
+
+static void screen_host_passphrase_render(void)
+{
+    oled_clear();
+    oled_draw_string_centered(0, "App passphrase");
+
+    if (strlen(host_passphrase_address) < 42) {
+        /* Nothing to recognise means nothing to confirm. */
+        oled_draw_string_centered(3, "No address");
+        oled_draw_string(7, 0, "NO");
+        return;
+    }
+
+    sign_draw_address(2, host_passphrase_address);
+    oled_draw_string(5, 0, "Typed on host!");
+    oled_draw_string(6, 0, "Match your record");
+    oled_draw_string(7, 0, "NO           YES");
+}
+
+static void screen_host_passphrase_on_button(button_id_t btn)
+{
+    if (btn == BUTTON_ACCEPT && strlen(host_passphrase_address) == 42) {
+        sign_outcome = SIGN_APPROVED;
+    } else if (btn == BUTTON_ACCEPT || btn == BUTTON_CANCEL) {
+        /* The protocol task clears the passphrase on a rejection: the wrong
+         * wallet must not stay selected just because the user said no. */
+        sign_outcome = SIGN_REJECTED;
+    } else {
+        return;
+    }
+    memzero(host_passphrase_address, sizeof(host_passphrase_address));
+    ui_set_screen(SCREEN_WALLET_INFO);
+}
+
+static const screen_t screen_host_passphrase = {
+    .enter = screen_host_passphrase_enter,
+    .render = screen_host_passphrase_render,
+    .on_button = screen_host_passphrase_on_button,
+    .exit = NULL,
+};
+
+/* ============================================================================
  * Public API
  * ============================================================================ */
 
@@ -3452,6 +3593,7 @@ void ui_init(void)
     screens[SCREEN_PASSPHRASE] = &screen_passphrase;
     screens[SCREEN_PASSPHRASE_CONFIRM] = &screen_passphrase_confirm;
     screens[SCREEN_SIGN_CONFIRM] = &screen_sign_confirm;
+    screens[SCREEN_HOST_PASSPHRASE_CONFIRM] = &screen_host_passphrase;
 
     current_screen = SCREEN_BOOT;
     needs_render = true;
@@ -3576,6 +3718,11 @@ void ui_task(void *pvParameters)
             ui_set_screen(SCREEN_SIGN_CONFIRM);
         }
 
+        if (host_passphrase_pending) {
+            host_passphrase_pending = false;
+            ui_set_screen(SCREEN_HOST_PASSPHRASE_CONFIRM);
+        }
+
         if (host_unlock_pending) {
             host_unlock_pending = false;
             if (!pin_is_unlocked()) {
@@ -3673,6 +3820,10 @@ void ui__reset_static_state_for_test(void)
     host_lock_pending = false;
     sign_request_pending = false;
     sign_outcome = SIGN_PENDING;
+    sign_is_message = false;
+    memzero(sign_message, sizeof(sign_message));
+    host_passphrase_pending = false;
+    memzero(host_passphrase_address, sizeof(host_passphrase_address));
 
     lock_timeout_choice = 1;
     brightness_choice = 2;

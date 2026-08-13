@@ -705,8 +705,74 @@ static void test_change_pin_catches_a_mismatch(void)
     CHECK(pin_verify("1234"), "the PIN changed despite the mismatch");
 }
 
+/* A personal_sign confirmation must show the whole message, because the
+ * signature covers the whole message. Anything the screen leaves out is
+ * something the user approved without reading. */
+static void test_message_confirmation_shows_all_of_it(void)
+{
+    printf("== the message screen renders the entire message, then the source\n");
+    boot_unlocked_with_seed();
+
+    const char *message = "Sign in to LeekWallet as user 42 on 2026-08-13 ok";
+    ui_request_sign_message(message, strlen(message), 3,
+                            "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_SIGN_CONFIRM);
+
+    /* Twenty characters a row, so a 48-character message spans three of them
+     * and every one has to be on screen. */
+    CHECK_SCREEN(fake_oled_contains("Sign in to LeekWalle"), "first row missing");
+    CHECK_SCREEN(fake_oled_contains("t as user 42 on 2026"), "second row missing");
+    CHECK_SCREEN(fake_oled_contains("-08-13 ok"), "the tail of the message is missing");
+    CHECK_SCREEN(fake_oled_contains("Sign msg?"),
+                 "the screen does not say it is signing a message");
+
+    /* And the source address, on its own page, as for a transaction (T47). */
+    press(BUTTON_DOWN);
+    CHECK_SCREEN(fake_oled_contains("From"), "no source page");
+    CHECK_SCREEN(fake_oled_contains("0x0100aaaaaaaabb"),
+                 "the source address is not on the source page");
+
+    /* Approval only after every page has been seen, and only then. */
+    press(BUTTON_ACCEPT);
+    CHECK(ui_sign_outcome() == SIGN_APPROVED, "approving both pages did not approve");
+    ui_sign_clear();
+}
+
+/* The host-entry passphrase path (PROTOCOL.md 5): the address is the whole
+ * defence, and saying no has to be a real answer rather than a delay. */
+static void test_host_passphrase_confirmation(void)
+{
+    printf("== a host-supplied passphrase is confirmed against its address\n");
+    boot_unlocked_with_seed();
+
+    ui_request_passphrase_confirm("0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_HOST_PASSPHRASE_CONFIRM);
+
+    CHECK_SCREEN(fake_oled_contains("0x0100aaaaaaaabb"),
+                 "the wallet's address is not on screen");
+    /* The user has to know this came from the host, which is the weaker path. */
+    CHECK_SCREEN(fake_oled_contains("host"),
+                 "the screen does not say the passphrase came from the app");
+    CHECK(ui_sign_outcome() == SIGN_PENDING, "the prompt answered itself");
+
+    press(BUTTON_CANCEL);
+    CHECK(ui_sign_outcome() == SIGN_REJECTED, "CANCEL did not reject");
+    ui_sign_clear();
+
+    /* With no address there is nothing to recognise, so there is nothing to
+     * accept: a blank confirmation is worse than none. */
+    ui_request_passphrase_confirm("");
+    go(SCREEN_HOST_PASSPHRASE_CONFIRM);
+    press(BUTTON_ACCEPT);
+    CHECK(ui_sign_outcome() == SIGN_REJECTED,
+          "an empty address was confirmable anyway");
+    ui_sign_clear();
+}
+
 int main(void)
 {
+    test_message_confirmation_shows_all_of_it();
+    test_host_passphrase_confirmation();
     test_harness_sees_the_screen();
 
     test_import_word_count_prompt();

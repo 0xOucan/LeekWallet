@@ -44,6 +44,7 @@
 #include "ui.h"
 
 #include "chacha20poly1305/rfc7539.h"
+#include "sha3.h"
 
 void pin__reset_static_state_for_test(void);
 void protocol__pump_for_test(void);
@@ -73,6 +74,7 @@ static int failures = 0;
 #define E_REJECTED     0x0200
 #define E_TIMEOUT      0x0201
 #define E_UNDECODABLE  0x0202
+#define E_NO_WALLET    0x0300
 #define E_SESSION      0x0400
 
 /* ------------------------------------------------------------- fake UI */
@@ -90,6 +92,12 @@ static EthTx    shown_tx;
 static uint32_t shown_index;
 static char     shown_from[43];
 
+static int  message_prompts;       /* ui_request_sign_message calls */
+static char shown_message[256];
+static size_t shown_message_len;
+static int  passphrase_prompts;    /* ui_request_passphrase_confirm calls */
+static char shown_passphrase_address[64];
+
 void ui_request_session_confirm(void) { session_confirm_prompts++; }
 void ui_request_unlock(void)          { unlock_prompts++; }
 void ui_request_lock(void)            { lock_requests++; }
@@ -100,6 +108,25 @@ void ui_request_sign(const EthTx *tx, uint32_t address_index, const char *from)
     shown_tx = *tx;
     shown_index = address_index;
     snprintf(shown_from, sizeof(shown_from), "%s", from ? from : "");
+}
+
+void ui_request_sign_message(const char *message, size_t length,
+                             uint32_t address_index, const char *from)
+{
+    message_prompts++;
+    shown_message_len = length < sizeof(shown_message) - 1 ? length
+                                                          : sizeof(shown_message) - 1;
+    memcpy(shown_message, message, shown_message_len);
+    shown_message[shown_message_len] = '\0';
+    shown_index = address_index;
+    snprintf(shown_from, sizeof(shown_from), "%s", from ? from : "");
+}
+
+void ui_request_passphrase_confirm(const char *address)
+{
+    passphrase_prompts++;
+    snprintf(shown_passphrase_address, sizeof(shown_passphrase_address), "%s",
+             address ? address : "");
 }
 
 SignOutcome ui_sign_outcome(void) { return scripted_outcome; }
@@ -361,6 +388,10 @@ static void fresh_device(void)
     host_tx = host_rx = 0;
     session_up = false;
     confirm_requests = unlock_prompts = lock_requests = session_confirm_prompts = 0;
+    message_prompts = passphrase_prompts = 0;
+    memset(shown_message, 0, sizeof(shown_message));
+    shown_message_len = 0;
+    memset(shown_passphrase_address, 0, sizeof(shown_passphrase_address));
     scripted_outcome = SIGN_APPROVED;
 
     protocol_start();
@@ -920,6 +951,518 @@ static void test_tampered_frame_tears_down_the_session(void)
           "a failed tag left the session standing (state %d)", session_state());
 }
 
+/* ------------------------------------------------- EIP-191 personal_sign */
+
+/**
+ * The prefixed digest, spelled out here rather than called out of eth-tx.c.
+ *
+ * The whole risk in personal_sign is the preimage: a wrong prefix or a wrong
+ * decimal length produces a valid signature over something the user never
+ * agreed to, and nothing downstream notices. A test that asked the device's own
+ * hasher what the answer was would agree with any prefix at all.
+ */
+static void personal_digest(const char *message, uint8_t out[32])
+{
+    char prefix[64];
+    int n = snprintf(prefix, sizeof(prefix),
+                     "\x19" "Ethereum Signed Message:\n%zu", strlen(message));
+
+    SHA3_CTX ctx;
+    keccak_256_Init(&ctx);
+    sha3_Update(&ctx, (const uint8_t *)prefix, (size_t)n);
+    sha3_Update(&ctx, (const uint8_t *)message, strlen(message));
+    keccak_Final(&ctx, out);
+}
+
+/** { "method": ..., "message": ..., "index": ... } */
+static size_t sign_message_request(uint8_t *buf, size_t cap,
+                                   const char *message, uint32_t index)
+{
+    CborWriter w;
+    cbor_writer_init(&w, buf, cap);
+    cbor_write_map(&w, 3);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signMessage");
+    cbor_write_text(&w, "message");
+    cbor_write_text(&w, message);
+    cbor_write_text(&w, "index");
+    cbor_write_uint(&w, index);
+    return cbor_writer_ok(&w) ? w.length : 0;
+}
+
+static void test_sign_message_signs_what_it_showed(void)
+{
+    printf("== signMessage hashes the EIP-191 preimage of the text it displayed\n");
+    fresh_device();
+    device_unlocked();
+    confirmed_session(20);
+
+    /* The keccak the helper above uses is the same primitive the address
+     * checksum depends on, so pin it against the one vector everyone knows
+     * before trusting it to judge a prefix. */
+    static const uint8_t KECCAK_EMPTY[32] = {
+        0xc5,0xd2,0x46,0x01,0x86,0xf7,0x23,0x3c, 0x92,0x7e,0x7d,0xb2,0xdc,0xc7,0x03,0xc0,
+        0xe5,0x00,0xb6,0x53,0xca,0x82,0x27,0x3b, 0x7b,0xfa,0xd8,0x04,0x5d,0x85,0xa4,0x70,
+    };
+    uint8_t empty[32];
+    SHA3_CTX ctx;
+    keccak_256_Init(&ctx);
+    keccak_Final(&ctx, empty);
+    CHECK(memcmp(empty, KECCAK_EMPTY, 32) == 0,
+          "the test's own keccak is wrong; nothing below means anything");
+
+    const char *message = "Sign in to LeekWallet";
+
+    uint8_t payload[256];
+    scripted_outcome = SIGN_APPROVED;
+    send_encrypted(payload, sign_message_request(payload, sizeof(payload), message, 2));
+
+    CHECK(message_prompts == 1, "the message was signed without a prompt");
+    CHECK(shown_index == 2, "the screen named index %u, not 2", shown_index);
+    CHECK(strlen(shown_from) == 42,
+          "the screen was not given a full source address: '%s'", shown_from);
+    CHECK(shown_message_len == strlen(message) &&
+          memcmp(shown_message, message, shown_message_len) == 0,
+          "the screen was shown something other than the message: '%s'", shown_message);
+
+    Frame f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE, "the signature was not returned");
+
+    const uint8_t *body;
+    size_t body_len;
+    CborItem it;
+    uint8_t first[32];
+    memset(first, 0, sizeof(first));
+
+    if (f.present && result_body(&f, &body, &body_len)) {
+        /* The fake wallet returns the digest as r, so this compares the bytes
+         * signed against the prefixed hash of the bytes displayed. */
+        uint8_t want[32];
+        personal_digest(shown_message, want);
+
+        CHECK(cbor_map_find(body, body_len, "r", &it) && it.type == CBOR_BYTES &&
+              it.value == 32 && memcmp(it.data, want, 32) == 0,
+              "the signature is not over the EIP-191 digest of what was shown");
+        if (cbor_map_find(body, body_len, "r", &it) && it.type == CBOR_BYTES &&
+            it.value == 32) {
+            memcpy(first, it.data, 32);
+        }
+
+        /* And specifically that the prefix is there at all: signing the bare
+         * keccak of the message would be a working signature over a preimage
+         * an attacker can choose to look like a transaction. */
+        uint8_t unprefixed[32];
+        keccak_256_Init(&ctx);
+        sha3_Update(&ctx, (const uint8_t *)message, strlen(message));
+        keccak_Final(&ctx, unprefixed);
+        CHECK(memcmp(first, unprefixed, 32) != 0,
+              "signMessage hashed the message without the EIP-191 prefix");
+
+        CHECK(cbor_map_find(body, body_len, "yParity", &it) &&
+              it.type == CBOR_UINT && it.value <= 1,
+              "yParity is %u - that is the legacy v", it.value);
+        CHECK(cbor_map_find(body, body_len, "index", &it) &&
+              it.type == CBOR_UINT && it.value == 2,
+              "the reply names a different index than was signed");
+    }
+
+    /* The decimal length is a byte count with no padding, so a message one byte
+     * longer must hash under a different prefix as well as different content. */
+    send_encrypted(payload,
+                   sign_message_request(payload, sizeof(payload),
+                                        "Sign in to LeekWallet!", 2));
+    f = next_reply();
+    if (f.present && result_body(&f, &body, &body_len) &&
+        cbor_map_find(body, body_len, "r", &it) && it.type == CBOR_BYTES &&
+        it.value == 32) {
+        uint8_t want2[32];
+        personal_digest("Sign in to LeekWallet!", want2);
+        CHECK(memcmp(it.data, want2, 32) == 0,
+              "a 22-byte message did not hash under its own length prefix");
+        CHECK(memcmp(it.data, first, 32) != 0, "two messages hashed the same");
+    } else {
+        CHECK(false, "the second message was not signed");
+    }
+}
+
+static void test_sign_message_refuses_what_it_cannot_show(void)
+{
+    printf("== signMessage refuses tiers, junk and anything it cannot render\n");
+    fresh_device();
+    device_has_a_wallet();          /* wallet present, PIN not entered */
+
+    uint8_t payload[512];
+    size_t len = sign_message_request(payload, sizeof(payload), "hi", 0);
+
+    /* No session at all. */
+    send_plain(payload, len);
+    expect_error(T_ERROR, E_SESSION, "signMessage before any handshake");
+    CHECK(message_prompts == 0, "a session-less request reached the screen");
+
+    confirmed_session(21);
+
+    /* Session, but locked: the keys tier is not open. */
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_NOT_UNLOCKED, "signMessage while locked");
+    CHECK(message_prompts == 0, "a locked device put a message on screen");
+
+    pin_set("123456");
+    pin_verify("123456");
+    CHECK(pin_is_unlocked(), "the fixture did not unlock the device");
+
+    CborWriter w;
+
+    /* No message field at all. */
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 1);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signMessage");
+    send_encrypted(payload, w.length);
+    expect_error(T_ENC_ERROR, E_MALFORMED, "signMessage with no message");
+
+    /* A byte string where text was specified. Guessing that bytes are UTF-8 is
+     * how one message acquires two spellings and the device stops knowing which
+     * one it displayed. */
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signMessage");
+    cbor_write_text(&w, "message");
+    cbor_write_bytes(&w, (const uint8_t *)"hi", 2);
+    send_encrypted(payload, w.length);
+    expect_error(T_ENC_ERROR, E_MALFORMED, "a message sent as bytes");
+
+    /* Longer than the screen can hold. Truncating would sign more than it
+     * showed, which is the failure this whole file is about. */
+    char long_message[200];
+    memset(long_message, 'A', sizeof(long_message) - 1);
+    long_message[sizeof(long_message) - 1] = '\0';
+    send_encrypted(payload,
+                   sign_message_request(payload, sizeof(payload), long_message, 0));
+    expect_error(T_ENC_ERROR, E_MALFORMED, "a message longer than the display");
+    CHECK(message_prompts == 0, "an oversized message reached the screen");
+
+    /* Exactly at the bound is fine, one over is not. */
+    char at_limit[121];
+    memset(at_limit, 'B', 120);
+    at_limit[120] = '\0';
+    scripted_outcome = SIGN_APPROVED;
+    send_encrypted(payload, sign_message_request(payload, sizeof(payload), at_limit, 0));
+    Frame f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE, "a 120-byte message was refused");
+    CHECK(message_prompts == 1, "the 120-byte message was not confirmed");
+    CHECK(shown_message_len == 120, "the screen was shown %zu of 120 bytes",
+          shown_message_len);
+
+    char over_limit[122];
+    memset(over_limit, 'B', 121);
+    over_limit[121] = '\0';
+    send_encrypted(payload, sign_message_request(payload, sizeof(payload), over_limit, 0));
+    expect_error(T_ENC_ERROR, E_MALFORMED, "a 121-byte message");
+
+    /* Not renderable on a 128x64 OLED, so not signable: a control byte, a
+     * newline, a non-ASCII byte and a tab. Showing a mangled version of a
+     * message while signing the real one is blind signing in a costume (6bis),
+     * so each is 0x0202 - the device cannot say what this is. */
+    message_prompts = 0;
+    static const char *unrenderable[] = {
+        "hello\x01world",
+        "line one\nline two",
+        "caf\xc3\xa9",
+        "tab\there",
+    };
+    for (size_t i = 0; i < sizeof(unrenderable) / sizeof(unrenderable[0]); i++) {
+        send_encrypted(payload,
+                       sign_message_request(payload, sizeof(payload),
+                                            unrenderable[i], 0));
+        expect_error(T_ENC_ERROR, E_UNDECODABLE, "an unrenderable message");
+    }
+    CHECK(message_prompts == 0,
+          "the device asked for approval of a message it could not render");
+
+    /* An index beyond the non-hardened range is a parse failure, not an
+     * address. */
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 3);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signMessage");
+    cbor_write_text(&w, "message");
+    cbor_write_text(&w, "hi");
+    cbor_write_text(&w, "index");
+    cbor_write_uint(&w, 0x80000000u);
+    send_encrypted(payload, w.length);
+    expect_error(T_ENC_ERROR, E_MALFORMED, "an index above 0x7FFFFFFF");
+    CHECK(message_prompts == 0, "an out-of-range index reached the screen");
+
+    /* And the two ways a user ends a request. */
+    len = sign_message_request(payload, sizeof(payload), "hi", 0);
+    scripted_outcome = SIGN_REJECTED;
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_REJECTED, "the user refused the message");
+
+    scripted_outcome = SIGN_PENDING;
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_TIMEOUT, "nobody answered the message prompt");
+}
+
+/* ----------------------------------------------------------- selectWallet */
+
+static size_t select_wallet_request(uint8_t *buf, size_t cap, uint64_t index)
+{
+    CborWriter w;
+    cbor_writer_init(&w, buf, cap);
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "selectWallet");
+    cbor_write_text(&w, "index");
+    cbor_write_uint(&w, index);
+    return cbor_writer_ok(&w) ? w.length : 0;
+}
+
+static bool address_of_index_zero(char *out, size_t out_size)
+{
+    uint8_t payload[96];
+    CborWriter w;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "getAddress");
+    cbor_write_text(&w, "index");
+    cbor_write_uint(&w, 0);
+    send_encrypted(payload, w.length);
+
+    Frame f = next_reply();
+    const uint8_t *body;
+    size_t body_len;
+    CborItem it;
+    if (!f.present || !result_body(&f, &body, &body_len)) return false;
+    if (!cbor_map_find(body, body_len, "address", &it) || it.type != CBOR_TEXT) {
+        return false;
+    }
+    return cbor_text_copy(&it, out, out_size);
+}
+
+static void test_select_wallet(void)
+{
+    printf("== selectWallet moves between stored seeds, and refuses the rest\n");
+    fresh_device();
+    device_has_a_wallet();
+
+    uint8_t payload[96];
+    size_t len = select_wallet_request(payload, sizeof(payload), 1);
+
+    send_plain(payload, len);
+    expect_error(T_ERROR, E_SESSION, "selectWallet before any handshake");
+
+    confirmed_session(22);
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_NOT_UNLOCKED, "selectWallet while locked");
+
+    pin_set("123456");
+    pin_verify("123456");
+    fake_wallet_preload(
+        "legal winner thank year wave sausage worth useful legal winner thank year "
+        "wave sausage worth useful legal winner thank year wave sausage worth title");
+
+    char before[64] = {0}, after[64] = {0};
+    CHECK(address_of_index_zero(before, sizeof(before)), "no address before the switch");
+
+    send_encrypted(payload, select_wallet_request(payload, sizeof(payload), 1));
+    Frame f = next_reply();
+    const uint8_t *body;
+    size_t body_len;
+    CborItem it;
+    CHECK(f.present && f.type == T_ENC_RESPONSE, "selectWallet was not answered");
+    if (f.present && result_body(&f, &body, &body_len)) {
+        CHECK(cbor_map_find(body, body_len, "activeWallet", &it) &&
+              it.type == CBOR_UINT && it.value == 1,
+              "selectWallet did not report the wallet it selected");
+    }
+
+    CHECK(address_of_index_zero(after, sizeof(after)), "no address after the switch");
+    /* The switch has to reach derivation, not merely a status field: a
+     * selectWallet that updates a counter and leaves the keys alone is worse
+     * than one that fails, because the screen would then name wallet 1 while
+     * signing with wallet 2. */
+    CHECK(strcmp(before, after) != 0,
+          "selecting a different wallet derived the same address (%s)", after);
+
+    /* Out of range, in every direction the host can reach for. 256 and 257 are
+     * the ones worth naming: a uint8_t cast would turn them into 0 and 1, and 1
+     * is a wallet that exists. */
+    static const uint64_t bad[] = { 0, 3, 99, 255, 256, 257, 0xFFFFFFFFu };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        send_encrypted(payload, select_wallet_request(payload, sizeof(payload), bad[i]));
+        expect_error(T_ENC_ERROR, E_NO_WALLET, "an out-of-range wallet index");
+    }
+    /* Whatever it refused, it must not have moved. */
+    char still[64] = {0};
+    CHECK(address_of_index_zero(still, sizeof(still)), "no address after the refusals");
+    CHECK(strcmp(still, after) == 0,
+          "a refused selectWallet changed the active wallet anyway");
+
+    /* No index, and an index of the wrong type. */
+    CborWriter w;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 1);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "selectWallet");
+    send_encrypted(payload, w.length);
+    expect_error(T_ENC_ERROR, E_MALFORMED, "selectWallet with no index");
+
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "selectWallet");
+    cbor_write_text(&w, "index");
+    cbor_write_text(&w, "2");
+    send_encrypted(payload, w.length);
+    expect_error(T_ENC_ERROR, E_MALFORMED, "an index sent as text");
+
+    /* A passphrase belongs to the seed it was entered against. Switching seeds
+     * must drop it, or the user lands in a third wallet nobody named. */
+    wallet_set_passphrase("hunter2", 7);
+    CHECK(wallet_has_passphrase(), "the fixture did not apply a passphrase");
+    send_encrypted(payload, select_wallet_request(payload, sizeof(payload), 2));
+    (void)next_reply();
+    CHECK(!wallet_has_passphrase(),
+          "switching wallets carried the passphrase across");
+}
+
+/* ---------------------------------------------------------- setPassphrase */
+
+static size_t set_passphrase_request(uint8_t *buf, size_t cap, const char *pass)
+{
+    CborWriter w;
+    cbor_writer_init(&w, buf, cap);
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "setPassphrase");
+    cbor_write_text(&w, "passphrase");
+    cbor_write_text(&w, pass);
+    return cbor_writer_ok(&w) ? w.length : 0;
+}
+
+/** Do these bytes appear anywhere in the reply? */
+static bool contains(const uint8_t *hay, size_t hay_len, const char *needle)
+{
+    size_t n = strlen(needle);
+    if (n > hay_len) return false;
+    for (size_t i = 0; i + n <= hay_len; i++) {
+        if (memcmp(hay + i, needle, n) == 0) return true;
+    }
+    return false;
+}
+
+static void test_set_passphrase(void)
+{
+    printf("== setPassphrase confirms a fingerprint, and a refusal is recoverable\n");
+    fresh_device();
+    device_has_a_wallet();
+
+    uint8_t payload[256];
+    size_t len = set_passphrase_request(payload, sizeof(payload), "hunter2");
+
+    send_plain(payload, len);
+    expect_error(T_ERROR, E_SESSION, "setPassphrase before any handshake");
+
+    confirmed_session(23);
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_NOT_UNLOCKED, "setPassphrase while locked");
+    CHECK(passphrase_prompts == 0, "a locked device asked to confirm a passphrase");
+    CHECK(!wallet_has_passphrase(), "a locked device applied a passphrase");
+
+    pin_set("123456");
+    pin_verify("123456");
+
+    /* The happy path. The address the device shows is the one it answers with:
+     * a reply naming a different wallet than the screen did would make the
+     * confirmation meaningless. */
+    scripted_outcome = SIGN_APPROVED;
+    send_encrypted(payload, len);
+
+    CHECK(passphrase_prompts == 1, "the passphrase was applied without a prompt");
+    CHECK(strlen(shown_passphrase_address) == 42,
+          "the screen was given '%s', not a full address", shown_passphrase_address);
+    CHECK(wallet_has_passphrase(), "an approved passphrase was not applied");
+
+    Frame f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE, "setPassphrase was not answered");
+
+    const uint8_t *body;
+    size_t body_len;
+    CborItem it;
+    if (f.present && result_body(&f, &body, &body_len)) {
+        CHECK(cbor_map_find(body, body_len, "address", &it) &&
+              it.type == CBOR_TEXT && it.value == 42 &&
+              memcmp(it.data, shown_passphrase_address, 42) == 0,
+              "the reply names a different wallet than the screen did");
+        CHECK(cbor_map_find(body, body_len, "passphrase", &it) &&
+              it.type == CBOR_UINT && it.value == 1,
+              "the reply does not report the passphrase as active");
+        /* Never the passphrase itself, in any field. */
+        CHECK(!contains(f.payload, f.len, "hunter2"),
+              "the reply echoes the passphrase back");
+    }
+
+    /* A refusal has to be recoverable: the wrong wallet must not stay selected
+     * just because the user said no. That is the entire reason the fingerprint
+     * is shown before the passphrase is used for anything. */
+    wallet_clear_passphrase();
+    scripted_outcome = SIGN_REJECTED;
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_REJECTED, "the user did not recognise the wallet");
+    CHECK(!wallet_has_passphrase(),
+          "a rejected passphrase stayed applied - the user is now in a wallet "
+          "they refused");
+
+    scripted_outcome = SIGN_PENDING;
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_TIMEOUT, "nobody answered the fingerprint prompt");
+    CHECK(!wallet_has_passphrase(), "an unanswered passphrase stayed applied");
+
+    /* Malformed input is refused rather than guessed at, and nothing is applied
+     * on the way to refusing it. */
+    scripted_outcome = SIGN_APPROVED;
+    passphrase_prompts = 0;
+
+    CborWriter w;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 1);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "setPassphrase");
+    send_encrypted(payload, w.length);
+    expect_error(T_ENC_ERROR, E_MALFORMED, "setPassphrase with no passphrase");
+
+    send_encrypted(payload, set_passphrase_request(payload, sizeof(payload), ""));
+    expect_error(T_ENC_ERROR, E_MALFORMED, "an empty passphrase");
+
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "setPassphrase");
+    cbor_write_text(&w, "passphrase");
+    cbor_write_bytes(&w, (const uint8_t *)"hunter2", 7);
+    send_encrypted(payload, w.length);
+    expect_error(T_ENC_ERROR, E_MALFORMED, "a passphrase sent as bytes");
+
+    /* Longer than the buffer, and outside what the device's own keyboard can
+     * produce: a passphrase enterable only from the app is a wallet the user
+     * cannot reach without the app. */
+    char too_long[80];
+    memset(too_long, 'x', sizeof(too_long) - 1);
+    too_long[sizeof(too_long) - 1] = '\0';
+    send_encrypted(payload, set_passphrase_request(payload, sizeof(payload), too_long));
+    expect_error(T_ENC_ERROR, E_MALFORMED, "an over-long passphrase");
+
+    send_encrypted(payload,
+                   set_passphrase_request(payload, sizeof(payload), "bad\x01pass"));
+    expect_error(T_ENC_ERROR, E_MALFORMED, "a passphrase with a control byte");
+
+    CHECK(passphrase_prompts == 0, "a malformed passphrase reached the screen");
+    CHECK(!wallet_has_passphrase(), "a malformed passphrase was applied anyway");
+}
+
 int main(void)
 {
     test_plaintext_ping_and_features();
@@ -933,6 +1476,10 @@ int main(void)
     test_errors_stay_encrypted_once_a_session_exists();
     test_malformed_input();
     test_tampered_frame_tears_down_the_session();
+    test_sign_message_signs_what_it_showed();
+    test_sign_message_refuses_what_it_cannot_show();
+    test_select_wallet();
+    test_set_passphrase();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");

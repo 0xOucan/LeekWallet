@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "eth-tx.h"
+#include "sha3.h"
 
 static int failures = 0;
 
@@ -217,8 +218,96 @@ static void test_chain_names(void)
     CHECK(strstr(unknown, "999999") != NULL, "unknown chain rendered as \"%s\"", unknown);
 }
 
+/* EIP-191 personal_sign: what may be signed, and what it hashes to.
+ *
+ * The bound and the printability rule live here rather than only in the
+ * protocol endpoint, because "this device can render that message" is a fact
+ * about the display, not about the wire. Duplicated on purpose - and therefore
+ * worth testing on its own, or the copy that matters silently stops applying. */
+static void test_message_displayability(void)
+{
+    printf("== a message is signable only if it can be rendered in full\n");
+
+    CHECK(eth_message_is_displayable((const uint8_t *)"hello", 5),
+          "plain ASCII was refused");
+    CHECK(eth_message_is_displayable((const uint8_t *)"", 0),
+          "an empty message was refused");
+
+    /* The bound is the screen, not the buffer: what cannot be read cannot be
+     * approved. */
+    uint8_t big[ETH_MAX_MESSAGE + 1];
+    memset(big, 'A', sizeof(big));
+    CHECK(eth_message_is_displayable(big, ETH_MAX_MESSAGE),
+          "a message exactly at the limit was refused");
+    CHECK(!eth_message_is_displayable(big, ETH_MAX_MESSAGE + 1),
+          "a message one byte over the limit was accepted");
+
+    /* No glyph, no honest rendering. Showing a mangled message while signing
+     * the real one is blind signing with better lighting. */
+    CHECK(!eth_message_is_displayable((const uint8_t *)"a\nb", 3),
+          "a newline was accepted");
+    CHECK(!eth_message_is_displayable((const uint8_t *)"a\tb", 3),
+          "a tab was accepted");
+    CHECK(!eth_message_is_displayable((const uint8_t *)"a\x01""b", 3),
+          "a control byte was accepted");
+    CHECK(!eth_message_is_displayable((const uint8_t *)"caf\xc3\xa9", 5),
+          "a UTF-8 sequence was accepted");
+
+    /* Hashing refuses the same bound, so nothing can be signed past it even if
+     * a caller forgets to ask. */
+    uint8_t digest[32];
+    CHECK(!eth_message_hash(big, ETH_MAX_MESSAGE + 1, digest),
+          "an over-long message was hashed anyway");
+}
+
+static void test_message_hash_prefix(void)
+{
+    printf("== the personal_sign preimage carries the prefix and a byte count\n");
+
+    /* Two messages differing only in length must differ in the prefix as well
+     * as the content: a length that is ignored or padded makes distinct
+     * messages collide, which is the whole reason EIP-191 has one. */
+    uint8_t a[32], b[32], c[32];
+    CHECK(eth_message_hash((const uint8_t *)"abc", 3, a), "hashing 'abc' failed");
+    CHECK(eth_message_hash((const uint8_t *)"abcd", 4, b), "hashing 'abcd' failed");
+    CHECK(memcmp(a, b, 32) != 0, "two messages of different lengths hashed alike");
+
+    CHECK(eth_message_hash((const uint8_t *)"abc", 3, c), "hashing is not deterministic");
+    CHECK(memcmp(a, c, 32) == 0, "the same message hashed two ways");
+
+    /* The preimage in full, written out here rather than asked of the code
+     * under test.
+     *
+     * Every half-right version of this - no prefix, no length, the length in
+     * the wrong place - still produces a 32-byte digest that signs cleanly and
+     * verifies against nothing the user agreed to. A host that gets to choose
+     * an unprefixed preimage can choose one that is a valid RLP transaction,
+     * turning a message prompt into a transfer. So the expectation is spelled
+     * out byte for byte. */
+    static const char PREIMAGE[] = "\x19" "Ethereum Signed Message:\n3abc";
+    uint8_t want[32];
+    SHA3_CTX ctx;
+    keccak_256_Init(&ctx);
+    sha3_Update(&ctx, (const uint8_t *)PREIMAGE, sizeof(PREIMAGE) - 1);
+    keccak_Final(&ctx, want);
+    CHECK(memcmp(a, want, 32) == 0,
+          "the personal_sign preimage is not \\x19Ethereum Signed "
+          "Message:\\n<len><message>");
+
+    /* The empty message is legal and has a definite answer; it is also where a
+     * length written as "" instead of "0" would go unnoticed. */
+    uint8_t empty[32], zero_text[32];
+    CHECK(eth_message_hash(NULL, 0, empty), "the empty message would not hash");
+    CHECK(eth_message_hash((const uint8_t *)"0", 1, zero_text), "hashing '0' failed");
+    CHECK(memcmp(empty, zero_text, 32) != 0,
+          "the empty message hashes like the message \"0\" - the length is "
+          "being written where the content should be");
+}
+
 int main(void)
 {
+    test_message_displayability();
+    test_message_hash_prefix();
     test_encoding_shape();
     test_zero_is_empty_not_zero_byte();
     test_hash_is_stable_and_sensitive();
