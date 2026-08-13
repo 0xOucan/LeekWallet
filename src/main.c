@@ -24,6 +24,7 @@
  * This is a hardware wallet with HD wallet support.
  */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -66,16 +67,21 @@ void app_main(void)
     /* Measure key derivation on this silicon - see ROADMAP T9c. */
     vault_kdf_benchmark_ms();
 
-    /* Initialize I2C */
-    if (oled_i2c_init() != ESP_OK) {
-        ESP_LOGE(TAG, "I2C initialization failed");
-        return;
-    }
-
-    /* Initialize OLED */
-    if (oled_init() != ESP_OK) {
-        ESP_LOGE(TAG, "OLED initialization failed");
-        return;
+    /* Initialize the display.
+     *
+     * A missing display is not fatal. Returning here used to abandon boot
+     * entirely, which meant a loose I2C wire produced a device that looked
+     * dead rather than one with a blank screen, and made the firmware
+     * untestable under QEMU, which has no SSD1306 to find.
+     *
+     * The wallet, the protocol endpoint and the buttons are all still useful
+     * without a panel, so carry on and say so. Nothing that needs user
+     * confirmation can be approved blind, because those confirmations are
+     * button presses against rendered text that simply will not appear. */
+    bool have_display = (oled_i2c_init() == ESP_OK) && (oled_init() == ESP_OK);
+    if (!have_display) {
+        ESP_LOGE(TAG, "No display found - continuing headless");
+        ESP_LOGE(TAG, "Check SDA=GPIO8, SCL=GPIO9 and that the panel is at 0x3C");
     }
 
     /* Initialize buttons */

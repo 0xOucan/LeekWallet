@@ -8,7 +8,10 @@ set -euo pipefail
 
 BUILD_DIR=".pio/build/esp32s3"
 IMAGE="${BUILD_DIR}/qemu-flash.bin"
-FLASH_SIZE="4MB"
+# Must match partitions.csv and sdkconfig. A smaller image makes the bootloader
+# reject the partition table outright: "offset 0x10000 size 0x400000 exceeds
+# flash chip size". QEMU caught exactly that when these drifted apart.
+FLASH_SIZE="16MB"
 
 if ! command -v qemu-system-xtensa >/dev/null 2>&1; then
     cat >&2 <<'MSG'

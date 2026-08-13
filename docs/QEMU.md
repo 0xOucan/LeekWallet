@@ -15,6 +15,14 @@ between a day's work and a drawer of bricks.
 
 That is the whole reason [T11](../ROADMAP.md) is scheduled here first.
 
+## Installed here
+
+```
+~/.local/opt/qemu/bin/qemu-system-xtensa   (esp_develop_9.2.2)
+```
+
+Add it to PATH, or `./scripts/qemu.sh` will tell you how.
+
 ## Install
 
 Upstream QEMU has no `esp32s3` machine — you need Espressif's fork:
@@ -58,9 +66,29 @@ whole image should be opaque and the script comes up empty.
 | eFuses, flash encryption, secure boot | Real RNG entropy (see [S6](../AUDIT.md)) |
 | Crypto correctness and timing *ratios* | Absolute timing, power draw, brownout |
 
+Concretely on the timing point: the KDF benchmark reports **31 ms** under QEMU
+and **504 ms** on the board, so the emulator runs this workload about sixteen
+times faster. Useful for spotting a change that costs ten times more than
+expected, useless for choosing an iteration count.
+
 The display and buttons stay a [host-harness](../sim/README.md) concern, and
 absolute timing needs the board — so the KDF iteration count ([T9c](../ROADMAP.md))
 must be measured on hardware, not here. QEMU gives you a ratio, not a number.
+
+## What running it already caught
+
+Two bugs surfaced the first time the firmware booted under emulation, neither
+of which the host suite could see:
+
+- **The flash image and the partition table disagreed.** `qemu.sh` still built a
+  4 MB image after the move to 16 MB, and the bootloader refused the partition
+  table outright. The same drift existed in `sdkconfig.defaults`, which
+  PlatformIO had been warning about into a scrollback nobody was reading.
+- **A missing display aborted boot.** `app_main` returned early when the OLED
+  did not answer, so a loose I2C wire produced a device that looked dead rather
+  than one with a blank screen. The firmware now continues headless and says
+  so, which is both more honest on hardware and what makes emulation useful at
+  all.
 
 ## Known limitations
 

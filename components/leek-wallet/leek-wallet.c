@@ -676,7 +676,15 @@ WalletError wallet_init(void) {
     state.unlocked = false;
     state.has_mnemonic = false;
 
-    ESP_LOGI(TAG, "Wallet initialized, password_set=%d", state.password_set);
+    /* How many wallets exist and which is active are not secret - they are two
+     * plain counters, and the mnemonics they refer to stay encrypted. Loading
+     * them here rather than at unlock means the UI knows the device holds a
+     * wallet before anyone has authenticated, which is what lets it offer to
+     * open one. */
+    load_wallet_metadata();
+
+    ESP_LOGI(TAG, "Wallet initialized, password_set=%d, wallets=%d, active=%d",
+             state.password_set, state.wallet_count, state.active_wallet_index);
     return WALLET_OK;
 }
 

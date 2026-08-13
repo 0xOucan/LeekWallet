@@ -920,6 +920,17 @@ static void screen_pin_unlock_on_button(button_id_t btn)
                 current_digit = 0;
                 if (pin_verify(pin_entry)) {
                     ESP_LOGI(TAG, "PIN verified");
+
+                    /* Unlock the vault now rather than lazily.
+                     *
+                     * Waiting until a screen needed keys produced a deadlock:
+                     * the menu hid "View Address" because wallet_count was
+                     * still zero, and wallet_count only became non-zero once
+                     * something unlocked the vault - which only the hidden
+                     * screen did. A rebooted device with wallets on it looked
+                     * empty until the user wandered into Settings. */
+                    ensure_wallet_unlocked();
+
                     if (pending_mnemonic_display) {
                         pending_mnemonic_display = false;
                         ui_set_screen(SCREEN_MNEMONIC_DISPLAY);
