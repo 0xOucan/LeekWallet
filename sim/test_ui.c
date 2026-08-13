@@ -27,6 +27,9 @@
 #include "button.h"
 bool fake_protocol_rx_enabled(void);
 #include "mnemonic-entry.h"
+#include "blind-signing.h"
+#include "eth-tx.h"
+#include "sha3.h"
 #include "leek-wallet.h"
 
 /* Test hooks from ui.c and pin.c (compiled with -DLEEK_HOST_TEST). */
@@ -779,6 +782,232 @@ static void test_message_confirmation_shows_all_of_it(void)
     ui_sign_clear();
 }
 
+/* ------------------------------------------------- blind signing (T16) */
+
+/* Walk the settings list until `label` is the selected row. The list scrolls
+ * three at a time, so "press DOWN n times" would encode the position of every
+ * item above it and break on the next one added. */
+static bool settings_select(const char *label)
+{
+    go(SCREEN_SETTINGS);
+    for (int i = 0; i < 30; i++) {
+        for (int row = 0; row < FAKE_OLED_ROWS; row++) {
+            const char *text = fake_oled_row(row);
+            if (text[0] == '>' && strstr(text, label)) {
+                return true;
+            }
+        }
+        press(BUTTON_DOWN);
+    }
+    return false;
+}
+
+/* Enabling the hatch has to cost something. One press must not do it, and the
+ * screen has to say what is being given up before it asks. */
+static void test_blind_signing_takes_a_deliberate_act(void)
+{
+    printf("== turning blind signing on warns, and needs more than one press\n");
+    boot_unlocked_with_seed();
+
+    CHECK(!blind_signing_enabled(), "blind signing is not off on a fresh device");
+    CHECK(settings_select("Blind"), "no blind-signing entry in settings");
+    CHECK_SCREEN(fake_oled_contains("[OFF]"),
+                 "the settings row does not show the setting is off");
+
+    press(BUTTON_ACCEPT);
+    CHECK(ui_get_screen() == SCREEN_BLIND_WARN,
+          "selecting it did not open the warning (screen %d)", ui_get_screen());
+
+    /* What it costs, in words. Not "advanced mode" or "expert settings". */
+    CHECK_SCREEN(fake_oled_contains("cannot read"),
+                 "the warning does not say the device cannot read the calls");
+    CHECK_SCREEN(fake_oled_contains("drain"),
+                 "the warning does not say what can go wrong");
+
+    /* Four presses is not five. */
+    for (int i = 0; i < 4; i++) {
+        press(BUTTON_ACCEPT);
+        CHECK(!blind_signing_enabled(),
+              "blind signing turned on after only %d presses", i + 1);
+        CHECK(ui_get_screen() == SCREEN_BLIND_WARN,
+              "the warning left the screen after %d presses", i + 1);
+    }
+    press(BUTTON_ACCEPT);
+    CHECK(blind_signing_enabled(), "five presses did not enable blind signing");
+    CHECK(ui_get_screen() == SCREEN_SETTINGS, "did not return to settings");
+    CHECK(settings_select("Blind"), "the entry vanished once enabled");
+    CHECK_SCREEN(fake_oled_contains("[ON]"),
+                 "a weakened device does not say so on the settings row");
+
+    /* Turning it back off is one press: nothing is lost by doing it early. */
+    press(BUTTON_ACCEPT);
+    CHECK(!blind_signing_enabled(), "one press did not turn the protection back on");
+
+    /* And abandoning the warning part-way leaves it off, with no partial
+     * credit carried into the next visit. */
+    CHECK(settings_select("Blind"), "the entry vanished");
+    press(BUTTON_ACCEPT);
+    press(BUTTON_ACCEPT);
+    press(BUTTON_ACCEPT);
+    press(BUTTON_CANCEL);
+    CHECK(ui_get_screen() == SCREEN_SETTINGS, "CANCEL did not leave the warning");
+    CHECK(!blind_signing_enabled(), "an abandoned warning enabled it anyway");
+
+    /* Leaving reset the settings cursor, so find the row again rather than
+     * assuming where it is. */
+    CHECK(settings_select("Blind"), "the entry vanished after a cancel");
+    press(BUTTON_ACCEPT);          /* re-enter the warning */
+    CHECK(ui_get_screen() == SCREEN_BLIND_WARN, "could not re-enter the warning");
+    press(BUTTON_ACCEPT);
+    press(BUTTON_ACCEPT);
+    CHECK(!blind_signing_enabled(),
+          "the earlier presses were still counted on a second visit");
+    press(BUTTON_CANCEL);
+}
+
+/* The confirmation for a call the device cannot read: visibly different, and
+ * honest about exactly how little it knows. */
+static void test_blind_confirmation_is_marked_and_shows_the_digest(void)
+{
+    printf("== a blind confirmation names itself and shows the calldata hash\n");
+    boot_unlocked_with_seed();
+
+    EthTx tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.chain_id = 1;
+    tx.has_to = true;
+    memset(tx.to, 0x5A, sizeof(tx.to));
+    eth_quantity_set_u64(&tx.value, 0);
+
+    static const uint8_t data[36] = { 0xde, 0xad, 0xbe, 0xef };
+    memcpy(tx.data, data, sizeof(data));
+    tx.data_length = sizeof(data);
+
+    /* The checksummed form the device will draw, computed the same way it
+     * does: a hand-written expectation would be asserting the case rules of
+     * EIP-55 rather than what is on screen. */
+    char to_hex[43];
+    CHECK(eth_format_address(tx.to, to_hex, sizeof(to_hex)), "could not format `to`");
+    char to_head[17];
+    snprintf(to_head, sizeof(to_head), "%.16s", to_hex);
+
+    ui_request_sign(&tx, 0, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_SIGN_CONFIRM);
+
+    /* Distinct from a normal confirmation at a glance, on every page. */
+    CHECK_SCREEN(fake_oled_row_contains(0, "BLIND"),
+                 "the header does not mark this as blind (\"%s\")", fake_oled_row(0));
+    CHECK_SCREEN(fake_oled_contains("UNKNOWN CALL"),
+                 "the first page does not say the call is unknown");
+    CHECK_SCREEN(fake_oled_contains("cannot read"),
+                 "the device does not say it cannot read the call");
+
+    /* Approving without paging is not approval, and that rule must not be
+     * looser here of all places. */
+    press(BUTTON_ACCEPT);
+    CHECK(ui_sign_outcome() == SIGN_PENDING,
+          "a blind call was approved without seeing every page");
+
+    /* Everything the device honestly knows, page by page. */
+    bool saw_to = false, saw_chain = false, saw_len = false, saw_from = false;
+    char expect_hex[65];
+    {
+        uint8_t digest[32];
+        keccak_256(data, sizeof(data), digest);
+        for (int i = 0; i < 32; i++) {
+            snprintf(expect_hex + i * 2, 3, "%02x", digest[i]);
+        }
+    }
+    bool saw_hash = false;
+
+    for (int page = 0; page < 6; page++) {
+        if (fake_oled_contains(to_head))              saw_to = true;
+        if (fake_oled_contains("Ethereum"))           saw_chain = true;
+        if (fake_oled_contains("36 bytes"))           saw_len = true;
+        if (fake_oled_contains("0x0100aaaaaaaabb"))   saw_from = true;
+        /* The digest, in full and in four rows of sixteen. A truncated hash
+         * is forgeable, so a prefix would be worse than none. */
+        if (fake_oled_contains("keccak256:")) {
+            char joined[65] = "";
+            for (int row = 0; row < FAKE_OLED_ROWS; row++) {
+                const char *text = fake_oled_row(row);
+                if (strlen(text) == 16 && strspn(text, "0123456789abcdef") == 16) {
+                    strncat(joined, text, sizeof(joined) - strlen(joined) - 1);
+                }
+            }
+            saw_hash = (strcmp(joined, expect_hex) == 0);
+            CHECK_SCREEN(saw_hash, "calldata digest is %s, expected %s",
+                         joined, expect_hex);
+        }
+        press(BUTTON_DOWN);
+    }
+
+    CHECK_SCREEN(saw_to, "the recipient never appeared");
+    CHECK_SCREEN(saw_chain, "the chain never appeared");
+    CHECK_SCREEN(saw_len, "the calldata length never appeared");
+    CHECK_SCREEN(saw_from, "the signing address never appeared (T47)");
+    CHECK(saw_hash, "the calldata digest was never shown");
+
+    press(BUTTON_ACCEPT);
+    CHECK(ui_sign_outcome() == SIGN_APPROVED,
+          "a fully paged blind call could not be approved");
+    ui_sign_clear();
+
+    /* And refusing works from the first page, without paging. */
+    ui_request_sign(&tx, 0, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_SIGN_CONFIRM);
+    press(BUTTON_CANCEL);
+    CHECK(ui_sign_outcome() == SIGN_REJECTED, "CANCEL did not reject a blind call");
+    ui_sign_clear();
+}
+
+/* A decodable call must not borrow the blind wording: "unknown" on a screen
+ * that did understand the call would teach the user to ignore it. */
+static void test_a_decoded_call_is_not_marked_blind(void)
+{
+    printf("== a call the device did decode is not dressed as a blind one\n");
+    boot_unlocked_with_seed();
+
+    EthTx tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.chain_id = 1;
+    tx.has_to = true;
+    memset(tx.to, 0x5A, sizeof(tx.to));
+
+    /* setApprovalForAll(operator, true) - the widest approval there is, and
+     * the one that has to read as such. */
+    memset(tx.data, 0, 68);
+    tx.data[0] = 0xa2; tx.data[1] = 0x2c; tx.data[2] = 0xb4; tx.data[3] = 0x65;
+    memset(tx.data + 16, 0x77, 20);
+    tx.data[67] = 1;
+    tx.data_length = 68;
+
+    char op_hex[43];
+    uint8_t op[20];
+    memset(op, 0x77, sizeof(op));
+    CHECK(eth_format_address(op, op_hex, sizeof(op_hex)), "could not format operator");
+    char op_head[17];
+    snprintf(op_head, sizeof(op_head), "%.16s", op_hex);
+
+    ui_request_sign(&tx, 0, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_SIGN_CONFIRM);
+
+    CHECK_SCREEN(!fake_oled_row_contains(0, "BLIND"),
+                 "a decoded call is marked blind (\"%s\")", fake_oled_row(0));
+    CHECK_SCREEN(fake_oled_contains("APPROVE ALL"),
+                 "setApprovalForAll is not described as approving everything");
+
+    bool saw_operator = false;
+    for (int page = 0; page < 4; page++) {
+        if (fake_oled_contains("Operator") && fake_oled_contains(op_head)) {
+            saw_operator = true;
+        }
+        press(BUTTON_DOWN);
+    }
+    CHECK_SCREEN(saw_operator, "the operator being approved was never named");
+    ui_sign_clear();
+}
+
 /* The host-entry passphrase path (PROTOCOL.md 5): the address is the whole
  * defence, and saying no has to be a real answer rather than a delay. */
 static void test_host_passphrase_confirmation(void)
@@ -812,6 +1041,9 @@ static void test_host_passphrase_confirmation(void)
 
 int main(void)
 {
+    test_blind_signing_takes_a_deliberate_act();
+    test_blind_confirmation_is_marked_and_shows_the_digest();
+    test_a_decoded_call_is_not_marked_blind();
     test_message_confirmation_shows_all_of_it();
     test_host_passphrase_confirmation();
     test_harness_sees_the_screen();

@@ -23,6 +23,8 @@
 #include "text-entry.h"
 #include "eth-tx.h"
 #include "eth-decode.h"
+#include "blind-signing.h"
+#include "sha3.h"
 #include "device-wipe.h"
 #include "transport.h"
 #include "esp_timer.h"
@@ -109,6 +111,10 @@ static void screen_entropy_on_button(button_id_t btn);
 static void screen_wipe_confirm_enter(void);
 static void screen_wipe_confirm_render(void);
 static void screen_wipe_confirm_on_button(button_id_t btn);
+
+static void screen_blind_warn_enter(void);
+static void screen_blind_warn_render(void);
+static void screen_blind_warn_on_button(button_id_t btn);
 
 static void screen_mnemonic_verify_enter(void);
 static void screen_mnemonic_verify_render(void);
@@ -244,6 +250,13 @@ static const screen_t screen_wipe_confirm = {
     .enter = screen_wipe_confirm_enter,
     .render = screen_wipe_confirm_render,
     .on_button = screen_wipe_confirm_on_button,
+    .exit = NULL
+};
+
+static const screen_t screen_blind_warn = {
+    .enter = screen_blind_warn_enter,
+    .render = screen_blind_warn_render,
+    .on_button = screen_blind_warn_on_button,
     .exit = NULL
 };
 
@@ -711,6 +724,9 @@ typedef enum {
 #endif
     SET_TRANSPORT,
     SET_USB,
+    /* Next to Wipe, and for the same reason: both are things you should have
+     * to scroll past everything else to reach. */
+    SET_BLIND,
     SET_WIPE,
     SET_BACK,
     SETTINGS_ITEMS
@@ -730,6 +746,7 @@ static const char *settings_items[SETTINGS_ITEMS] = {
 #endif
     "Link",
     "USB HID Test",
+    "Blind sign",
     "Wipe Device",
     "Back"
 };
@@ -2229,6 +2246,12 @@ static void screen_settings_render(void)
             snprintf(line, sizeof(line), "%s Entry %s",
                      item_idx == settings_selection ? ">" : " ",
                      mnemonic_entry_blocks_enabled() ? "Blocks" : "Simple");
+        } else if (item_idx == SET_BLIND) {
+            /* The state is on the menu line, not hidden behind the item. A
+             * weakened device must be visible without going looking. */
+            snprintf(line, sizeof(line), "%s Blind %s",
+                     item_idx == settings_selection ? ">" : " ",
+                     blind_signing_enabled() ? "[ON]" : "[OFF]");
         } else if (item_idx == SET_AUTOLOCK) {
             snprintf(line, sizeof(line), "%s Lock %s",
                      item_idx == settings_selection ? ">" : " ",
@@ -2313,6 +2336,17 @@ static void screen_settings_on_button(button_id_t btn)
                     entropy_set_rf_active(transport_get() == TRANSPORT_BLE);
                     break;
                 case SET_USB:  usb_hid_test();     break;
+                case SET_BLIND:
+                    /* Asymmetric on purpose. Turning the protection back on
+                     * is one press, because nothing is lost by doing it by
+                     * accident; turning it off goes through a screen that
+                     * says what it costs and asks repeatedly. */
+                    if (blind_signing_enabled()) {
+                        blind_signing_set(false);
+                    } else {
+                        ui_set_screen(SCREEN_BLIND_WARN);
+                    }
+                    break;
                 case SET_WIPE:
                     ui_set_screen(SCREEN_WIPE_CONFIRM);
                     break;
@@ -2576,6 +2610,10 @@ static void screen_wipe_confirm_on_button(button_id_t btn)
             ESP_LOGW(TAG, "Wipe confirmed by user");
             device_wipe();
             wallet_init();
+            /* The wipe erased the stored flag; drop the cached copy too, or
+             * this boot would keep answering "on" for a device that no longer
+             * has it stored and the next boot would disagree. */
+            blind_signing_forget();
             memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
             mnemonic_word_count = 0;
             mnemonic_entry_clear(&entry);
@@ -2586,6 +2624,75 @@ static void screen_wipe_confirm_on_button(button_id_t btn)
         }
     } else {
         /* Anything else aborts. */
+        ui_set_screen(SCREEN_SETTINGS);
+        return;
+    }
+
+    ui_invalidate();
+}
+
+/* ============================================================================
+ * Blind Signing Warning (T16, PROTOCOL.md 6bis)
+ *
+ * The device refuses calldata it cannot describe. This screen is the only way
+ * past that refusal, and it deliberately costs something: the same repeated
+ * deliberate act as a wipe, because both are decisions whose consequence
+ * arrives later and cannot be taken back at the moment it matters.
+ *
+ * There is no command that reaches here. A host able to switch the protection
+ * off would be a host the protection never protected you from, so enabling is
+ * on-device only, by construction rather than by policy.
+ * ============================================================================ */
+
+/* One more than a wipe's three. A wipe destroys a device you can restore from
+ * a backup; this one changes what every future signature means, silently, from
+ * now on. */
+#define BLIND_CONFIRM_PRESSES 5
+
+static int blind_confirm_count = 0;
+
+static void screen_blind_warn_enter(void)
+{
+    ESP_LOGI(TAG, "Blind signing warning screen");
+    blind_confirm_count = 0;
+}
+
+static void screen_blind_warn_render(void)
+{
+    oled_clear();
+    oled_draw_string_centered(0, "!! BLIND SIGN !!");
+
+    /* What it costs, in words, and no reassurance. The user is about to give
+     * up the thing that makes this a hardware wallet rather than a keyring. */
+    oled_draw_string(1, 0, "Allows signing");
+    oled_draw_string(2, 0, "calls this device");
+    oled_draw_string(3, 0, "cannot read.");
+    oled_draw_string(4, 0, "A bad app can");
+    oled_draw_string(5, 0, "drain you.");
+
+    int left = BLIND_CONFIRM_PRESSES - blind_confirm_count;
+    char msg[32];
+    snprintf(msg, sizeof(msg), "Press OK %u more", (unsigned)(left < 0 ? 0 : left));
+    oled_draw_string_centered(6, msg);
+
+    oled_draw_string(7, 0, "BACK      ENABLE");
+}
+
+static void screen_blind_warn_on_button(button_id_t btn)
+{
+    if (btn != BUTTON_ACCEPT) {
+        /* Anything else abandons it, and the count goes with the screen. */
+        ui_set_screen(SCREEN_SETTINGS);
+        return;
+    }
+
+    if (++blind_confirm_count >= BLIND_CONFIRM_PRESSES) {
+        if (!blind_signing_set(true)) {
+            /* Failing to persist means the next boot would disagree with this
+             * one about whether the device is protected. Say so and stay off
+             * rather than run in a state that will not survive a reset. */
+            ESP_LOGE(TAG, "Blind signing could not be stored; left off");
+        }
         ui_set_screen(SCREEN_SETTINGS);
         return;
     }
@@ -3050,8 +3157,10 @@ static void screen_passphrase_confirm_on_button(button_id_t btn)
  *
  * Which pages exist depends on what the device could decode. A token transfer
  * has a different set of facts worth reading than a native one, and the
- * protocol task has already refused anything outside the decodable set (T50),
- * so no page here ever has to render "unknown".
+ * protocol task has already refused anything outside the decodable set (T50)
+ * unless the owner turned blind signing on (T16) — which is the only way a
+ * page here ever renders "unknown", and when it does it says so in those
+ * words rather than dressing the call up as something it understood.
  * ============================================================================ */
 
 typedef enum {
@@ -3060,11 +3169,16 @@ typedef enum {
     SIGN_PAGE_TO,           /* recipient of a native transfer */
     SIGN_PAGE_ACTION,       /* what the token call does, and for how much */
     SIGN_PAGE_PARTY,        /* the token recipient or the approved spender */
+    SIGN_PAGE_PARTY2,       /* transferFrom's destination */
     SIGN_PAGE_CONTRACT,     /* the token contract being called, and the chain */
+    SIGN_PAGE_BLIND_WARN,   /* blind signing: the device cannot read this call */
+    SIGN_PAGE_BLIND_DATA,   /* blind signing: calldata length and its hash */
     SIGN_PAGE_FROM          /* the address that will sign (T47) */
 } SignPageKind;
 
-#define SIGN_MAX_PAGES 4
+/* The longest plan is the blind one: warning, value, recipient, calldata
+ * digest, source. Everything decodable needs fewer. */
+#define SIGN_MAX_PAGES 6
 
 static EthTx        sign_tx;
 static EthCall      sign_call;
@@ -3087,6 +3201,13 @@ static volatile bool sign_request_pending = false;
 static bool sign_is_message = false;
 static char sign_message[ETH_MAX_MESSAGE + 1];
 
+/* Set when the request got here only because blind signing is on. The screen
+ * has to look different from a normal confirmation - same buttons, same paging
+ * rule, but nobody should be able to approve one while thinking they approved
+ * the other. */
+static bool    sign_blind = false;
+static uint8_t sign_data_hash[32];   /* keccak256 of the calldata as received */
+
 void ui_request_sign_message(const char *message, size_t length,
                              uint32_t address_index, const char *from)
 {
@@ -3105,6 +3226,10 @@ void ui_request_sign_message(const char *message, size_t length,
     sign_message[length] = '\0';
 
     sign_is_message = true;
+    /* A message that reached this screen was renderable in full; blind
+     * signing does not and must not reopen the ones that were not. */
+    sign_blind = false;
+    memzero(sign_data_hash, sizeof(sign_data_hash));
     sign_index = address_index;
     if (from) {
         snprintf(sign_from, sizeof(sign_from), "%s", from);
@@ -3140,18 +3265,63 @@ void ui_request_sign(const EthTx *tx, uint32_t address_index, const char *from)
 
     eth_decode_call(sign_tx.data, sign_tx.data_length, &sign_call);
 
+    sign_blind = (sign_call.kind == ETH_CALL_UNKNOWN);
+    memzero(sign_data_hash, sizeof(sign_data_hash));
+    if (sign_blind) {
+        /* The one thing the device can honestly say about bytes it cannot
+         * read: which bytes they were. Hashed here, from the same buffer the
+         * signature is taken over, so a user who wants to check the call
+         * against a second source has something to compare. */
+        keccak_256(sign_tx.data, sign_tx.data_length, sign_data_hash);
+    }
+
     int n = 0;
     switch (sign_call.kind) {
         case ETH_CALL_ERC20_TRANSFER:
         case ETH_CALL_ERC20_APPROVE:
+        case ETH_CALL_MINT_TO:
             sign_page_kind[n++] = SIGN_PAGE_ACTION;
             sign_page_kind[n++] = SIGN_PAGE_PARTY;
             sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
             break;
+        case ETH_CALL_ERC20_TRANSFER_FROM:
+            /* Two parties, and which is which matters more here than
+             * anywhere: this call moves someone else's tokens. */
+            sign_page_kind[n++] = SIGN_PAGE_ACTION;
+            sign_page_kind[n++] = SIGN_PAGE_PARTY;
+            sign_page_kind[n++] = SIGN_PAGE_PARTY2;
+            sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
+            break;
+        case ETH_CALL_SET_APPROVAL_ALL:
+            sign_page_kind[n++] = SIGN_PAGE_ACTION;
+            sign_page_kind[n++] = SIGN_PAGE_PARTY;
+            sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
+            break;
+        case ETH_CALL_WETH_DEPOSIT:
+            /* The amount wrapped is the transaction's own value, so the ether
+             * page is the amount page here. */
+            sign_page_kind[n++] = SIGN_PAGE_ACTION;
+            sign_page_kind[n++] = SIGN_PAGE_VALUE;
+            sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
+            break;
+        case ETH_CALL_WETH_WITHDRAW:
+        case ETH_CALL_MINT:
+            sign_page_kind[n++] = SIGN_PAGE_ACTION;
+            sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
+            break;
+        case ETH_CALL_UNKNOWN:
+            /* Only reachable with blind signing on (T16); the protocol task
+             * refuses it otherwise. The warning comes first so the page the
+             * user lands on is the one that says the device cannot read this,
+             * and the rest is everything it does know. */
+            sign_page_kind[n++] = SIGN_PAGE_BLIND_WARN;
+            sign_page_kind[n++] = SIGN_PAGE_VALUE;
+            sign_page_kind[n++] = SIGN_PAGE_TO;
+            sign_page_kind[n++] = SIGN_PAGE_BLIND_DATA;
+            break;
         default:
-            /* ETH_CALL_UNKNOWN cannot reach this screen; the protocol task
-             * refuses it. Rendering it as a plain transfer would be a lie, so
-             * if it ever does arrive the value pages are still what is signed. */
+            /* ETH_CALL_EMPTY: a plain transfer, and the two facts that
+             * describe it entirely. */
             sign_page_kind[n++] = SIGN_PAGE_VALUE;
             sign_page_kind[n++] = SIGN_PAGE_TO;
             break;
@@ -3226,6 +3396,8 @@ void ui_sign_clear(void)
     memzero(sign_from, sizeof(sign_from));
     memzero(sign_message, sizeof(sign_message));
     sign_is_message = false;
+    sign_blind = false;
+    memzero(sign_data_hash, sizeof(sign_data_hash));
 }
 
 static bool sign_all_seen(void)
@@ -3266,13 +3438,38 @@ static void sign_draw_address(int row, const char *hex42)
     oled_draw_string(row + 2, 0, part);
 }
 
+/* A token amount, wrapped over two rows and labelled for what it is.
+ *
+ * "raw units" is not a hedge, it is the truth: decimals() lives on the
+ * contract and the device cannot call it, so scaling the number would mean
+ * inventing the scale. Long values wrap rather than truncate, because a
+ * shortened amount is a different amount. */
+static void sign_draw_amount(int row)
+{
+    char amount[80];
+    if (!eth_format_integer(&sign_call.amount, amount, sizeof(amount))) {
+        snprintf(amount, sizeof(amount), "?");
+    }
+    size_t alen = strlen(amount);
+    for (int i = 0; i < 2 && (size_t)(i * 21) < alen; i++) {
+        char part[22];
+        snprintf(part, sizeof(part), "%.21s", amount + i * 21);
+        oled_draw_string(row + i, 0, part);
+    }
+    oled_draw_string(row + 2, 0, "raw units");
+}
+
 static void screen_sign_confirm_render(void)
 {
     oled_clear();
 
     char line[24];
-    snprintf(line, sizeof(line), "%s  %u/%u",
-             sign_is_message ? "Sign msg?" : "Sign?",
+    /* The header is the one row on every page, so it is where "this is not a
+     * normal confirmation" belongs. A blind request has to be distinguishable
+     * at a glance from one the device understood. */
+    const char *title = sign_blind ? "!BLIND SIGN!"
+                                   : (sign_is_message ? "Sign msg?" : "Sign?");
+    snprintf(line, sizeof(line), "%s  %u/%u", title,
              (unsigned)(sign_page + 1), (unsigned)sign_page_count);
     oled_draw_string_centered(0, line);
 
@@ -3340,37 +3537,146 @@ static void screen_sign_confirm_render(void)
              * Amounts are raw token units: the device cannot call decimals()
              * on the contract, and printing "12.5" from a scale it guessed
              * would be a confident lie about the thing being signed. */
-            bool approve = (sign_call.kind == ETH_CALL_ERC20_APPROVE);
-            oled_draw_string(2, 0, approve ? "Approve spending" : "Send tokens");
+            switch (sign_call.kind) {
+                case ETH_CALL_ERC20_APPROVE:
+                    oled_draw_string(2, 0, "Approve spending");
+                    if (sign_call.unlimited) {
+                        /* The pattern behind most drain incidents: an
+                         * allowance the user never revisits and an attacker
+                         * can empty at leisure. */
+                        oled_draw_string(4, 0, "UNLIMITED amount");
+                        oled_draw_string(5, 0, "Spender can take");
+                        oled_draw_string(6, 0, "all of this token");
+                    } else {
+                        sign_draw_amount(4);
+                    }
+                    break;
 
-            if (approve && sign_call.unlimited) {
-                /* The pattern behind most drain incidents: an allowance the
-                 * user never revisits and an attacker can empty at leisure. */
-                oled_draw_string(4, 0, "UNLIMITED amount");
-                oled_draw_string(5, 0, "Spender can take");
-                oled_draw_string(6, 0, "all of this token");
-            } else {
-                char amount[80];
-                if (!eth_format_integer(&sign_call.amount, amount, sizeof(amount))) {
-                    snprintf(amount, sizeof(amount), "?");
-                }
-                /* Long numbers wrap rather than truncate. */
-                size_t alen = strlen(amount);
-                for (int i = 0; i < 2 && (size_t)(i * 21) < alen; i++) {
-                    char part[22];
-                    snprintf(part, sizeof(part), "%.21s", amount + i * 21);
-                    oled_draw_string(4 + i, 0, part);
-                }
-                oled_draw_string(6, 0, "raw units");
+                case ETH_CALL_SET_APPROVAL_ALL:
+                    /* Not an amount at all, which is exactly why it gets its
+                     * own words. This is broader than an unlimited ERC-20
+                     * allowance: it hands over every token in the collection,
+                     * including ones bought after the approval was given. */
+                    if (sign_call.flag) {
+                        oled_draw_string(1, 0, "APPROVE ALL");
+                        oled_draw_string(2, 0, "tokens in this");
+                        oled_draw_string(3, 0, "collection");
+                        oled_draw_string(5, 0, "Operator may move");
+                        oled_draw_string(6, 0, "every one, anytime");
+                    } else {
+                        oled_draw_string(1, 0, "Revoke approval");
+                        oled_draw_string(2, 0, "for all tokens");
+                        oled_draw_string(5, 0, "Operator loses");
+                        oled_draw_string(6, 0, "access");
+                    }
+                    break;
+
+                case ETH_CALL_ERC20_TRANSFER_FROM:
+                    /* Spends an allowance rather than the signer's balance,
+                     * so the holder and the destination are different
+                     * addresses and both get a page of their own. */
+                    oled_draw_string(2, 0, "Move tokens");
+                    oled_draw_string(3, 0, "between accounts");
+                    sign_draw_amount(4);
+                    break;
+
+                case ETH_CALL_WETH_DEPOSIT:
+                    /* No arguments: the amount wrapped is the ether attached
+                     * to the transaction, which the next page shows. */
+                    oled_draw_string(2, 0, "Wrap ETH");
+                    oled_draw_string(4, 0, "Sends the ether");
+                    oled_draw_string(5, 0, "below to this");
+                    oled_draw_string(6, 0, "contract");
+                    break;
+
+                case ETH_CALL_WETH_WITHDRAW:
+                    oled_draw_string(2, 0, "Unwrap tokens");
+                    sign_draw_amount(4);
+                    break;
+
+                case ETH_CALL_MINT_TO:
+                    oled_draw_string(2, 0, "Mint tokens");
+                    oled_draw_string(3, 0, "to address below");
+                    sign_draw_amount(4);
+                    break;
+
+                case ETH_CALL_MINT:
+                    oled_draw_string(2, 0, "Mint tokens");
+                    oled_draw_string(3, 0, "to this account");
+                    sign_draw_amount(4);
+                    break;
+
+                default:
+                    oled_draw_string(2, 0, "Send tokens");
+                    sign_draw_amount(4);
+                    break;
             }
             break;
         }
         case SIGN_PAGE_PARTY: {
+            /* One page, several meanings, so the label is never generic: an
+             * address under "To" and the same address under "Spender" are
+             * different things to agree to. */
             char addr[43];
-            oled_draw_string(2, 0,
-                sign_call.kind == ETH_CALL_ERC20_APPROVE ? "Spender" : "To");
+            const char *label;
+            switch (sign_call.kind) {
+                case ETH_CALL_ERC20_APPROVE:       label = "Spender";      break;
+                case ETH_CALL_SET_APPROVAL_ALL:    label = "Operator";     break;
+                case ETH_CALL_ERC20_TRANSFER_FROM: label = "Taken from";   break;
+                case ETH_CALL_MINT_TO:             label = "Minted to";    break;
+                default:                           label = "To";           break;
+            }
+            oled_draw_string(2, 0, label);
             if (eth_format_address(sign_call.address, addr, sizeof(addr))) {
                 sign_draw_address(3, addr);
+            }
+            break;
+        }
+        case SIGN_PAGE_PARTY2: {
+            char addr[43];
+            oled_draw_string(2, 0, "Sent to");
+            if (sign_call.has_second &&
+                eth_format_address(sign_call.second, addr, sizeof(addr))) {
+                sign_draw_address(3, addr);
+            } else {
+                oled_draw_string(4, 0, "(unavailable)");
+            }
+            break;
+        }
+        case SIGN_PAGE_BLIND_WARN: {
+            /* The whole point of the hatch being opt-in is that this page
+             * exists and is unmissable. It claims nothing about the call. */
+            oled_draw_string(1, 0, "UNKNOWN CALL");
+            oled_draw_string(2, 0, "Device cannot read");
+            oled_draw_string(3, 0, "this contract call");
+            oled_draw_string(4, 0, "or say what it");
+            oled_draw_string(5, 0, "does. You trust");
+            oled_draw_string(6, 0, "the app, not this.");
+            break;
+        }
+        case SIGN_PAGE_BLIND_DATA: {
+            /* Which bytes, since not what they mean. The length says how much
+             * is hidden and the digest lets it be checked against a second
+             * source - the only two honest facts available about calldata the
+             * device cannot parse. */
+            snprintf(line, sizeof(line), "Calldata %u bytes",
+                     (unsigned)sign_tx.data_length);
+            oled_draw_string(1, 0, line);
+            oled_draw_string(2, 0, "keccak256:");
+
+            /* All 64 hex characters, four rows of sixteen. A prefix would be
+             * cheaper to read and trivially forgeable, which is the reason a
+             * truncated hash is not shown anywhere on this device. */
+            for (int row = 0; row < 4; row++) {
+                char part[17];
+                for (int i = 0; i < 8; i++) {
+                    static const char hex[] = "0123456789abcdef";
+                    uint8_t b = sign_data_hash[row * 8 + i];
+                    part[i * 2]     = hex[b >> 4];
+                    part[i * 2 + 1] = hex[b & 0x0F];
+                }
+                part[16] = '\0';
+                oled_draw_string(3 + row, 0, part);
             }
             break;
         }
@@ -3556,6 +3862,7 @@ void ui_init(void)
     screens[SCREEN_QR_CODE] = &screen_qr_code;
     screens[SCREEN_ENTROPY] = &screen_entropy;
     screens[SCREEN_WIPE_CONFIRM] = &screen_wipe_confirm;
+    screens[SCREEN_BLIND_WARN] = &screen_blind_warn;
     screens[SCREEN_MNEMONIC_VERIFY] = &screen_mnemonic_verify;
     screens[SCREEN_SESSION_CONFIRM] = &screen_session_confirm;
     screens[SCREEN_PASSPHRASE] = &screen_passphrase;
@@ -3797,6 +4104,10 @@ void ui__reset_static_state_for_test(void)
     sign_request_pending = false;
     sign_outcome = SIGN_PENDING;
     sign_is_message = false;
+    sign_blind = false;
+    memzero(sign_data_hash, sizeof(sign_data_hash));
+    blind_confirm_count = 0;
+    blind_signing_forget();
     memzero(sign_message, sizeof(sign_message));
     host_passphrase_pending = false;
     memzero(host_passphrase_address, sizeof(host_passphrase_address));

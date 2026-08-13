@@ -36,6 +36,10 @@ typedef enum {
     SCREEN_SIGN_CONFIRM,
     SCREEN_HOST_PASSPHRASE_CONFIRM,
     SCREEN_SIGN_RESULT,
+    /* Turning blind signing on (T16). Its own screen rather than a toggle in
+     * the settings list, because switching off a protection should cost more
+     * than one press and should not be possible without reading why. */
+    SCREEN_BLIND_WARN,
     SCREEN_COUNT
 } screen_id_t;
 

@@ -35,6 +35,7 @@
 #include "eth-decode.h"
 #include "eth-tx.h"
 #include "fake_nvs.h"
+#include "blind-signing.h"
 #include "fake_usb.h"
 #include "fake_wallet.h"
 #include "leek-wallet.h"
@@ -394,6 +395,11 @@ static void fresh_device(void)
 {
     fake_usb_reset();
     fake_nvs_reset();
+    /* The wipe of simulated flash took the blind-signing flag with it; the
+     * cached copy has to go too, or a test that enabled it would leak the
+     * weaker mode into the next one. This is the same call the wipe screen
+     * makes on hardware. */
+    blind_signing_forget();
     pin__reset_static_state_for_test();
     pin_init();
     fake_wallet_reset();
@@ -710,6 +716,204 @@ static void test_undecodable_calldata_refused_before_confirmation(void)
 
     expect_error(T_ENC_ERROR, E_UNDECODABLE, "contract creation");
     CHECK(confirm_requests == 0, "contract creation reached the screen");
+}
+
+/* A signTransaction request whose calldata nothing decodes. `to` present, so
+ * the only thing standing between it and the screen is the setting. */
+static size_t undecodable_request(uint8_t *payload, size_t cap,
+                                  const uint8_t to[20],
+                                  const uint8_t *data, size_t data_len)
+{
+    CborWriter w;
+    cbor_writer_init(&w, payload, cap);
+    cbor_write_map(&w, 5);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signTransaction");
+    cbor_write_text(&w, "chainId");
+    cbor_write_uint(&w, 1);
+    cbor_write_text(&w, "index");
+    cbor_write_uint(&w, 0);
+    cbor_write_text(&w, "to");
+    cbor_write_bytes(&w, to, 20);
+    cbor_write_text(&w, "data");
+    cbor_write_bytes(&w, data, data_len);
+    return cbor_writer_ok(&w) ? w.length : 0;
+}
+
+/* getFeatures over whatever channel is live. Asked inside a session it must
+ * go encrypted like everything else, or the two sides desync and every later
+ * assertion in the test is about the wrong frame. */
+static uint32_t features_blind_signing(void)
+{
+    uint8_t payload[64];
+    size_t len = req(payload, sizeof(payload), "getFeatures");
+    Frame f;
+    if (session_up) {
+        send_encrypted(payload, len);
+        f = next_reply();
+    } else {
+        send_plain(payload, len);
+        f = next_frame();
+    }
+    const uint8_t *body;
+    size_t body_len;
+    CborItem it;
+    if (f.present && result_body(&f, &body, &body_len) &&
+        cbor_map_find(body, body_len, "blindSigning", &it) && it.type == CBOR_UINT) {
+        return (uint32_t)it.value;
+    }
+    return 0xFFFFFFFFu;   /* "no answer" must not read as "off" */
+}
+
+/* The escape hatch (T16): what it opens, and everything it does not. */
+static void test_blind_signing_is_off_until_the_device_says_otherwise(void)
+{
+    printf("== blind signing is off by default, on-device only, and narrow\n");
+    fresh_device();
+    device_unlocked();
+    confirmed_session(40);
+
+    uint8_t to[20];
+    memset(to, 0xC0, sizeof(to));
+    uint8_t data[36] = { 0xde, 0xad, 0xbe, 0xef };
+    uint8_t payload[512];
+    size_t len;
+
+    CHECK(features_blind_signing() == 0,
+          "a fresh device does not report blind signing off");
+
+    /* There is no command for this. If one is ever added, this is where it
+     * will start failing: the setting must be unchanged by anything the host
+     * can send, including a request that names it. */
+    CborWriter w;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "setBlindSigning");
+    cbor_write_text(&w, "enabled");
+    cbor_write_uint(&w, 1);
+    send_encrypted(payload, w.length);
+    (void)next_reply();     /* an unknown method; the answer does not matter */
+    CHECK(features_blind_signing() == 0,
+          "a host request changed the blind-signing setting");
+
+    /* Off: refused before the screen. This is the assertion the whole design
+     * rests on, restated here so the hatch cannot quietly remove it. */
+    len = undecodable_request(payload, sizeof(payload), to, data, sizeof(data));
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_UNDECODABLE, "undecodable call, setting off");
+    CHECK(confirm_requests == 0, "an undecodable call reached the screen while off");
+
+    /* On, as the device's own settings screen would do it. */
+    CHECK(blind_signing_set(true), "could not enable blind signing");
+    CHECK(features_blind_signing() == 1,
+          "getFeatures hides that the device is in the weaker mode");
+
+    /* Now it reaches the confirmation, and can be approved. */
+    scripted_outcome = SIGN_APPROVED;
+    len = undecodable_request(payload, sizeof(payload), to, data, sizeof(data));
+    send_encrypted(payload, len);
+    CHECK(confirm_requests == 1, "the hatch did not put the call on screen");
+
+    Frame f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE, "the signature was not returned");
+    const uint8_t *body;
+    size_t body_len;
+    CborItem it;
+    if (f.present && result_body(&f, &body, &body_len)) {
+        /* Blind about the meaning, never about the bytes: the signature is
+         * still over the transaction the device parsed and showed, calldata
+         * included. */
+        CHECK(shown_tx.data_length == sizeof(data) &&
+              memcmp(shown_tx.data, data, sizeof(data)) == 0,
+              "the screen was shown different calldata than was sent");
+        uint8_t expect_digest[32];
+        CHECK(eth_tx_hash(&shown_tx, expect_digest), "could not re-hash what was shown");
+        CHECK(cbor_map_find(body, body_len, "r", &it) && it.type == CBOR_BYTES &&
+              it.value == 32 && memcmp(it.data, expect_digest, 32) == 0,
+              "the blind signature is not over what was displayed");
+    }
+
+    /* And can be refused, which must still be the cheap outcome. */
+    confirm_requests = 0;
+    scripted_outcome = SIGN_REJECTED;
+    len = undecodable_request(payload, sizeof(payload), to, data, sizeof(data));
+    send_encrypted(payload, len);
+    CHECK(confirm_requests == 1, "the rejected call never reached the screen");
+    expect_error(T_ENC_ERROR, E_REJECTED, "blind call rejected on device");
+
+    scripted_outcome = SIGN_APPROVED;
+
+    /* --- what the hatch deliberately does NOT open --- */
+
+    /* Contract creation. No recipient to name, so a blind confirmation would
+     * have nothing true left on it. */
+    confirm_requests = 0;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 3);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signTransaction");
+    cbor_write_text(&w, "chainId");
+    cbor_write_uint(&w, 1);
+    cbor_write_text(&w, "data");
+    cbor_write_bytes(&w, data, sizeof(data));
+    send_encrypted(payload, w.length);
+    expect_error(T_ENC_ERROR, E_UNDECODABLE, "contract creation with the hatch open");
+    CHECK(confirm_requests == 0, "the hatch let contract creation through");
+
+    /* Oversized calldata. Refused for a different reason again: the device
+     * never held those bytes, so it could not hash what it signed. */
+    uint8_t huge[300] = { 0xde, 0xad, 0xbe, 0xef };   /* ETH_MAX_DATA is 256 */
+    len = undecodable_request(payload, sizeof(payload), to, huge, sizeof(huge));
+    CHECK(len > 0, "the oversized request did not fit the buffer");
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_MALFORMED, "oversized calldata with the hatch open");
+    CHECK(confirm_requests == 0, "the hatch let oversized calldata through");
+
+    /* A message the screen cannot render. Blind signing is about calldata; a
+     * confirmation showing mangled text carries no information at all. */
+    message_prompts = 0;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signMessage");
+    cbor_write_text(&w, "message");
+    cbor_write_text(&w, "hello\x01world");
+    send_encrypted(payload, w.length);
+    expect_error(T_ENC_ERROR, E_UNDECODABLE, "unrenderable message with the hatch open");
+    CHECK(message_prompts == 0, "the hatch let an unrenderable message through");
+
+    /* Off again, on the device, and the refusal is back with no reboot. */
+    CHECK(blind_signing_set(false), "could not disable blind signing");
+    CHECK(features_blind_signing() == 0, "getFeatures still reports blind signing on");
+    confirm_requests = 0;
+    len = undecodable_request(payload, sizeof(payload), to, data, sizeof(data));
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_UNDECODABLE, "undecodable call after turning it back off");
+    CHECK(confirm_requests == 0, "turning the setting off did not take effect");
+
+    /* Persistence: the setting survives a reboot, because a device that
+     * forgets it is on would silently re-protect - and one that forgets it is
+     * off would silently stay weak. */
+    CHECK(blind_signing_set(true), "could not re-enable");
+    fake_nvs_reboot();
+    blind_signing_forget();
+    CHECK(blind_signing_enabled(), "blind signing did not survive a reboot");
+    CHECK(blind_signing_set(false), "could not disable after the reboot");
+
+    /* A stored byte this firmware never wrote - corruption, or an older or
+     * newer build's encoding. Only an exact 1 may turn the protection off;
+     * anything else has to read as protected, because the safe reading of a
+     * damaged security flag is the safe setting. */
+    nvs_handle_t nvs;
+    CHECK(nvs_open("leek_ui", NVS_READWRITE, &nvs) == ESP_OK,
+          "could not open settings to plant a corrupt flag");
+    nvs_set_u8(nvs, "blindsig", 2);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+    blind_signing_forget();
+    CHECK(!blind_signing_enabled(),
+          "a stored byte of 2 was read as blind signing enabled");
 }
 
 static size_t native_transfer_request(uint8_t *payload, size_t cap,
@@ -1745,6 +1949,7 @@ int main(void)
     test_locked_device_refuses_keys();
     test_address_derivation_reads_the_path();
     test_undecodable_calldata_refused_before_confirmation();
+    test_blind_signing_is_off_until_the_device_says_otherwise();
     test_signing_signs_what_it_showed();
     test_rejection_and_timeout();
     test_errors_stay_encrypted_once_a_session_exists();
