@@ -12,7 +12,7 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui test_button
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
@@ -70,6 +70,9 @@ $(BUILD)/test_passphrase: test_passphrase.c host_stubs.c $(CRYPTO_SRC) | $(BUILD
 
 $(BUILD)/test_device_wipe: test_device_wipe.c esp_stubs.c ../src/device-wipe.c ../src/pin.c \
                           $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c | $(BUILD)
+	$(CC) $(CFLAGS) -DLEEK_HOST_TEST -o $@ $^
+
+$(BUILD)/test_button: test_button.c esp_stubs.c ../src/button.c | $(BUILD)
 	$(CC) $(CFLAGS) -DLEEK_HOST_TEST -o $@ $^
 
 $(BUILD)/test_pin: test_pin.c esp_stubs.c ../src/pin.c \
