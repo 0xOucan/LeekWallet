@@ -92,15 +92,31 @@ class Client {
    * to notice changes made on the device, which is exactly when a user is also
    * touching the app.
    */
-  async call(method: string, params: Record<string, CborValue> = {}): Promise<Record<string, CborValue>> {
-    const mine = this.queue.then(() => this.callNow(method, params));
+  async call(
+    method: string,
+    params: Record<string, CborValue> = {},
+    timeoutMs = 5000,
+  ): Promise<Record<string, CborValue>> {
+    const mine = this.queue.then(() => this.callNow(method, params, timeoutMs));
     // Keep the chain alive even when a call rejects, or one failure wedges
     // every request that follows.
     this.queue = mine.then(() => undefined, () => undefined);
     return mine;
   }
 
-  private async callNow(method: string, params: Record<string, CborValue> = {}): Promise<Record<string, CborValue>> {
+  private async callNow(
+    method: string,
+    params: Record<string, CborValue> = {},
+    timeoutMs = 5000,
+  ): Promise<Record<string, CborValue>> {
+    /* Waiting longer than the device does is the only safe direction. If the
+     * transport gives up first, the device still processes the request and
+     * replies to nobody: its counters move, the host's do not, and the session
+     * is unrecoverable. That is not a timeout, it is a broken connection with
+     * a misleading message. */
+    const t = this.transport as { timeoutMs?: number };
+    if ("timeoutMs" in t) t.timeoutMs = timeoutMs;
+
     const reply = new Promise<{ ok?: Record<string, CborValue>; err?: DeviceError }>((r) => {
       this.pending = r;
     });
@@ -113,7 +129,18 @@ class Client {
       ? [FrameType.EncryptedRequest, this.session.encrypt(body)]
       : [FrameType.Request, body];
 
-    await this.transport.send(encodeFrame(type, payload));
+    try {
+      await this.transport.send(encodeFrame(type, payload));
+    } catch (e) {
+      /* The device may still be processing. Its counters will have moved and
+       * ours have not, so the session cannot be reused - fail loudly rather
+       * than leaving the next request to die with "decrypt failed". */
+      this.session = null;
+      this.pending = null;
+      throw new Error(
+        `${(e as Error).message}. The session is no longer usable; disconnect and reconnect.`,
+      );
+    }
     const { ok, err } = await reply;
     if (err) throw err;
     return ok ?? {};
@@ -451,16 +478,20 @@ async function sign(): Promise<void> {
       return new Uint8Array((hex.match(/../g) ?? []).map((h) => parseInt(h, 16)));
     };
 
+    const SIGN_TIMEOUT_MS = 150000;   // the device gives the user 120 s
+    /* Sepolia, not mainnet. A demo transaction the user can actually fund and
+     * broadcast is worth more than one they cannot, and a mainnet chain ID on
+     * a test build is an invitation to a costly accident. */
     const r = await client.call("signTransaction", {
       index: selectedIndex,
-      chainId: 1,
+      chainId: 11155111,
       nonce: 0,
       to: new Uint8Array(20).fill(0x71),
       value: wei(500000000000000000n),          // 0.5 ETH
       gas: wei(21000n),
       maxFeePerGas: wei(20000000000n),
       maxPriorityFeePerGas: wei(1000000000n),
-    });
+    }, SIGN_TIMEOUT_MS);
 
     const rr = r["r"];
     const ss = r["s"];

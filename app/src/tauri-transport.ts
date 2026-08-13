@@ -90,6 +90,14 @@ export class TauriSerialTransport implements Transport {
    * here keeps the seam honest: the client above cannot tell the difference,
    * which is exactly what makes mock-developed UI work against hardware.
    */
+  /**
+   * How long to wait for the next reply, in milliseconds.
+   *
+   * Set per request. Anything needing a button press on the device has to
+   * outlast a human deciding, and the device gives them two minutes.
+   */
+  timeoutMs = 5000;
+
   async send(frame: Uint8Array): Promise<void> {
     const invoke = invoker();
     if (!invoke || !this.opened) throw new Error("transport is not open");
@@ -101,7 +109,7 @@ export class TauriSerialTransport implements Transport {
     const [replyType, replyPayload] = await invoke<[number, number[]]>("request", {
       frameType: type,
       payload,
-      timeoutMs: 5000,
+      timeoutMs: this.timeoutMs,
     });
 
     const body = new Uint8Array(replyPayload.length + 3);
