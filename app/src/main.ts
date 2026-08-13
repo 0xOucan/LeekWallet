@@ -10,7 +10,7 @@
 import { encodeCbor, decodeCbor, type CborValue } from "../packages/core/src/cbor.ts";
 import { encodeFrame, FrameDecoder, FrameType } from "../packages/core/src/framing.ts";
 import { MockDevice } from "../packages/core/src/mock-device.ts";
-import { DeviceError, type Transport } from "../packages/core/src/transport.ts";
+import { DeviceError, ErrorCode, type Transport } from "../packages/core/src/transport.ts";
 import {
   derivationsInvalidated, UNKNOWN_STATUS, type DeviceStatus,
 } from "../packages/core/src/device-state.ts";
@@ -71,6 +71,7 @@ class Client {
           try {
             payload = this.session.decrypt(payload);
           } catch {
+            this.killSession("a reply failed authentication");
             const resolve = this.pending;
             this.pending = null;
             resolve?.({ err: new DeviceError(0x0400, "authentication failed") });
@@ -83,7 +84,21 @@ class Client {
         this.pending = null;
         if (!resolve) continue;
         if (f.type === FrameType.Error || f.type === FrameType.EncryptedError) {
-          resolve({ err: new DeviceError(Number(body["code"]), String(body["message"])) });
+          const code = Number(body["code"]);
+          /* 0x0400 in PLAINTEXT after a session existed means the device threw
+           * the session away - session_decrypt() resets on a failed tag, and a
+           * failed tag is indistinguishable from an attack, so failing closed
+           * there is right. But it leaves this side holding keys the device has
+           * forgotten, and every later request gets the same "decrypt failed"
+           * against a session that is already gone. Retrying into that is what
+           * made an unlock fail twice and look like the PIN was wrong.
+           *
+           * One corrupted frame is rare on a cable and entirely ordinary on a
+           * radio, which is why this only ever showed up over BLE. */
+          if (code === ErrorCode.SessionRequired && f.type === FrameType.Error) {
+            this.killSession("the device ended the session");
+          }
+          resolve({ err: new DeviceError(code, String(body["message"])) });
         } else {
           resolve({ ok: body["result"] as Record<string, CborValue> });
         }
@@ -203,6 +218,19 @@ class Client {
         await new Promise((r) => setTimeout(r, 750));
       }
     }
+  }
+
+  /**
+   * Forget the session. The next call goes out in plaintext and is refused,
+   * which is the honest outcome: there is no channel until a new handshake,
+   * and quietly re-establishing one would skip the passkey comparison that
+   * makes the channel worth anything.
+   */
+  private killSession(why: string): void {
+    if (!this.session) return;
+    this.session = null;
+    log(`session ended — ${why}. Reconnect to compare a new passkey.`);
+    setConnection("connecting", "Session ended — reconnect");
   }
 
   get encrypted(): boolean {
