@@ -4,8 +4,18 @@
   "description": "Transport-agnostic protocol codec and device client for LeekWallet",
   "license": "Apache-2.0",
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/framing.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/cbor.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/mock-device.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/device-state.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/viem-account.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/framing.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/cbor.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/mock-device.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/device-state.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/viem-account.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/session.test.ts"
+  },
+  "dependencies": {
+    "@noble/ciphers": "1.3.0",
+    "@noble/curves": "1.9.1",
+    "@noble/hashes": "1.8.0"
+  },
+  "peerDependencies": {
+    "viem": ">=2"
   }
 }

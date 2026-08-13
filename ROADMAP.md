@@ -249,7 +249,7 @@ Write the protocol spec first and both sides build against it simultaneously.
 | ID | Task | Depends | Done when |
 |----|------|---------|-----------|
 | ~~T20~~ ✅ | **Protocol spec** → [docs/PROTOCOL.md](docs/PROTOCOL.md): framing, session/passkey, command set, passphrase-as-keyboard, errors | — | drafted; open questions listed at the end |
-| T21 | `@leekwallet/core` TS package — codec + session state machine, zero platform deps | T20 | unit tests pass against a mock transport |
+| ~~T21~~ ✅ | `@leekwallet/core`: framing, CBOR, session (X25519/HKDF/ChaCha20-Poly1305), device-state invalidation, viem adapter, mock device | T20 | 6 suites, no platform dependencies |
 | ~~T22a~~ ✅ | Rust USB serial transport (`app/transport-serial/`), sync-marked framing, resynchronises past console text. Verified against hardware with `cargo run --bin leek-probe` | T21 | device answers ping/getFeatures/getStatus over the crate the app will use |
 | ~~T22b~~ ✅ | Tauri command surface over the serial transport; the shell picks hardware when the backend is present and the mock otherwise | T22a | backend builds; frontend selects transport automatically |
 | T22c | BLE transport (`btleplug`) for Android behind the same interface | T22a | identical results over both channels |

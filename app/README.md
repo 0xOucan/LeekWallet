@@ -36,9 +36,31 @@ packages`.
 Without any of this, `pnpm dev` and the mock still cover everything except the
 native window and the real transports.
 
+### Running the native shell
+
+Two paths, and picking the wrong one gives a window that says it cannot reach
+localhost:
+
 ```bash
-cd src-tauri && cargo build     # native shell
+# Development: Vite serves the frontend, edits reload live.
+pnpm dev                        # terminal 1, must be running first
+cd src-tauri && cargo run       # terminal 2
 ```
+
+```bash
+# Standalone: uses the built dist/, no dev server needed.
+pnpm build
+cd src-tauri && cargo run --release
+```
+
+A **debug** build loads `devUrl` from `tauri.conf.json`, which is
+`http://localhost:1420`. A **release** build loads `frontendDist`. So
+`cargo run` without `pnpm dev` running produces exactly one symptom — a blank
+window complaining it cannot connect — and the fix is whichever half is
+missing.
+
+`libEGL warning: DRI3 error` on startup is harmless; the window falls back to
+software rendering.
 
 ## Setup
 
