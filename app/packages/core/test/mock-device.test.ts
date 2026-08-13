@@ -121,6 +121,42 @@ async function main(): Promise<void> {
     check(after.result !== undefined, "the session did not survive an error");
   }
 
+  group("signMessage matches the device: same shape, same refusals");
+  {
+    const dev = await connected({ startUnlocked: true });
+    const before = dev.confirmations.length;
+
+    const ok = await call(dev, "signMessage", { index: 3, message: "hello there" });
+    check(ok.result?.["index"] === 3, `index came back as ${String(ok.result?.["index"])}`);
+    check(ok.result?.["r"] instanceof Uint8Array && ok.result?.["s"] instanceof Uint8Array,
+      "signMessage must answer {index, r, s, yParity} like signTransaction");
+    check(ok.result?.["signature"] === undefined,
+      "the flat 65-byte signature is the old shape; nothing that parses one parses the other");
+    check(dev.confirmations.length === before + 1, "the message was not shown on the device");
+
+    /* The device renders the whole message and signs exactly that, so anything
+     * it cannot render is refused before a prompt. A mock that accepts an
+     * emoji would pass every test here and fail on hardware. */
+    for (const [label, message] of [
+      ["emoji", "gm \u{1F31E}"],
+      ["newline", "line one\nline two"],
+      ["control byte", "bell\u0007"],
+      ["too long", "x".repeat(121)],
+      ["empty", ""],
+    ] as const) {
+      const at = dev.confirmations.length;
+      const r = await call(dev, "signMessage", { index: 0, message });
+      check(r.error?.code === ErrorCode.Undecodable,
+        `${label}: expected a refusal, got ${JSON.stringify(r)}`);
+      check(dev.confirmations.length === at,
+        `${label}: an unrenderable message reached the confirmation screen`);
+    }
+
+    /* Exactly at the limit is fine — the boundary is the interesting part. */
+    const edge = await call(dev, "signMessage", { index: 0, message: "y".repeat(120) });
+    check(edge.result?.["r"] !== undefined, "120 bytes should be signable");
+  }
+
   group("locked device refuses key operations");
   {
     const dev = await connected();

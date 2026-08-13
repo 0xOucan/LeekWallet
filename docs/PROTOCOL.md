@@ -588,7 +588,7 @@ guessed at:
 
 | Command | Request | Reply |
 |---|---|---|
-| `signMessage` | `{ message: text, index \| path }` | `{ index, r, s, yParity }` — the same shape as `signTransaction` |
+| `signMessage` | `{ message: text, index \| path }` | `{ index, r, s, yParity }` — the same shape as `signTransaction`. Mock matches, including the refusals |
 | `selectWallet` | `{ index: 1-based }` | `{ activeWallet }`, `0x0300` if there is no such wallet |
 | `setPassphrase` | `{ passphrase: text }` | `{ address, passphrase: 1 }` after the on-device confirm |
 

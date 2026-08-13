@@ -59,6 +59,10 @@ type Handler = (params: Record<string, CborValue>) => CborValue;
 
 const DEVICE_LABEL = "LeekWallet (mock)";
 
+/* Six rows of twenty characters — what the OLED can actually show, and so what
+ * the firmware will accept. See eth_message_is_displayable(). */
+const MESSAGE_MAX_BYTES = 120;
+
 /* Fixed so the pairing UI has something stable to render. A real device
  * derives this from the handshake; see session.ts. */
 const MOCK_PASSKEY = "314159";
@@ -399,9 +403,41 @@ export class MockDevice implements Transport {
 
     signMessage: (p) => {
       this.requireUnlocked();
-      const message = String(p["message"] ?? "");
-      this.confirm(`Sign message: ${message.slice(0, 40)}`);
-      return { signature: new Uint8Array(65).fill(0x22) };
+      const index = addressIndex(p);
+      const raw = p["message"];
+      if (typeof raw !== "string") {
+        throw new MockRejection(ErrorCode.MalformedFrame, "message must be text");
+      }
+
+      /* The device displays the whole message and signs exactly what it
+       * displayed, so it refuses anything it cannot render: printable ASCII
+       * only, and no longer than the six twenty-character rows the screen has
+       * (PROTOCOL.md 6e). Accepting more here than protocol.c accepts is the
+       * mock being more permissive than the device, which is the one thing it
+       * must never be - an emoji in a message would pass every test and fail
+       * on hardware. */
+      /* Length in BYTES, not in whatever byteLength() makes of a hex-looking
+       * string - it is written for calldata and reads text as hex. Printable
+       * ASCII makes the two the same number, which is exactly why the
+       * printability check comes first. */
+      const printable = /^[\x20-\x7e]+$/.test(raw);
+      if (!printable || raw.length > MESSAGE_MAX_BYTES) {
+        throw new MockRejection(
+          ErrorCode.Undecodable,
+          "this device cannot display that message",
+        );
+      }
+
+      this.confirm(`Sign message from m/44'/60'/0'/0/${index}: ${raw.slice(0, 40)}`);
+
+      /* Same shape as signTransaction. One reply format for one kind of
+       * answer; a client that parses one parses the other. */
+      return {
+        index,
+        r: new Uint8Array(32).fill(0x33),
+        s: new Uint8Array(32).fill(0x44),
+        yParity: index & 1,
+      };
     },
   };
 
