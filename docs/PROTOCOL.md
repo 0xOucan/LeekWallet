@@ -433,10 +433,27 @@ so the mock refuses exactly what the device refuses:
 | empty | native transfer: amount, chain, recipient |
 | `transfer(address,uint256)` | recipient, raw amount, token contract |
 | `approve(address,uint256)` | spender, raw amount **or** an unlimited warning, token contract |
-| anything else | `0x0202`, refused before the confirmation screen |
+| `transferFrom(address,address,uint256)` | "Move tokens between accounts", raw amount, holder, destination, token contract |
+| `setApprovalForAll(address,bool)` | "APPROVE ALL tokens in this collection" or "Revoke approval", operator, contract |
+| `deposit()` | "Wrap ETH", the transaction's own value, contract |
+| `withdraw(uint256)` | "Unwrap tokens", raw amount, contract |
+| `mint(address,uint256)` | "Mint tokens to address below", raw amount, recipient, contract |
+| `mint(uint256)` | "Mint tokens to this account", raw amount, contract |
+| anything else | `0x0202`, refused before the confirmation screen — unless blind signing is on (T16 below) |
 
 Contract creation is refused too — there is no recipient to name and no code the
-device can describe.
+device can describe — and that refusal is *not* what the blind-signing setting
+reopens.
+
+`setApprovalForAll(operator, true)` gets the loudest wording on the device. It
+is broader than an unlimited ERC-20 allowance: it hands over every token in the
+collection, including ones bought after the approval was given. `false` is a
+revocation and reads as one.
+
+`safeTransferFrom(address,address,uint256)` is deliberately *not* in the set,
+despite the identical argument shape: on ERC-721 the third word is a token id
+rather than an amount and the device cannot tell which standard it is talking
+to, so any wording it chose would be wrong half the time.
 
 Three details that are load-bearing:
 
@@ -454,6 +471,40 @@ Three details that are load-bearing:
 EIP-712 typed data is in the set as designed and not yet implemented — the
 device has no `signTypedData` today. When it lands it needs a renderer, not just
 a decoder; a recognised type that cannot be displayed is still blind signing.
+
+#### The escape hatch, and what it deliberately does not open (T16)
+
+`src/blind-signing.h`. A device setting, **off by default**, **persisted**, and
+**changeable on the device only** — there is no command for it and there must
+never be one, because a host that can switch the protection off is a host the
+protection was never protecting you from. `getFeatures` reports the real state
+in `blindSigning`, so the app and any dapp can see the device is in the weaker
+mode.
+
+Enabling it takes five deliberate presses on a screen that says, in words, that
+the device will be signing calls it cannot read and that a bad app can drain
+you. Turning it **off** again is a single press: nothing is lost by restoring
+the protection by accident. A wipe clears it.
+
+With it on, an undecodable call reaches a confirmation that is visibly not a
+normal one — the header reads `!BLIND SIGN!` on every page — and shows
+everything the device honestly knows: that it *cannot* say what the call does,
+the recipient, the value, the chain, the signing address, the calldata length,
+and the full 64-hex-character keccak256 of the calldata. The usual rule holds:
+every page must be seen before the approve option appears.
+
+It opens exactly one door. Three refusals stay closed, each for a reason a
+warning screen cannot repair:
+
+| still refused | why the hatch does not apply |
+|---|---|
+| contract creation | no recipient to name; a blind confirmation is bearable only because it can still say who is being paid, and here there is nothing true left on the screen |
+| calldata over `ETH_MAX_DATA` | the device never held those bytes, so it could not hash or display what it was signing — this is a capacity limit, not a comprehension one |
+| a message `eth_message_is_displayable` rejects | the confirmation would show a different string than the one being hashed; blind signing is about *calldata*, not about mangled text |
+
+The signature is still taken over the device's own re-serialisation of the
+fields it displayed, calldata included. Blind about the meaning, never about the
+bytes.
 
 ### Session model: unlock once, confirm every time
 

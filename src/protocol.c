@@ -32,6 +32,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 
+#include "blind-signing.h"
 #include "cbor.h"
 #include "memzero.h"
 #include "leek-wallet.h"
@@ -313,8 +314,13 @@ static void dispatch(const uint8_t *payload, size_t len)
         cbor_write_map(&w, 1);
         cbor_write_text(&w, "result");
         cbor_write_map(&w, 3);
+        /* The real state, never a constant. A host that cannot tell whether
+         * the device is in the weaker mode cannot warn anyone about it, and
+         * this field is the only place it is visible from off-device. It is
+         * readable pre-session on purpose: it describes the device, not the
+         * wallet, and it is the answer to "will you refuse my dapp?". */
         cbor_write_text(&w, "blindSigning");
-        cbor_write_uint(&w, 0);
+        cbor_write_uint(&w, blind_signing_enabled() ? 1 : 0);
         cbor_write_text(&w, "firmware");
         cbor_write_text(&w, "0.1.0");
         cbor_write_text(&w, "model");
@@ -502,9 +508,26 @@ static void dispatch(const uint8_t *payload, size_t len)
          * and grow the decodable set deliberately. */
         EthCall call;
         if (!eth_tx_is_decodable(&tx, &call)) {
-            send_error(ERR_UNDECODABLE,
-                       "this device cannot show what that call does");
-            return;
+            /* The escape hatch (T16), and the narrowest form of it that is
+             * useful. Two conditions, both required:
+             *
+             *   - the owner turned blind signing on, at the device, having
+             *     read what it costs. No command can do this.
+             *   - the transaction still has a recipient. Contract creation
+             *     stays refused: a blind confirmation is bearable only
+             *     because it can still name who is being paid, and there the
+             *     device would have nothing true left to show.
+             *
+             * Oversized calldata is refused above and stays refused for a
+             * different reason again — the device never held those bytes, so
+             * it could not even hash what it was signing. */
+            if (!(tx.has_to && blind_signing_enabled())) {
+                send_error(ERR_UNDECODABLE,
+                           "this device cannot show what that call does");
+                return;
+            }
+            ESP_LOGW(TAG, "Blind signing: undecodable calldata, %u bytes",
+                     (unsigned)tx.data_length);
         }
 
         /* Derive the source address here, on the task that will do the

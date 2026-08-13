@@ -115,7 +115,8 @@ $(BUILD)/test_ui: test_ui.c esp_stubs.c host_stubs.c fake_oled.c fake_wallet.c \
                   fake_input.c fake_protocol.c ../src/transport.c ../src/ble.c \
                   ../src/ui.c ../src/pin.c ../src/mnemonic-entry.c \
                   ../src/entropy.c ../src/session.c ../src/text-entry.c \
-                  ../src/eth-tx.c ../src/eth-decode.c ../src/device-wipe.c \
+                  ../src/eth-tx.c ../src/eth-decode.c ../src/blind-signing.c \
+                  ../src/device-wipe.c \
                   $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                   $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
                   $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
@@ -168,7 +169,7 @@ $(BUILD)/test_pin_change: test_pin_change.c esp_stubs.c host_stubs.c \
 PROTOCOL_SRC := test_protocol.c esp_stubs.c host_stubs.c fake_usb.c fake_wallet.c \
                 ../src/protocol.c ../src/cbor.c ../src/session.c ../src/pin.c \
                 ../src/ble-chunk.c ../src/ble.c ../src/transport.c \
-                ../src/eth-tx.c ../src/eth-decode.c \
+                ../src/eth-tx.c ../src/eth-decode.c ../src/blind-signing.c \
                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
                 $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \

@@ -44,9 +44,50 @@ MUTANTS = [
      "        /* mutant: left advertising */", "BLE keeps advertising on USB"),
     ("src/transport.c", "        protocol_set_rx_enabled(false);     /* USB endpoint stops answering */",
      "        protocol_set_rx_enabled(true);", "cable stays live under BLE"),
+
+    # The widened decodable set (T50) and the blind-signing hatch (T16). Each
+    # of these is the shape of a real mistake: a length check that stops being
+    # exact, an argument shape copied from the row above, a warning screen that
+    # accepts the first press, a gate that stops consulting the setting.
+    ("src/eth-decode.c", "    if (len != 4 + words * 32) {",
+     "    if (len < 4 + words * 32) {", "trailing bytes after a known selector"),
+    ("src/eth-decode.c", "    if (word[31] > 1) {", "    if (false) {",
+     "a bool that is neither 0 nor 1"),
+    ("src/eth-decode.c", "    for (int i = 0; i < 31; i++) {", "    for (int i = 0; i < 0; i++) {",
+     "dirty high bytes in a bool word"),
+    ("src/eth-decode.c", "{ SEL_MINT,          ETH_CALL_MINT,                ARGS_UINT           },",
+     "{ SEL_MINT,          ETH_CALL_MINT,                ARGS_ADDR_UINT      },",
+     "mint(uint256) read at the wrong arity"),
+    ("src/eth-decode.c", "call.unlimited = (known->kind == ETH_CALL_ERC20_APPROVE) &&",
+     "call.unlimited = (known->kind != ETH_CALL_UNKNOWN) &&",
+     "unlimited warning on calls that are not allowances"),
+    ("src/eth-decode.c", "if (!word_is_address(w0) || !word_is_address(w1)) goto done;",
+     "if (!word_is_address(w0)) goto done;",
+     "dirty padding on transferFrom's destination"),
+    ("src/eth-decode.c", "    if (!tx->has_to) {", "    if (false) {",
+     "contract creation reaches the decoder"),
+    ("src/protocol.c", "if (!(tx.has_to && blind_signing_enabled())) {",
+     "if (!blind_signing_enabled()) {",
+     "the hatch unlocks contract creation"),
+    ("src/protocol.c", "if (!(tx.has_to && blind_signing_enabled())) {", "if (false) {",
+     "undecodable calldata always allowed"),
+    ("src/protocol.c", "cbor_write_uint(&w, blind_signing_enabled() ? 1 : 0);",
+     "cbor_write_uint(&w, 0);", "getFeatures hides the setting"),
+    ("src/blind-signing.c", "        enabled = (stored == 1);", "        enabled = true;",
+     "any stored byte turns blind signing on"),
+    ("src/blind-signing.c", "    enabled = false;      /* the default",
+     "    enabled = true;       /* the default", "blind signing defaults to on"),
+    ("src/ui.c", "if (++blind_confirm_count >= BLIND_CONFIRM_PRESSES) {",
+     "if (++blind_confirm_count >= 1) {", "one press enables blind signing"),
+    ("src/ui.c", "    sign_blind = (sign_call.kind == ETH_CALL_UNKNOWN);",
+     "    sign_blind = false;", "a blind confirmation looks like a normal one"),
+    ("src/ui.c", "            sign_page_kind[n++] = SIGN_PAGE_BLIND_DATA;",
+     "            /* mutant: no calldata digest */", "blind confirmation hides the calldata"),
+    ("src/ui.c", "            sign_page_kind[n++] = SIGN_PAGE_BLIND_WARN;",
+     "            /* mutant: no warning page */", "blind confirmation drops the warning"),
 ]
 
-BINARIES = ["test_protocol", "test_ble_chunk", "test_ui"]
+BINARIES = ["test_protocol", "test_ble_chunk", "test_ui", "test_eth_decode"]
 
 
 def run(cmd, **kw):
