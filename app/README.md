@@ -65,6 +65,31 @@ signing device.
 | `ignore-scripts=true` | Most npm supply-chain incidents execute through a `postinstall`. pnpm 9 still runs them by default; pnpm 10 changed that, and we are on 9.x. Nothing here needs them, and the build was verified without. |
 | `save-exact=true` | An install today and an install next month resolve identically, rather than relying on a range being honoured. |
 | `prefer-frozen-lockfile=true` | A dependency change should be a reviewed commit, not a side effect of running install. |
+| `minimumReleaseAge=10080` | Seven days. Refuses anything published in the last week — see below. |
+
+### The seven-day gate
+
+`minimumReleaseAge` is the strongest single answer to the attack pnpm does not
+otherwise prevent. A compromised package is usually spotted and yanked within
+hours; refusing anything published in the last week lets the ecosystem do the
+detection, and this project never installs the bad version at all. The cost is
+that a genuine fix is a week late, which for a wallet is the right trade.
+
+**It requires pnpm 10.16 or newer.** This project is pinned to 9.15.3, where the
+key is silently ignored, so the line is written and inert. To activate it:
+
+```bash
+pnpm add -g pnpm@latest      # or: corepack use pnpm@latest
+```
+
+then bump `packageManager` in `package.json`. Note that pnpm 10 also blocks
+install scripts by default, which `ignore-scripts` already does here.
+
+> Watch out for one trap while doing this. `corepack prepare` may fail with
+> `Cannot find matching keyid` on older Node, because its bundled npm signing
+> keys have rotated. The advertised workaround is `COREPACK_INTEGRITY_KEYS=0`,
+> which disables signature verification — do not use it. Turning off signature
+> checking to install a supply-chain mitigation defeats the mitigation.
 
 ### What pnpm does and does not do
 
