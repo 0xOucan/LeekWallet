@@ -27,6 +27,20 @@ export interface MockOptions {
   autoApprove?: boolean;
   /** Start already unlocked, skipping the PIN prompt. */
   startUnlocked?: boolean;
+
+  /**
+   * Whether the simulated user eventually types the PIN after `unlock`.
+   *
+   * `unlock` only prompts — the device answers `{prompted:1, unlocked:0}` and
+   * the host polls `getStatus` (PROTOCOL.md 6e #1). Default true so the demo
+   * app makes progress; set false to drive `enterPin()` by hand, which is the
+   * only way to assert on the window where the device is prompting and still
+   * locked.
+   */
+  autoPin?: boolean;
+
+  /** How long the simulated user takes to type the PIN, when `autoPin`. */
+  pinEntryMs?: number;
   /** How many seeds the device holds. */
   walletCount?: number;
 
@@ -61,6 +75,8 @@ export class MockDevice implements Transport {
    * built against that mock would pass without ever exercising it. */
   private sessionState: "none" | "pending" | "active" = "none";
   private unlocked: boolean;
+  /** The PIN pad is on screen and the device is waiting for the user. */
+  private pinPrompted = false;
   private handler: ((frame: Uint8Array) => void) | null = null;
   private readonly decoder = new FrameDecoder();
   private readonly opts: Required<MockOptions>;
@@ -85,6 +101,26 @@ export class MockDevice implements Transport {
   autoLock(): void {
     this.unlocked = false;
     this.passphraseActive = false;
+    this.pinPrompted = false;
+  }
+
+  /**
+   * Test hook: the user finished typing the PIN on the device keypad.
+   *
+   * Nothing crosses the wire when this happens — the host only learns about it
+   * by polling `getStatus`, which is exactly the behaviour app code has to be
+   * built against.
+   */
+  enterPin(): void {
+    if (this.pinPrompted) {
+      this.pinPrompted = false;
+      this.unlocked = true;
+    }
+  }
+
+  /** Whether the device is currently showing its PIN pad. */
+  get promptingForPin(): boolean {
+    return this.pinPrompted;
   }
 
   constructor(options: MockOptions = {}) {
@@ -94,6 +130,8 @@ export class MockDevice implements Transport {
       startUnlocked: options.startUnlocked ?? false,
       walletCount: options.walletCount ?? 1,
       autoConfirmSession: options.autoConfirmSession ?? true,
+      autoPin: options.autoPin ?? true,
+      pinEntryMs: options.pinEntryMs ?? 400,
     };
     this.unlocked = this.opts.startUnlocked;
   }
@@ -215,10 +253,12 @@ export class MockDevice implements Transport {
 
     ping: () => ({ pong: 1 }),
 
+    /* Exactly the three fields protocol.c writes. `initialized` was invented
+     * here and existed nowhere else, so app code could branch on a field real
+     * hardware never sends. */
     getFeatures: () => ({
       model: "LeekWallet-mock",
       firmware: "0.1.0-mock",
-      initialized: 1,
       blindSigning: 0,
     }),
 
@@ -229,20 +269,42 @@ export class MockDevice implements Transport {
       passphrase: this.passphraseActive ? 1 : 0,
     }),
 
+    /**
+     * Prompt, and say nothing about the outcome.
+     *
+     * The PIN is typed on the device, so the reply cannot carry the result —
+     * it is sent long before the user has touched a button. The device answers
+     * `{prompted:1, unlocked:0}` and the host polls `getStatus`. The mock used
+     * to unlock synchronously and return `{unlocked:1}`, which taught every app
+     * built on it that unlocking is instantaneous.
+     *
+     * Already unlocked is the one case with an immediate answer, and protocol.c
+     * takes it: no prompt, `{unlocked:1}`.
+     */
     unlock: () => {
-      // The PIN is entered on the device, never sent. This just prompts.
-      this.confirm("Enter PIN on device");
-      this.unlocked = true;
-      return { unlocked: 1 };
+      if (this.unlocked) return { unlocked: 1 };
+
+      /* Recorded, not confirm()ed: a PIN pad is not an approve/reject screen,
+       * and `autoApprove` governs signing decisions. Whether the user types the
+       * PIN is `autoPin`. */
+      this.confirmations.push("Enter PIN on device");
+      this.pinPrompted = true;
+      if (this.opts.autoPin) {
+        setTimeout(() => this.enterPin(), this.opts.pinEntryMs);
+      }
+      return { prompted: 1, unlocked: 0 };
     },
 
     lock: () => {
       this.unlocked = false;
+      this.pinPrompted = false;
       /* The passphrase dies with the session, as it does on the device. A host
        * that kept deriving addresses from it would be showing a wallet the
        * device can no longer produce. */
       this.passphraseActive = false;
-      return {};
+      // `{unlocked:0}`, as protocol.c answers - an empty map told the host
+      // nothing about the state it had just changed.
+      return { unlocked: 0 };
     },
 
     selectWallet: (p) => {
@@ -266,31 +328,46 @@ export class MockDevice implements Transport {
 
     getAddress: (p) => {
       this.requireUnlocked();
-      const path = String(p["path"] ?? "m/44'/60'/0'/0/0");
-
-      /* Derive from the trailing index exactly as the firmware does. Deriving
-       * from the whole path string would make the mock distinguish addresses
-       * the device cannot, hiding a parsing bug rather than reproducing it -
-       * which is what happened: the device read only "index", ignored "path",
-       * and returned address zero ten times while the mock looked fine. */
-      const tail = path.slice(path.lastIndexOf("/") + 1);
-      const index = Number.parseInt(tail, 10);
-      if (!Number.isFinite(index) || index < 0) {
-        throw new MockRejection(ErrorCode.MalformedFrame, `bad path ${path}`);
-      }
+      const index = addressIndex(p);
+      const path = String(p["path"] ?? `m/44'/60'/0'/0/${index}`);
 
       if (p["display"]) this.confirm(`Show address for ${path}`);
+      /* `{address, index}`, the device's shape, and nothing else. Echoing the
+       * requested `path` back would let host code read a field real hardware
+       * never sends - and worse, believe the device agreed with its reading of
+       * the path when all the device ever kept was the trailing index. */
       return {
-        path,
         address: mockAddress(String(index), this.activeWallet, this.passphraseActive),
+        index,
       };
     },
 
     signTransaction: (p) => {
       this.requireUnlocked();
-      const path = String(p["path"] ?? "m/44'/60'/0'/0/0");
+      const index = addressIndex(p);
+      const path = `m/44'/60'/0'/0/${index}`;
       const to = p["to"];
       const toHex = to instanceof Uint8Array ? "0x" + hex(to) : String(to ?? "");
+
+      /* chainId is mandatory and must be an unsigned integer. The same address
+       * exists on every EVM chain, so a signature made without knowing the
+       * chain is a replay waiting to happen; protocol.c refuses rather than
+       * defaulting to 1. */
+      const chainId = p["chainId"];
+      if (typeof chainId !== "number" || !Number.isInteger(chainId) || chainId < 0) {
+        throw new MockRejection(ErrorCode.MalformedFrame, "chainId required");
+      }
+
+      /* The size bound comes before the decodability check, in that order,
+       * because that is the order protocol.c applies them: an oversized blob is
+       * a malformed request (0x0001), not an undecodable call (0x0202), and a
+       * client that distinguishes the two must see the same code the device
+       * sends. It also refuses to let the host choose the device's memory
+       * usage. */
+      const dataLength = byteLength(p["data"]);
+      if (dataLength > ETH_MAX_DATA) {
+        throw new MockRejection(ErrorCode.MalformedFrame, "calldata too large to display");
+      }
 
       /* Refuse what the firmware refuses (T50), and never less. A mock that is
        * more permissive than the device certifies code the device rejects -
@@ -306,7 +383,18 @@ export class MockDevice implements Transport {
       // The confirmation names the source as well as the destination: a host
       // that quietly changes the path must be visible on the device (T47).
       this.confirm(`Sign ${describeCall(call)} from ${path} to ${toHex}`);
-      return { signature: new Uint8Array(65).fill(0x11), path };
+      /* `{index, r, s, yParity}` - the device's shape. yParity is 0 or 1 and
+       * never the legacy 27/28: a client that masks the low bit of 27 inverts
+       * it, and the resulting signature recovers to an address nobody owns,
+       * which reads as "you have no funds" rather than "the signature is
+       * wrong". Emitting the same values here means the reassembly code is
+       * exercised before it meets hardware. */
+      return {
+        index,
+        r: new Uint8Array(32).fill(0x11),
+        s: new Uint8Array(32).fill(0x22),
+        yParity: index & 1,
+      };
     },
 
     signMessage: (p) => {
@@ -351,6 +439,51 @@ class MockRejection extends Error {
 }
 
 const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+
+/** `ETH_MAX_DATA` in src/eth.h — what the device can hold and describe. */
+const ETH_MAX_DATA = 256;
+
+/** Highest address index the device will derive; see protocol.c. */
+const MAX_ADDRESS_INDEX = 0x7fffffff;
+
+/** Calldata as the device measures it, in bytes, whatever form it arrived in. */
+function byteLength(data: CborValue | undefined): number {
+  if (data instanceof Uint8Array) return data.length;
+  if (typeof data === "string") {
+    const body = data.startsWith("0x") ? data.slice(2) : data;
+    // Round up: an odd nibble count is malformed anyway and eth-decode.ts
+    // rejects it, so err towards "too long" rather than "just fits".
+    return Math.ceil(body.length / 2);
+  }
+  return 0;
+}
+
+/**
+ * Which address the request names, with the device's precedence.
+ *
+ * `index` wins over `path`, exactly as protocol.c reads them — the firmware
+ * once read only `index`, ignored `path`, and derived address zero ten times,
+ * so the mock resolves it the same way rather than parsing the whole path and
+ * hiding the difference.
+ */
+function addressIndex(p: Record<string, CborValue>): number {
+  let index: number;
+  if (typeof p["index"] === "number") {
+    index = p["index"];
+  } else if (typeof p["path"] === "string") {
+    const tail = p["path"].slice(p["path"].lastIndexOf("/") + 1);
+    index = Number.parseInt(tail, 10);
+  } else {
+    index = 0;
+  }
+
+  /* Above 0x7FFFFFFF is a hardened index, which BIP32 encodes differently and
+   * the device refuses rather than silently deriving a different key. */
+  if (!Number.isInteger(index) || index < 0 || index > MAX_ADDRESS_INDEX) {
+    throw new MockRejection(ErrorCode.MalformedFrame, "address index out of range");
+  }
+  return index;
+}
 
 /**
  * Deterministic stand-in for a derived address.

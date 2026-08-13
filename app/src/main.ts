@@ -329,9 +329,12 @@ async function connect(): Promise<void> {
     transport = new TauriSerialTransport(port.name);
     log(`found ${port.name} — ${port.description}`);
   } else {
-    // Latency is deliberate: a mock that answers instantly hides every place
-    // the UI forgot to show that it is waiting.
-    transport = new MockDevice({ latencyMs: 250, walletCount: 1 });
+    /* Latency is deliberate: a mock that answers instantly hides every place
+     * the UI forgot to show that it is waiting. `pinEntryMs` is the same idea
+     * applied to unlocking - the device only prompts, and the seconds the user
+     * spends on the keypad are seconds this app has to keep polling and keep
+     * saying so. */
+    transport = new MockDevice({ latencyMs: 250, walletCount: 1, pinEntryMs: 2000 });
   }
   client = new Client(transport);
 
@@ -377,10 +380,12 @@ async function unlock(): Promise<void> {
   try {
     const reply = await client.call("unlock");
 
-    /* The device only *prompts*; the PIN is typed there and never travels.
-     * So the app waits for the status to change rather than treating the
-     * reply as the answer. */
+    /* The device only *prompts*; the PIN is typed there and never travels, so
+     * the reply is `{prompted:1, unlocked:0}` and arrives long before the user
+     * has touched the keypad. The status poll is the answer. `{unlocked:1}`
+     * comes back only when the device was already unlocked. */
     if (reply["unlocked"] !== 1) {
+      log("waiting for the PIN on the device…");
       const deadline = Date.now() + 120000;
       for (;;) {
         await new Promise((r) => setTimeout(r, 750));
