@@ -253,7 +253,7 @@ Write the protocol spec first and both sides build against it simultaneously.
 | ~~T21~~ ✅ | `@leekwallet/core`: framing, CBOR, session (X25519/HKDF/ChaCha20-Poly1305), device-state invalidation, viem adapter, mock device | T20 | 6 suites, no platform dependencies |
 | ~~T22a~~ ✅ | Rust USB serial transport (`app/transport-serial/`), sync-marked framing, resynchronises past console text. Verified against hardware with `cargo run --bin leek-probe` | T21 | device answers ping/getFeatures/getStatus over the crate the app will use |
 | ~~T22b~~ ✅ | Tauri command surface over the serial transport; the shell picks hardware when the backend is present and the mock otherwise | T22a | backend builds; frontend selects transport automatically |
-| T22c | BLE transport (`btleplug`) for Android behind the same interface | T22a | identical results over both channels |
+| ~~T22c~~ ✅ | BLE transport (`btleplug`) for Android behind the same interface | T22a | identical results over both channels — desktop proven end to end; Android still needs the JVM driver class (T30) |
 | ~~T23~~ ✅ | **Mock device** implementing the protocol: session, permission tiers, confirmations, rejection, latency | T20 | 10 test groups green; UI can be built with no hardware |
 | ~~T48~~ ✅ | Transaction interpretation in the app (Rabby-style), with unlimited-approval warnings and local selector DB. Advisory only — see [PROTOCOL.md 6c](docs/PROTOCOL.md) | T24 | ERC-20 transfer and approve decoded and labelled as a preview; addresses render EIP-55 to match the device screen |
 | T49 | WalletConnect project ID: bundled default plus a user override in settings | T32 | app works out of the box and can be pointed at your own project |
@@ -275,10 +275,10 @@ T23 is the highest-leverage item in the plan: it decouples Track D from all firm
 | T27b | Tauri v2 shell, desktop targets, capability allowlist | — | empty app builds on Linux |
 | ~~T27c~~ ✅ | Discovery, pairing with passkey comparison, unlock, address list, signing — against the mock and against hardware | T22, T23, T27a | verified end to end on a real device |
 | T28 | Transaction construction + send flow (viem) | T24, T27a | testnet transfer signed by the mock |
-| T29 | Android target: `tauri android init`, build, sign | T27b | APK runs on a device |
+| ~~T29~~ ✅ | Android target: `tauri android init`, build, sign | T27b | APK builds; see `app/ANDROID.md`. Never installed on a phone yet |
 | T30 | Android BLE: runtime permissions (`BLUETOOTH_SCAN`/`CONNECT`, location on older APIs), scan/pair flow, reconnect handling | T22, T29 | phone connects and survives a backgrounding |
 | T31 | Screen-reader labels, keyboard traversal, contrast audit | T27c, T28 | pre-delivery checklist passes |
-| T32 | WalletConnect v2 pairing (URI + QR), session list, pending-request view. **No in-app dapp browser** — see [PROTOCOL.md 6b](docs/PROTOCOL.md) | T28 | signs a request from a real dapp in the user's own browser |
+| ~~T32~~ ✅ | WalletConnect v2 pairing (URI + QR), session list, pending-request view. **No in-app dapp browser** — see [PROTOCOL.md 6b](docs/PROTOCOL.md) | T28 | signs a request from a real dapp in the user's own browser — Aave's Base Sepolia faucet, `0x48696ca6…`, decoded and confirmed on-device, no blind signing |
 | T46 | Address enumeration in the app: derive and list addresses so the user picks there, Ledger-behind-Rabby style | T24 | list of 10 addresses with balances, selection drives the signing path |
 | ~~T47~~ ✅ | Show the signing *source* address on the device confirmation, not just the destination | T12 | the full checksummed address is rendered, derived on the protocol task at the signing path |
 
