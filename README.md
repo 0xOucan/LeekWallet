@@ -328,6 +328,16 @@ passphrase** and users who supplied their own dice entropy. Passphrase support h
 standard-compliant and verified against the spec's known-answer vectors
 (`sim/test_passphrase.c`).
 
+### Status: it works, on testnets
+
+A LeekWallet has signed and broadcast a real Sepolia transaction end to end —
+seed generated on-device from user-supplied entropy, stored under a salted
+PBKDF2 key with authenticated encryption, derived to `m/44'/60'/0'/0/0`,
+displayed page by page on the OLED, approved by button, signed by secp256k1,
+carried over an X25519-authenticated channel, and accepted by the network.
+
+[`0xa035de1c…`](https://sepolia.etherscan.io/tx/0xa035de1cb50860956dd8cfead9efd204e8d94dbb857a4bc26b4e1350bc20d96c)
+
 ### ⚠️ Testnets only — verify it yourself before trusting it with anything
 
 LeekWallet is a proof of concept under active development. **Use testnets.**
@@ -431,8 +441,12 @@ When enabled, LeekWallet advertises as:
 - [x] BLE NimBLE stack
 - [x] Host test harness (no hardware required)
 - [ ] Fix seed import (110 unreachable BIP39 words)
-- [x] Salted vault KDF, tuned on hardware
-- [ ] Flash encryption + secure boot
+- [x] Salted vault KDF, tuned on hardware (504 ms/derivation, measured)
+- [x] Authenticated storage (AES-256-GCM, format v3 with crash-safe migration)
+- [x] Encrypted USB session with on-device passkey comparison
+- [x] On-device transaction decode and confirmation
+- [x] Companion app (Tauri v2) signing real transactions
+- [ ] Flash encryption + secure boot — **the gate before real funds**
 - [ ] On-device transaction decode & confirmation
 - [ ] BLE + USB protocol layer
 - [ ] Companion app — Tauri v2 (Linux/macOS/Windows + Android)

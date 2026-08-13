@@ -348,6 +348,36 @@ Everything else is parallel decoration around this chain:
 The two items most likely to slip are **T12** (on-device decode — the screen is small and the
 data is not) and **T30** (the Android plugin — the only piece with no mock).
 
+## Where this stands
+
+**A real Sepolia transaction has been signed and broadcast.** The chain that
+had to work all at once — entropy, vault, derivation, display, approval,
+signing, transport, session, encoding — works.
+
+What is still true: **flash encryption is not enabled**, so anyone holding the
+device can read the vault off the chip and attack the PIN offline. That is the
+one thing between this and real funds, and no amount of work elsewhere
+substitutes for it.
+
+### What hardware testing found that host tests could not
+
+Recorded because it shaped the roadmap, and because the pattern will repeat:
+
+| Bug | Why the suites missed it |
+|---|---|
+| Screen flicker on every keypress | Timing, not logic |
+| Wallet metadata never loaded at boot | A deadlock between two correct components |
+| Nonce counters desynchronised on any rejected frame | The mock never rejects |
+| Address list re-derived itself into a loop | `setInterval` re-entrancy under real latency |
+| Client sent `path`, firmware read `index` | The mock accepted both |
+| **Two tasks sharing one derivation state** | **No test runs two FreeRTOS tasks** |
+
+The last one signed a real transaction with a key nobody selected. It failed
+safely only because that key held no funds.
+
+Twice the mock was *more permissive than the device* and certified code that
+could not work. Both times the fix was making the mock stricter.
+
 ## Progress
 
 Done: **T0.1** (fake NVS with crash injection and an I/O-ordering probe), **T1** (import fixed —
