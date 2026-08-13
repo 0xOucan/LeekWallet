@@ -479,6 +479,79 @@ static void test_harness_sees_the_screen(void)
                  "the previous frame bled into this one");
 }
 
+
+/* ============================================================================
+ * An error is not an address (AUDIT S8a, T7)
+ * ============================================================================ */
+
+/* The failure this guards against is subtle by design. The address renderer
+ * slices its buffer at fixed offsets, so a short error string parked in that
+ * buffer draws as one short line over two blank ones - which reads as a
+ * truncated address, not as a failure. The QR screen then encoded the same
+ * buffer, so a failure message could be offered to a camera as somewhere to
+ * send money. */
+
+static void test_failed_derivation_is_not_shown_as_an_address(void)
+{
+    printf("== a failed derivation says Error, not something address-shaped (S8a)\n");
+    boot_unlocked_with_seed();
+
+    fake_wallet_fail_derivation(true);
+    go(SCREEN_WALLET_INFO);
+
+    CHECK_SCREEN(fake_oled_contains("Error"), "the screen does not say anything failed");
+    CHECK_SCREEN(fake_oled_contains("Addr failed"), "the reason is missing");
+    CHECK_SCREEN(!fake_oled_contains("0x"), "something address-shaped was drawn anyway");
+}
+
+static void test_qr_refuses_to_encode_an_error(void)
+{
+    printf("== the QR screen will not encode a failure message (S8a)\n");
+    boot_unlocked_with_seed();
+
+    fake_wallet_fail_derivation(true);
+    go(SCREEN_WALLET_INFO);
+    go(SCREEN_QR_CODE);
+
+    /* The old guard listed the error strings it knew about, so each new one
+     * silently became a QR code. Assert on what was encoded, not on which
+     * message was current. */
+    const char *encoded = fake_oled_qr_data();
+    CHECK_SCREEN(encoded == NULL || encoded[0] == '\0',
+                 "a QR code was drawn for \"%s\"", encoded ? encoded : "");
+    CHECK_SCREEN(fake_oled_contains("No address"), "the QR screen did not explain itself");
+}
+
+static void test_qr_still_works_for_a_real_address(void)
+{
+    printf("== a real address still reaches the QR screen\n");
+    boot_unlocked_with_seed();
+
+    go(SCREEN_WALLET_INFO);
+    CHECK_SCREEN(fake_oled_contains("QR"), "the QR option is missing for a valid address");
+
+    go(SCREEN_QR_CODE);
+    const char *encoded = fake_oled_qr_data();
+    CHECK(encoded != NULL && strlen(encoded) == 42 && encoded[0] == '0' && encoded[1] == 'x',
+          "encoded \"%s\" instead of a 42-character address", encoded ? encoded : "(none)");
+}
+
+static void test_passphrase_confirmation_needs_an_address(void)
+{
+    printf("== passphrase confirmation refuses to confirm nothing (S8a)\n");
+    boot_unlocked_with_seed();
+
+    /* This screen asks the user to recognise an address. With no address there
+     * is nothing to recognise, and the old code drew blank lines under "Match
+     * your record" - an invitation to accept a wallet that never derived. */
+    fake_wallet_fail_derivation(true);
+    go(SCREEN_PASSPHRASE_CONFIRM);
+
+    CHECK_SCREEN(!fake_oled_contains("Match your record"),
+                 "the user was asked to match a record against nothing");
+    CHECK_SCREEN(fake_oled_contains("Error"), "the failure is not stated");
+}
+
 int main(void)
 {
     test_harness_sees_the_screen();
@@ -495,6 +568,11 @@ int main(void)
     test_pin_explicit_submit();
     test_pin_wrong_spends_an_attempt();
     test_pin_digits_do_not_outlive_the_screen();
+
+    test_failed_derivation_is_not_shown_as_an_address();
+    test_qr_refuses_to_encode_an_error();
+    test_qr_still_works_for_a_real_address();
+    test_passphrase_confirmation_needs_an_address();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");

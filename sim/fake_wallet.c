@@ -46,6 +46,7 @@ static const char *FAKE_24 =
 void fake_wallet_reset(void)
 {
     memset(&w, 0, sizeof(w));
+    fake_wallet_fail_derivation(false);
 }
 
 uint8_t fake_wallet_preload(const char *mnemonic)
@@ -195,17 +196,34 @@ WalletError wallet_wipe(void)
 
 /* Derived from the wallet and the path index only, so a test can say exactly
  * which address should be on screen without doing any elliptic curve maths. */
+static bool fail_derivation = false;
+
+void fake_wallet_fail_derivation(bool fail)
+{
+    fail_derivation = fail;
+}
+
 WalletError wallet_get_address_at_path(const HDPath *path, EthAddress *address_out)
 {
     if (!path || !address_out) {
         return WALLET_ERROR_DERIVATION_FAILED;
     }
+    if (fail_derivation) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
     if (!w.unlocked || w.active == 0) {
         return WALLET_ERROR_LOCKED;
     }
+    /* A full 42-character address: "0x" and 40 hex digits, exactly what the
+     * real derivation returns.
+     *
+     * The first four digits vary by wallet and index so tests can tell two
+     * addresses apart; the rest is filler. Emitting a shorter string would
+     * make the fake produce something no device ever produces, and would hide
+     * every bug about telling a real address from something that is not one
+     * (AUDIT S8a). */
     snprintf(address_out->hex, sizeof(address_out->hex),
-             "0x%02x%02x%08x%08x%08x%04x",
-             w.active, (unsigned)(path->address_index & 0xFF),
-             0xAAAAAAAAu, 0xBBBBBBBBu, 0xCCCCCCCCu, 0xDDDDu);
+             "0x%02x%02x%s", w.active, (unsigned)(path->address_index & 0xFF),
+             "aaaaaaaabbbbbbbbccccccccddddddddeeee");
     return WALLET_OK;
 }

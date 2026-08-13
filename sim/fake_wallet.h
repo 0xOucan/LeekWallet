@@ -17,6 +17,14 @@ void fake_wallet_reset(void);
  */
 uint8_t fake_wallet_preload(const char *mnemonic);
 
+/**
+ * Make every derivation fail, to exercise the screens' error paths.
+ *
+ * Those paths are where an error can be mistaken for an address (AUDIT S8a),
+ * and on real hardware they are almost unreachable on demand.
+ */
+void fake_wallet_fail_derivation(bool fail);
+
 /** True once the UI has called wallet_mark_backup_verified for `index`. */
 bool fake_wallet_backup_verified(uint8_t index);
 

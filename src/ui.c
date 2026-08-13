@@ -1171,21 +1171,47 @@ static void screen_main_menu_on_button(button_id_t btn)
  * Wallet Info Screen (View Address)
  * ============================================================================ */
 
+/* Why this is a separate field rather than a message parked in
+ * `eth_address.hex` (AUDIT S8a, T7).
+ *
+ * The address renderer slices its buffer at fixed offsets 0/16/30. An error
+ * string written there renders as a short first line over two blank ones -
+ * which at a glance is a truncated address, not a failure. Worse, the QR
+ * screen encoded whatever was in that field, so "Addr failed" was offered to
+ * a camera as a receive address.
+ *
+ * An address and an explanation of why there is no address are different
+ * things and are now stored as different things. `address_valid()` is the
+ * single gate every consumer asks. */
+static char address_error[24] = {0};
+
+static void set_address_error(const char *message)
+{
+    memzero(&eth_address, sizeof(eth_address));
+    snprintf(address_error, sizeof(address_error), "%s", message);
+}
+
+/* A real, complete address - never an error, never a partial derivation. */
+static bool address_valid(void)
+{
+    return address_error[0] == '\0' && strlen(eth_address.hex) == 42;
+}
+
 static void screen_wallet_info_enter(void)
 {
     ESP_LOGI(TAG, "Wallet info screen");
 
     memset(&eth_address, 0, sizeof(eth_address));
+    address_error[0] = '\0';
 
     if (!ensure_wallet_unlocked()) {
-        strcpy(eth_address.hex, "Unlock failed");
+        set_address_error("Unlock failed");
         return;
     }
 
     WalletStatus status = wallet_get_status();
     if (status.wallet_count == 0) {
-        /* No wallet - show message */
-        strcpy(eth_address.hex, "No wallet");
+        set_address_error("No wallet");
         return;
     }
 
@@ -1194,7 +1220,7 @@ static void screen_wallet_info_enter(void)
         WalletError err = wallet_select_wallet(1);
         if (err != WALLET_OK) {
             ESP_LOGE(TAG, "Failed to select wallet: %d", err);
-            strcpy(eth_address.hex, "Select failed");
+            set_address_error("Select failed");
             return;
         }
     }
@@ -1211,7 +1237,7 @@ static void screen_wallet_info_enter(void)
     WalletError err = wallet_get_address_at_path(&eth_path, &eth_address);
     if (err != WALLET_OK) {
         ESP_LOGE(TAG, "Failed to get address: %d", err);
-        strcpy(eth_address.hex, "Addr failed");
+        set_address_error("Addr failed");
     }
 }
 
@@ -1229,6 +1255,12 @@ static void screen_wallet_info_render(void)
     if (status.wallet_count == 0) {
         oled_draw_string_centered(3, "No wallet");
         oled_draw_string_centered(4, "Create one first");
+    } else if (!address_valid()) {
+        /* Say plainly that there is no address, rather than drawing something
+         * address-shaped. The word "Error" is what distinguishes this from a
+         * short address at a glance. */
+        oled_draw_string_centered(2, "Error");
+        oled_draw_string_centered(4, address_error[0] ? address_error : "No address");
     } else {
         /* Display address in 3 lines (42 chars total) */
         /* Line 1: 0x + 14 chars = 16 chars */
@@ -1248,7 +1280,9 @@ static void screen_wallet_info_render(void)
         oled_draw_string_centered(4, line3);
     }
 
-    oled_draw_string(7, 0, "UP DN BCK   QR");
+    /* Offering QR for something that is not an address invites the user to
+     * scan a failure message. */
+    oled_draw_string(7, 0, address_valid() ? "UP DN BCK   QR" : "UP DN BCK");
 }
 
 /* Re-derive the displayed address for the current index. */
@@ -1259,9 +1293,11 @@ static void wallet_info_refresh_address(void)
     HDPath eth_path = HDPATH_ETH_DEFAULT;
     eth_path.address_index = address_index;
 
+    address_error[0] = '\0';
+
     if (wallet_get_address_at_path(&eth_path, &eth_address) != WALLET_OK) {
         ESP_LOGE(TAG, "Failed to derive address %u", (unsigned)address_index);
-        strcpy(eth_address.hex, "Derive failed");
+        set_address_error("Derive failed");
     }
 }
 
@@ -1989,7 +2025,7 @@ static void usb_hid_test(void)
 {
 #ifdef CONFIG_TINYUSB_ENABLED
     ESP_LOGI(TAG, "USB HID test - typing address...");
-    if (eth_address.hex[0] != '\0' && eth_address.hex[0] != 'N') {
+    if (address_valid()) {
         ESP_LOGI(TAG, "Address: %s", eth_address.hex);
         /* TinyUSB HID would type the address here */
     } else {
@@ -2137,8 +2173,9 @@ static void screen_qr_code_enter(void)
     ESP_LOGI(TAG, "QR code screen");
 
     /* eth_address should already be populated from wallet_info screen */
-    if (eth_address.hex[0] == '\0') {
+    if (!address_valid()) {
         /* Fallback: try to get address again */
+        address_error[0] = '\0';
         if (ensure_wallet_unlocked()) {
             WalletStatus status = wallet_get_status();
             if (status.wallet_count > 0) {
@@ -2147,15 +2184,27 @@ static void screen_qr_code_enter(void)
                 }
                 HDPath eth_path = HDPATH_ETH_DEFAULT;
                 eth_path.address_index = address_index;
-                wallet_get_address_at_path(&eth_path, &eth_address);
+                if (wallet_get_address_at_path(&eth_path, &eth_address) != WALLET_OK) {
+                    set_address_error("Addr failed");
+                }
+            } else {
+                set_address_error("No wallet");
             }
+        } else {
+            set_address_error("Unlock failed");
         }
     }
 }
 
 static void screen_qr_code_render(void)
 {
-    if (eth_address.hex[0] == '\0' || strcmp(eth_address.hex, "No wallet") == 0) {
+    /* One gate, asked of the same field the QR is built from.
+     *
+     * The old check listed the error strings it knew about, so every failure
+     * added later - "Addr failed", "Derive failed" - was encoded into a QR
+     * code and presented to a camera as a receive address. Ask whether there
+     * is an address instead of trying to enumerate the ways there is not. */
+    if (!address_valid()) {
         oled_clear();
         oled_draw_string_centered(3, "No address");
         oled_draw_string(7, 0, "BACK");
@@ -2779,6 +2828,18 @@ static void screen_passphrase_confirm_render(void)
     oled_clear();
     oled_draw_string_centered(0, wallet_has_passphrase() ? "Passphrase set"
                                                          : "No passphrase");
+
+    /* This screen asks the user to confirm a passphrase by recognising its
+     * address. With no address there is nothing to recognise, and rendering
+     * blank lines under "Match your record" invites them to accept a wallet
+     * that never derived. */
+    if (!address_valid()) {
+        oled_draw_string_centered(2, "Error");
+        oled_draw_string_centered(4, address_error[0] ? address_error : "No address");
+        oled_draw_string_centered(6, "Cannot confirm");
+        oled_draw_string(7, 0, "RETRY");
+        return;
+    }
 
     char line1[17], line2[17], line3[17];
     strncpy(line1, eth_address.hex, 16);      line1[16] = '\0';
