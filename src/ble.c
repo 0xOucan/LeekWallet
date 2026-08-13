@@ -55,6 +55,14 @@ static const char *TAG = "ble";
 
 #define BLE_DEVICE_NAME "LeekWallet"
 
+/* Caught at build time rather than as a log line on a battery-powered device.
+ *
+ * Advertisement: 3 (flags) + 2 + 16 (128-bit UUID) = 21 of the 31 available.
+ * Scan response: 2 + strlen(name). T56 makes the name user-configurable, and
+ * this is the bound that keeps a long one from silently stopping the radio. */
+_Static_assert(2 + sizeof(BLE_DEVICE_NAME) - 1 <= 31,
+               "device name too long for a legacy scan response");
+
 /* 6c65656b-7761-6c6c-6574-0000000000NN — "leekwallet" in ASCII, so the UUID is
  * recognisable in a scanner log. NimBLE takes the bytes little-endian. */
 #define LEEK_UUID(last)                                                     \
@@ -226,11 +234,23 @@ static void ble_advertise(void)
     struct ble_hs_adv_fields fields;
     struct ble_gap_adv_params adv_params;
 
+    /* The advertisement carries the service UUID; the NAME goes in the scan
+     * response.
+     *
+     * Both together do not fit. A legacy advertisement is 31 bytes: 3 for
+     * flags, 18 for a complete 128-bit UUID list, and 2 + strlen(name) for the
+     * name - 33 for "LeekWallet". ble_gap_adv_set_fields() then rejects the
+     * lot with BLE_HS_EMSGSIZE and advertising never starts at all. The device
+     * looks powered and idle, the failure is one log line, and on battery
+     * there is no console to read it on. That is how this shipped and was
+     * only found by nothing appearing in a scan.
+     *
+     * Splitting them is also correct rather than merely smaller: a scanner
+     * filtering by service UUID (see leek-ble-probe) matches on the
+     * advertisement, and anything showing a human a device list issues a scan
+     * request and gets the name. */
     memset(&fields, 0, sizeof(fields));
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    fields.name = (uint8_t *)BLE_DEVICE_NAME;
-    fields.name_len = strlen(BLE_DEVICE_NAME);
-    fields.name_is_complete = 1;
     fields.uuids128 = (ble_uuid128_t *)&svc_uuid;
     fields.num_uuids128 = 1;
     fields.uuids128_is_complete = 1;
@@ -238,6 +258,18 @@ static void ble_advertise(void)
     int rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
         ESP_LOGE(TAG, "adv_set_fields failed: %d", rc);
+        return;
+    }
+
+    struct ble_hs_adv_fields rsp;
+    memset(&rsp, 0, sizeof(rsp));
+    rsp.name = (uint8_t *)BLE_DEVICE_NAME;
+    rsp.name_len = strlen(BLE_DEVICE_NAME);
+    rsp.name_is_complete = 1;
+
+    rc = ble_gap_adv_rsp_set_fields(&rsp);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "adv_rsp_set_fields failed: %d", rc);
         return;
     }
 
