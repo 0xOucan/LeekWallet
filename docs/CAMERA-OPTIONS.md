@@ -682,6 +682,28 @@ disqualifying (§2.3).
 
 ---
 
+## 8b. If you use a 5 V module, check its logic level first
+
+The DevKitC exposes a 5 V rail from USB VBUS, so powering a 5 V scanner such as
+the GM65 is easy. Two things are not.
+
+**ESP32 GPIOs are not 5 V tolerant.** If the module's UART TX idles at 5 V,
+wiring it straight to an ESP32-S3 RX pin can damage that pin — often not
+immediately, which makes it worse to find. Many 5 V modules signal at 3.3 V
+TTL, but that varies by clone and listings get it wrong. Measure TX idle with a
+meter before connecting, or put a divider or level shifter on the
+module-to-ESP32 direction. The other direction is usually fine: 3.3 V normally
+reads as logic high on a 5 V input.
+
+**VBUS is not always present.** It is there on USB and on a power bank, but the
+airgap case is precisely the one where the device may be on neither, and a LiPo
+build would need a boost converter to feed a 5 V module.
+
+Both problems disappear with a 3.3 V native module. That is the practical reason
+the GM802-S beats the GM65 here, on top of being cheaper: no level check, no
+boost converter, no dependency on a rail that exists only when something is
+plugged in.
+
 ## 9. What selling assembled devices implies
 
 Short, because it is a consequence to note rather than a design to settle here — but it changes
