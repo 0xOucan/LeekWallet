@@ -305,6 +305,40 @@ The one thing this does **not** protect against is someone who has the device in
 their hand: flash encryption is not enabled, so the vault can be read off the
 chip. See [S1 in AUDIT.md](AUDIT.md), and the box below.
 
+### Backing up a seed that holds value
+
+The device protects a seed while it is on the device. The copy you write down is
+where funds are actually lost, and it is the part no firmware can help with.
+**[docs/BACKUP.md](docs/BACKUP.md) is the full reasoning; this is the summary.**
+
+**The one rule: the seed and the passphrase never live in the same place.** If
+someone finds both, they have your funds. If you lose both, so have you.
+
+**Do not split a phrase by cutting it up.** Words 1-8 on one paper, 5-12 on
+another, so any two rebuild the twelve — it looks like a 2-of-3 backup and is
+not one. Someone holding eight words faces about 2^44 candidates for the rest,
+which a rented GPU rig grinds in days to weeks. A real threshold scheme leaks
+*nothing* from one share; you cannot get that by cutting plaintext into
+overlapping pieces.
+
+**A passphrase does not license a weak split.** It does raise the cost — an
+attacker needs the missing words *and* the passphrase, and can test neither
+alone. But it quietly makes a 30-40 bit human-chosen secret the only thing
+standing between a thief and the funds, when you started with 128 bits. A
+passphrase is protection against a stolen *complete* backup; spending it to
+justify a weakened one spends it twice.
+
+**What to do instead: several complete copies, in different places, with the
+passphrase somewhere else again.** One location robbed and the thief holds a
+valid seed they cannot spend. One location lost and the others are whole, with
+nothing to reconstruct. Better against theft *and* against loss than three
+partial papers.
+
+**Verify a restore before funding it.** A wrong passphrase does not fail — it
+produces a valid wallet that is not yours. Record the master fingerprint (XFP)
+shown on the wallet screen, and check it matches after restoring. Eight hex
+characters, a few seconds, and it identifies the seed rather than one address.
+
 ### Why a DIY wallet, when commercial ones have secure elements?
 
 A secure element protects a private key against someone with the physical device and a

@@ -226,6 +226,14 @@ There are no production wallets yet, but the mechanism is needed before there ar
   last, resume on boot. The fake NVS crash injection in `sim/` is what proves this, the same way
   it proved the S4 fix.
 
+## Backing it up
+
+The vault protects the seed on the device. The written copy is a separate
+problem and the one people actually lose funds to — see
+[BACKUP.md](BACKUP.md). The short version: keep the seed and the passphrase in
+different places, keep complete copies rather than cut-up ones, and verify a
+restore by its master fingerprint before funding it.
+
 ## Where the passphrase sits
 
 Worth being explicit, because it is easy to assume the vault protects it: the BIP39 passphrase
