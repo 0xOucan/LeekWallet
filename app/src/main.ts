@@ -409,6 +409,24 @@ const setConnection = (state: string, label: string): void => {
   $("conn").textContent = label;
 };
 
+/**
+ * Put the controls back to their disconnected state.
+ *
+ * Every failure path in connect() must end here. busy(true) disables all four
+ * buttons for the duration of an attempt, and an early return that forgets to
+ * undo it leaves the user staring at an app whose Unlock does nothing - which
+ * is exactly what happened on hardware: a handshake that failed left every
+ * control dead and looked like the session had been lost.
+ */
+const showDisconnected = (): void => {
+  ($("connect") as HTMLButtonElement).disabled = false;
+  ($("unlock") as HTMLButtonElement).disabled = true;
+  ($("disconnect") as HTMLButtonElement).disabled = true;
+  ($("sign") as HTMLButtonElement).disabled = true;
+  ($("transport") as HTMLSelectElement).disabled =
+    ($("transport") as HTMLSelectElement).options.length < 2;
+};
+
 const busy = (on: boolean): void => {
   for (const id of ["connect", "unlock", "disconnect", "sign"]) {
     ($(id) as HTMLButtonElement).disabled = on;
@@ -525,7 +543,7 @@ async function connect(): Promise<void> {
     transport = null;
     client = null;
     setMode(null);
-    busy(false);
+    showDisconnected();
     return;
   }
 
@@ -555,6 +573,10 @@ async function connect(): Promise<void> {
         log(`handshake failed: ${String((e as Error).message ?? e)}`);
       }
       await transport.close().catch(() => {});
+      transport = null;
+      client = null;
+      setMode(null);
+      showDisconnected();
       return;
     }
     $("passkey").textContent = `${passkey.slice(0, 3)} ${passkey.slice(3)}`;
@@ -563,7 +585,21 @@ async function connect(): Promise<void> {
     log("press ALLOW on the device to continue");
     setConnection("connecting", "Confirm on device…");
 
-    await client.waitForApproval();
+    try {
+      await client.waitForApproval();
+    } catch (e) {
+      /* Times out after a minute, or the session died while waiting. Either
+       * way this attempt is over and the controls must come back - the user
+       * has to be able to press Connect again. */
+      setConnection("error", "Not confirmed on the device");
+      log(String((e as Error).message ?? e));
+      await transport.close().catch(() => {});
+      transport = null;
+      client = null;
+      setMode(null);
+      showDisconnected();
+      return;
+    }
     log("approved on device; channel encrypted");
   } else {
     const hello = await client.call("hello");
