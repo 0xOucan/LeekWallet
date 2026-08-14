@@ -18,9 +18,17 @@ import {
   availableTransports, listPorts, TauriSerialTransport, type HardwareKind,
 } from "./tauri-transport.ts";
 import { BleTransport, scanBle, BLE_NOT_FOUND } from "./ble-transport.ts";
-import { createPublicClient, defineChain, http, parseEther, serializeTransaction,
+import { createPublicClient, custom, defineChain, parseEther, serializeTransaction,
          isAddress, type Chain, type Hex, type Address } from "viem";
-import { CHAINS, getChain, type ChainInfo } from "../packages/core/src/chains.ts";
+import {
+  addCustomChain, allChains, CHAINS, chainLabelDetailed, CUSTOM_CHAIN_NOTICE, getChain,
+  loadCustomChains, removeCustomChain, resolveChain, type ChainInfo, type CustomChainInput,
+} from "../packages/core/src/chains.ts";
+import {
+  endpointOrder, FailoverRpc, fetchRpcSend, preferredRpc, rememberRpc,
+  type RpcSend,
+} from "../packages/core/src/rpc.ts";
+import { resolveRpcSend } from "./rpc-proxy.ts";
 import {
   deriveSession, generateKeypair, Session,
 } from "../packages/core/src/session.ts";
@@ -736,14 +744,17 @@ const DEFAULT_CHAIN_ID = 11155111;
 function storedChainId(): number {
   const raw = localStorage.getItem(CHAIN_KEY);
   const id = raw === null ? NaN : Number(raw);
-  return getChain(id) ? id : DEFAULT_CHAIN_ID;
+  // resolveChain, not getChain: a custom network the user added is a legitimate
+  // thing to have selected last time. It is still marked custom everywhere it
+  // is rendered — see chainLabelDetailed.
+  return resolveChain(id) ? id : DEFAULT_CHAIN_ID;
 }
 
 let chainId = storedChainId();
 
 /** Never undefined: storedChainId() only returns IDs the registry knows. */
 function activeChain(): ChainInfo {
-  return getChain(chainId) ?? (getChain(DEFAULT_CHAIN_ID) as ChainInfo);
+  return resolveChain(chainId) ?? (getChain(DEFAULT_CHAIN_ID) as ChainInfo);
 }
 
 /**
@@ -773,42 +784,231 @@ function populateRpcs(info: ChainInfo): void {
     opt.textContent = new URL(url).host;
     select.appendChild(opt);
   }
+  /* Show the endpoint that actually worked last time rather than always the
+   * first one listed. Otherwise the selector claims a preference the app is no
+   * longer acting on, and the whole point of showing it is that it is true. */
+  select.value = preferredRpc(info.id, info.rpcUrls) ?? (info.rpcUrls[0] as string);
+}
+
+/**
+ * Say which operator was actually reached (T62).
+ *
+ * Failover means the endpoint in the selector is a first choice, not a
+ * promise, so "who learned about my addresses" is no longer answered by
+ * reading the dropdown. The preview says "the RPC you pick learns which
+ * addresses you are asking about"; this line is what keeps that sentence
+ * honest when the pick did not answer and somebody else did.
+ */
+function showRpcUsed(text: string): void {
+  $("rpcused").textContent = text;
+}
+
+/*
+ * How RPC requests leave this process (T62 stage 2).
+ *
+ * `fetch` until the backend has been asked, then the Rust proxy if this build
+ * has one. Held in a module-level variable, and resolved once at startup,
+ * because a transport that changed between the nonce lookup and the broadcast
+ * would make "who was asked" unanswerable — and that question has to have an
+ * answer, since it is the one the sign preview promises.
+ *
+ * The difference is not cosmetic: a `fetch` is bound by the CSP to the
+ * reviewed origins, so on that path a custom network cannot be reached at all.
+ */
+let rpcSend: RpcSend = fetchRpcSend();
+let viaProxy = false;
+
+/** The endpoints the active chain would be tried in, by host. For diagnostics. */
+function activeChainOrder(): string[] {
+  const info = activeChain();
+  return endpointOrder(info.id, info.rpcUrls).map((u) => new URL(u).host);
+}
+
+/**
+ * A viem client whose transport walks the chain's endpoints in turn.
+ *
+ * `custom()` rather than `http()`: the failover policy, the timeout and the
+ * record of who answered all live in core where they are tested without a
+ * network, and stage 2 swaps what `send` is without touching this call site.
+ *
+ * viem's own retry is switched off. It would re-send the same call to the same
+ * endpoint, which for a wallet means disclosing the request again for a
+ * failure we are already handling one layer down.
+ */
+function rpcFor(info: ChainInfo): { chain: Chain; transport: ReturnType<typeof custom>; failover: FailoverRpc } {
+  const first = preferredRpc(info.id, info.rpcUrls) ?? (info.rpcUrls[0] as string);
+  const failover = new FailoverRpc({
+    chainId: info.id,
+    rpcUrls: info.rpcUrls,
+    send: rpcSend,
+    onEndpoint: (url) => showRpcUsed(`Reached ${new URL(url).host}${viaProxy ? "" : " (direct)"}.`),
+    onFailover: (a) => {
+      showRpcUsed(`${new URL(a.url).host} did not answer (${a.reason}); trying the next endpoint.`);
+      log(`rpc: ${new URL(a.url).host} ${a.reason}: ${a.message}`);
+    },
+  });
+  return {
+    chain: viemChain(info, first),
+    transport: custom({ request: (args) => failover.request(args as { method: string; params?: unknown }) }, {
+      retryCount: 0,
+    }),
+    failover,
+  };
 }
 
 function applyChain(info: ChainInfo): void {
   populateRpcs(info);
+  showRpcUsed("No endpoint contacted yet.");
   $("amountlabel").textContent = `Amount (${info.nativeCurrency.symbol})`;
   $("chainnote").dataset["net"] = info.testnet ? "testnet" : "mainnet";
-  $("chainnote").textContent = info.testnet
+  const money = info.testnet
     ? `Chain ${info.id}. Testnet — this money is not worth anything. Check the chain ID on the device.`
     : `Chain ${info.id}. MAINNET — real funds. Check the chain ID on the device before approving.`;
+  /* A user-added network carries its caveat everywhere it is shown, not just
+   * in the selector: nothing about its name, symbol or decimals was checked by
+   * anything, and only the chain ID on the device decides which network the
+   * signature is valid on. */
+  $("chainnote").textContent =
+    info.source === "custom" ? `${money} ${CUSTOM_CHAIN_NOTICE}` : money;
   renderPreview();
+}
+
+/** Rebuild the chain list: curated first, then custom. The order is the trust order. */
+function populateChains(): void {
+  const select = $("chain") as HTMLSelectElement;
+  select.textContent = "";
+  for (const c of allChains()) {
+    const opt = document.createElement("option");
+    opt.value = String(c.id);
+    // chainLabelDetailed, so a user-supplied name cannot reach the list
+    // without the "(custom, unverified)" that came with it.
+    opt.textContent =
+      `${chainLabelDetailed(c.id).text} (${c.id})${c.testnet ? " — testnet" : ""}`;
+    select.appendChild(opt);
+  }
+  select.value = String(chainId);
 }
 
 function initChainSelector(): void {
   const select = $("chain") as HTMLSelectElement;
-  select.textContent = "";
-  for (const c of CHAINS) {
-    const opt = document.createElement("option");
-    opt.value = String(c.id);
-    opt.textContent = `${c.name} (${c.id})${c.testnet ? " — testnet" : ""}`;
-    select.appendChild(opt);
-  }
-  select.value = String(chainId);
+  populateChains();
   select.addEventListener("change", () => {
-    const picked = getChain(Number(select.value));
+    const picked = resolveChain(Number(select.value));
     // An unknown value can only come from a tampered DOM; ignore rather than
     // sign against a chain nothing in the app can name.
     if (!picked) return;
     chainId = picked.id;
     localStorage.setItem(CHAIN_KEY, String(chainId));
     applyChain(picked);
-    log(`chain: ${picked.name} (${picked.id})`);
+    log(`chain: ${chainLabelDetailed(picked.id).text} (${picked.id})`);
     // Sessions are told, or a connected dapp keeps building transactions for
     // the chain this wallet has just left.
     walletConnect.chainChanged(picked.id);
   });
+
+  /* Choosing an endpoint by hand records it as the preferred one, which is
+   * what makes the choice survive a reload and outrank whatever answered last.
+   * The user picking who to talk to must beat the app's own bookkeeping. */
+  const rpcSelect = $("rpc") as HTMLSelectElement;
+  rpcSelect.addEventListener("change", () => {
+    const info = activeChain();
+    if (!info.rpcUrls.includes(rpcSelect.value)) return;
+    rememberRpc(info.id, rpcSelect.value);
+    showRpcUsed("No endpoint contacted yet.");
+    log(`rpc: first choice is now ${new URL(rpcSelect.value).host}`);
+  });
+
   applyChain(activeChain());
+  initCustomChains();
+}
+
+/* ------------------------------------------------------- custom networks
+ *
+ * The escape hatch a curated table can never replace, and the reason the Rust
+ * proxy exists: an origin the user types in tomorrow cannot be in an allowlist
+ * compiled today. See docs/RPC-ACCESS.md.
+ *
+ * Validation is entirely core's (`validateCustomChain`) — the same function
+ * that re-checks whatever is in storage on the way out — so the form cannot
+ * accept something a reload would reject, and a second copy of the rules
+ * cannot drift from the first. This file only moves strings.
+ */
+
+/** Show the entries that exist, each with the marking and a way to remove it. */
+function renderCustomChains(): void {
+  const list = $("cclist");
+  list.textContent = "";
+  const customs = loadCustomChains();
+  if (customs.length === 0) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = "No networks added.";
+    list.appendChild(li);
+    return;
+  }
+  for (const c of customs) {
+    const li = document.createElement("li");
+    const label = document.createElement("span");
+    // Never the bare name: it is the user's word, not anybody's finding.
+    label.textContent = `${chainLabelDetailed(c.id).text} — chain ${c.id}, ${c.rpcUrls.length} RPC`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      removeCustomChain(c.id);
+      /* Removing the network that is selected must not leave the app signing
+       * for a chain it can no longer describe. */
+      if (chainId === c.id) {
+        chainId = DEFAULT_CHAIN_ID;
+        localStorage.setItem(CHAIN_KEY, String(chainId));
+        applyChain(activeChain());
+      }
+      populateChains();
+      renderCustomChains();
+      log(`removed custom network ${c.id}`);
+    });
+    li.append(label, remove);
+    list.appendChild(li);
+  }
+}
+
+function initCustomChains(): void {
+  $("ccnotice").textContent = CUSTOM_CHAIN_NOTICE;
+  renderCustomChains();
+
+  $("ccadd").addEventListener("click", () => {
+    const errors = $("ccerrors");
+    errors.textContent = "";
+    const input: CustomChainInput = {
+      id: Number(($("ccid") as HTMLInputElement).value.trim()),
+      name: ($("ccname") as HTMLInputElement).value,
+      nativeCurrency: {
+        name: ($("ccurname") as HTMLInputElement).value,
+        symbol: ($("ccursym") as HTMLInputElement).value,
+        decimals: Number(($("ccurdec") as HTMLInputElement).value.trim()),
+      },
+      rpcUrls: ($("ccrpcs") as HTMLTextAreaElement).value
+        .split("\n").map((s) => s.trim()).filter((s) => s.length > 0),
+      explorerUrl: ($("ccexplorer") as HTMLInputElement).value.trim(),
+      testnet: ($("cctestnet") as HTMLInputElement).checked,
+    };
+
+    const result = addCustomChain(input);
+    if (!result.ok) {
+      // Every objection at once: a form that reveals them one at a time is one
+      // people abandon in favour of pasting an RPC into a browser.
+      for (const message of result.errors) {
+        const li = document.createElement("li");
+        li.textContent = message;
+        errors.appendChild(li);
+      }
+      return;
+    }
+    populateChains();
+    renderCustomChains();
+    log(`added custom network ${result.chain.id} (${result.chain.name}) — unverified`);
+  });
 }
 
 /* ---------------------------------------------------------------- preview */
@@ -910,16 +1110,17 @@ async function sign(): Promise<void> {
      * transaction, not a stolen one - the device still shows what it signs.
      * Worth knowing that this query tells the RPC operator which addresses
      * you are interested in. */
-    /* The endpoint is chosen from a short allowlist that the CSP also permits.
-     * An editable field would mean allowing any host, which is precisely what
-     * a compromised dependency would want. */
-    const endpoint = ($("rpc") as HTMLSelectElement).value;
     /* Snapshot the chain for the whole of this signing run. Re-reading the
      * selector after the device has been asked would let a mid-flight change
      * broadcast to a network other than the one that was signed for. */
     const chain = activeChain();
-    const rpc = createPublicClient({ chain: viemChain(chain, endpoint), transport: http(endpoint) });
-    log(`fetching nonce and fees via ${new URL(endpoint).host}…`);
+    /* Every endpoint the registry lists for this chain, tried in turn: one
+     * operator being down or rate-limiting is the failure people actually hit,
+     * and it must not take the chain out. Which one answered is reported next
+     * to the selector, because a failover changes who learned the address. */
+    const { chain: viemDef, transport, failover } = rpcFor(chain);
+    const rpc = createPublicClient({ chain: viemDef, transport });
+    log(`fetching nonce and fees via ${new URL(failover.order()[0] as string).host}…`);
 
     const [nonce, fees] = await Promise.all([
       rpc.getTransactionCount({ address: from }),
@@ -1075,11 +1276,10 @@ async function signPlannedTransaction(tx: PlannedTx, broadcast: boolean): Promis
 
   const info = getChain(tx.chainId);
   if (!info) throw new Error(`this wallet has no RPC for chain ${tx.chainId}`);
-  const endpoint = info.rpcUrls[0] as string;
-  const rpc = createPublicClient({
-    chain: viemChain(info, endpoint),
-    transport: http(endpoint),
-  });
+  // Same failover as the manual path: a dapp-driven signature must not fail
+  // because the first-listed operator is having an afternoon.
+  const { chain: viemDef, transport, failover } = rpcFor(info);
+  const rpc = createPublicClient({ chain: viemDef, transport });
 
   const from = addresses[index] as Address;
   const nonce = tx.nonce ?? (await rpc.getTransactionCount({ address: from }));
@@ -1142,7 +1342,10 @@ async function signPlannedTransaction(tx: PlannedTx, broadcast: boolean): Promis
   );
 
   if (!broadcast) return raw;
-  log(`broadcasting via ${new URL(endpoint).host}…`);
+  // `lastUrl` once anything has been asked, the head of the order before that:
+  // either way this names the endpoint the broadcast is about to start at, not
+  // a stale pick from the selector.
+  log(`broadcasting via ${new URL(failover.lastUrl ?? (failover.order()[0] as string)).host}…`);
   return await rpc.sendRawTransaction({ serializedTransaction: raw });
 }
 
@@ -1277,12 +1480,33 @@ async function initEnvironment(): Promise<void> {
   ($("connect") as HTMLButtonElement).disabled = false;
 }
 
+/**
+ * Ask the backend once whether RPC calls can go through it, and say so.
+ *
+ * The answer decides whether a custom network is offerable at all: without the
+ * proxy the request leaves the webview, where the CSP allows only the reviewed
+ * origins, and a user-typed endpoint is simply blocked. Saying that in the
+ * form beats letting someone fill it in and meet a console error.
+ */
+async function initRpcTransport(): Promise<void> {
+  const resolved = await resolveRpcSend();
+  rpcSend = resolved.send;
+  viaProxy = resolved.viaProxy;
+
+  const add = $("ccadd") as HTMLButtonElement;
+  add.disabled = !viaProxy;
+  $("customchainstatus").textContent = viaProxy
+    ? "Requests go through this app's backend, so a network you add here is reachable. Whoever you name learns which addresses you ask about."
+    : "This build sends RPC requests straight from the window, which may only reach the endpoints reviewed at build time. A network added here could not be contacted, so adding one is switched off.";
+}
+
 /* Held shut until the backend has answered. Clicking through an unpopulated
  * selector would read as "mock" and quietly connect to a simulation on a
  * machine that has a device attached. */
 ($("connect") as HTMLButtonElement).disabled = true;
 void initEnvironment();
 initChainSelector();
+void initRpcTransport();
 
 $("connect").addEventListener("click", () => void connect());
 $("unlock").addEventListener("click", () => void unlock());
@@ -1391,7 +1615,15 @@ function diagnosticsReport(): string {
 
   L.push("== Chain");
   L.push(`${chain.name} (${chain.id})${chain.testnet ? " — testnet" : ""}, ${chain.source}`);
-  L.push(`RPC: ${rpc || "none selected"}`);
+  L.push(`RPC first choice: ${rpc || "none selected"}`);
+  // The order, not just the pick: "it worked on the second endpoint" is the
+  // kind of thing a bug report needs and nobody remembers to mention.
+  L.push(`RPC order: ${activeChainOrder().join(" -> ")}`);
+  L.push(`RPC last reached: ${$("rpcused").textContent ?? "?"}`);
+  // Which path the request took decides what it could reach at all, so a bug
+  // report saying "my network does not work" is unreadable without it.
+  L.push(`RPC path: ${viaProxy ? "backend proxy" : "webview fetch (CSP-bound)"}`);
+  L.push(`Custom networks: ${loadCustomChains().length}`);
   L.push("");
 
   L.push("== Addresses");

@@ -23,6 +23,21 @@
 mod ble;
 mod serial;
 
+// The one thing in this backend that is not "move bytes to the device": an
+// outbound JSON-RPC call, made here rather than in the webview because the CSP
+// governs the webview and not this process. It is what a user-supplied RPC
+// endpoint needs to be reachable at all — no build-time allowlist can contain
+// an origin the user types in tomorrow. The module is the gatekeeper the
+// allowlist used to be; see its header and docs/RPC-ACCESS.md.
+//
+// Part of that policy — the redirect rule, the response checks, the origin the
+// UI displays — is reached only from the HTTP client, which is behind the
+// `rpc-proxy` feature (see the module header for why it has to be). It is
+// still compiled and still tested without the feature, so the allow only
+// silences "you have not called this yet", not a real absence.
+#[cfg_attr(not(feature = "rpc-proxy"), allow(dead_code))]
+mod rpc;
+
 /// Which transports this build actually has behind it.
 ///
 /// A real capability query, replacing the frontend's old habit of sniffing the
@@ -83,7 +98,9 @@ pub fn run() {
             ble::ble_scan,
             ble::ble_connect,
             ble::ble_disconnect,
-            ble::ble_request
+            ble::ble_request,
+            rpc::rpc_proxy_available,
+            rpc::rpc_call
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the LeekWallet companion");

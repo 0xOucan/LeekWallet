@@ -129,7 +129,17 @@ group("the CSP allowlist still bounds the registry, by exact origin");
    *     "chain added but unreachable" is impossible to miss in CI output.
    *
    * When the CSP is extended, the FIXME below goes away and the loop at the
-   * bottom becomes a hard check over every origin again. */
+   * bottom becomes a hard check over every origin again.
+   *
+   * T62 added a Rust proxy, so a native build's RPC calls no longer pass
+   * through connect-src at all. Nothing here is relaxed for it, and nothing
+   * here is deleted as obsolete. Three reasons: the webview fetch path still
+   * exists (browser builds, the dev server, and any build compiled without the
+   * proxy's HTTP client) and must stay bounded; the directive also covers the
+   * WalletConnect relay and anything a dependency might try; and the
+   * wildcard/bare-https assertions are the security content of this file
+   * regardless of who does the fetching. A second door being opened under
+   * supervision is not a reason to take the first one off its hinges. */
   const conf = JSON.parse(
     readFileSync(new URL("../../../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
   ) as { app: { security: { csp: string } } };

@@ -74,10 +74,45 @@
             <select id="chain" class="addr"></select>
           </label>
           <p class="muted chainnote" id="chainnote"></p>
+          <!-- A first choice, not a promise: if it does not answer, the app
+               moves to the next operator this chain lists (T62). The line
+               below says which one was actually reached, because that is who
+               learned which addresses were asked about. -->
           <label class="field">
-            <span>RPC endpoint</span>
+            <span>RPC endpoint (first choice)</span>
             <select id="rpc" class="addr"></select>
           </label>
+          <p class="muted rpcused" id="rpcused">No endpoint contacted yet.</p>
+
+          <!-- Custom networks (T62). Only reachable when RPC calls go through
+               the Rust proxy: a user-typed origin cannot be in the webview's
+               build-time connect-src allowlist, so on a plain browser build
+               the request is blocked and the form says so rather than offering
+               something that will not work. -->
+          <details class="custom-chain" id="customchain">
+            <summary>Add a network</summary>
+            <p class="muted" id="customchainstatus"></p>
+            <label class="field"><span>Chain ID</span>
+              <input id="ccid" class="addr" inputmode="numeric" autocomplete="off" placeholder="e.g. 480" /></label>
+            <label class="field"><span>Name</span>
+              <input id="ccname" class="addr" autocomplete="off" /></label>
+            <label class="field"><span>Currency name</span>
+              <input id="ccurname" class="addr" autocomplete="off" value="Ether" /></label>
+            <label class="field"><span>Currency symbol</span>
+              <input id="ccursym" class="addr" autocomplete="off" value="ETH" /></label>
+            <label class="field"><span>Currency decimals</span>
+              <input id="ccurdec" class="addr" inputmode="numeric" autocomplete="off" value="18" /></label>
+            <label class="field"><span>RPC URLs (https, one per line)</span>
+              <textarea id="ccrpcs" class="addr" rows="2" spellcheck="false"></textarea></label>
+            <label class="field"><span>Explorer URL</span>
+              <input id="ccexplorer" class="addr" spellcheck="false" autocomplete="off" placeholder="https://…" /></label>
+            <label class="field field--check">
+              <input id="cctestnet" type="checkbox" /> <span>This is a testnet</span></label>
+            <button id="ccadd" class="secondary" type="button">Add network</button>
+            <ul class="preview__warnings" id="ccerrors"></ul>
+            <p class="muted" id="ccnotice"></p>
+            <ul class="cclist" id="cclist"></ul>
+          </details>
           <label class="field">
             <span>To</span>
             <input id="to" class="addr" spellcheck="false"
