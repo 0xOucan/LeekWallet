@@ -131,3 +131,16 @@ CONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"
 CONFIG_PARTITION_TABLE_OFFSET=0xF000
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-secure.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions-secure.csv"
+
+# ============================================================================
+# REPRODUCIBLE BUILD (T37)
+#
+# sdkconfig.secure is a complete defaults file, not an overlay on
+# sdkconfig.defaults, so this has to be repeated here or the shipping target
+# would be the one build nobody can reproduce. See sdkconfig.defaults for why.
+#
+# It matters more here than in the default build: this is the environment whose
+# output gets signed and burned, and a signature over a binary nobody can
+# rebuild only proves who signed it, not what it is.
+# ============================================================================
+CONFIG_APP_REPRODUCIBLE_BUILD=y

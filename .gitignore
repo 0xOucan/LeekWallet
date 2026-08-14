@@ -31,3 +31,8 @@ sdkconfig.esp32s3-*
 # Internal notes: research that is not part of the published design.
 # Ignored deliberately — see docs/internal/README if one exists.
 docs/internal/
+
+# Release artefacts, built by scripts/release.sh from a tag. Rebuildable by
+# anyone from the tag, which is the point of T37, so committing them would only
+# add a second copy that could disagree with the first.
+release/

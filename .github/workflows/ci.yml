@@ -56,3 +56,36 @@ jobs:
           restore-keys: pio-${{ runner.os }}-
       - run: pip install --upgrade platformio
       - run: ./scripts/check.sh firmware
+
+  # Reproducibility is the property that rots silently: a dependency bump
+  # reintroduces a build timestamp and nothing complains until someone tries to
+  # verify a release months later. Whoever solders and flashes a board is its
+  # owner's trust anchor, and the only way out of that is a binary anyone can
+  # rebuild - so this is checked on every push, not at release time when it is
+  # too late to be a surprise.
+  #
+  # Its own job, not a stage of check.sh: it builds the firmware twice, and
+  # check.sh needs to stay something a developer runs before committing.
+  repro:
+    name: Reproducible build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # repro-check.sh clones the repo and checks out a commit, so the
+          # default shallow single-commit checkout is enough - but tags matter:
+          # PROJECT_VER comes from `git describe`, and a checkout that lost the
+          # tags stamps a different version than a full clone would. Fetching
+          # everything keeps the hash CI computes equal to the hash a person
+          # computes.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'sdkconfig.defaults') }}
+          restore-keys: pio-${{ runner.os }}-
+      - run: pip install --upgrade platformio
+      - run: ./scripts/repro-check.sh

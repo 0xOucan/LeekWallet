@@ -10,8 +10,14 @@
 #   ./scripts/check.sh sim        just the C suites
 #   ./scripts/check.sh app        just the TypeScript
 #   ./scripts/check.sh firmware   just the ESP-IDF build
+#   ./scripts/check.sh repro      byte-for-byte reproducibility (slow, opt-in)
 #
 # Exits non-zero on the first failure, and says which stage.
+#
+# `repro` is deliberately NOT part of `all`: it builds the firmware twice, and
+# this script has to stay something worth running before every commit. CI runs
+# it as its own job on every push instead - see .github/workflows/ci.yml and
+# docs/RELEASE.md.
 
 set -uo pipefail
 
@@ -54,6 +60,12 @@ if [[ "$WHAT" == "all" || "$WHAT" == "firmware" ]]; then
     else
         printf '\n\033[33m== firmware: skipped, pio not installed\033[0m\n'
     fi
+fi
+
+if [[ "$WHAT" == "repro" ]]; then
+    # Path is relative to the repo root, which this script cd'd to above -
+    # $0's dirname is not usable after that cd.
+    run "reproducible build" ./scripts/repro-check.sh
 fi
 
 printf '\n'

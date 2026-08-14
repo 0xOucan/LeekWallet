@@ -111,3 +111,27 @@ CONFIG_ESP32S3_SPIRAM_SUPPORT=n
 # WATCHDOG
 # ============================================================================
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
+# ============================================================================
+# REPRODUCIBLE BUILD (T37)
+#
+# Whoever solders and flashes a board is its owner's trust anchor. That claim
+# is only checkable if anyone else can rebuild the published source and get the
+# same bytes — otherwise "this is the firmware we published" is a promise, not
+# a fact.
+#
+# Without this, two builds of an identical tree differ in exactly three places,
+# all downstream of one cause: ESP-IDF stamps the wall-clock build time into
+# esp_app_desc_t (and the bootloader's own description), which then changes the
+# ELF SHA-256 recorded in the image and the SHA-256 appended to it. This option
+# drops the time/date stamp from both images and remaps source paths in debug
+# info, so the build no longer depends on when or where it ran.
+#
+# What it deliberately does NOT drop is PROJECT_VER: the short commit hash
+# stays in the image, because a binary that cannot name the source it came from
+# is the problem this task exists to solve. That value is a function of the
+# commit, so it is reproducible for anyone building the same commit.
+#
+# Verify, never assume:  ./scripts/repro-check.sh
+# ============================================================================
+CONFIG_APP_REPRODUCIBLE_BUILD=y
