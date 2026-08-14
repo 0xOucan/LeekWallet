@@ -36,6 +36,13 @@ bool fake_protocol_rx_enabled(void);
 /* Test hooks from ui.c and pin.c (compiled with -DLEEK_HOST_TEST). */
 void        pin__reset_static_state_for_test(void);
 void        ui__reset_static_state_for_test(void);
+bool        ui__check_autolock_for_test(void);
+void        ui__service_host_lock_for_test(void);
+const char *ui__master_xfp_for_test(void);
+uint32_t    ui__account_for_test(void);
+bool        ui__wallet_info_pass_shown_for_test(void);
+int         fake_protocol_device_passphrase_notices(void);
+void        fake_protocol_reset(void);
 const char *ui__mnemonic_buffer_for_test(void);
 size_t      ui__mnemonic_buffer_size_for_test(void);
 int         ui__mnemonic_word_count_for_test(void);
@@ -98,6 +105,11 @@ static void idle_pump(void)
     if (ui_needs_render()) {
         ui_render();
     }
+    /* Same order as ui_task(): the repaint first, then the work that was
+     * deferred so it would happen behind a frame the user has already seen
+     * (AUDIT S8f). A pump that ran them the other way round would let a test
+     * pass against code that does the slow work inside the button handler. */
+    ui_poll_deferred();
 }
 
 /* Power-on: empty flash, cleared RAM, registered screens. */
@@ -949,7 +961,9 @@ static void test_message_confirmation_shows_all_of_it(void)
     boot_unlocked_with_seed();
 
     const char *message = "Sign in to LeekWallet as user 42 on 2026-08-13 ok";
-    ui_request_sign_message(message, strlen(message), 3,
+    HDPath msg_path = HDPATH_ETH_DEFAULT;
+    msg_path.address_index = 3;
+    ui_request_sign_message(message, strlen(message), &msg_path,
                             "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
     go(SCREEN_SIGN_CONFIRM);
 
@@ -1082,7 +1096,8 @@ static void test_blind_confirmation_is_marked_and_shows_the_digest(void)
     char to_head[17];
     snprintf(to_head, sizeof(to_head), "%.16s", to_hex);
 
-    ui_request_sign(&tx, 0, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    HDPath sign_at = HDPATH_ETH_DEFAULT;
+    ui_request_sign(&tx, &sign_at, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
     go(SCREEN_SIGN_CONFIRM);
 
     /* Distinct from a normal confirmation at a glance, on every page. */
@@ -1145,7 +1160,7 @@ static void test_blind_confirmation_is_marked_and_shows_the_digest(void)
     ui_sign_clear();
 
     /* And refusing works from the first page, without paging. */
-    ui_request_sign(&tx, 0, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    ui_request_sign(&tx, &sign_at, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
     go(SCREEN_SIGN_CONFIRM);
     press(BUTTON_CANCEL);
     CHECK(ui_sign_outcome() == SIGN_REJECTED, "CANCEL did not reject a blind call");
@@ -1180,7 +1195,8 @@ static void test_a_decoded_call_is_not_marked_blind(void)
     char op_head[17];
     snprintf(op_head, sizeof(op_head), "%.16s", op_hex);
 
-    ui_request_sign(&tx, 0, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    HDPath sign_at = HDPATH_ETH_DEFAULT;
+    ui_request_sign(&tx, &sign_at, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
     go(SCREEN_SIGN_CONFIRM);
 
     CHECK_SCREEN(!fake_oled_row_contains(0, "BLIND"),
@@ -1287,6 +1303,442 @@ static void test_the_signed_acknowledgement_actually_appears(void)
     ui_sign_clear();
 }
 
+
+/* ============================================================================
+ * AUDIT S8f - the wallet-create handler no longer renders re-entrantly
+ * ============================================================================ */
+
+/* What S8f actually was: screen_wallet_create_on_button() called ui_render()
+ * itself, from inside a button handler, to get "Generating..." onto the panel
+ * before a second of blocking work. The intent was real - the device must not
+ * look dead - so the fix keeps it and moves the work instead: the handler sets
+ * a flag, the loop paints, and ui_poll_deferred() does the generating.
+ *
+ * The property under test is the one the second render path put at risk: after
+ * the press and before the pump, the screen says it is working and NOTHING has
+ * happened yet. Delete the deferral and the wallet is already created by the
+ * time press() returns; keep the re-entrant render and the frame is produced
+ * from inside a handler that is still mutating the screen's state. */
+static void test_seed_generation_happens_behind_its_own_frame(void)
+{
+    printf("== generating a seed is deferred out of the button handler (S8f)\n");
+    boot_unlocked_with_seed();
+
+    go(SCREEN_WALLET_CREATE);
+    press(BUTTON_ACCEPT);   /* GEN */
+
+    CHECK(ui_get_screen() == SCREEN_WALLET_CREATE,
+          "the handler left the screen before the work was announced");
+    CHECK_SCREEN(fake_oled_contains("Generating"),
+                 "the user is not told the device is working");
+    /* The seed buffer is the evidence: it is filled by the generation and by
+     * nothing else on this path. */
+    CHECK(ui__mnemonic_buffer_for_test()[0] == '\0',
+          "the seed was generated inside the button handler - the frame that "
+          "announces it can never have been on the panel first (S8f)");
+
+    /* One turn of the loop: paint, then the deferred work. */
+    idle_pump();
+
+    CHECK(ui__mnemonic_buffer_for_test()[0] != '\0',
+          "the deferred generation never ran");
+    CHECK(ui_get_screen() == SCREEN_MNEMONIC_DISPLAY,
+          "the new seed was not shown to be written down");
+}
+
+/* Leaving the screen while "Generating..." is up must cancel the request, not
+ * queue a seed for whatever screen comes next. Only reachable at all because
+ * the handler no longer blocks. */
+static void test_leaving_the_create_screen_cancels_the_generation(void)
+{
+    printf("== abandoning the create screen abandons the generation (S8f)\n");
+    boot_unlocked_with_seed();
+
+    go(SCREEN_WALLET_CREATE);
+    press(BUTTON_ACCEPT);
+    go(SCREEN_MAIN_MENU);
+    idle_pump();
+
+    CHECK(ui__mnemonic_buffer_for_test()[0] == '\0',
+          "a seed was generated after the user left the screen");
+    CHECK(ui_get_screen() == SCREEN_MAIN_MENU, "the deferred work stole the screen");
+}
+
+/* ============================================================================
+ * T42 - when the passphrase clears, and what the screen says about it
+ *
+ * A passphrase is not a setting; it selects a wallet. Every one of these is a
+ * path where the device could go on deriving from a passphrase the user
+ * believes is gone, or show an address from one they believe is applied.
+ * ============================================================================ */
+
+static void test_autolock_drops_the_passphrase(void)
+{
+    printf("== auto-lock drops the passphrase, not just the screen (T42)\n");
+    boot_unlocked_with_seed();
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "setup: vault would not unlock");
+    wallet_set_passphrase("hunter2", 7);
+    CHECK(wallet_has_passphrase(), "setup: the passphrase did not apply");
+
+    go(SCREEN_WALLET_INFO);
+    /* Default timeout is 5 minutes; go well past it. */
+    fake_clock_advance_us(6 * 60 * 1000000LL);
+    CHECK(ui__check_autolock_for_test(), "the device did not auto-lock");
+
+    CHECK(!wallet_has_passphrase(),
+          "the passphrase survived an auto-lock - the PIN alone would reopen "
+          "a hidden wallet, which is the second factor gone");
+    CHECK(ui_get_screen() == SCREEN_PIN_UNLOCK, "auto-lock did not ask for the PIN");
+
+    /* And unlocking again does not bring it back. */
+    CHECK(pin_verify("1234"), "could not unlock again");
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "vault would not reopen");
+    CHECK(!wallet_has_passphrase(), "unlocking restored a passphrase nobody typed");
+}
+
+static void test_switching_wallets_drops_the_passphrase(void)
+{
+    printf("== switching seeds drops the passphrase and the address with it\n");
+    boot_unlocked_with_seed();
+    CHECK(fake_wallet_preload(PHRASE_12) == 2, "setup: need a second seed");
+    CHECK(wallet_select_wallet(1) == WALLET_OK, "setup: could not select seed 1");
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "setup: vault would not unlock");
+
+    wallet_set_passphrase("hunter2", 7);
+    go(SCREEN_WALLET_INFO);
+    char with_pass[43];
+    snprintf(with_pass, sizeof(with_pass), "%s", fake_oled_row(2));
+
+    go(SCREEN_WALLET_SELECT);
+    press(BUTTON_DOWN);
+    press(BUTTON_ACCEPT);
+
+    CHECK(!wallet_has_passphrase(),
+          "the passphrase followed the user to another seed - a wallet nobody "
+          "named, that looks empty");
+    CHECK(ui_get_screen() == SCREEN_WALLET_INFO, "the switch did not show the wallet");
+    CHECK_SCREEN(strcmp(fake_oled_row(2), with_pass) != 0,
+                 "the address did not change with the wallet");
+}
+
+/* The one that cannot be fixed by clearing state alone: the screen is ALREADY
+ * showing an address and a fingerprint when the passphrase changes underneath
+ * it. Nothing presses a button, so nothing re-derives unless the UI task
+ * notices. Every real trigger is another task - a host setPassphrase, a
+ * host-rejected confirmation, a disconnect dropping a host passphrase. */
+static void test_a_passphrase_change_under_the_wallet_screen_re_derives(void)
+{
+    printf("== the wallet screen never shows an address from a passphrase that "
+           "is no longer applied (T42)\n");
+    boot_unlocked_with_seed();
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "setup: vault would not unlock");
+
+    go(SCREEN_WALLET_INFO);
+    char base_addr[43];
+    snprintf(base_addr, sizeof(base_addr), "%s", fake_oled_row(2));
+    uint32_t base_fp = 0;
+    CHECK(wallet_get_master_fingerprint(&base_fp) == WALLET_OK, "no base fingerprint");
+
+    /* A host applies one while the screen sits there. */
+    wallet_set_passphrase("hunter2", 7);
+    idle_pump();    /* notices, re-derives, marks dirty */
+    idle_pump();    /* paints */
+
+    CHECK_SCREEN(strcmp(fake_oled_row(2), base_addr) != 0,
+                 "the screen still shows the base wallet's address after a "
+                 "passphrase was applied");
+    CHECK_SCREEN(fake_oled_row_contains(0, "P"),
+                 "nothing on screen says a passphrase is applied (\"%s\")",
+                 fake_oled_row(0));
+    uint32_t with_fp = 0;
+    CHECK(wallet_get_master_fingerprint(&with_fp) == WALLET_OK, "no fingerprint");
+    char expect[16];
+    snprintf(expect, sizeof(expect), "XFP %08lX", (unsigned long)with_fp);
+    CHECK_SCREEN(fake_oled_contains(expect),
+                 "the fingerprint is stale relative to the applied passphrase");
+
+    /* And the other direction: the host, or a rejection, clears it again. */
+    wallet_clear_passphrase();
+    idle_pump();
+    idle_pump();
+
+    CHECK_SCREEN(strcmp(fake_oled_row(2), base_addr) == 0,
+                 "the screen kept an address derived from a passphrase that is "
+                 "gone - the user would read it off and never be paid");
+    snprintf(expect, sizeof(expect), "XFP %08lX", (unsigned long)base_fp);
+    CHECK_SCREEN(fake_oled_contains(expect), "the fingerprint stayed stale");
+    CHECK(!ui__wallet_info_pass_shown_for_test(),
+          "the screen still believes a passphrase is applied");
+}
+
+/* ============================================================================
+ * T45 - accounts
+ * ============================================================================ */
+
+/* Walk the settings list to an item by its label, the way a user would. */
+static void settings_goto(const char *label)
+{
+    go(SCREEN_SETTINGS);
+    for (int guard = 0; guard < 40; guard++) {
+        if (fake_oled_contains(label)) {
+            /* Only stop when it is the SELECTED line: pressing ACCEPT acts on
+             * the selection, not on whatever happens to be visible. */
+            for (int page = 2; page <= 6; page += 2) {
+                const char *row = fake_oled_row(page);
+                if (row && row[0] == '>' && strstr(row, label)) {
+                    return;
+                }
+            }
+        }
+        press(BUTTON_DOWN);
+    }
+    CHECK(false, "settings has no item labelled \"%s\"", label);
+}
+
+static void test_the_account_is_selectable_and_bounded(void)
+{
+    printf("== the account level is selectable, and bounded (T45)\n");
+    boot_unlocked_with_seed();
+
+    settings_goto("Account");
+    CHECK_SCREEN(fake_oled_contains("Account 0"), "the account is not shown");
+
+    press(BUTTON_ACCEPT);
+    CHECK(ui__account_for_test() == 1, "the account did not advance");
+    CHECK_SCREEN(fake_oled_contains("Account 1"), "the new account is not shown");
+
+    /* Round the whole cycle: it must wrap, and it must wrap at the documented
+     * bound rather than running off into accounts no screen can name. */
+    for (int i = 1; i < HD_ACCOUNT_COUNT; i++) {
+        press(BUTTON_ACCEPT);
+    }
+    CHECK(ui__account_for_test() == 0,
+          "the account selector did not wrap at HD_ACCOUNT_COUNT (%u after a "
+          "full cycle)", (unsigned)ui__account_for_test());
+}
+
+static void test_the_wallet_screen_names_the_whole_path(void)
+{
+    printf("== the wallet screen shows the derivation path, not just an index\n");
+    boot_unlocked_with_seed();
+
+    go(SCREEN_WALLET_INFO);
+    CHECK_SCREEN(fake_oled_contains("m/44'/60'/0'/0/0"),
+                 "no derivation path on the wallet screen");
+    char account0[43];
+    snprintf(account0, sizeof(account0), "%s", fake_oled_row(2));
+
+    /* Browse to address 1, then change account: the index must restart, because
+     * index 1 of account 0 and index 1 of account 1 are unrelated addresses. */
+    press(BUTTON_UP);
+    CHECK_SCREEN(fake_oled_contains("m/44'/60'/0'/0/1"), "the index is not in the path");
+
+    settings_goto("Account");
+    press(BUTTON_ACCEPT);
+    go(SCREEN_WALLET_INFO);
+
+    CHECK_SCREEN(fake_oled_contains("m/44'/60'/1'/0/0"),
+                 "the path does not follow the account, or the index did not "
+                 "restart with it");
+    CHECK_SCREEN(strcmp(fake_oled_row(2), account0) != 0,
+                 "account 1 derives the same address as account 0");
+}
+
+/* The selection is the analogue of active_idx, so it survives a reboot for the
+ * same reason: a device that silently reverts to account 0 shows a different
+ * address for the same wallet, which reads as funds having vanished. */
+static void test_the_account_survives_a_reboot(void)
+{
+    printf("== the selected account persists like the selected wallet (T45)\n");
+    boot_unlocked_with_seed();
+
+    settings_goto("Account");
+    press(BUTTON_ACCEPT);
+    press(BUTTON_ACCEPT);
+    CHECK(ui__account_for_test() == 2, "setup: could not select account 2");
+
+    /* Power-cycle without erasing flash - everything boot_device() does except
+     * fake_nvs_reset(). */
+    fake_clock_reset();
+    fake_oled_reset();
+    fake_input_reset();
+    fake_wallet_reset();
+    pin__reset_static_state_for_test();
+    ui__reset_static_state_for_test();
+    pin_init();
+    wallet_init();
+    ui_init();
+    ui_render();
+
+    CHECK(ui__account_for_test() == 2,
+          "the account reverted to 0 across a reboot (got %u)",
+          (unsigned)ui__account_for_test());
+}
+
+/* A wipe erases the vault namespaces, not the settings one, so the account has
+ * to be reset explicitly or the next owner's first seed comes up at the
+ * previous owner's account. */
+static void test_a_wipe_resets_the_account(void)
+{
+    printf("== a wipe returns the device to account 0 (T45)\n");
+    boot_unlocked_with_seed();
+
+    settings_goto("Account");
+    press(BUTTON_ACCEPT);
+    CHECK(ui__account_for_test() == 1, "setup: could not select account 1");
+
+    go(SCREEN_WIPE_CONFIRM);
+    for (int i = 0; i < 8; i++) {
+        press(BUTTON_ACCEPT);
+    }
+    CHECK(ui_get_screen() == SCREEN_PIN_SETUP, "setup: the wipe did not complete");
+    CHECK(ui__account_for_test() == 0, "the account selection survived a wipe");
+}
+
+/* T47 with the account level added. An index alone was already not enough to
+ * know what was signing; two paths that differ only in their account are both
+ * "addr 0", so the confirmation has to render the path. */
+static void test_the_signing_confirmation_shows_the_account(void)
+{
+    printf("== the signing confirmation names the full path, not the index (T45/T47)\n");
+    boot_unlocked_with_seed();
+
+    EthTx tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.chain_id = 1;
+    tx.has_to = true;
+    memset(tx.to, 0x11, sizeof(tx.to));
+
+    HDPath path = HDPATH_ETH_DEFAULT;
+    path.account = 7;
+    path.address_index = 2;
+    ui_request_sign(&tx, &path, "0x0107020aaaaaabbbbbbbbccccccccddddddddeee");
+    go(SCREEN_SIGN_CONFIRM);
+
+    bool saw_path = false;
+    for (int page = 0; page < 6; page++) {
+        if (fake_oled_contains("m/44'/60'/7'/0/2")) {
+            saw_path = true;
+            break;
+        }
+        press(BUTTON_DOWN);
+    }
+    CHECK_SCREEN(saw_path,
+                 "the confirmation never showed the account it was signing "
+                 "from - a host moving accounts would be invisible");
+    ui_sign_clear();
+}
+
+
+/* ============================================================================
+ * T42 - every lock path locks the same thing
+ *
+ * Reported from hardware: lock the device from the menu, unlock it, and you
+ * are still in the passphrase wallet. pin_lock() and wallet_lock() were each
+ * individually right; the four CALL SITES disagreed, and the one a user
+ * reaches for deliberately was the one that only closed the PIN gate.
+ *
+ * That is why these are per-path tests rather than one test of a function. A
+ * test of lock_device() would have passed on the broken firmware, because
+ * lock_device() is not what the menu called.
+ * ============================================================================ */
+
+/* The shared assertion: after this, nothing about the previous session is
+ * still live. Takes the path's name so a failure says which one. */
+static void check_fully_locked(const char *path)
+{
+    CHECK(!pin_is_unlocked(), "%s: the PIN gate is still open", path);
+
+    WalletStatus st = wallet_get_status();
+    CHECK(!st.unlocked,
+          "%s: the vault stayed open behind the PIN gate - the seed never left "
+          "RAM and unlocking returns to the same wallet", path);
+    CHECK(!wallet_has_passphrase(),
+          "%s: the passphrase survived the lock, so the PIN alone reopens a "
+          "hidden wallet (T42)", path);
+    CHECK(ui__mnemonic_buffer_for_test()[0] == '\0',
+          "%s: the UI's copy of the seed outlived the lock", path);
+    CHECK(ui_get_screen() == SCREEN_PIN_UNLOCK,
+          "%s: the device did not ask for the PIN", path);
+
+    /* The fingerprint names the seed the passphrase produced. Left cached, the
+     * next screen to draw it would vouch for a wallet the device can no longer
+     * derive - the same bug, one row quieter. */
+    CHECK_SCREEN(!fake_oled_contains("XFP"),
+                 "%s: a stale fingerprint is still on screen", path);
+    CHECK(ui__master_xfp_for_test()[0] == '\0',
+          "%s: the cached fingerprint survived the lock - the next screen to "
+          "draw it would vouch for a wallet the device can no longer derive",
+          path);
+}
+
+/* Put the device in the state the bug was reported from: unlocked, seed
+ * loaded, a passphrase applied, and an address on screen derived from it. */
+static void unlocked_in_a_passphrase_wallet(void)
+{
+    boot_unlocked_with_seed();
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "setup: vault would not unlock");
+    wallet_set_passphrase("hunter2", 7);
+    go(SCREEN_WALLET_INFO);
+    CHECK(wallet_has_passphrase(), "setup: no passphrase applied");
+    CHECK_SCREEN(fake_oled_contains("XFP"), "setup: no fingerprint on screen");
+}
+
+static void test_the_menu_lock_actually_locks(void)
+{
+    printf("== \"Lock device\" on the menu locks the vault, not just the PIN\n");
+    unlocked_in_a_passphrase_wallet();
+
+    go(SCREEN_MAIN_MENU);
+    press(BUTTON_CANCEL);   /* Lock device */
+
+    check_fully_locked("menu lock");
+}
+
+static void test_the_host_lock_actually_locks(void)
+{
+    printf("== a host-requested lock drops the same things (T42)\n");
+    unlocked_in_a_passphrase_wallet();
+
+    /* What the protocol task does; the UI task picks it up on its next pass. */
+    ui_request_lock();
+    ui__service_host_lock_for_test();
+    idle_pump();
+
+    check_fully_locked("host lock");
+}
+
+static void test_the_autolock_timeout_locks(void)
+{
+    printf("== the auto-lock timeout drops the same things (T42)\n");
+    unlocked_in_a_passphrase_wallet();
+
+    fake_clock_advance_us(6 * 60 * 1000000LL);
+    CHECK(ui__check_autolock_for_test(), "the device did not auto-lock");
+    idle_pump();
+
+    check_fully_locked("auto-lock");
+}
+
+/* Show Seed re-asks for the PIN so a reveal cannot ride on a session unlocked
+ * minutes ago. It now locks fully, deliberately: asking "prove you are the
+ * owner" while holding the decrypted mnemonic in RAM answers a different
+ * question, and the correct PIN re-derives it anyway. */
+static void test_show_seed_relocks_the_vault_too(void)
+{
+    printf("== Show Seed re-asks for the PIN with nothing left in RAM (S5/T42)\n");
+    unlocked_in_a_passphrase_wallet();
+
+    settings_goto("Show Seed");
+    press(BUTTON_ACCEPT);
+
+    check_fully_locked("show seed");
+
+    /* And the request itself survives, or the item would do nothing. */
+    CHECK(pin_verify("1234"), "could not re-enter the PIN");
+    press(BUTTON_ACCEPT);
+}
+
 int main(void)
 {
     test_blind_signing_takes_a_deliberate_act();
@@ -1327,6 +1779,24 @@ int main(void)
     test_change_pin_is_reachable_and_works();
     test_change_pin_rejects_a_wrong_current_pin();
     test_change_pin_catches_a_mismatch();
+
+    test_seed_generation_happens_behind_its_own_frame();
+    test_leaving_the_create_screen_cancels_the_generation();
+
+    test_autolock_drops_the_passphrase();
+    test_switching_wallets_drops_the_passphrase();
+    test_a_passphrase_change_under_the_wallet_screen_re_derives();
+
+    test_the_account_is_selectable_and_bounded();
+    test_the_wallet_screen_names_the_whole_path();
+    test_the_account_survives_a_reboot();
+    test_a_wipe_resets_the_account();
+    test_the_signing_confirmation_shows_the_account();
+
+    test_the_menu_lock_actually_locks();
+    test_the_host_lock_actually_locks();
+    test_the_autolock_timeout_locks();
+    test_show_seed_relocks_the_vault_too();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");

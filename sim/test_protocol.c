@@ -109,23 +109,30 @@ void ui_request_session_confirm(void) { session_confirm_prompts++; }
 void ui_request_unlock(void)          { unlock_prompts++; }
 void ui_request_lock(void)            { lock_requests++; }
 
-void ui_request_sign(const EthTx *tx, uint32_t address_index, const char *from)
+/* The path the device said it would sign at. Recorded whole, because the
+ * account level is the half of it a host can move without the index changing
+ * (T45) - "shown_index == 0" was true of two different wallets. */
+static HDPath shown_path;
+
+void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
 {
     confirm_requests++;
     shown_tx = *tx;
-    shown_index = address_index;
+    shown_path = *path;
+    shown_index = path->address_index;
     snprintf(shown_from, sizeof(shown_from), "%s", from ? from : "");
 }
 
 void ui_request_sign_message(const char *message, size_t length,
-                             uint32_t address_index, const char *from)
+                             const HDPath *path, const char *from)
 {
     message_prompts++;
     shown_message_len = length < sizeof(shown_message) - 1 ? length
                                                           : sizeof(shown_message) - 1;
     memcpy(shown_message, message, shown_message_len);
     shown_message[shown_message_len] = '\0';
-    shown_index = address_index;
+    shown_path = *path;
+    shown_index = path->address_index;
     snprintf(shown_from, sizeof(shown_from), "%s", from ? from : "");
 }
 
@@ -2436,6 +2443,198 @@ static void test_ble_name_is_bounded_and_persisted(void)
     ble_name_forget();
 }
 
+
+/* ============================================================================
+ * T45 - the account level in a requested path
+ * ============================================================================ */
+
+/* The bug this is here for: m/44'/60'/3'/0/0 was parsed for its trailing 0 and
+ * answered with ACCOUNT 0's address, under the label the host asked for. A
+ * device that quietly substitutes one wallet for another is the failure every
+ * confirmation screen exists to prevent, and here it happened before any
+ * screen was involved. */
+static void test_the_account_level_is_read_not_assumed(void)
+{
+    printf("== a request naming an account gets that account (T45)\n");
+    fresh_device();
+    device_unlocked();
+    confirmed_session(41);
+
+    char account0[43] = {0};
+    char account3[43] = {0};
+    const char *paths[2] = { "m/44'/60'/0'/0/5", "m/44'/60'/3'/0/5" };
+    char *out[2] = { account0, account3 };
+
+    for (int i = 0; i < 2; i++) {
+        uint8_t payload[96];
+        CborWriter w;
+        cbor_writer_init(&w, payload, sizeof(payload));
+        cbor_write_map(&w, 2);
+        cbor_write_text(&w, "method");
+        cbor_write_text(&w, "getAddress");
+        cbor_write_text(&w, "path");
+        cbor_write_text(&w, paths[i]);
+        send_encrypted(payload, w.length);
+
+        Frame f = next_reply();
+        CHECK(f.present && f.type == T_ENC_RESPONSE, "getAddress was not answered");
+        const uint8_t *body;
+        size_t body_len;
+        CborItem it;
+        if (f.present && result_body(&f, &body, &body_len)) {
+            CHECK(cbor_map_find(body, body_len, "index", &it) &&
+                  it.type == CBOR_UINT && it.value == 5,
+                  "the address index was lost while reading the account");
+            if (cbor_map_find(body, body_len, "address", &it) &&
+                it.type == CBOR_TEXT && it.value == 42) {
+                memcpy(out[i], it.data, 42);
+            }
+        }
+    }
+
+    CHECK(strlen(account0) == 42 && strlen(account3) == 42,
+          "one of the two requests produced no address");
+    CHECK(strcmp(account0, account3) != 0,
+          "m/44'/60'/3'/0/5 answered with account 0's address - the device "
+          "returned a different wallet than the one that was asked for");
+}
+
+/* A path is not an arbitrary integer. Hardened levels are encoded as
+ * 0x80000000|n, so anything at or above 2^31 is an overflow that would land
+ * somewhere else entirely; refusing is the only honest answer. */
+static void test_an_out_of_range_account_is_refused(void)
+{
+    printf("== an account outside the hardened range is refused (T45)\n");
+    fresh_device();
+    device_unlocked();
+    confirmed_session(42);
+
+    uint8_t payload[96];
+    CborWriter w;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 3);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "getAddress");
+    cbor_write_text(&w, "account");
+    cbor_write_uint(&w, 0x80000000u);
+    cbor_write_text(&w, "index");
+    cbor_write_uint(&w, 0);
+    send_encrypted(payload, w.length);
+    expect_error(T_ENC_ERROR, E_MALFORMED, "an account of 2^31");
+
+    /* And the account the device's own menu cannot reach is still legal: the
+     * bound on the selector is a UI bound, not a derivation one. What makes
+     * that safe is the confirmation rendering the whole path. */
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "getAddress");
+    cbor_write_text(&w, "account");
+    cbor_write_uint(&w, 40);
+    send_encrypted(payload, w.length);
+    Frame f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE,
+          "account 40 was refused; the menu's bound has leaked into the wire");
+}
+
+/* The signing path has to carry the account all the way through: what the
+ * screen was shown and what the key was derived from must be one object. */
+static void test_the_signing_path_carries_the_account(void)
+{
+    printf("== the account reaches both the confirmation and the signature\n");
+    fresh_device();
+    device_unlocked();
+    confirmed_session(43);
+    scripted_outcome = SIGN_APPROVED;
+
+    uint8_t to[20];
+    memset(to, 0xAB, sizeof(to));
+
+    uint8_t payload[256];
+    CborWriter w;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 4);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signTransaction");
+    cbor_write_text(&w, "chainId");
+    cbor_write_uint(&w, 1);
+    cbor_write_text(&w, "path");
+    cbor_write_text(&w, "m/44'/60'/6'/0/2");
+    cbor_write_text(&w, "to");
+    cbor_write_bytes(&w, to, sizeof(to));
+    CHECK(cbor_writer_ok(&w), "request did not fit");
+    send_encrypted(payload, w.length);
+
+    CHECK(confirm_requests == 1, "no confirmation was asked for");
+    CHECK(shown_path.account == 6 && shown_path.address_index == 2,
+          "the screen was told m/44'/60'/%u'/0/%u, not the requested "
+          "m/44'/60'/6'/0/2",
+          (unsigned)shown_path.account, (unsigned)shown_path.address_index);
+
+    Frame f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE, "the signature was not returned");
+}
+
+/* ============================================================================
+ * T42 - a host-supplied passphrase belongs to the host's session
+ * ============================================================================ */
+
+/* The failure: the app types a passphrase, the user approves it, the cable is
+ * pulled or the phone walks out of BLE range - and the device is still in the
+ * hidden wallet. The next thing to connect inherits it, derives from it and
+ * signs with it, and nothing was ever re-approved.
+ *
+ * A passphrase entered ON the device is a different case and must survive; the
+ * second half of this test is that distinction. */
+static void test_a_host_passphrase_dies_with_its_session(void)
+{
+    printf("== a host-supplied passphrase does not outlive its session (T42)\n");
+    fresh_device();
+    device_has_a_wallet();
+    device_unlocked();
+    confirmed_session(44);
+
+    uint8_t payload[256];
+    size_t len = set_passphrase_request(payload, sizeof(payload), "hunter2");
+    scripted_outcome = SIGN_APPROVED;
+    send_encrypted(payload, len);
+    (void)next_reply();
+    CHECK(wallet_has_passphrase(), "setup: the passphrase was not applied");
+
+    /* Every teardown funnels through session_reset(): a disconnect, a new
+     * peer, a transport switch, a frame that failed to authenticate. */
+    session_reset();
+    CHECK(!wallet_has_passphrase(),
+          "the passphrase survived the session that supplied it - whatever "
+          "connects next inherits a hidden wallet nobody re-approved");
+
+    /* A passphrase the user typed on the device is not the host's to revoke.
+     * Dropping it on a disconnect would silently return them to the base
+     * wallet, which looks exactly like an empty one.
+     *
+     * Set up as it actually happens: the host supplies one, and the user then
+     * overrides it at the device. The endpoint has to stop considering the
+     * passphrase its own at that point, or its own teardown takes the user's
+     * passphrase with it. */
+    confirmed_session(45);
+    /* A new session restarts the device's nonce counters, so the host's have
+     * to restart with them - the same thing a real client does on reconnect. */
+    host_tx = host_rx = 0;
+    scripted_outcome = SIGN_APPROVED;
+    len = set_passphrase_request(payload, sizeof(payload), "hunter2");
+    send_encrypted(payload, len);
+    (void)next_reply();
+    CHECK(wallet_has_passphrase(), "setup: the host passphrase was not applied");
+
+    wallet_set_passphrase("typed-here", 10);
+    protocol_note_device_passphrase();
+    session_reset();
+    CHECK(wallet_has_passphrase(),
+          "a passphrase entered on the device was dropped when a host "
+          "disconnected");
+    wallet_clear_passphrase();
+}
+
 int main(void)
 {
     test_plaintext_ping_and_features();
@@ -2463,6 +2662,11 @@ int main(void)
     test_a_reply_matches_its_request();
     test_a_busy_transport_refuses_rather_than_drops();
     test_ble_name_is_bounded_and_persisted();
+
+    test_the_account_level_is_read_not_assumed();
+    test_an_out_of_range_account_is_refused();
+    test_the_signing_path_carries_the_account();
+    test_a_host_passphrase_dies_with_its_session();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");

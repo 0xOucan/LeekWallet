@@ -27,6 +27,7 @@
 #include "sha3.h"
 #include "device-wipe.h"
 #include "transport.h"
+#include "protocol.h"
 #include "ble.h"
 #include "ble-name.h"
 #include "esp_timer.h"
@@ -481,6 +482,47 @@ static EthAddress eth_address;
  * and the limit exists only to keep UP/DOWN a short cycle. */
 #define ADDRESS_INDEX_COUNT 10
 static uint32_t address_index = 0;
+
+/* Which account of the active seed everything on this device derives from
+ * (T45): m/44'/60'/<hd_account>'/0/<address_index>.
+ *
+ * Why this is persisted and address_index is not, even though both are
+ * selections rather than secrets. The address index is browsing: the user
+ * walks it to find a receiving address and the walk has no meaning tomorrow.
+ * The account is *which identity is in use* — the same role active_idx plays
+ * for seeds — and a device that silently reverts to account 0 after a reboot
+ * shows a different address for the same wallet, which reads as funds having
+ * vanished. So the account persists like active_idx, and the index restarts
+ * at 0 whenever the wallet or the account changes, because it indexes into
+ * something that just changed underneath it.
+ *
+ * Bounded by HD_ACCOUNT_COUNT on this device's own screens; see ui.h for why
+ * the bound is a UI bound and not a derivation one. */
+static uint32_t hd_account = 0;
+
+/* The path everything on the device browses at. Built in one place so the
+ * address screen, the QR screen and the account selector cannot drift into
+ * deriving from three different paths — which is the failure mode T47 was
+ * about, one level up. */
+static HDPath hd_path_at(uint32_t index)
+{
+    HDPath path = HDPATH_ETH_DEFAULT;
+    path.account = hd_account;
+    path.address_index = index;
+    return path;
+}
+
+/* "m/44'/60'/0'/0/0" — 16 characters at the defaults, and the display is 21
+ * columns wide, so the ordinary case is never truncated. A host-chosen account
+ * or index large enough to overflow that would be truncated by snprintf, which
+ * is why the caller renders it on a row of its own with nothing after it. */
+static void format_hd_path(char *out, size_t size, const HDPath *path)
+{
+    snprintf(out, size, "m/%u'/%u'/%u'/%u/%u",
+             (unsigned)path->purpose, (unsigned)path->coin_type,
+             (unsigned)path->account, (unsigned)path->change,
+             (unsigned)path->address_index);
+}
 static char mnemonic_buffer[256];
 static int mnemonic_word_count = 0;
 
@@ -494,6 +536,19 @@ static int wallet_list_selection = 0;
 static int create_word_count = 12;  /* 12 or 24 */
 static bool create_show_mnemonic = false;
 static char create_error[32] = {0};
+
+/* Set by the button handler, consumed by ui_poll_deferred() (AUDIT S8f).
+ *
+ * Generating a seed unlocks the vault and runs BIP39 — a second or more on
+ * this silicon, with the UI task blocked throughout — so the user has to be
+ * told it started. The old code told them by calling ui_render() from inside
+ * the button handler: a second render path into a screen that was already
+ * mid-transition, so a repaint arriving from anywhere else could redraw a
+ * screen whose state had half-changed, and the flush ordering depended on
+ * which of the two paths ran last. Setting a flag instead keeps exactly one
+ * render path — the loop's — and the work happens after the frame is on the
+ * panel, which is what the ui_render() call was reaching for. */
+static bool create_generate_pending = false;
 
 /* Mnemonic entry state - logic lives in mnemonic-entry.c so it can be tested
  * on the host without an ESP32 attached (see sim/). */
@@ -598,6 +653,10 @@ static int64_t  last_activity_us = 0;
 #define UI_KEY_LOCK_TIMEOUT "lock_to"
 #define UI_KEY_BRIGHTNESS   "bright"
 #define UI_KEY_ENTRY_BLOCKS "wblocks"
+/* The selected BIP44 account (T45). Not secret — it is in every watch-only
+ * descriptor — and stored beside the other selections rather than in the
+ * vault, so it survives a lock exactly as the active wallet index does. */
+#define UI_KEY_ACCOUNT      "acct"
 
 /* Four steps rather than a slider: the OLED is legible across the whole range,
  * so fine control buys nothing and costs presses. Low is genuinely useful -
@@ -664,6 +723,14 @@ static void settings_load(void)
     if (nvs_get_u8(nvs, UI_KEY_ENTRY_BLOCKS, &stored) == ESP_OK) {
         entry_blocks_apply(stored != 0);
     }
+    /* Range-checked on the way in, not just on the way out. A byte outside the
+     * menu's range would leave the device deriving from an account no screen
+     * can reach or re-select, which is precisely the "shows a different wallet
+     * than you think" failure the path row exists to prevent. */
+    if (nvs_get_u8(nvs, UI_KEY_ACCOUNT, &stored) == ESP_OK &&
+        stored < HD_ACCOUNT_COUNT) {
+        hd_account = stored;
+    }
     nvs_close(nvs);
 }
 
@@ -691,6 +758,85 @@ static void entry_blocks_save(void)
         nvs_commit(nvs);
         nvs_close(nvs);
     }
+}
+
+/* Persisting the account, and resetting the address index with it.
+ *
+ * The reset is not politeness: index 3 of account 0 and index 3 of account 1
+ * are unrelated addresses, so carrying the index across a change would leave
+ * the screen at an address the user never chose in an account they just
+ * entered. Callers change the account through here for that reason. */
+static void hd_account_set(uint32_t account)
+{
+    hd_account = account % HD_ACCOUNT_COUNT;
+    address_index = 0;
+
+    nvs_handle_t nvs;
+    if (nvs_open(UI_NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        ESP_LOGW(TAG, "Could not persist the account selection");
+        return;
+    }
+    nvs_set_u8(nvs, UI_KEY_ACCOUNT, (uint8_t)hd_account);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
+/* The cached BIP32 master fingerprint, as eight hex characters, or "" when
+ * there is none to show. Lives up here because locking has to be able to drop
+ * it; the reasoning about what it is for is with refresh_master_xfp(). */
+static char master_xfp[9] = {0};
+
+/* Whether a passphrase was applied when the address and fingerprint currently
+ * on the wallet screen were derived (T42).
+ *
+ * The screen derives on entry and then sits there. A host can set or clear a
+ * passphrase over the wire, and a lock can drop one, while it sits — leaving
+ * an address and an XFP that belong to a wallet that is no longer selected.
+ * That is the stale-passphrase failure in its most direct form: the user reads
+ * a receive address off a screen the device would no longer produce. So the
+ * derived-at state is recorded here and checked by ui_poll_deferred(). */
+static bool wallet_info_passphrase_shown = false;
+
+/* Lock the device. The ONLY way this file locks anything.
+ *
+ * Reported from hardware: the user pressed "Lock device" on the main menu,
+ * entered their PIN again, and was still in their passphrase wallet. The menu
+ * item called pin_lock() and nothing else, so the PIN gate closed over a vault
+ * that stayed open - passphrase, decrypted mnemonic, cached seed and derived
+ * node all still in RAM and still applied. Auto-lock and the host lock did
+ * call wallet_lock(), which is why it survived: the lock a user reaches for
+ * deliberately was the one that did not lock.
+ *
+ * Each of pin_lock() and wallet_lock() was individually correct. What was
+ * wrong was that four call sites each had to remember both, and one did not.
+ * So there is now one function, it is what every path calls, and "locked"
+ * means the same thing everywhere:
+ *
+ *   - the PIN gate is closed (pin_lock)
+ *   - the vault is shut and the passphrase, mnemonic and seed cache are zeroed
+ *     (wallet_lock) - this is the T42 rule, because keeping a passphrase
+ *     across a lock means the PIN alone reopens a hidden wallet
+ *   - the UI's own copies of the seed go with them
+ *   - the cached fingerprint goes too. It names the seed the passphrase
+ *     produced, and a fingerprint outliving its passphrase is the same bug in
+ *     a quieter form: the next screen to draw it would vouch for a wallet the
+ *     device can no longer derive.
+ *
+ * What survives is what a lock is not for: which wallet, which account, which
+ * address index. All three are selections, not secrets, and all three are
+ * already in NVS. */
+static void lock_device(void)
+{
+    pin_lock();
+    wallet_lock();
+
+    pending_mnemonic_display = false;
+    memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
+    mnemonic_word_count = 0;
+    mnemonic_page = 0;
+
+    memzero(master_xfp, sizeof(master_xfp));
+    wallet_info_passphrase_shown = false;
 }
 
 static void lock_timeout_save(void)
@@ -735,12 +881,9 @@ static bool lock_check_timeout(void)
     }
 
     ESP_LOGI(TAG, "Auto-lock after %u s idle", (unsigned)seconds);
-    pin_lock();
-    wallet_lock();               /* drops passphrase, mnemonic and seed cache */
-    pending_mnemonic_display = false;
-    memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
-    mnemonic_word_count = 0;
-    /* address_index and the active wallet survive deliberately - see above. */
+    /* address_index, the account and the active wallet survive deliberately;
+     * everything else lock_device() drops. */
+    lock_device();
     ui_set_screen(SCREEN_PIN_UNLOCK);
     return true;
 }
@@ -752,6 +895,12 @@ typedef enum {
     SET_NEW_WALLET,
     SET_IMPORT_WALLET,
     SET_PASSPHRASE,
+    /* Next to the passphrase deliberately (T45). Both answer the same question
+     * — "which wallet am I in?" — and neither is browsing, which is why the
+     * account is not a fifth thing for UP/DOWN to mean on the address screen.
+     * All four buttons there already do something, and stealing one would cost
+     * either the QR code or address browsing to save a menu entry. */
+    SET_ACCOUNT,
     SET_BRIGHTNESS,
     SET_AUTOLOCK,
     SET_ENTRY_STYLE,
@@ -779,6 +928,7 @@ static const char *settings_items[SETTINGS_ITEMS] = {
     "New Wallet",
     "Import Wallet",
     "Passphrase",
+    "Account",
     "Brightness",
     "Auto-lock",
     "Word entry",
@@ -1463,9 +1613,15 @@ static void screen_main_menu_on_button(button_id_t btn)
             break;
 
         case BUTTON_CANCEL:
-            /* Lock device */
-            pin_lock();
-            pending_mnemonic_display = false;
+            /* Lock device.
+             *
+             * This called pin_lock() alone and shipped that way: the PIN gate
+             * closed and the vault stayed open underneath it, so unlocking
+             * again landed the user back in their passphrase wallet with the
+             * seed never having left RAM. Reported from hardware. It is the
+             * deliberate lock, so it must be at least as strong as the one
+             * that happens by itself. */
+            lock_device();
             ui_set_screen(SCREEN_PIN_UNLOCK);
             break;
 
@@ -1507,8 +1663,6 @@ static char address_error[24] = {0};
  *
  * Cached rather than derived per render, because deriving it runs PBKDF2 on a
  * cold seed cache and the render path runs on every repaint. */
-static char master_xfp[9] = {0};
-
 static void refresh_master_xfp(void)
 {
     uint32_t fp = 0;
@@ -1578,8 +1732,7 @@ static void screen_wallet_info_enter(void)
      * lands after approving a transaction - so an unlocked select here
      * re-derives to the *browsing* index while the protocol task is signing,
      * and the device signs with a key the confirmation screen never named. */
-    HDPath eth_path = HDPATH_ETH_DEFAULT;
-    eth_path.address_index = address_index;
+    HDPath eth_path = hd_path_at(address_index);
 
     WalletError err = wallet_get_address_at_path(&eth_path, &eth_address);
     if (err != WALLET_OK) {
@@ -1588,6 +1741,7 @@ static void screen_wallet_info_enter(void)
     }
 
     refresh_master_xfp();
+    wallet_info_passphrase_shown = wallet_has_passphrase();
 }
 
 static void screen_wallet_info_render(void)
@@ -1596,10 +1750,28 @@ static void screen_wallet_info_render(void)
 
     WalletStatus status = wallet_get_status();
     char title[22];
-    snprintf(title, sizeof(title), "W%u/%u  addr %u",
+    /* Which seed, and whether a passphrase is on it. The passphrase marker is
+     * on the title row rather than buried because a passphrase changes every
+     * address on this screen and leaves no other visible trace (T42) - the
+     * XFP below says the seed changed, but only to someone who recorded it. */
+    snprintf(title, sizeof(title), "W%u/%u  addr %u%s",
              (unsigned)status.active_wallet_index, (unsigned)status.wallet_count,
-             (unsigned)address_index);
+             (unsigned)address_index, wallet_has_passphrase() ? " P" : "");
     oled_draw_string_centered(0, title);
+
+    /* The full derivation path, on its own row (T45).
+     *
+     * With the account level selectable, "addr 3" no longer identifies an
+     * address: the same index under another account is a different wallet
+     * entirely. The path is the only text on this screen that says which one,
+     * and it is the same string the signing confirmation shows, so the two can
+     * be compared by eye. */
+    if (status.wallet_count > 0) {
+        char path_str[24];
+        HDPath shown = hd_path_at(address_index);
+        format_hd_path(path_str, sizeof(path_str), &shown);
+        oled_draw_string_centered(1, path_str);
+    }
 
     if (status.wallet_count == 0) {
         oled_draw_string_centered(3, "No wallet");
@@ -1644,8 +1816,7 @@ static void wallet_info_refresh_address(void)
 {
     memset(&eth_address, 0, sizeof(eth_address));
 
-    HDPath eth_path = HDPATH_ETH_DEFAULT;
-    eth_path.address_index = address_index;
+    HDPath eth_path = hd_path_at(address_index);
 
     address_error[0] = '\0';
 
@@ -1654,7 +1825,11 @@ static void wallet_info_refresh_address(void)
         set_address_error("Derive failed");
     }
 
+    /* Refreshed together, always. The fingerprint names the seed the address
+     * came off, so an address re-derived under a new passphrase beside an XFP
+     * from the old one would be worse than showing no fingerprint at all. */
     refresh_master_xfp();
+    wallet_info_passphrase_shown = wallet_has_passphrase();
 }
 
 static void screen_wallet_info_on_button(button_id_t btn)
@@ -1702,6 +1877,7 @@ static void screen_wallet_create_enter(void)
     ESP_LOGI(TAG, "Wallet create screen");
     create_word_count = 12;
     create_show_mnemonic = false;
+    create_generate_pending = false;
     create_error[0] = '\0';
     memset(mnemonic_buffer, 0, sizeof(mnemonic_buffer));
 }
@@ -1747,37 +1923,11 @@ static void screen_wallet_create_on_button(button_id_t btn)
             if (!create_show_mnemonic) {
                 create_error[0] = '\0';
 
-                /* Generate mnemonic */
+                /* Ask for the work; do not do it here. The frame the user
+                 * needs to see is painted by the loop, and ui_poll_deferred()
+                 * runs the generation immediately afterwards (AUDIT S8f). */
                 create_show_mnemonic = true;
-                ui_invalidate();
-                ui_render();  /* Show "Generating..." */
-
-                if (!ensure_wallet_unlocked()) {
-                    ESP_LOGE(TAG, "Failed to unlock wallet");
-                    strncpy(create_error, "Unlock failed", sizeof(create_error));
-                    create_show_mnemonic = false;
-                    ui_invalidate();
-                    return;
-                }
-
-                WalletError err = wallet_create_mnemonic(create_word_count,
-                                                         mnemonic_buffer,
-                                                         sizeof(mnemonic_buffer));
-                if (err != WALLET_OK) {
-                    ESP_LOGE(TAG, "Failed to create mnemonic: %d", err);
-                    snprintf(create_error, sizeof(create_error), "Gen err: %d", err);
-                    create_show_mnemonic = false;
-                    ui_invalidate();
-                    return;
-                }
-
-                /* wallet_create_mnemonic already stores and selects the wallet */
-                WalletStatus status = wallet_get_status();
-                ESP_LOGI(TAG, "Created wallet %d with %d words",
-                         status.active_wallet_index, create_word_count);
-
-                /* Go to mnemonic display */
-                ui_set_screen(SCREEN_MNEMONIC_DISPLAY);
+                create_generate_pending = true;
             }
             break;
 
@@ -1785,6 +1935,52 @@ static void screen_wallet_create_on_button(button_id_t btn)
             break;
     }
 
+    ui_invalidate();
+}
+
+/* The slow half of "GEN", run from ui_poll_deferred() with the
+ * "Generating..." frame already on the panel (AUDIT S8f).
+ *
+ * Every exit path clears create_generate_pending, including the failures: a
+ * flag that survives its own handler would regenerate a seed on the next pass
+ * through the loop, silently, and the second one would be the wallet the user
+ * ends up with. */
+static void wallet_create_run_generation(void)
+{
+    create_generate_pending = false;
+
+    if (!ensure_wallet_unlocked()) {
+        ESP_LOGE(TAG, "Failed to unlock wallet");
+        snprintf(create_error, sizeof(create_error), "Unlock failed");
+        create_show_mnemonic = false;
+        ui_invalidate();
+        return;
+    }
+
+    WalletError err = wallet_create_mnemonic(create_word_count,
+                                             mnemonic_buffer,
+                                             sizeof(mnemonic_buffer));
+    if (err != WALLET_OK) {
+        ESP_LOGE(TAG, "Failed to create mnemonic: %d", err);
+        snprintf(create_error, sizeof(create_error), "Gen err: %d", err);
+        create_show_mnemonic = false;
+        ui_invalidate();
+        return;
+    }
+
+    /* wallet_create_mnemonic already stores and selects the wallet. A new seed
+     * is a new set of identities, so the account selection goes back to 0 for
+     * the same reason a wallet switch resets it (T45). */
+    hd_account_set(0);
+
+    WalletStatus status = wallet_get_status();
+    ESP_LOGI(TAG, "Created wallet %d with %d words",
+             status.active_wallet_index, create_word_count);
+
+    /* Presses made during the generation belong to the screen the user was
+     * looking at, not the one they are about to get. */
+    button_drain();
+    ui_set_screen(SCREEN_MNEMONIC_DISPLAY);
     ui_invalidate();
 }
 
@@ -1867,6 +2063,12 @@ static void screen_wallet_select_on_button(button_id_t btn)
             if (status.wallet_count > 0) {
                 wallet_select_wallet(wallet_list_selection + 1);
                 address_index = 0;   /* a different seed, start from its first address */
+                /* The ACCOUNT is deliberately kept. Every seed has an account
+                 * 3, so unlike the passphrase there is nothing seed-specific
+                 * being carried across - and the wallet screen names the full
+                 * path, so the selection is visible rather than implied. What
+                 * a passphrase carries across a switch is a wallet nobody
+                 * asked for; what an account number carries is a number. */
                 ESP_LOGI(TAG, "Selected wallet %d", wallet_list_selection + 1);
                 ui_set_screen(SCREEN_WALLET_INFO);
             }
@@ -2337,6 +2539,13 @@ static void screen_settings_render(void)
             snprintf(line, sizeof(line), "%s %.14s",
                      item_idx == settings_selection ? ">" : " ",
                      ble_name_get());
+        } else if (item_idx == SET_ACCOUNT) {
+            /* The value is on the menu line, like Link and Blind: which
+             * identity the device is deriving from is not something a user
+             * should have to open a screen to discover. */
+            snprintf(line, sizeof(line), "%s Account %u",
+                     item_idx == settings_selection ? ">" : " ",
+                     (unsigned)hd_account);
         } else if (item_idx == SET_BRIGHTNESS) {
             snprintf(line, sizeof(line), "%s Bright %s",
                      item_idx == settings_selection ? ">" : " ",
@@ -2389,9 +2598,19 @@ static void screen_settings_on_button(button_id_t btn)
             switch ((SettingsAction)settings_selection) {
                 case SET_SHOW_SEED:
                     /* Re-entering the PIN is the point: this reveals the seed,
-                     * so it must not ride on a session unlocked minutes ago. */
+                     * so it must not ride on a session unlocked minutes ago.
+                     *
+                     * A full lock, not just the PIN gate, and that is a
+                     * decision rather than a tidy-up. The question this screen
+                     * asks is "prove you are the owner again", and holding a
+                     * decrypted mnemonic and a live seed cache in RAM while
+                     * asking it answers a different question - it is the state
+                     * AUDIT S5 was written about, entered on purpose. The cost
+                     * is one re-derivation the correct PIN pays for anyway;
+                     * the benefit is that a device sitting on a PIN prompt has
+                     * no seed in memory no matter how it got there. */
+                    lock_device();
                     pending_mnemonic_display = true;
-                    pin_lock();
                     ui_set_screen(SCREEN_PIN_UNLOCK);
                     break;
                 case SET_NEW_WALLET:
@@ -2402,6 +2621,15 @@ static void screen_settings_on_button(button_id_t btn)
                     break;
                 case SET_PASSPHRASE:
                     ui_set_screen(SCREEN_PASSPHRASE);
+                    break;
+                case SET_ACCOUNT:
+                    /* Cycles, like Brightness and Auto-lock. Ten presses to
+                     * cross the range is acceptable for something changed
+                     * rarely, and it costs no extra screen; the wallet screen
+                     * shows the resulting path in full, which is where the
+                     * change is actually confirmed. */
+                    hd_account_set(hd_account + 1);
+                    ESP_LOGI(TAG, "Account %u selected", (unsigned)hd_account);
                     break;
                 case SET_ENTRY_STYLE:
                     entry_blocks_apply(!mnemonic_entry_blocks_enabled());
@@ -2485,8 +2713,7 @@ static void screen_qr_code_enter(void)
                 if (status.active_wallet_index == 0) {
                     wallet_select_wallet(1);
                 }
-                HDPath eth_path = HDPATH_ETH_DEFAULT;
-                eth_path.address_index = address_index;
+                HDPath eth_path = hd_path_at(address_index);
                 if (wallet_get_address_at_path(&eth_path, &eth_address) != WALLET_OK) {
                     set_address_error("Addr failed");
                 }
@@ -2733,6 +2960,11 @@ static void screen_wipe_confirm_on_button(button_id_t btn)
              * this boot would keep answering "on" for a device that no longer
              * has it stored and the next boot would disagree. */
             blind_signing_forget();
+            /* Same reasoning one level down (T45): the account selection lives
+             * in the settings namespace, which a wipe does not erase, so a
+             * wiped device would come up deriving the next seed at whatever
+             * account the previous owner left selected. */
+            hd_account_set(0);
             memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
             mnemonic_word_count = 0;
             mnemonic_entry_clear(&entry);
@@ -3187,6 +3419,10 @@ static void screen_passphrase_on_button(button_id_t btn)
                 }
                 wallet_set_passphrase(passphrase_entry.text,
                                       (size_t)passphrase_entry.length);
+                /* Typed here, so it is not the host's to revoke: a disconnect
+                 * must not drop the user back into the base wallet without
+                 * saying so (T42). */
+                protocol_note_device_passphrase();
                 text_entry_clear(&passphrase_entry);
                 address_index = 0;
                 ui_set_screen(SCREEN_PASSPHRASE_CONFIRM);
@@ -3445,7 +3681,11 @@ typedef enum {
 
 static EthTx        sign_tx;
 static EthCall      sign_call;
-static uint32_t     sign_index;
+/* The path the signature will be taken at, carried in whole rather than as an
+ * index (T45/T47). The account level is host-selectable, so an index alone
+ * cannot say which wallet is signing - and this screen exists to say exactly
+ * that. Rendered in full on the source page. */
+static HDPath       sign_path_shown;
 static char         sign_from[43];
 static int          sign_page;
 static SignPageKind sign_page_kind[SIGN_MAX_PAGES] = {SIGN_PAGE_FROM};
@@ -3472,7 +3712,7 @@ static bool    sign_blind = false;
 static uint8_t sign_data_hash[32];   /* keccak256 of the calldata as received */
 
 void ui_request_sign_message(const char *message, size_t length,
-                             uint32_t address_index, const char *from)
+                             const HDPath *path, const char *from)
 {
     memzero(&sign_tx, sizeof(sign_tx));
     memzero(&sign_call, sizeof(sign_call));
@@ -3493,7 +3733,7 @@ void ui_request_sign_message(const char *message, size_t length,
      * signing does not and must not reopen the ones that were not. */
     sign_blind = false;
     memzero(sign_data_hash, sizeof(sign_data_hash));
-    sign_index = address_index;
+    sign_path_shown = path ? *path : (HDPath)HDPATH_ETH_DEFAULT;
     if (from) {
         snprintf(sign_from, sizeof(sign_from), "%s", from);
     } else {
@@ -3508,12 +3748,12 @@ void ui_request_sign_message(const char *message, size_t length,
     sign_request_pending = true;
 }
 
-void ui_request_sign(const EthTx *tx, uint32_t address_index, const char *from)
+void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
 {
     sign_is_message = false;
     memzero(sign_message, sizeof(sign_message));
     memcpy(&sign_tx, tx, sizeof(sign_tx));
-    sign_index = address_index;
+    sign_path_shown = path ? *path : (HDPath)HDPATH_ETH_DEFAULT;
 
     /* The source address is derived by the protocol task before it asks, and
      * carried in rather than looked up here. Deriving on the UI task would put
@@ -4000,9 +4240,22 @@ static void screen_sign_confirm_render(void)
              * to what it did - a task race had it signing with a key this
              * screen never named (T47). The address is derived from the same
              * path the signature is taken at. */
-            snprintf(line, sizeof(line), "From  addr %u", (unsigned)sign_index);
-            oled_draw_string(1, 0, line);
+            /* The whole path, not "addr N".
+             *
+             * T47 put the source address here because an index was not enough
+             * to know what was signing. An account level makes that strictly
+             * worse: m/44'/60'/0'/0/0 and m/44'/60'/9'/0/0 are both "addr 0"
+             * and are different wallets, so a host moving accounts between
+             * requests would be invisible. The path is what makes it visible,
+             * and it is the same string the wallet screen shows. */
+            oled_draw_string(1, 0, "From");
             sign_draw_address(2, sign_from);
+
+            /* On a row of its own, so nothing can push it off the edge: a
+             * truncated path would misname the wallet that is signing, which
+             * is worse than the index this replaced. */
+            format_hd_path(line, sizeof(line), &sign_path_shown);
+            oled_draw_string(5, 0, line);
 
             if (sign_is_message) {
                 /* No value, no chain: a personal_sign moves nothing by itself.
@@ -4241,6 +4494,30 @@ void ui_invalidate(void)
     needs_render = true;
 }
 
+void ui_poll_deferred(void)
+{
+    if (create_generate_pending && current_screen == SCREEN_WALLET_CREATE) {
+        wallet_create_run_generation();
+        return;
+    }
+    /* Left the screen before the work ran (CANCEL is still live while
+     * "Generating..." is up, because the handler no longer blocks). The
+     * request goes with the screen. */
+    create_generate_pending = false;
+
+    /* The passphrase changed under a screen that is already showing an address
+     * derived from the old one (T42). Every way that can happen is another
+     * task or a timer: a host setPassphrase, a host-rejected confirmation, an
+     * auto-lock. Re-derive rather than merely repaint - the address itself is
+     * wrong now, not just the marker beside it. */
+    if (current_screen == SCREEN_WALLET_INFO &&
+        wallet_has_passphrase() != wallet_info_passphrase_shown) {
+        ESP_LOGW(TAG, "Passphrase changed under the wallet screen; re-deriving");
+        wallet_info_refresh_address();
+        ui_invalidate();
+    }
+}
+
 bool ui_needs_render(void)
 {
     return needs_render;
@@ -4256,6 +4533,20 @@ void ui_register_screen(screen_id_t id, const screen_t *screen)
     if (id < SCREEN_COUNT) {
         screens[id] = screen;
     }
+}
+
+/* The host asked the device to lock (PROTOCOL.md). Extracted from the task
+ * loop so the tests exercise the same path the firmware does - the bug this
+ * whole family came from was four call sites disagreeing, and a test driving
+ * its own copy of one of them would have hidden it. */
+static void service_host_lock(void)
+{
+    if (!host_lock_pending) {
+        return;
+    }
+    host_lock_pending = false;
+    lock_device();
+    ui_set_screen(SCREEN_PIN_UNLOCK);
 }
 
 void ui_task(void *pvParameters)
@@ -4328,19 +4619,17 @@ void ui_task(void *pvParameters)
             }
         }
 
-        if (host_lock_pending) {
-            host_lock_pending = false;
-            pin_lock();
-            wallet_lock();
-            memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
-            mnemonic_word_count = 0;
-            ui_set_screen(SCREEN_PIN_UNLOCK);
-        }
+        service_host_lock();
 
         /* Re-render if needed */
         if (ui_needs_render()) {
             ui_render();
         }
+
+        /* After the repaint, never before: the work deferred here is deferred
+         * precisely so the frame announcing it is already on the panel
+         * (AUDIT S8f). */
+        ui_poll_deferred();
     }
 }
 
@@ -4364,6 +4653,25 @@ const char *ui__pin_entry_for_test(void)  { return pin_entry; }
 int         ui__pin_cursor_for_test(void) { return pin_cursor; }
 int         ui__pin_option_for_test(void) { return current_digit; }
 
+/* The auto-lock decision, which otherwise only ui_task()'s loop can reach.
+ *
+ * Exposed rather than reimplemented in the test: "what the device drops when
+ * it locks itself" is a T42 invariant, and a test asserting it against its own
+ * copy of the rule would pass while the device kept a passphrase applied. */
+bool ui__check_autolock_for_test(void) { return lock_check_timeout(); }
+void ui__service_host_lock_for_test(void) { service_host_lock(); }
+
+/* The cached fingerprint, which is not on any screen while the device is
+ * locked and so cannot be asserted through the framebuffer - the stale-XFP
+ * failure is that it is still HERE when the next screen goes to draw it. */
+const char *ui__master_xfp_for_test(void) { return master_xfp; }
+
+/* Which account the device is deriving at, and whether the wallet screen's
+ * address was derived with a passphrase applied. Both are private on purpose;
+ * both are the state a stale-passphrase or wrong-account bug lives in. */
+uint32_t ui__account_for_test(void)            { return hd_account; }
+bool ui__wallet_info_pass_shown_for_test(void) { return wallet_info_passphrase_shown; }
+
 const MnemonicEntry *ui__entry_for_test(void)  { return &entry; }
 bool ui__entry_choosing_length_for_test(void)  { return entry_choosing_length; }
 int  ui__entry_length_choice_for_test(void)    { return entry_length_choice; }
@@ -4381,6 +4689,8 @@ void ui__reset_static_state_for_test(void)
     wallet_list_selection = 0;
 
     address_index = 0;
+    hd_account = 0;
+    wallet_info_passphrase_shown = false;
     memzero(&eth_address, sizeof(eth_address));
     memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
     mnemonic_word_count = 0;
@@ -4389,6 +4699,7 @@ void ui__reset_static_state_for_test(void)
 
     create_word_count = 12;
     create_show_mnemonic = false;
+    create_generate_pending = false;
     memzero(create_error, sizeof(create_error));
 
     mnemonic_entry_clear(&entry);
@@ -4432,6 +4743,7 @@ void ui__reset_static_state_for_test(void)
 
     lock_timeout_choice = 1;
     brightness_choice = 2;
+    memzero(master_xfp, sizeof(master_xfp));
     last_activity_us = 0;
 }
 

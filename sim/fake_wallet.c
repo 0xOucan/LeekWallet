@@ -174,6 +174,12 @@ WalletError wallet_select_wallet(uint8_t index)
         return WALLET_ERROR_NO_MNEMONIC;
     }
     w.active = index;
+    /* Mirrors the real wallet, which drops the passphrase on a switch: a
+     * passphrase belongs to the seed it was entered against (T42). The fake
+     * kept it, which meant every UI test of a wallet switch was asserting
+     * against behaviour the device does not have - the one thing a stand-in
+     * must never do. */
+    wallet_clear_passphrase();
     return WALLET_OK;
 }
 
@@ -296,9 +302,16 @@ WalletError wallet_get_address_at_path(const HDPath *path, EthAddress *address_o
      * make the fake produce something no device ever produces, and would hide
      * every bug about telling a real address from something that is not one
      * (AUDIT S8a). */
+    /* Wallet, account and index all vary the address, and the passphrase
+     * varies it too. All four change which wallet the device is really in, so
+     * a test that cannot tell them apart cannot catch the failure where the
+     * screen shows one and the device derives another (T42, T45). */
     snprintf(address_out->hex, sizeof(address_out->hex),
-             "0x%02x%02x%s", w.active, (unsigned)(path->address_index & 0xFF),
-             "aaaaaaaabbbbbbbbccccccccddddddddeeee");
+             "0x%02x%02x%02x%01x%s", w.active,
+             (unsigned)(path->account & 0xFF),
+             (unsigned)(path->address_index & 0xFF),
+             w.has_passphrase ? 1u : 0u,
+             "aaaaaabbbbbbbbccccccccddddddddeee");
     return WALLET_OK;
 }
 

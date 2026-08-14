@@ -51,4 +51,16 @@ void protocol_reset_rx(void);
  */
 void protocol_set_rx_enabled(bool enabled);
 
+/**
+ * Tell the endpoint the user typed a passphrase on the device itself (T42).
+ *
+ * A host-supplied passphrase is scoped to the session that supplied it and is
+ * dropped when that session ends. A passphrase entered on the device is not:
+ * it belongs to the person holding the device, and a BLE disconnect must not
+ * silently return them to the base wallet. This is how the endpoint learns
+ * that whatever it applied earlier has been superseded by a passphrase it
+ * has no claim over.
+ */
+void protocol_note_device_passphrase(void);
+
 #endif /* LEEK_PROTOCOL_H */
