@@ -19,6 +19,15 @@
  * duplication is deliberate: the CSP is a reviewable security boundary and
  * cannot be generated from this file at build time.
  *
+ * Since T62 a native build sends RPC calls through a Rust command instead
+ * (src-tauri/src/rpc.rs), which the CSP does not govern — that is what makes a
+ * user-supplied endpoint reachable at all. The allowlist is NOT relaxed as a
+ * result. A browser build, the dev server, and any build compiled without the
+ * proxy's HTTP client still fetch straight from the window, and while that
+ * path exists it must stay bounded to origins somebody reviewed. An allowlist
+ * that is merely redundant costs nothing; one that was deleted because a
+ * second door opened is not recoverable.
+ *
  * ---------------------------------------------------------------------------
  * Why this is a curated table and not "every chain ID"
  *

@@ -8,10 +8,35 @@ description = "LeekWallet companion app"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# The RPC proxy's HTTP client (T62 stage 2). Off by default because every TLS
+# stack available to reqwest compiles C, which needs the Android NDK toolchain
+# on hand for `cargo check --target aarch64-linux-android` — a requirement not
+# every checkout can meet, and not one worth imposing to type-check the rest of
+# the app. The proxy's policy (src/rpc.rs) is compiled and tested either way;
+# only the socket is behind this. Release builds turn it on.
+rpc-proxy = ["dep:reqwest"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# URL parsing for the RPC proxy's policy, which is compiled unconditionally.
+# Already in the tree via tauri; named here because src/rpc.rs uses it
+# directly and a dependency you rely on should be one you declared.
+url = "2"
+
+# The proxy's HTTP client. `rustls` rather than the system TLS because a wallet
+# should not be at the mercy of whatever a phone's certificate store has had
+# added to it, and default features are off to keep http2 (and its own C-ish
+# dependency tail) out of a client that only ever makes one POST at a time.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset"], optional = true }
+
+# `#[tokio::test]` for the policy tests. Not a runtime dependency: the command
+# itself runs on the async runtime Tauri already provides.
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
 
 # Desktop speaks both USB CDC and BLE; the device serves one at a time
 # (PROTOCOL.md 3b), so which one is live is a runtime question, not a build-time
