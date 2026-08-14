@@ -21,9 +21,16 @@ import { BleTransport, scanBle, BLE_NOT_FOUND } from "./ble-transport.ts";
 import { createPublicClient, custom, defineChain, parseEther, serializeTransaction,
          isAddress, type Chain, type Hex, type Address } from "viem";
 import {
-  addCustomChain, allChains, CHAINS, chainLabelDetailed, CUSTOM_CHAIN_NOTICE, getChain,
-  loadCustomChains, removeCustomChain, resolveChain, type ChainInfo, type CustomChainInput,
+  addCustomChain, allChains, CHAINS, chainLabelDetailed, CUSTOM_CHAIN_NOTICE, formatUnits,
+  getChain, loadCustomChains, removeCustomChain, resolveChain, type ChainInfo,
+  type CustomChainInput,
 } from "../packages/core/src/chains.ts";
+import {
+  balanceProvenance, BALANCE_SOURCE_NOTICE, describeTokenAmount, encodeErc20Transfer,
+  fetchNativeBalance, fetchTokenBalance, fetchTokenMeta, freshnessOf, parseUnits,
+  TOKEN_SCALE_NOTICE, type BalanceSnapshot, type EthRequest, type TokenAmountView,
+  type TokenMeta,
+} from "../packages/core/src/balances.ts";
 import {
   endpointOrder, FailoverRpc, fetchRpcSend, preferredRpc, rememberRpc,
   type RpcSend,
@@ -33,7 +40,7 @@ import {
   deriveSession, generateKeypair, Session,
 } from "../packages/core/src/session.ts";
 import {
-  interpretTransaction, type TxInterpretation,
+  checksumAddress, interpretTransaction, type TxInterpretation,
 } from "../packages/core/src/tx-interpret.ts";
 import { chunk, renderInterpretation } from "./interpretation-view.ts";
 import { initWalletConnect, type WalletBridge } from "./wc/ui.ts";
@@ -355,6 +362,7 @@ function invalidateDerived(reason: string): void {
   $("addrpanel").hidden = true;
   $("signpanel").hidden = true;
   $("sfrom").textContent = "—";
+  clearBalances();
   log(`derived addresses cleared: ${reason}`);
   // A locked device offers no accounts, so a proposal on screen has to say so.
   walletConnect.accountsChanged();
@@ -715,6 +723,12 @@ async function loadAddresses(): Promise<void> {
       btn.setAttribute("aria-selected", "true");
       $("sfrom").textContent = `m/44'/60'/0'/0/${i}`;
       log(`selected address ${i}`);
+      /* A different address has different balances, so the ones on screen are
+       * now about somebody else. Clear first, fetch second: showing the
+       * previous address's figures under the new address, even for a second,
+       * is the kind of thing people act on. */
+      clearBalances();
+      void refreshBalances("address changed");
     });
     list.appendChild(btn);
   });
@@ -722,6 +736,12 @@ async function loadAddresses(): Promise<void> {
   $("sfrom").textContent = `m/44'/60'/0'/0/${selectedIndex}`;
   log(`derived ${addresses.length} addresses`);
   walletConnect.accountsChanged();
+  /* One of the two moments a fetch happens without being asked for: the app
+   * has just learned which address the user is looking at, which is exactly
+   * when a balance stops being a stale number about somebody else. */
+  clearBalances();
+  populateAssets();
+  void refreshBalances("addresses derived");
 }
 
 /* ------------------------------------------------------------------ chains */
@@ -870,6 +890,12 @@ function applyChain(info: ChainInfo): void {
    * signature is valid on. */
   $("chainnote").textContent =
     info.source === "custom" ? `${money} ${CUSTOM_CHAIN_NOTICE}` : money;
+  /* The other unprompted fetch. A balance is per chain, so switching networks
+   * does not make the figure old, it makes it about a different network
+   * entirely — keeping it on screen would be worse than any staleness. */
+  clearBalances();
+  populateAssets();
+  void refreshBalances("chain changed");
   renderPreview();
 }
 
@@ -1011,6 +1037,479 @@ function initCustomChains(): void {
   });
 }
 
+/* --------------------------------------------------------------- balances
+ *
+ * What the app can and cannot say about a balance (T63).
+ *
+ * *Can*: "this is the number a public RPC operator gave me at 14:02, and here
+ * is which operator." Every figure on this panel is that, and the line under
+ * it says so. The device has no idea what any of these balances are — it holds
+ * keys, not state — so nothing here is attested by anything.
+ *
+ * *Cannot*: "you have 5 USDC." `decimals()` and `symbol()` are answered by the
+ * contract, so scaling raw units into a friendly figure applies numbers
+ * supplied by the thing under suspicion (PROTOCOL.md 6d). Hence the shape core
+ * enforces: raw units and the contract address are always drawn, and a scaled
+ * figure only ever appears inside a block that carries UNVERIFIED and the
+ * notice. Nothing in this file constructs a scaled string itself.
+ *
+ * Refresh: on connect, on wallet change, on chain change, on address change,
+ * after a broadcast, and on the button — never on a timer. Each fetch tells an
+ * operator which address the user cares about, and a background poll would
+ * turn that one disclosure into a log of when this window is open. What *is*
+ * on a timer is the age label, which costs nothing and is what keeps a
+ * ten-minute-old figure from reading as current.
+ */
+
+/** Watched token contracts, per chain. Addresses only: nothing else is known. */
+const TOKENS_KEY = "leek.tokens.v1";
+
+function readWatched(): Record<string, string[]> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(TOKENS_KEY) ?? "{}");
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    return parsed as Record<string, string[]>;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The tokens being watched on a chain.
+ *
+ * Re-validated on the way out of storage, like custom chains: anything that
+ * ever gets script into this origin can write here, and an address that is not
+ * an address would end up in calldata.
+ */
+function watchedTokens(chain: number): string[] {
+  const list = readWatched()[String(chain)];
+  if (!Array.isArray(list)) return [];
+  return list.filter((a): a is string => typeof a === "string" && isAddress(a)).map((a) => a.toLowerCase());
+}
+
+function writeWatched(chain: number, list: string[]): void {
+  const all = readWatched();
+  all[String(chain)] = list;
+  try {
+    localStorage.setItem(TOKENS_KEY, JSON.stringify(all));
+  } catch {
+    /* A watch list that cannot be saved costs re-typing an address. */
+  }
+}
+
+/** Balances, keyed `chainId:address` for tokens and `chainId:native`. */
+const tokenMetaCache = new Map<string, TokenMeta>();
+const tokenBalances = new Map<string, { raw: bigint; snapshot: BalanceSnapshot }>();
+let nativeBalance: { wei: bigint; snapshot: BalanceSnapshot } | null = null;
+
+const balKey = (chain: number, token: string): string => `${chain}:${token.toLowerCase()}`;
+
+/** True while a fetch is in flight, so the button cannot stack requests. */
+let fetchingBalances = false;
+
+/**
+ * An `EthRequest` on the active chain, plus a way to name who answered.
+ *
+ * Built from the same `rpcFor()` the signing path uses, so a balance and a
+ * nonce are fetched by the same failover policy from the same operator list —
+ * two mechanisms would mean two answers to "who learned my address".
+ */
+function balanceRequest(info: ChainInfo): { request: EthRequest; host: () => string | undefined } {
+  const { failover } = rpcFor(info);
+  return {
+    request: (args) => failover.request(args),
+    host: () => (failover.lastUrl ? new URL(failover.lastUrl).host : undefined),
+  };
+}
+
+/**
+ * Fetch the selected address's balances on the active chain.
+ *
+ * One address, not ten. Deriving ten addresses is cheap and local; asking an
+ * operator about ten is ten disclosures and ten times the rate-limit pressure
+ * for a number nine of which nobody is looking at.
+ */
+async function refreshBalances(reason: string): Promise<void> {
+  const address = addresses[selectedIndex];
+  if (!address || fetchingBalances) return;
+  const info = activeChain();
+  const chain = info.id;
+  fetchingBalances = true;
+  ($("balrefresh") as HTMLButtonElement).disabled = true;
+  $("balnative").textContent = "Fetching…";
+
+  const { request, host } = balanceRequest(info);
+  try {
+    const wei = await fetchNativeBalance(request, address);
+    /* The chain may have been changed while this was in flight. Storing the
+     * answer against the chain it was asked on, and checking before drawing,
+     * is what stops a Sepolia balance appearing under a mainnet heading. */
+    nativeBalance = {
+      wei,
+      snapshot: { chainId: chain, address, fetchedAt: Date.now(), ...(host() ? { endpointHost: host() as string } : {}) },
+    };
+  } catch (e) {
+    nativeBalance = null;
+    log(`balance: ${String((e as Error).message ?? e)}`);
+  }
+
+  for (const token of watchedTokens(chain)) {
+    try {
+      const key = balKey(chain, token);
+      if (!tokenMetaCache.has(key)) {
+        // Metadata is asked for once per contract per session: it does not
+        // change, and re-asking is another disclosure for the same answer.
+        tokenMetaCache.set(key, await fetchTokenMeta(request, chain, token));
+      }
+      const raw = await fetchTokenBalance(request, token, address);
+      tokenBalances.set(key, {
+        raw,
+        snapshot: { chainId: chain, address, fetchedAt: Date.now(), ...(host() ? { endpointHost: host() as string } : {}) },
+      });
+    } catch (e) {
+      tokenBalances.delete(balKey(chain, token));
+      log(`token ${token.slice(0, 10)}…: ${String((e as Error).message ?? e)}`);
+    }
+  }
+
+  fetchingBalances = false;
+  ($("balrefresh") as HTMLButtonElement).disabled = false;
+  log(`balances refreshed (${reason})`);
+  renderBalances();
+  populateAssets();
+}
+
+/** Forget everything fetched. Called when the answers stop applying. */
+function clearBalances(): void {
+  nativeBalance = null;
+  tokenBalances.clear();
+  renderBalances();
+}
+
+/** Draw one "UNVERIFIED" block for a scaled figure. Never called for raw. */
+function scaledRow(scaled: NonNullable<TokenAmountView["scaled"]>): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "unverified-amount";
+  const tag = document.createElement("span");
+  tag.className = "unverified-amount__tag";
+  tag.textContent = "UNVERIFIED";
+  const text = document.createElement("span");
+  // The source is named because "the contract said so" and "this app's own
+  // short list said so" are different kinds of nothing.
+  text.textContent =
+    `≈ ${scaled.text} ${scaled.symbol ?? "units"} ` +
+    `(${scaled.decimals} decimals, ${scaled.source === "app-hint" ? "from an unchecked list in this app" : "self-declared by the contract"})`;
+  box.append(tag, text);
+  const note = document.createElement("p");
+  note.className = "muted";
+  note.textContent = scaled.notice;
+  box.appendChild(note);
+  return box;
+}
+
+/** Redraw the whole balance panel from state. No fetching here. */
+function renderBalances(): void {
+  const info = activeChain();
+  const chain = info.id;
+  const address = addresses[selectedIndex];
+  const now = Date.now();
+
+  const native = $("balnative");
+  const prov = $("balprov");
+  if (!address) {
+    native.textContent = "—";
+    prov.textContent = "";
+  } else if (nativeBalance && nativeBalance.snapshot.chainId === chain &&
+             nativeBalance.snapshot.address === address) {
+    // The gas token's decimals come from the chain registry, not from any
+    // contract, so this one figure is as good as the registry entry — which
+    // for a custom network is whatever the user typed, and says so already.
+    native.textContent =
+      `${formatUnits(nativeBalance.wei, info.nativeCurrency.decimals)} ${info.nativeCurrency.symbol}`;
+    native.dataset["stale"] = String(freshnessOf(nativeBalance.snapshot.fetchedAt, now).stale);
+    prov.textContent =
+      `Address ${selectedIndex} · ${balanceProvenance(nativeBalance.snapshot, now)}`;
+  } else {
+    native.textContent = "not fetched";
+    delete native.dataset["stale"];
+    prov.textContent = `Address ${selectedIndex} · ${BALANCE_SOURCE_NOTICE}`;
+  }
+
+  const list = $("tokenlist");
+  list.textContent = "";
+  const tokens = watchedTokens(chain);
+  if (tokens.length === 0) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = "No tokens watched on this network.";
+    list.appendChild(li);
+    return;
+  }
+
+  for (const token of tokens) {
+    const key = balKey(chain, token);
+    const meta = tokenMetaCache.get(key);
+    const held = tokenBalances.get(key);
+    const li = document.createElement("li");
+    li.className = "token";
+
+    /* The contract address is the heading, and it is never replaced by a name.
+     * A name here would be the app asserting an identity it cannot check —
+     * the exact substitution PROTOCOL.md 6d rules out. */
+    const head = document.createElement("div");
+    head.className = "token__addr addr";
+    head.textContent = chunk(checksumAddress(token.slice(2)));
+    li.appendChild(head);
+
+    const amount = document.createElement("div");
+    amount.className = "token__amount";
+    if (held && held.snapshot.chainId === chain && held.snapshot.address === address) {
+      const view: TokenAmountView = describeTokenAmount(token, held.raw, meta);
+      amount.textContent = `${view.rawText} raw units`;
+      li.appendChild(amount);
+      if (view.scaled) li.appendChild(scaledRow(view.scaled));
+      const age = document.createElement("p");
+      age.className = "muted";
+      age.textContent = balanceProvenance(held.snapshot, now);
+      li.appendChild(age);
+    } else {
+      amount.textContent = "not fetched";
+      li.appendChild(amount);
+    }
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const send = document.createElement("button");
+    send.type = "button";
+    send.className = "secondary";
+    send.textContent = "Send this token";
+    send.addEventListener("click", () => {
+      ($("asset") as HTMLSelectElement).value = token;
+      applyAsset();
+      $("signpanel").scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "secondary";
+    drop.textContent = "Stop watching";
+    drop.addEventListener("click", () => {
+      writeWatched(chain, watchedTokens(chain).filter((a) => a !== token));
+      tokenBalances.delete(key);
+      renderBalances();
+      populateAssets();
+      log(`stopped watching ${token}`);
+    });
+    row.append(send, drop);
+    li.appendChild(row);
+    list.appendChild(li);
+  }
+}
+
+function initBalances(): void {
+  $("balrefresh").addEventListener("click", () => void refreshBalances("button"));
+
+  $("tokenadd").addEventListener("click", () => {
+    const field = $("tokenaddr") as HTMLInputElement;
+    const value = field.value.trim();
+    const err = $("tokenerr");
+    if (!isAddress(value)) {
+      err.textContent = "That is not a 20-byte address. A token is identified by its contract address here — there is no name lookup, because a name is not something this app can check.";
+      return;
+    }
+    const chain = activeChain().id;
+    const list = watchedTokens(chain);
+    const lower = value.toLowerCase();
+    if (list.includes(lower)) {
+      err.textContent = "Already watched on this network.";
+      return;
+    }
+    writeWatched(chain, [...list, lower]);
+    field.value = "";
+    err.textContent = "";
+    renderBalances();
+    void refreshBalances("token added");
+  });
+
+  /* The age label, and only the age label, is on a timer. No request leaves
+   * the process here: this is what makes staleness visible without turning
+   * the app into a beacon. */
+  setInterval(() => {
+    if (!$("addrpanel").hidden) renderBalances();
+  }, 15000);
+
+  renderBalances();
+}
+
+/* ------------------------------------------------------------ what to send
+ *
+ * Native value, or an ERC-20 `transfer(address,uint256)`. The token path is
+ * worth having because the device already decodes that selector and draws the
+ * recipient and the raw amount on its own screen (eth-decode.ts) — so it is a
+ * send the user can actually verify, unlike an arbitrary call.
+ */
+
+type Asset =
+  | { kind: "native" }
+  | { kind: "token"; address: string; meta: TokenMeta | undefined };
+
+function currentAsset(): Asset {
+  const value = ($("asset") as HTMLSelectElement).value;
+  if (value === "native" || !isAddress(value)) return { kind: "native" };
+  const key = balKey(activeChain().id, value);
+  return { kind: "token", address: value.toLowerCase(), meta: tokenMetaCache.get(key) };
+}
+
+/** Rebuild the asset list: the gas token, then whatever is watched here. */
+function populateAssets(): void {
+  const select = $("asset") as HTMLSelectElement;
+  const previous = select.value;
+  const info = activeChain();
+  select.textContent = "";
+
+  const nativeOpt = document.createElement("option");
+  nativeOpt.value = "native";
+  nativeOpt.textContent = `${info.nativeCurrency.symbol} (this network's gas token)`;
+  select.appendChild(nativeOpt);
+
+  for (const token of watchedTokens(info.id)) {
+    const opt = document.createElement("option");
+    opt.value = token;
+    const meta = tokenMetaCache.get(balKey(info.id, token));
+    // The address is in the label, always. A symbol may join it, in question
+    // marks, never in place of it.
+    opt.textContent = meta?.symbol
+      ? `${meta.symbol}? (UNVERIFIED) — ${token.slice(0, 10)}…${token.slice(-4)}`
+      : `token ${token.slice(0, 10)}…${token.slice(-4)}`;
+    select.appendChild(opt);
+  }
+  select.value = Array.from(select.options).some((o) => o.value === previous) ? previous : "native";
+  applyAsset();
+}
+
+/**
+ * Re-label the amount field for whatever asset is selected.
+ *
+ * The unit choice is the honest part. A token's scaled unit exists only
+ * because a contract claimed a decimals value, so "raw units" stays a
+ * first-class option rather than a hidden one, and the note under the field
+ * spells out the multiplication at the moment the number is typed.
+ */
+function applyAsset(): void {
+  const asset = currentAsset();
+  const unitField = $("unitfield");
+  const unit = $("amountunit") as HTMLSelectElement;
+  const info = activeChain();
+
+  if (asset.kind === "native") {
+    unitField.hidden = true;
+    $("amountlabel").textContent = `Amount (${info.nativeCurrency.symbol})`;
+    $("assetnote").textContent =
+      `Sending the gas token of chain ${info.id}. Its ticker and decimals come from this app's chain registry, not from any contract.`;
+    renderAmountNote();
+    renderPreview();
+    return;
+  }
+
+  const decimals = asset.meta?.decimals;
+  const previous = unit.value;
+  unit.textContent = "";
+  if (decimals !== undefined) {
+    const scaled = document.createElement("option");
+    scaled.value = "scaled";
+    scaled.textContent = `${asset.meta?.symbol ?? "token"}? — UNVERIFIED, ×10^${decimals}`;
+    unit.appendChild(scaled);
+  }
+  const rawOpt = document.createElement("option");
+  rawOpt.value = "raw";
+  rawOpt.textContent = "raw units (exactly what the device shows)";
+  unit.appendChild(rawOpt);
+  unit.value = Array.from(unit.options).some((o) => o.value === previous) ? previous : (decimals !== undefined ? "scaled" : "raw");
+  unitField.hidden = false;
+
+  $("amountlabel").textContent = "Amount";
+  $("assetnote").textContent =
+    `ERC-20 transfer on contract ${checksumAddress(asset.address.slice(2))}. ` +
+    (decimals === undefined
+      ? "This contract did not answer decimals() or symbol(), so amounts are in raw units only."
+      : "This app asked the contract what it calls itself and how many decimals it uses; a contract can answer whatever it likes, so neither is checked.");
+  renderAmountNote();
+  renderPreview();
+}
+
+/**
+ * Say what the typed number will become, under the field, as it is typed.
+ *
+ * The conversion is the claim nobody can verify, so it is stated where the
+ * claim is made rather than in a notice further down the page that a hurried
+ * person scrolls past.
+ */
+function renderAmountNote(): void {
+  const note = $("amountnote");
+  const asset = currentAsset();
+  const text = ($("amount") as HTMLInputElement).value.trim();
+  if (asset.kind === "native") {
+    note.textContent = "";
+    return;
+  }
+  const unit = ($("amountunit") as HTMLSelectElement).value;
+  const decimals = asset.meta?.decimals;
+  if (unit === "raw" || decimals === undefined) {
+    note.textContent =
+      "Raw units — no conversion, and this is the number the device will show on its own screen.";
+    return;
+  }
+  let raw: bigint | undefined;
+  try {
+    raw = parseUnits(text, decimals);
+  } catch (e) {
+    note.textContent = String((e as Error).message ?? e);
+    return;
+  }
+  note.textContent =
+    `${text} × 10^${decimals} = ${raw} raw units, which is what the device will show. ` +
+    `The 10^${decimals} comes from the contract's own decimals(), which nothing checked — ` +
+    `if it lied, you are sending a different amount than you think. ${TOKEN_SCALE_NOTICE}`;
+}
+
+/** What the form currently describes, or an error naming the field at fault. */
+type Planned =
+  | { ok: true; to: string; value: bigint; data?: string; gas?: bigint }
+  | { ok: false; field: "to" | "amount"; message: string };
+
+function plannedSend(): Planned {
+  const toValue = ($("to") as HTMLInputElement).value.trim();
+  const amountValue = ($("amount") as HTMLInputElement).value.trim();
+  if (!isAddress(toValue)) {
+    return { ok: false, field: "to", message: "that is not a valid address" };
+  }
+  const asset = currentAsset();
+
+  if (asset.kind === "native") {
+    let value: bigint;
+    try {
+      value = parseEther(amountValue);
+    } catch {
+      return { ok: false, field: "amount", message: "that is not a valid amount" };
+    }
+    return { ok: true, to: toValue, value, gas: 21000n };
+  }
+
+  const unit = ($("amountunit") as HTMLSelectElement).value;
+  const decimals = asset.meta?.decimals;
+  let raw: bigint;
+  try {
+    raw = unit === "scaled" && decimals !== undefined
+      ? parseUnits(amountValue, decimals)
+      : parseUnits(amountValue, 0);
+  } catch (e) {
+    return { ok: false, field: "amount", message: String((e as Error).message ?? e) };
+  }
+  /* `to` becomes the contract and the recipient moves into calldata — which is
+   * exactly what the device decodes and renders, so the screen the user checks
+   * still names the person being paid. */
+  return { ok: true, to: asset.address, value: 0n, data: encodeErc20Transfer(toValue, raw) };
+}
+
 /* ---------------------------------------------------------------- preview */
 
 /**
@@ -1024,28 +1523,27 @@ function initCustomChains(): void {
  */
 function renderPreview(fee?: { gas: bigint; maxFeePerGas: bigint }): void {
   const panel = $("preview");
-  const toValue = ($("to") as HTMLInputElement).value.trim();
-  const amountValue = ($("amount") as HTMLInputElement).value.trim();
 
-  let value: bigint;
-  try {
-    value = parseEther(amountValue);
-  } catch {
-    value = 0n;
-  }
-
-  // An incomplete form has nothing worth summarising, and a half-summary of a
-  // half-typed address invites reading it as if it were complete.
-  if (!isAddress(toValue)) {
+  // An incomplete or unparseable form has nothing worth summarising, and a
+  // half-summary of a half-typed address invites reading it as if it were
+  // complete. A token amount that will not parse is reported under the field
+  // by renderAmountNote, not by a preview of a transaction nobody described.
+  const plan = plannedSend();
+  if (!plan.ok) {
     panel.hidden = true;
     return;
   }
 
+  /* The same interpreter, whether this is a native send or an ERC-20
+   * transfer: for the token case it decodes the calldata this app just built
+   * with the decoder that mirrors the firmware, so the preview is reading the
+   * bytes rather than being told about them. */
   const view: TxInterpretation = interpretTransaction(
     {
       chainId,
-      to: toValue,
-      value,
+      to: plan.to,
+      value: plan.value,
+      ...(plan.data !== undefined ? { data: plan.data } : {}),
       ...(fee ? { gas: fee.gas, maxFeePerGas: fee.maxFeePerGas } : {}),
     },
     // Symbol from the chain registry, for descriptor `amount` fields. The
@@ -1079,26 +1577,19 @@ function renderPreview(fee?: { gas: bigint; maxFeePerGas: bigint }): void {
 async function sign(): Promise<void> {
   if (!transport || !client) return;
 
-  const toValue = ($("to") as HTMLInputElement).value.trim();
-  const amountValue = ($("amount") as HTMLInputElement).value.trim();
   $("txresult").textContent = "";
 
-  if (!isAddress(toValue)) {
-    ($("to") as HTMLInputElement).setAttribute("aria-invalid", "true");
-    log("that is not a valid address");
+  /* One description of what the form means, shared with the preview. Two would
+   * eventually disagree, and the one that mattered would be the one that got
+   * signed rather than the one that got shown. */
+  const plan = plannedSend();
+  for (const id of ["to", "amount"]) $(id).removeAttribute("aria-invalid");
+  if (!plan.ok) {
+    $(plan.field).setAttribute("aria-invalid", "true");
+    log(plan.message);
     return;
   }
-  ($("to") as HTMLInputElement).removeAttribute("aria-invalid");
-
-  let value: bigint;
-  try {
-    value = parseEther(amountValue);
-  } catch {
-    ($("amount") as HTMLInputElement).setAttribute("aria-invalid", "true");
-    log("that is not a valid amount");
-    return;
-  }
-  ($("amount") as HTMLInputElement).removeAttribute("aria-invalid");
+  const { to: toValue, value, data } = plan;
 
   busy(true);
   try {
@@ -1131,12 +1622,28 @@ async function sign(): Promise<void> {
 
     log(`nonce ${nonce}, max fee ${maxFeePerGas} wei`);
 
+    /* A plain send is always 21000; a token transfer's cost depends on the
+     * contract's storage, so it has to be estimated. That estimate is another
+     * disclosure to the operator — it hands them the calldata — but the
+     * alternative is a guessed limit, and a token transfer that runs out of
+     * gas still costs the gas. An estimate that reverts is reported as-is
+     * rather than retried: "execution reverted" usually means the balance is
+     * not there, which the user needs to read. */
+    const gas = plan.gas ?? await rpc.estimateGas({
+      account: from,
+      to: toValue as Address,
+      value,
+      ...(data !== undefined ? { data: data as Hex } : {}),
+    });
+
     /* Re-draw the preview now that the fee ceiling is known, and repeat any
      * warnings in the log — the panel can be scrolled off, and an unlimited
      * approval is worth saying twice. Nothing here blocks: refusing to send
      * would only teach the user that the app decides what is safe. */
-    renderPreview({ gas: 21000n, maxFeePerGas });
-    for (const w of interpretTransaction({ chainId: chain.id, to: toValue, value }).warnings) {
+    renderPreview({ gas, maxFeePerGas });
+    for (const w of interpretTransaction({
+      chainId: chain.id, to: toValue, value, ...(data !== undefined ? { data } : {}),
+    }).warnings) {
       log(`warning: ${w.message}`);
     }
 
@@ -1148,7 +1655,8 @@ async function sign(): Promise<void> {
       nonce,
       to: toValue as Address,
       value,
-      gas: 21000n,
+      ...(data !== undefined ? { data: data as Hex } : {}),
+      gas,
       maxFeePerGas,
       maxPriorityFeePerGas,
       type: "eip1559" as const,
@@ -1160,7 +1668,11 @@ async function sign(): Promise<void> {
       nonce,
       to: hexBytes(toValue),
       value: weiBytes(value),
-      gas: weiBytes(21000n),
+      /* The recipient and the amount live in here for a token send. The device
+       * decodes this itself and draws them; it is not taking this app's word
+       * for what the bytes mean. */
+      ...(data !== undefined ? { data: hexBytes(data) } : {}),
+      gas: weiBytes(gas),
       maxFeePerGas: weiBytes(maxFeePerGas),
       maxPriorityFeePerGas: weiBytes(maxPriorityFeePerGas),
     }, SIGN_TIMEOUT_MS);
@@ -1190,6 +1702,14 @@ async function sign(): Promise<void> {
     log(`sent: ${hash}`);
     $("txresult").innerHTML =
       `Sent. <a href="${chain.explorerUrl}/tx/${hash}" target="_blank" rel="noreferrer">View on explorer</a>`;
+
+    /* Whatever is on screen is now certainly wrong — one of these balances
+     * just changed. This is the one automatic refresh in the app, and it is
+     * automatic because the user's own action is what invalidated the number.
+     * It runs after the broadcast rather than after inclusion, so the figure
+     * may still be the pre-transaction one; the age line is what makes that
+     * readable rather than misleading. */
+    void refreshBalances("after broadcast");
   } catch (e) {
     if (e instanceof DeviceError && e.code === 0x0200) {
       log("rejected on the device");
@@ -1506,6 +2026,8 @@ async function initRpcTransport(): Promise<void> {
 ($("connect") as HTMLButtonElement).disabled = true;
 void initEnvironment();
 initChainSelector();
+initBalances();
+populateAssets();
 void initRpcTransport();
 
 $("connect").addEventListener("click", () => void connect());
@@ -1520,8 +2042,10 @@ $("usenext").addEventListener("click", () => {
 });
 
 for (const id of ["to", "amount"]) {
-  $(id).addEventListener("input", () => renderPreview());
+  $(id).addEventListener("input", () => { renderAmountNote(); renderPreview(); });
 }
+$("asset").addEventListener("change", () => applyAsset());
+$("amountunit").addEventListener("change", () => { renderAmountNote(); renderPreview(); });
 /* ------------------------------------------------------------------- theme */
 
 /* Three states, not two. "System" has to be reachable, or a user who toggles
