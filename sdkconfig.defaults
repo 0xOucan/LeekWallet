@@ -1,7 +1,8 @@
 # ============================================================================
 # LeekWallet sdkconfig.defaults
 # ============================================================================
-# ESP32-S3 Mini: 4MB flash, no PSRAM, USB-Serial-JTAG console
+# ESP32-S3 DevKitC-1 N16R8: 16MB flash, 8MB PSRAM (off - see below),
+# USB-Serial-JTAG console
 # ============================================================================
 
 # ============================================================================
@@ -84,7 +85,24 @@ CONFIG_TINYUSB_HID_ENABLED=y
 CONFIG_TINYUSB_DESC_HID_STRING="LeekWallet HID"
 
 # ============================================================================
-# PSRAM - Not available on ESP32-S3 Mini
+# PSRAM - present, and deliberately OFF.
+#
+# The chip really has it: esptool reports "Embedded PSRAM 8MB (AP_3v3)" on the
+# attached board, and platformio.ini has said devkitc-1 with 16MB flash all
+# along. The old comment here claimed a Mini with none, which was simply wrong
+# about the hardware.
+#
+# It stays off because this is a wallet. PSRAM is a separate die reached over a
+# bus; internal SRAM shares silicon with the CPU. Anything the allocator spills
+# externally - a seed, a mnemonic, a derived key - is reachable in ways internal
+# memory is not, and the S3's external-memory encryption rides on flash
+# encryption, which is T11 and not yet burned. Nothing needs the space today:
+# the firmware uses about 15% of internal RAM.
+#
+# Turn it on when something actually needs it - a camera framebuffer for T58 is
+# the realistic case - and with two conditions: secrets allocated
+# MALLOC_CAP_INTERNAL so they cannot land off-die, and external memory
+# encryption on. Octal PSRAM also consumes GPIO35/36/37, free today.
 # ============================================================================
 CONFIG_SPIRAM=n
 CONFIG_ESP32S3_SPIRAM_SUPPORT=n
