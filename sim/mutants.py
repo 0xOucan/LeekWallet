@@ -190,10 +190,55 @@ MUTANTS = [
     ("src/ui.c", "     * within 100 ms regardless. */\n    ui_invalidate();",
      "     * within 100 ms regardless. */",
      "the Signed acknowledgement never repaints"),
+
+    # SLIP-39. Every one of these is a way to produce shares that look right
+    # and are not recoverable by another implementation -- the failure mode a
+    # backup format cannot have. The official vectors are what must notice.
+    ("src/slip39-backup.c", "if (memcmp(check, digest, DIGEST_LEN) != 0) {",
+     "if (false) {", "SLIP-39 digest check dropped"),
+    ("src/slip39-backup.c", "if (rs1024(ext, w, words) != 1) {",
+     "if (false) {", "SLIP-39 checksum not verified"),
+    ("src/slip39-backup.c", "if ((w[4] >> (9 - i)) & 1) {",
+     "if (false) {", "SLIP-39 nonzero padding accepted"),
+    ("src/slip39-backup.c", "size_t pad = value_bits % 16;",
+     "size_t pad = value_bits % 10;", "SLIP-39 padding length from the wrong modulus"),
+    ("src/slip39-backup.c", "uint8_t ext = (uint8_t)((w[1] >> 4) & 1);",
+     "uint8_t ext = (uint8_t)((w[1] >> 8) & 1);",
+     "SLIP-39 extendable flag read from the wrong bit"),
+    ("src/slip39-backup.c", "if (value_len < SLIP39_MIN_SECRET_LEN) {",
+     "if (false) {", "SLIP-39 sub-128-bit share accepted"),
+    ("src/slip39-backup.c", "if (member_idx[m] == table[i].member_index) {",
+     "if (false) {", "SLIP-39 duplicate member index accepted"),
+    ("src/slip39-backup.c", "if (members != threshold) {", "if (false) {",
+     "SLIP-39 under-threshold group accepted"),
+    ("src/slip39-backup.c", "if (groups_seen != sh->group_threshold) {",
+     "if (groups_seen > sh->group_threshold) {",
+     "SLIP-39 too few groups accepted"),
+    ("src/slip39-backup.c", "if (table[i].id != sh->id ||", "if (false ||",
+     "SLIP-39 shares from different backups mixed"),
+    ("src/slip39-backup.c", "pass[0] = encrypt ? k : (uint8_t)(3 - k);",
+     "pass[0] = k;", "SLIP-39 Feistel rounds not reversed on decrypt"),
+    ("src/slip39-backup.c", "uint32_t iterations = 2500u << e;",
+     "uint32_t iterations = 10000u << e;", "SLIP-39 PBKDF2 iteration count"),
+    ("src/slip39-backup.c", "    memcpy(out, R, half);\n    memcpy(out + half, L, half);",
+     "    memcpy(out, L, half);\n    memcpy(out + half, R, half);",
+     "SLIP-39 Feistel halves swapped"),
+    ("src/slip39-backup.c", "out->group_threshold    = (uint8_t)(((hdr >> 12) & 0xf) + 1);",
+     "out->group_threshold    = (uint8_t)((hdr >> 12) & 0xf);",
+     "SLIP-39 group threshold decoded without its +1"),
+    ("src/slip39-backup.c", "            cmp = (w[len] == '\\0') ? 0 : 1;",
+     "            cmp = 0;", "SLIP-39 word matched on a prefix"),
+    ("src/slip39-backup.c", "    if (threshold == 1) {\n        for (uint8_t i = 0; i < count; i++) {",
+     "    if (threshold == 0) {\n        for (uint8_t i = 0; i < count; i++) {",
+     "SLIP-39 threshold-1 split takes the general path"),
+    ("src/slip39-backup.c", "if (groups[i].threshold == 1 && groups[i].count > 1) {",
+     "if (false) {", "SLIP-39 1-of-N group allowed"),
+    ("src/slip39-backup.c", "    if (rng_hook) {", "    if (false) {",
+     "SLIP-39 generation bypasses the entropy gate"),
 ]
 
 BINARIES = ["test_protocol", "test_ble_chunk", "test_ui", "test_eth_decode",
-            "test_text_entry"]
+            "test_text_entry", "test_slip39"]
 
 # Which suites even compile the mutated file. A suite that does not link it
 # cannot notice the mutant, so building it proves nothing and costs a rebuild;
@@ -203,6 +248,7 @@ SUITES_FOR = {
     "src/ui.c":         ["test_ui"],
     "src/eth-decode.c": ["test_eth_decode", "test_ui", "test_protocol"],
     "src/ble-chunk.c":  ["test_ble_chunk", "test_ui", "test_protocol"],
+    "src/slip39-backup.c": ["test_slip39"],
 }
 
 
