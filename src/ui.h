@@ -10,6 +10,25 @@
 #include <stdint.h>
 #include "button.h"
 #include "eth-tx.h"
+#include "leek-wallet.h"
+
+/**
+ * How many BIP44 accounts the device offers on its own screens (T45).
+ *
+ * m/44'/60'/<account>'/0/<index>: the account level is a separate identity off
+ * the same seed — separate history, separate balance — which docs/VAULT.md
+ * argues should be the ordinary way to hold several wallets, rather than
+ * storing several seeds and multiplying the number of things to back up.
+ *
+ * Ten, matching ADDRESS_INDEX_COUNT, and for the same reason: a selector on
+ * four buttons has to stay a short cycle, and ten identities is already far
+ * past what anyone navigates by pressing a button ten times. It is NOT a limit
+ * on what the device can derive or sign — the protocol carries a full path and
+ * a host may ask for any account — which is exactly why every confirmation
+ * screen renders the whole path rather than an index. An account the device's
+ * own menu cannot reach is legitimate; an account the user cannot SEE is not.
+ */
+#define HD_ACCOUNT_COUNT 10
 
 /**
  * Screen identifiers
@@ -127,6 +146,29 @@ void ui_register_screen(screen_id_t id, const screen_t *screen);
 void ui_task(void *pvParameters);
 
 /**
+ * Work the UI task owes itself, run once per loop *after* the repaint.
+ *
+ * Two things live here, and both are the same shape: something that must not
+ * happen inside a button handler.
+ *
+ *   - Slow work a screen announced (AUDIT S8f). Seed generation takes long
+ *     enough to need a "Generating..." frame in front of it, and the old code
+ *     got that frame onto the panel by calling ui_render() from inside the
+ *     button handler. That gave the screen two render paths and let a repaint
+ *     re-enter a screen that was mid-transition. Now the handler only sets the
+ *     text and marks the screen dirty; the loop paints it, and the generation
+ *     runs here, once the frame is already on the glass.
+ *
+ *   - State another task changed under a screen that is already up (T42): a
+ *     host clearing the passphrase while the wallet screen shows an address
+ *     and a fingerprint derived from it.
+ *
+ * Called by ui_task(). The host tests call it directly, which is the whole
+ * point of it being a function rather than a block inside the loop.
+ */
+void ui_poll_deferred(void);
+
+/**
  * Ask the user to compare the session passkey.
  *
  * Called from the protocol task when a handshake begins. The UI task picks it
@@ -155,9 +197,15 @@ void ui_request_lock(void);
  * path the signature will be taken at. It is passed in rather than looked up
  * on the UI task, which shares derivation state with the protocol task (T47).
  *
+ * `path` is that same path, in full. It is a path rather than an index because
+ * the account level is host-selectable too (T45): "addr 0" is identical text
+ * for m/44'/60'/0'/0/0 and m/44'/60'/7'/0/0, and those are different wallets.
+ * A host quietly moving accounts has to be visible, and it can only be visible
+ * if the screen is given the whole path.
+ *
  * Returns immediately. The protocol task polls ui_sign_outcome().
  */
-void ui_request_sign(const EthTx *tx, uint32_t address_index, const char *from);
+void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from);
 
 /**
  * Show a message and ask the user to approve signing it (EIP-191).
@@ -171,7 +219,7 @@ void ui_request_sign(const EthTx *tx, uint32_t address_index, const char *from);
  * path the signature will be taken at (T47).
  */
 void ui_request_sign_message(const char *message, size_t length,
-                             uint32_t address_index, const char *from);
+                             const HDPath *path, const char *from);
 
 /**
  * Show the wallet a host-supplied passphrase produced, and ask the user to

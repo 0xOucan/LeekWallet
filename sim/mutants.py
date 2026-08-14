@@ -235,6 +235,87 @@ MUTANTS = [
      "if (false) {", "SLIP-39 1-of-N group allowed"),
     ("src/slip39-backup.c", "    if (rng_hook) {", "    if (false) {",
      "SLIP-39 generation bypasses the entropy gate"),
+    # AUDIT S8f: the slow half of "GEN" happens after the frame that announces
+    # it, on the loop, not inside the button handler.
+    ("src/ui.c", "                create_generate_pending = true;",
+     "                /* mutant: generate inline */",
+     "the deferred generation never runs"),
+    ("src/ui.c",
+     "    if (create_generate_pending && current_screen == SCREEN_WALLET_CREATE) {",
+     "    if (create_generate_pending) {",
+     "a generation request outlives the screen that made it"),
+
+    # T42: a passphrase applied or dropped by another task must not leave an
+    # address and a fingerprint on screen that the device would not re-derive.
+    ("src/ui.c",
+     "    if (current_screen == SCREEN_WALLET_INFO &&\n        wallet_has_passphrase() != wallet_info_passphrase_shown) {",
+     "    if (false) {",
+     "the wallet screen keeps an address from a passphrase that is gone"),
+    ("src/ui.c", '(unsigned)address_index, wallet_has_passphrase() ? " P" : "");',
+     '(unsigned)address_index, "");',
+     "nothing on screen says a passphrase is applied"),
+    ("src/ui.c",
+     "    lock_device();\n    ui_set_screen(SCREEN_PIN_UNLOCK);\n    return true;",
+     "    pin_lock();\n    ui_set_screen(SCREEN_PIN_UNLOCK);\n    return true;",
+     "auto-lock leaves the passphrase applied"),
+    ("src/protocol.c", "        session_set_on_reset(host_passphrase_forget);",
+     "        /* mutant: nothing to do when the session dies */",
+     "a host passphrase outlives its session"),
+    ("src/protocol.c",
+     "void protocol_note_device_passphrase(void)\n{\n    host_passphrase_applied = false;\n}",
+     "void protocol_note_device_passphrase(void)\n{\n}",
+     "a device-typed passphrase is dropped when a host disconnects"),
+    ("src/session.c", "    if (on_reset) {\n        on_reset();\n    }",
+     "    /* mutant: nobody is told */",
+     "session teardown notifies nothing"),
+
+    # T45: the account level, on the wire and on the screens.
+    ("src/protocol.c", "            if (component == 2) {", "            if (false) {",
+     "the account in a requested path is ignored"),
+    ("src/protocol.c",
+     "    return path->account <= 0x7FFFFFFFu && path->address_index <= 0x7FFFFFFFu;",
+     "    return true;", "a path level past the hardened range is accepted"),
+    ("src/protocol.c", "        ui_request_sign(&tx, &sign_path, from_addr.hex);",
+     "        HDPath mutant_path = HDPATH_ETH_DEFAULT;\n        ui_request_sign(&tx, &mutant_path, from_addr.hex);",
+     "the confirmation is shown a different path than the one signed"),
+    ("src/ui.c", "    hd_account = account % HD_ACCOUNT_COUNT;\n    address_index = 0;",
+     "    hd_account = account;\n    address_index = 0;",
+     "the account selector runs past its bound"),
+    ("src/ui.c", "    hd_account = account % HD_ACCOUNT_COUNT;\n    address_index = 0;",
+     "    hd_account = account % HD_ACCOUNT_COUNT;",
+     "the address index survives an account change"),
+    ("src/ui.c", "        oled_draw_string_centered(1, path_str);",
+     "        /* mutant: no path on the wallet screen */",
+     "the wallet screen does not name its derivation path"),
+    ("src/ui.c",
+     "            format_hd_path(line, sizeof(line), &sign_path_shown);\n            oled_draw_string(5, 0, line);",
+     "            /* mutant: no path on the confirmation */",
+     "the signing confirmation hides the account it signs from"),
+    ("src/ui.c", "    nvs_set_u8(nvs, UI_KEY_ACCOUNT, (uint8_t)hd_account);",
+     "    nvs_set_u8(nvs, UI_KEY_ACCOUNT, 0);",
+     "the account selection is not persisted"),
+    ("src/ui.c",
+     "             * account the previous owner left selected. */\n            hd_account_set(0);",
+     "             * account the previous owner left selected. */",
+     "a wipe leaves the previous owner's account selected"),
+    # The reported bug and its neighbours: every lock path must lock the same
+    # thing. Each mutant is one call site going back to closing the PIN gate
+    # over an open vault.
+    ("src/ui.c", "    pin_lock();\n    wallet_lock();",
+     "    pin_lock();", "locking leaves the vault open behind the PIN gate"),
+    ("src/ui.c", "             * that happens by itself. */\n            lock_device();",
+     "             * that happens by itself. */\n            pin_lock();",
+     "the menu's Lock device only closes the PIN gate"),
+    ("src/ui.c",
+     "                    lock_device();\n                    pending_mnemonic_display = true;",
+     "                    pin_lock();\n                    pending_mnemonic_display = true;",
+     "Show Seed re-asks for the PIN with the seed still in RAM"),
+    ("src/ui.c", "    host_lock_pending = false;\n    lock_device();",
+     "    host_lock_pending = false;\n    pin_lock();",
+     "a host-requested lock only closes the PIN gate"),
+    ("src/ui.c", "    memzero(master_xfp, sizeof(master_xfp));",
+     "    /* mutant: the fingerprint outlives its seed */",
+     "a fingerprint survives the lock that dropped its passphrase"),
 ]
 
 BINARIES = ["test_protocol", "test_ble_chunk", "test_ui", "test_eth_decode",
@@ -249,6 +330,9 @@ SUITES_FOR = {
     "src/eth-decode.c": ["test_eth_decode", "test_ui", "test_protocol"],
     "src/ble-chunk.c":  ["test_ble_chunk", "test_ui", "test_protocol"],
     "src/slip39-backup.c": ["test_slip39"],
+    # session.c is linked by both endpoint suites; the protocol one is what
+    # notices a teardown that forgets to tell anyone (T42).
+    "src/session.c":    ["test_protocol", "test_ui"],
 }
 
 

@@ -169,10 +169,25 @@ void session_confirm(void)
     }
 }
 
+/* Whoever cares that the channel died. See session_set_on_reset(). */
+static void (*on_reset)(void) = NULL;
+
+void session_set_on_reset(void (*callback)(void))
+{
+    on_reset = callback;
+}
+
 void session_reset(void)
 {
     memzero(&sess, sizeof(sess));
     sess.state = SESSION_IDLE;
+
+    /* After the wipe, never before: the callback may look at the session, and
+     * it must see one that is already gone. A callback that resets the session
+     * itself would recurse, which is why nothing here re-enters. */
+    if (on_reset) {
+        on_reset();
+    }
 }
 
 SessionState session_state(void)

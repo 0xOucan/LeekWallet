@@ -68,6 +68,23 @@ void session_confirm(void);
 /** Tear down and wipe all session material. */
 void session_reset(void);
 
+/**
+ * Register something to run whenever the session goes away (T42).
+ *
+ * The session is torn down from four places — a disconnect, a new connection,
+ * a transport switch, and a frame that failed to authenticate — and state
+ * that belongs to the *host* rather than to the device has to die with it.
+ * Today that means a passphrase the app typed on the user's behalf: keeping it
+ * applied after the host that supplied it is gone leaves the device deriving
+ * from a hidden wallet that nothing on screen chose and no one is watching.
+ *
+ * A callback rather than a direct call so this file stays free of the wallet
+ * and the UI. It is the piece of the firmware that must run under a host test
+ * suite with nothing else linked in, and it decrypts attacker-controlled bytes
+ * — that isolation is worth keeping. NULL to unregister.
+ */
+void session_set_on_reset(void (*callback)(void));
+
 SessionState session_state(void);
 
 /**

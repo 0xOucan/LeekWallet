@@ -9,7 +9,7 @@ has moved on considerably. Where a finding is marked fixed, the fix is the curre
 Findings are ordered by severity. Each one names the file and line so it can be turned into a
 regression test in `sim/` before it is fixed.
 
-**Status:** S2, S3, S4, S5, S6, S7, S8a, S8b, S8c, S8d, S8g, S8h, S8i and S8k are **fixed** and
+**Status:** S2, S3, S4, S5, S6, S7, S8a, S8b, S8c, S8d, S8f, S8g, S8h, S8i and S8k are **fixed** and
 covered by tests. `ui.c` now runs on the host (T0.2-T0.4), so screen and button behaviour is testable rather
 than argued about.
 
@@ -18,8 +18,7 @@ PBKDF2 and authenticated AES-GCM — but **flash encryption and secure boot are 
 an attacker with the device still reads the vault off the chip and attacks the PIN offline. The
 KDF turns that from instant into days. It does not stop the read.
 
-Still open besides S1: **S8f** (a re-entrant `ui_render()` in the wallet-create handler) and
-**S8j**'s remaining half — the button queue is fixed and tested, but `dieharder` has never been
+Still open besides S1: **S8j**'s remaining half — the button queue is fixed and tested, but `dieharder` has never been
 run against the hardware RNG on real silicon. Everything else listed above is closed.
 
 ---
@@ -320,7 +319,7 @@ with a resume-on-boot flag.
 | c | `src/pin.c:309` | ~~`pin_get_current(pin, 0)` writes `pin[-1]`~~ **fixed** — guarded. |
 | ~~d~~ ✅ | `src/ui.c` | 24-word import: **fixed (T3)**. The import screen now opens with a 12/24 prompt and passes the answer to `mnemonic_entry_reset()`; BACK from the first character returns to it. Covered by the 24-word round-trip in `sim/test_mnemonic_entry.c`, which also pins the boundary — a 24-word phrase must not report itself complete at word 12. |
 | ~~e~~ ✅ | `src/ui.c` | **Fixed (T4).** The menu item works. It was dead for a good reason: the vault key derives from the PIN, so the `pin_change()` that "already existed" would have written a new hash and left every seed under a key nobody could derive again. It now re-encrypts every wallet into a spare slot generation and flips a single record carrying both the generation and the verifier, so a power cut leaves exactly one PIN opening everything. `sim/test_pin_change.c` crashes at every write of the operation and checks that after reboot. |
-| f | `src/ui.c:857` | `screen_wallet_create_on_button` calls `ui_render()` re-entrantly from inside a button handler to paint "Generating...", then the caller invalidates again. Works, but the screen contract now has two render paths. |
+| ~~f~~ ✅ | `src/ui.c` | **Fixed.** `screen_wallet_create_on_button` called `ui_render()` re-entrantly to paint "Generating..." before ~1 s of blocking work, giving the screen two render paths — a repaint could be produced from inside a handler that was still mutating the screen's state, and which path flushed last depended on the caller. The intent was real and is kept: the handler now sets `create_show_mnemonic` and a `create_generate_pending` flag and returns, the task loop paints that frame, and `ui_poll_deferred()` runs the generation behind it. One render path, and the announcement is on the panel before the work starts. Leaving the screen cancels the request, and the presses made during the generation are drained. Covered in `sim/test_ui.c` by two groups driven through `idle_pump()`, which now mirrors the loop (repaint if dirty, then deferred work); both survive-checked by mutants in `sim/mutants.py`. |
 | ~~g~~ ✅ | `src/ui.c` | **Fixed (T17).** The AP shipped a hardcoded WPA2 password (`leek1234`) and was reachable while the wallet was unlocked. It is now compiled out of the default build entirely, menu entry included, and lives only in `pio run -e esp32s3-wifi`. Two things the fix turned up: the toggle reported "WiFi [ON]" when Wi-Fi was compiled out, and the generated `sdkconfig.esp32s3` was committed and silently outranked `sdkconfig.defaults`, so turning Wi-Fi off had no effect until that file was removed. `sim/test_ui.c` walks the settings menu and asserts the entry is gone. |
 | h | `leek-wallet.c:129` | ~~AES-CBC with zero padding and no MAC~~ **authenticated implementation ready** in `src/vault-crypt.c`: AES-256-GCM, `nonce \|\| ciphertext \|\| tag`, nonce generated internally so it cannot be reused by a caller. Tests confirm a single flipped bit anywhere — nonce, ciphertext or tag — is rejected, where CBC produced a different plaintext and no error. **Wired in as storage format v3 and verified on hardware**: a device holding three v2 wallets migrated on unlock, and the same seeds derive the same addresses afterwards, confirmed by the user and by 20 successful derivations with no decrypt failures in the log. |
 | i | `src/ui.c:1630-1636` | ~~The QR screen maps ACCEPT/DOWN to "reveal seed phrase"~~ **fixed**. Hardware testing hit it: the QR fills the display so there is no footer, and pressing a button to leave the screen instead locked the device and demanded the PIN. Revealing the seed now lives in Settings, labelled, and still re-asks for the PIN. |

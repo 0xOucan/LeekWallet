@@ -311,31 +311,119 @@ static bool handle_hello(const uint8_t *payload, size_t len,
 }
 
 /**
- * The address index a request names, from "index" or the tail of "path".
+ * Every level this device will derive at must fit in a non-hardened index.
+ *
+ * Hardened levels are encoded by the wallet layer as 0x80000000 | n, so an
+ * account or an index at or above 2^31 is not a path — it is an overflow that
+ * would silently land somewhere else. Refusing is the only honest answer.
+ *
+ * Deliberately NOT bounded by HD_ACCOUNT_COUNT. That bound is what the
+ * device's own menu offers; a host asking for account 12 is asking for a real
+ * wallet, and refusing it would make paths the device can sign unreachable by
+ * anything but the menu. What makes it safe is that the confirmation screen
+ * renders the whole path, so an account the user did not choose is visible
+ * rather than merely legal.
+ */
+/* A passphrase this device did not see typed (T42).
+ *
+ * Set once the user has approved a host-supplied passphrase, and the reason
+ * the session-reset hook exists. A passphrase entered ON the device belongs to
+ * the person holding it and outlives any host; one typed INTO a host belongs
+ * to that host's session, and when the session dies - disconnect, transport
+ * switch, a new peer, a frame that failed to authenticate - the wallet it
+ * selected must die with it. Otherwise the next thing to connect inherits a
+ * hidden wallet it never asked for and the user never re-approved, and every
+ * address and signature it gets comes from a seed nothing on screen chose.
+ */
+static bool host_passphrase_applied = false;
+
+void protocol_note_device_passphrase(void)
+{
+    host_passphrase_applied = false;
+}
+
+static void host_passphrase_forget(void)
+{
+    if (!host_passphrase_applied) {
+        return;
+    }
+    host_passphrase_applied = false;
+    ESP_LOGW(TAG, "Session ended; dropping the host-supplied passphrase");
+    wallet_clear_passphrase();
+}
+
+static bool hd_path_in_range(const HDPath *path)
+{
+    return path->account <= 0x7FFFFFFFu && path->address_index <= 0x7FFFFFFFu;
+}
+
+/**
+ * The derivation path a request names, from "index"/"account" or from "path".
  *
  * Both spellings exist because the client thinks in BIP44 paths and the device
  * in indices; reading only "index" once meant every path-bearing request
- * silently derived address zero. Returns false when neither is present, so the
- * caller can decide whether that is a default or a refusal.
+ * silently derived address zero.
+ *
+ * The account level is read for the same reason, and it is the more dangerous
+ * of the two to ignore (T45). Until now m/44'/60'/3'/0/0 was parsed for its
+ * trailing 0 and answered with account 0's address under the label the host
+ * asked for — the device returning a different wallet than the one requested,
+ * with nothing anywhere saying so. Silently substituting a wallet is the exact
+ * failure the confirmation screens exist to prevent, so the account is parsed
+ * here and rendered there.
+ *
+ * `out` is pre-filled with the defaults by the caller. Components that are not
+ * present keep those defaults rather than being guessed at.
  */
-static bool request_index(const uint8_t *payload, size_t len, uint32_t *out)
+static void request_path(const uint8_t *payload, size_t len, HDPath *out)
 {
     CborItem item;
+    bool have_index = false;
+
     if (cbor_map_find(payload, len, "index", &item) && item.type == CBOR_UINT) {
-        *out = item.value;
-        return true;
+        out->address_index = item.value;
+        have_index = true;
     }
+    if (cbor_map_find(payload, len, "account", &item) && item.type == CBOR_UINT) {
+        out->account = item.value;
+    }
+
     if (cbor_map_find(payload, len, "path", &item) && item.type == CBOR_TEXT) {
         char path_str[40];
-        if (cbor_text_copy(&item, path_str, sizeof(path_str))) {
-            const char *last = strrchr(path_str, '/');
-            if (last && last[1] != '\0') {
-                *out = (uint32_t)strtoul(last + 1, NULL, 10);
-                return true;
+        if (!cbor_text_copy(&item, path_str, sizeof(path_str))) {
+            return;
+        }
+
+        /* Walk the components rather than only the tail. In m/44'/60'/a'/c/i
+         * the third slash introduces the account and the fifth the address
+         * index. A shorter path leaves whatever the explicit keys or the
+         * defaults gave; a longer one is not a path this device derives, and
+         * its extra components are ignored rather than mapped onto levels
+         * they do not name. */
+        const char *p = path_str;
+        int component = -1;   /* -1 while still on the leading "m" */
+        while (*p) {
+            if (*p != '/') {
+                p++;
+                continue;
+            }
+            component++;
+            p++;
+            if (*p == '\0') {
+                break;
+            }
+            uint32_t value = (uint32_t)strtoul(p, NULL, 10);
+            if (component == 2) {
+                out->account = value;
+            } else if (component == 4 && !have_index) {
+                /* An explicit "index" wins over the path's tail: a request
+                 * carrying both and disagreeing is malformed, and the device
+                 * must not quietly prefer the one the user is less likely to
+                 * have been shown. */
+                out->address_index = value;
             }
         }
     }
-    return false;
 }
 
 /**
@@ -476,28 +564,15 @@ static void dispatch(const uint8_t *payload, size_t len)
          * reading only "index" meant every request quietly derived address
          * zero, and ten identical addresses is a symptom that looks like a
          * derivation bug rather than a parsing one. */
-        uint32_t index = 0;
-        if (cbor_map_find(payload, len, "index", &item) && item.type == CBOR_UINT) {
-            index = item.value;
-        } else if (cbor_map_find(payload, len, "path", &item) && item.type == CBOR_TEXT) {
-            char path_str[40];
-            if (cbor_text_copy(&item, path_str, sizeof(path_str))) {
-                /* Take the trailing component of m/44'/60'/0'/0/<n>. Only the
-                 * address index is variable today; accounts are T45. */
-                const char *last = strrchr(path_str, '/');
-                if (last && last[1] != '\0') {
-                    index = (uint32_t)strtoul(last + 1, NULL, 10);
-                }
-            }
-        }
+        HDPath path = HDPATH_ETH_DEFAULT;
+        request_path(payload, len, &path);
 
-        if (index > 0x7FFFFFFFu) {
-            send_error(ERR_MALFORMED, "address index out of range");
+        if (!hd_path_in_range(&path)) {
+            send_error(ERR_MALFORMED, "derivation path out of range");
             return;
         }
+        uint32_t index = path.address_index;
 
-        HDPath path = HDPATH_ETH_DEFAULT;
-        path.address_index = index;
         EthAddress addr;
 
         if (wallet_get_address_at_path(&path, &addr) != WALLET_OK) {
@@ -573,12 +648,13 @@ static void dispatch(const uint8_t *payload, size_t len)
             tx.data_length = item.value;
         }
 
-        uint32_t sign_index = 0;
-        request_index(payload, len, &sign_index);
-        if (sign_index > 0x7FFFFFFFu) {
-            send_error(ERR_MALFORMED, "address index out of range");
+        HDPath sign_path = HDPATH_ETH_DEFAULT;
+        request_path(payload, len, &sign_path);
+        if (!hd_path_in_range(&sign_path)) {
+            send_error(ERR_MALFORMED, "derivation path out of range");
             return;
         }
+        uint32_t sign_index = sign_path.address_index;
 
         /* Refuse what cannot be explained (T50).
          *
@@ -614,10 +690,8 @@ static void dispatch(const uint8_t *payload, size_t len)
          * signing, and hand it to the screen. Deriving on the UI task shares
          * state with this one and once produced a signature from a key the
          * confirmation never named (T47). */
-        HDPath from_path = HDPATH_ETH_DEFAULT;
-        from_path.address_index = sign_index;
         EthAddress from_addr;
-        if (wallet_get_address_at_path(&from_path, &from_addr) != WALLET_OK) {
+        if (wallet_get_address_at_path(&sign_path, &from_addr) != WALLET_OK) {
             send_error(ERR_NO_WALLET, "derivation failed");
             return;
         }
@@ -625,7 +699,10 @@ static void dispatch(const uint8_t *payload, size_t len)
         /* Show it and wait. The screen renders these exact fields and the hash
          * below is taken from the same struct, so what is approved and what is
          * signed cannot differ. */
-        ui_request_sign(&tx, sign_index, from_addr.hex);
+        /* The screen is handed the same path the signature will be taken at,
+         * not a copy of one field of it, so "what was approved" and "what was
+         * signed" stay the same object (T47, T45). */
+        ui_request_sign(&tx, &sign_path, from_addr.hex);
 
         SignOutcome outcome = wait_for_user();
         if (outcome == SIGN_PENDING) {
@@ -645,10 +722,8 @@ static void dispatch(const uint8_t *payload, size_t len)
 
         /* Select and sign atomically. Doing these as two calls let the UI
          * task re-derive in between and the device signed with a key nobody
-         * asked for. */
-        HDPath sign_path = HDPATH_ETH_DEFAULT;
-        sign_path.address_index = sign_index;
-
+         * asked for. `sign_path` is the same struct the confirmation screen
+         * was handed, unchanged since. */
         EthSignature sig;
         if (wallet_sign_hash_at_path(&sign_path, digest, &sig) != WALLET_OK) {
             ui_sign_report(false);
@@ -723,15 +798,14 @@ static void dispatch(const uint8_t *payload, size_t len)
             return;
         }
 
-        uint32_t msg_index = 0;
-        request_index(payload, len, &msg_index);
-        if (msg_index > 0x7FFFFFFFu) {
-            send_error(ERR_MALFORMED, "address index out of range");
+        HDPath msg_path = HDPATH_ETH_DEFAULT;
+        request_path(payload, len, &msg_path);
+        if (!hd_path_in_range(&msg_path)) {
+            send_error(ERR_MALFORMED, "derivation path out of range");
             return;
         }
+        uint32_t msg_index = msg_path.address_index;
 
-        HDPath msg_path = HDPATH_ETH_DEFAULT;
-        msg_path.address_index = msg_index;
         EthAddress msg_from;
         if (wallet_get_address_at_path(&msg_path, &msg_from) != WALLET_OK) {
             send_error(ERR_NO_WALLET, "derivation failed");
@@ -739,7 +813,7 @@ static void dispatch(const uint8_t *payload, size_t len)
         }
 
         ui_request_sign_message((const char *)message, message_len,
-                                msg_index, msg_from.hex);
+                                &msg_path, msg_from.hex);
 
         SignOutcome msg_outcome = wait_for_user();
         if (msg_outcome == SIGN_PENDING) {
@@ -809,6 +883,7 @@ static void dispatch(const uint8_t *payload, size_t len)
         /* Switching seeds drops the passphrase (PROTOCOL.md 5). A passphrase
          * belongs to the seed it was entered against; carrying it across would
          * silently land the user in a third wallet nobody named. */
+        host_passphrase_applied = false;
         wallet_clear_passphrase();
 
         cbor_write_map(&w, 1);
@@ -870,17 +945,26 @@ static void dispatch(const uint8_t *payload, size_t len)
          * never written to flash or logged. */
         memzero(passphrase, sizeof(passphrase));
         if (perr != WALLET_OK) {
+            host_passphrase_applied = false;
             wallet_clear_passphrase();
             send_error(ERR_NO_WALLET, "could not apply the passphrase");
             return;
         }
 
-        /* The fingerprint the user compares. Deriving it here, on the task that
-         * applied the passphrase, is the same rule as T47: the screen must name
-         * what the device actually did. */
+        /* The address the user compares, and the seed fingerprint beside it on
+         * the screen. Derived here, on the task that applied the passphrase,
+         * which is the same rule as T47: the screen must name what the device
+         * actually did.
+         *
+         * Account 0 deliberately, whatever account the device is browsing: the
+         * question this screen asks is "is this the right SEED", and the XFP
+         * the screen draws answers it for every account at once. Following the
+         * browsing selection would make the same passphrase confirm against a
+         * different address depending on an unrelated menu setting. */
         HDPath pass_path = HDPATH_ETH_DEFAULT;
         EthAddress pass_addr;
         if (wallet_get_address_at_path(&pass_path, &pass_addr) != WALLET_OK) {
+            host_passphrase_applied = false;
             wallet_clear_passphrase();
             send_error(ERR_NO_WALLET, "derivation failed");
             return;
@@ -894,6 +978,7 @@ static void dispatch(const uint8_t *payload, size_t len)
              * it was in, and the host can try again. Leaving an unconfirmed
              * passphrase applied is how a user ends up signing from a wallet
              * they never agreed to. */
+            host_passphrase_applied = false;
             wallet_clear_passphrase();
             send_error(pass_outcome == SIGN_PENDING ? ERR_USER_TIMEOUT
                                                     : ERR_USER_REJECTED,
@@ -901,6 +986,11 @@ static void dispatch(const uint8_t *payload, size_t len)
                                                     : "rejected on device");
             return;
         }
+
+        /* Approved. From here the passphrase lives exactly as long as the
+         * session that supplied it (T42) - see host_passphrase_forget(). */
+        host_passphrase_applied = true;
+        session_set_on_reset(host_passphrase_forget);
 
         /* The address, never the passphrase or anything derived from it beyond
          * what a public address already reveals. */

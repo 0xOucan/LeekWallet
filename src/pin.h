@@ -122,7 +122,20 @@ bool pin_get_current(char *pin, size_t max_len);
 bool pin_is_unlocked(void);
 
 /**
- * Lock the device (clear verified state)
+ * Close the PIN gate: forget the verified state and the PIN itself.
+ *
+ * NOT "lock the device", despite the name it has always had, and the
+ * difference cost a user their expectation of one. This closes the gate and
+ * says nothing about the vault behind it: the passphrase, the decrypted
+ * mnemonic and the cached seed all survive a call to this, so a device that
+ * has only had its PIN gate closed is still holding everything the PIN was
+ * protecting. Unlocking again puts the user straight back into whatever wallet
+ * was selected, passphrase included.
+ *
+ * Locking the device is `lock_device()` in `src/ui.c`, which calls this and
+ * `wallet_lock()` together and is the only thing that should. Call this
+ * directly only where closing the gate really is the whole intent — there is
+ * no such caller in the firmware today.
  */
 void pin_lock(void);
 
