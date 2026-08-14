@@ -429,13 +429,35 @@ const busy = (on: boolean): void => {
  */
 async function findDevice(kind: LinkKind): Promise<Transport | null> {
   if (kind === "usb") {
-    const ports = await listPorts();
+    /* Enumeration *rejects* rather than returning empty when the platform has
+     * something specific to say - on Android, the cable and USB-host checks
+     * that a laptop's dialout-group advice would send someone past. Same shape
+     * as the BLE branch below, and for the same reason: swallowing the message
+     * would leave the user staring at an empty list. */
+    let ports;
+    try {
+      ports = await listPorts();
+    } catch (e) {
+      setConnection("error", "No device over USB");
+      log(String((e as Error).message ?? e));
+      return null;
+    }
     const port = ports.find((p) => p.likely_device) ?? ports[0];
     if (!port) {
       setConnection("error", "No device over USB");
       log("no USB serial ports; check the cable, and that you are in the dialout group");
-      log("if the device's Link setting is Bluetooth, it will not appear here at all");
       return null;
+    }
+    /* More than one candidate is unusual and worth saying out loud rather than
+     * silently taking the first - the same rule the BLE branch follows. It is
+     * not hypothetical on a phone: a USB-C dock or a second dev board is a
+     * whole extra Espressif device on the bus, and the user should know a
+     * choice was made for them before they approve a signature on it. */
+    const candidates = ports.filter((p) => p.likely_device);
+    if (candidates.length > 1) {
+      log(`${candidates.length} Espressif devices attached; using ${port.name}`);
+    } else if (!port.likely_device) {
+      log(`no Espressif device among ${ports.length} port(s); trying ${port.name} anyway`);
     }
     log(`found ${port.name} — ${port.description}`);
     /* A port existing does not mean the device is listening on it. With Link

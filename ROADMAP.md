@@ -343,6 +343,11 @@ sends your change to an attacker. Solana is the natural second coin.
 | T58a | Research spike before committing: verify ERC-4527's current shape and the UR encoding, and **measure** whether decode fits in RAM at a usable frame rate. A camera that cannot decode fast enough to be pleasant is worse than none. A scanner module that decodes onboard and speaks UART/I2C sidesteps the framebuffer and the decoder entirely and should be costed first | — | measured, not assumed |
 | T59 | **USB transport on Android**, alongside BLE. Android cannot open `/dev/ttyACM*` unrooted; it needs the USB Host API through a Kotlin driver. The route is the one T30 proved — a Tauri mobile plugin whose Gradle project `tauri-build` wires in automatically — not hand-rolled JNI. A cable takes the radio out of the threat model, which some users will prefer | T30 | the same signing flow over a C-to-C cable |
 
+T59 is **built but unproven**: `tauri-plugin-serialplugin` 3.x is wired in, `transports()` answers
+`["usb", "ble"]` on Android, and an arm64 APK builds with the plugin's Kotlin compiled and its
+`device_filter.xml` packaged. No phone was attached, so no permission dialog, no enumeration and no
+signature over a cable has been seen. Same standard as T30 — see `app/ANDROID.md`, "Known state".
+
 ## Critical path to the PoC
 
 Everything else is parallel decoration around this chain:

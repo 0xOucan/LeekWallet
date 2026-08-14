@@ -1,15 +1,16 @@
-# Android build (T29, T30)
+# Android build (T29, T30, T59)
 
 The companion app runs on Android through the same Tauri shell as the desktop
-build. Since T30 it also has a **real BLE transport** there: the `transports`
-command answers `["ble"]` on Android, and the app talks to a device over
-Bluetooth using the same frames, the same chunking and the same commands as on
-the desktop. Serial stays desktop-only — Android has no ports to enumerate.
+build, and since T59 it has **both transports** there: the `transports` command
+answers `["usb", "ble"]` on Android, and the Link selector offers both. Either
+one talks to a device using the same frames and the same four commands as on
+the desktop.
 
-> **Unproven on hardware.** Everything below builds and type-checks. No phone
-> was attached when it was written, so no scan, no connection, no permission
-> dialog and no signature has been observed on a real device. Read "Known
-> state" at the bottom before believing any of it.
+> **Unproven on hardware.** Everything below builds; the arm64 APK was produced
+> and its Gradle wiring inspected. No phone was attached when it was written, so
+> no scan, no enumeration, no connection, no permission dialog and no signature
+> has been observed on a real device. Read "Known state" at the bottom before
+> believing any of it.
 
 ## How BLE reaches Android
 
@@ -60,7 +61,129 @@ On the Rust side the split is a build-time feature, not a fork:
 implementation for both platforms. Enabling both features is a `compile_error!`
 rather than a silent choice of Bluetooth stack.
 
+## How USB reaches Android
+
+The same shape of problem, and deliberately the same answer.
+
+An unrooted Android app cannot open `/dev/ttyACM*`. The node is `root:root`,
+there is no `dialout` group to join, and no permission grants access to it. The
+only route to a CDC-ACM device is the Java **USB Host API**: `UsbManager`
+enumerates it, the user approves an explicit per-device permission intent, and
+only then does `openDevice` return a file descriptor that bulk transfers can run
+on. The `serialport` crate cannot do any of that, and the JVM half has to be
+compiled into the APK — which is exactly the constraint that ruled out
+hand-rolled JNI for BLE.
+
+[`tauri-plugin-serialplugin`](https://github.com/s00d/tauri-plugin-serialplugin)
+3.0.2 (Apache-2.0 OR MIT) is a Tauri mobile plugin, so the chain is the one
+above, verbatim: `links = "tauri-plugin-serialplugin"`, a build script calling
+`tauri_plugin::Builder::new(..).android_path("android")`, and `tauri-build`
+rewriting `tauri.settings.gradle` and `app/tauri.build.gradle.kts` to include
+the module. It was chosen over writing our own plugin around
+`mik3y/usb-serial-for-android` for three reasons:
+
+- It is the **only** maintained Tauri v2 plugin that actually ships Android
+  code. `tauri-plugin-serialport` and friends are `serialport`-crate wrappers
+  with no `android/` directory at all; the official plugins-workspace has
+  nothing in this area. Checked, not remembered — the repo tree and the
+  `[package.metadata.platforms.support.android]` key are the evidence.
+- Its 3.x rewrite moved the driver into Rust (`android-usb-serial` over `nusb`),
+  with Kotlin doing only enumeration, the permission dialog and handing over a
+  dup'd file descriptor. Versions ≤2.8.2 pulled `usb-serial-for-android` from
+  **JitPack**, which forced a hand-edit of `gen/android/build.gradle.kts` to add
+  the repository — an edit that this repo's regeneration rule would erase. Our
+  own plugin would have inherited that same trap.
+- Writing our own would mean owning a Kotlin USB driver, and the four ways this
+  breaks on modern Android (`FLAG_MUTABLE` on API 31+, an *explicit* intent on
+  API 34+, `RECEIVER_NOT_EXPORTED` on API 33+, and the receiver's export flag)
+  are all already handled in code with tests, which we would be reimplementing
+  for no gain.
+
+We use it as a **library, not as a JS API**. Its `invoke` commands are never
+exposed to the webview — no entry was added to `capabilities/default.json`, so
+the window gains no surface and the CSP is untouched — and the only calls are
+plain Rust methods on the `SerialPort` state it manages. The frames, the `LK`
+sync marker and the resync are ours, out of `transport-serial/src/wire.rs`, and
+are byte-for-byte the code the desktop backend runs.
+
+On the Rust side the split is a build-time feature, not a fork, matching BLE
+exactly: `leek-transport-serial` has `transport.rs` (`serialport`, feature
+`serialport`, desktop) and `android.rs` (the plugin, feature `android`), both
+exposing the same `list_ports`, `PortInfo`, `TransportError` and
+`send`/`recv`, and both driving the same `wire.rs`. `src-tauri/src/serial.rs`
+exports the same four command *names* on both platforms, so the frontend's USB
+path is one path. Enabling both features is a `compile_error!`.
+
+The desktop backend was not touched beyond moving its framing into `wire.rs` —
+the 250 ms settle, the `dtr_on_open(false)`, and the pre-send input flush are
+the same lines, each of which was paid for with a debugging session.
+
 ## Permissions
+
+### USB
+
+USB host needs **no install-time permission** — nothing is added to the
+permission list a user sees at install. It needs a **runtime, per-device**
+grant instead, which is a different mechanism from BLE's runtime permissions and
+behaves better.
+
+Enumeration is free: `UsbManager.getDeviceList()` needs no grant, so `ports`
+lists what is attached before anything is approved. Only opening prompts, and it
+prompts at Connect — the moment the user has expressed interest in a device,
+never on launch.
+
+What you see on the first attempt:
+
+- **First Connect on a given device** → Android shows *"Allow LeekWallet to
+  access the USB device?"* with a **"Use by default for this USB device"**
+  checkbox. The plugin's Kotlin **blocks** on the answer for up to 30 seconds,
+  so a grant lands inside the same attempt: **one tap on Connect is one
+  connection.** This is strictly better than the BLE flow, where the permission
+  call returns false immediately and the user must tap scan a second time.
+  Because it blocks, `connect` runs on `spawn_blocking` — on the UI thread this
+  would be an ANR while the dialog is on screen.
+- **Denied, or dismissed, or 30 s elapsed** → the connect fails with a message
+  naming the device and saying to replug and try again, never with an empty
+  list. A denied permission and an unplugged cable are indistinguishable unless
+  they are separated deliberately, and telling someone to check their cable when
+  the real problem is a dialog they dismissed is the worst answer this code
+  could give. Android does not remember a denial the way it remembers a granted
+  permission, so replugging and retrying genuinely does re-prompt.
+- **Ticked "use by default"** → the grant persists until the app is uninstalled,
+  and later connects raise no dialog at all.
+- **Nothing attached** → `ports` *rejects* rather than returning an empty array,
+  so the message can name the things worth checking on a phone (charge-only
+  cable, no USB-host support, missing OTG adapter) instead of the desktop
+  advice about the `dialout` group, which on Android is advice about a group
+  that does not exist.
+
+**The `USB_DEVICE_ATTACHED` intent-filter is present, and it is the plugin's
+decision, not ours.** The plugin's build script injects it into the generated
+`AndroidManifest.xml` unconditionally, along with a `@xml/device_filter`
+resource that ends in a catch-all `<usb-device />`. Consequences, stated plainly
+because they are visible to the user:
+
+- **Good:** plugging the wallet in offers to open LeekWallet, and a launch
+  triggered that way grants USB permission *implicitly* — no dialog at all. For
+  a fixed-VID device this is the nicest possible path, and it is the reason to
+  keep the filter rather than fight it.
+- **Bad:** the catch-all means *any* USB device attached may offer LeekWallet in
+  the chooser, not just an Espressif one. Narrowing it would mean shipping our
+  own `res/xml/device_filter.xml` in the app module, which lives under `gen/` and
+  would be erased on regeneration — the one thing this repo refuses to do. It is
+  logged here as a known wart rather than papered over. Note that the filter only
+  affects *launching*; it grants nothing on its own, and `likely_device` still
+  ranks strictly on `ESPRESSIF_VID` (0x303A).
+
+Several attached devices are handled rather than silently resolved: `list_ports`
+sorts Espressif VIDs first and then by name (the plugin returns a `HashMap`, and
+an order that changed between calls would move entries under the user's finger),
+and the UI **says out loud** when it picked one out of several, or when it fell
+back to a non-Espressif port. A dock or a second dev board is a whole extra
+device on the bus, and the user should know a choice was made for them before
+they approve a signature on it.
+
+### BLE
 
 `AndroidManifest.xml` entries arrive from the plugin's manifest, merged in by
 Gradle — `BLUETOOTH_SCAN` (with `neverForLocation`) and `BLUETOOTH_CONNECT` for
@@ -183,6 +306,58 @@ adb logcat -s RustStdoutStderr   # the Rust side's output
 Or `pnpm android:dev` with a device attached, which live-reloads the frontend
 from the Vite dev server.
 
+## Testing USB on the phone
+
+Nothing here has been run. This is the procedure, not a report.
+
+1. **Cable and adapter.** A C-to-C cable to a phone that supports USB host
+   (OTG), or a micro-USB phone with an OTG adapter. The cable must carry data;
+   a charge-only cable enumerates nothing and is the single most common cause of
+   an empty list. Note the phone must *supply* bus power to the board.
+2. On the wallet, set **Settings → Link → USB**. Unlike BLE, the device
+   enumerates over USB either way — the USB-Serial-JTAG bridge is in silicon and
+   comes up regardless of the Link setting — so a device that appears in the
+   list but never answers is almost always one whose Link is set to **BLE**
+   (PROTOCOL.md 3b). There is no way to ask it which link it is on over the link
+   it has switched off, so the silence is the signal, and the handshake timeout
+   says so in as many words.
+3. Launch the app. The Link selector should offer **USB cable** and
+   **Bluetooth**, and the badge should read `no link`, not `mock`. `mock` means
+   the backend answered `transports: []` — check the APK is the new one.
+4. Pick **USB cable** and tap Connect. The first attempt raises *"Allow
+   LeekWallet to access the USB device?"*. Tick **use by default** and tap OK;
+   the connection continues in the same attempt. There is **no** second tap, in
+   contrast to BLE.
+5. Compare the passkey against the OLED, press ALLOW, and run one signing
+   request end to end. A signature over a cable from the phone is the only thing
+   that proves any of this; a build that installs proves nothing.
+
+If it does not work:
+
+| Symptom | Most likely cause |
+| --- | --- |
+| "No LeekWallet is attached over USB" | Charge-only cable, no OTG support, or the phone is not supplying bus power. Confirm the phone sees it at all with any USB-serial terminal app. |
+| Permission dialog never appears | The app was not in the foreground when the intent was raised. Bring it forward and tap Connect again. |
+| "USB permission not granted" | Denied or dismissed. Unplug, replug, tap Connect, tap OK. |
+| Device listed, connects, then "Device did not answer" | The device's Link is set to BLE. Switch it, or switch this app to Bluetooth. |
+| "interface is busy" | A previous connection was not released. Disconnect in-app, or replug. |
+| Only some devices listed | Enumeration is by USB interface class; devices with no serial interface are correctly skipped. |
+
+Useful log filters:
+
+```bash
+adb logcat -s RustStdoutStderr SerialPlugin UsbFdBridge
+```
+
+To isolate whether the fault is Android's, run the desktop probe against the
+same board from a laptop — it uses the `serialport` backend but the identical
+`wire.rs`, so a success there and a failure on the phone puts the fault firmly
+on the Android side:
+
+```bash
+cd app/transport-serial && cargo run --bin leek-probe
+```
+
 ## Testing BLE on the phone
 
 Nothing here has been run. This is the procedure, not a report.
@@ -228,11 +403,32 @@ source of truth that silently does nothing because the generated file is
 already there. Run `pnpm tauri android init` after a fresh clone, and re-run it
 after changing the app identifier or product name.
 
-T30 kept that decision and did **not** hand-edit anything under `gen/`. The two
-files that wire the BLE plugin in — `gen/android/tauri.settings.gradle` and
-`gen/android/app/tauri.build.gradle.kts` — are rewritten by `tauri-build` on
-every build from the plugin's Cargo metadata. Regeneration is the mechanism,
+T30 and T59 both kept that decision and did **not** hand-edit anything under
+`gen/`. The two files that wire the plugins in —
+`gen/android/tauri.settings.gradle` and `gen/android/app/tauri.build.gradle.kts`
+— are rewritten by `tauri-build` on every build from the plugins' Cargo
+metadata. The serial plugin additionally rewrites the activity's
+`AndroidManifest.xml` from its own build script, between markers reading
+`SERIAL PLUGIN. AUTO-GENERATED. DO NOT REMOVE.` Regeneration is the mechanism,
 not a hazard.
+
+> **The trap, again.** `gen/android` is generated **once** and never refreshed.
+> If you change `tauri.conf.json`, the app identifier, or add or remove a Tauri
+> plugin, the existing `gen/android` will happily build the *old* wiring and
+> your change silently does nothing. **Delete the directory and re-run
+> `pnpm tauri android init`.** This cost half an hour during T59:
+>
+> ```bash
+> rm -rf app/src-tauri/gen/android && cd app && pnpm tauri android init
+> ```
+>
+> To check the wiring actually took, look for the plugin in both generated
+> Gradle files — this is the concrete verification, not a belief:
+>
+> ```bash
+> grep serialplugin app/src-tauri/gen/android/tauri.settings.gradle \
+>                   app/src-tauri/gen/android/app/tauri.build.gradle.kts
+> ```
 
 ## Release signing
 
@@ -262,30 +458,65 @@ treat it like `secure_boot_signing_key.pem`.
 
 ## Known state
 
-After T30, stated precisely, because "the APK builds" and "the APK works" are
+After T59, stated precisely, because "the APK builds" and "the APK works" are
 different claims and only one of them has been checked.
 
 **Verified on this machine:**
 
 - `cargo check` in `src-tauri` on the host — passes.
-- `cargo check --target aarch64-linux-android` — passes, with
-  `tauri-plugin-blec` and the blec backend compiled in.
-- `cargo test` in `transport-ble` — 15 wire tests pass, unchanged.
+- `cargo check --target aarch64-linux-android` — passes, with both
+  `tauri-plugin-blec` and `tauri-plugin-serialplugin` and both Android backends
+  compiled in.
+- `cargo test` in `transport-serial` — 11 wire tests (new; the framing was
+  previously untested because it was welded to a live port). `cargo test` in
+  `transport-ble` — 15 wire tests, unchanged.
 - `pnpm test` and `pnpm typecheck` — pass.
-- The desktop BLE path is untouched: same btleplug code, same commands.
+- **`pnpm android:build:arm64` — an APK was actually produced**, which is more
+  than T30 managed. The Gradle half of both chains is now *observed*, not
+  inferred:
+  - `gen/android/tauri.settings.gradle` gained
+    `include ':tauri-plugin-serialplugin'` alongside `':tauri-plugin-blec'`, and
+    `app/tauri.build.gradle.kts` gained both as `implementation` projects.
+  - The plugin's Kotlin compiled: `app/tauri/serialplugin/SerialPlugin.class`
+    and `manager/UsbFdBridge.class` are in its library jar, and it is an
+    `implementation` dependency of the app.
+  - The merged manifest carries
+    `<uses-feature android:name="android.hardware.usb.host" required="false">`
+    and the injected `USB_DEVICE_ATTACHED` intent-filter, and the plugin's
+    `res/xml/device_filter.xml` is packaged inside the APK.
+  - The androidx `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` signature permission
+    was merged in, which is the API-33 receiver-export requirement being handled.
+- The desktop paths are behaviour-unchanged: the BLE code is untouched, and the
+  serial backend runs the same open/send/recv sequence with its framing moved
+  into `wire.rs`.
+- The board on this machine enumerates as `303a:1001`, confirming the VID that
+  `ESPRESSIF_VID` matches on. Read only — nothing was written to it.
 
-**Not verified — no phone and no Android SDK were attached:**
+**Not verified — no phone was attached:**
 
-- `pnpm android:build` was **not** run for T30. The Gradle half of the chain
-  described in "How BLE reaches Android" is read off `tauri-build`'s and
-  `tauri-plugin`'s source, not observed. If it is wrong, it fails at Gradle
-  configuration time with a missing `:tauri-plugin-blec` project, loudly, not
-  at runtime.
-- No scan, no connection, no notification, no signature over BLE on Android.
-- The permission dialog has never been seen to appear.
-- The negotiated MTU on Android (`REQUEST_MTU` = 247, read back after connect)
-  has never been observed. If the read-back is wrong the chunker would write
-  past the link MTU and frames would be silently truncated — worth watching in
-  the first real test.
-- Earlier, from T29: a debug APK was produced for `aarch64`, but was never
-  installed or run on a device.
+- Nothing has run on Android. Not one line of the Kotlin has executed.
+- No enumeration, no permission dialog, no connection, no frame, no signature —
+  over USB or over BLE.
+- **The permission dialog has never been seen to appear**, on either transport.
+  The claim that USB's grant lands inside the same Connect attempt is read off
+  the plugin's Kotlin (a `CompletableFuture` waited on for 30 s), not observed.
+- `spawn_blocking` around the connect is reasoned, not measured. If the plugin
+  turns out to touch the UI thread internally, the dialog could still ANR.
+- `TransportError::classify_open` matches on **substrings** of the plugin's
+  error text, because the plugin flattens everything into one string variant. A
+  future plugin release that rewords its errors would downgrade a permission
+  denial to a generic message — worse wording, not a wrong answer, but the first
+  thing to check if the permission message never appears.
+- The `NO_DATA` sentinel in `transport-serial/src/android.rs` is matched the
+  same way, with the same caveat: a reword turns an idle device into a reported
+  read error instead of a clean timeout.
+- The 250 ms settle before clearing the input buffer is carried over from
+  desktop on the reasoning that the device's behaviour is host-independent. On
+  Android the fd arrives through a different path and the right delay may
+  differ. If stale frames appear on the first request, this is the line.
+- Whether `available_ports(true)` collapses the ESP32-S3 to exactly one entry on
+  a real phone.
+- The negotiated BLE MTU on Android (`REQUEST_MTU` = 247, read back after
+  connect) has never been observed. If the read-back is wrong the chunker would
+  write past the link MTU and frames would be silently truncated.
+- No APK has ever been *installed* or *run* on a device, from T29 onward.

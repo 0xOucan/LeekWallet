@@ -17,9 +17,10 @@ serde_json = "1"
 # (PROTOCOL.md 3b), so which one is live is a runtime question, not a build-time
 # one.
 #
-# Serial stays desktop-only: Android has no ports to enumerate and exposes USB
-# devices through a Java permission API instead, so serialport's platform code
-# does not build there at all.
+# Since T59 that is true of the phone too. The serial crate has two backends
+# behind one API — the `serialport` crate on desktop, the Android USB Host API
+# on a phone — so the platform difference is a feature flag here rather than a
+# transport that is simply missing there.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 leek-transport-serial = { path = "../transport-serial" }
 leek-transport-ble = { path = "../transport-ble" }
@@ -37,6 +38,18 @@ tokio = { version = "1", features = ["sync"] }
 leek-transport-ble = { path = "../transport-ble", default-features = false, features = ["blec"] }
 tauri-plugin-blec = "0.12"
 tokio = { version = "1", features = ["sync"] }
+
+# The same trick again for USB. `tauri-plugin-serialplugin` is a Tauri mobile
+# plugin, so the Kotlin that drives the USB Host API — enumeration, the
+# per-device permission dialog, and the file descriptor the bulk transfers run
+# on — ships inside the crate, and `tauri-build` wires its Gradle project in
+# every time `gen/android` is regenerated. The `serialport` crate cannot do any
+# of this: an unrooted Android app may not open /dev/ttyACM* at all.
+#
+# `default-features = false` is what makes the two backends mutually exclusive:
+# with the default `serialport` feature still on, the crate refuses to build.
+leek-transport-serial = { path = "../transport-serial", default-features = false, features = ["android"] }
+tauri-plugin-serialplugin = "3.0.2"
 
 # Tauri builds Android as a shared library loaded by the JVM, not an executable
 # with a main(). Without this the linker produces something the APK cannot load.
