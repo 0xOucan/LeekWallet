@@ -18,6 +18,15 @@ confirmation.
 
 ### Transport: one per platform — BLE on Android, cable on desktop
 
+> **Superseded by what shipped.** Both platforms now build both transports:
+> desktop has USB (`serialport`) and BLE (`btleplug`), and Android has both too
+> (`tauri-plugin-blec` for T30, `tauri-plugin-serialplugin` for T59) — built and
+> packaged into an APK, but never run on a phone. The
+> reasoning below is kept because it is why the *device* exposes one link at a
+> time (T57) and why the `Transport` trait exists — which is exactly what made
+> adding the second one configuration rather than rework, as the last paragraph
+> of this section predicted.
+
 **Decided: Android speaks BLE, desktop speaks USB CDC-ACM. Neither platform implements both.**
 
 Each platform gets the transport that is native to it, and skips the one that is painful there:
@@ -148,7 +157,7 @@ to say this at the moment of creation, not in a manual.
 | ~~T38~~ ✅ | On-device passphrase entry: full printable ASCII via mode entries in the selector ring | T3 | every printable character reachable; **13.6 presses/char measured**, so a 17-char passphrase costs 231 presses |
 | ~~T39~~ ✅ | Address shown after a passphrase is applied, before anything else, with RETRY to clear a wrong one | T38 | address changes with the passphrase; wrong entry is recoverable |
 | T39b | Add the master XFP alongside the address, as Coldcard does — shorter to write down than 42 hex characters | T39 | **Computation done**: `wallet_get_master_fingerprint()`, checked against two published vectors in `sim/test_xfp.c`. The on-screen display still needs wiring — `ui.c` was owned by concurrent work |
-| T40 | Host-side passphrase entry over the protocol, marked as the lower-security path | T20, T38 | mock device round-trips it |
+| T40 | Host-side passphrase entry over the protocol, marked as the lower-security path | T20, T38 | **Wire done, UI not**: `setPassphrase` is dispatched by the firmware (`src/protocol.c`) and answered by the mock (`app/packages/core/src/mock-device.ts`), and the app reads back whether one is applied. Nothing in the app *sends* one, so the lower-security path is unreachable — and unlabelled, which is the half that matters |
 | ~~T41~~ ✅ | Interop vectors: BIP39 known-answer seeds with and without passphrase | — | `sim/test_passphrase.c`, both spec vectors match byte-for-byte |
 | T45 | Per-seed accounts: expose `m/44'/60'/account'/0/0` so one seed covers multiple identities, which is the model that should be the default rather than 30 stored seeds | T43 | account selector on the wallet screen |
 | T42 | Session model: when the passphrase clears (on lock, on timeout, on wallet switch) and how the UI shows which wallet is active | T38 | no path silently reuses a stale passphrase |
@@ -220,7 +229,7 @@ one physical board.
 | ~~T5~~ ✅ | Unified `device_wipe()`, idempotent + confirmation screen ([S7](AUDIT.md)) | T0.1 | crash-injection test leaves no half state — `sim/test_device_wipe.c`, 7 groups, marker + resume-on-boot |
 | ~~T6~~ ✅ | Wire the unused `screen_t.exit` hook; `memzero()` seed buffers ([S5](AUDIT.md)) | T0.2 | buffer is zero after leaving the screen, and *not* zeroed across the display ↔ verify hand-off; removing the hook fails 6 assertions, over-correcting fails 9 |
 | ~~T7~~ ✅ | Error display separated from `eth_address.hex` ([S8a](AUDIT.md)) | T0.3 | error screen says "Error" and names the reason; QR refuses to encode anything that is not a 42-character address |
-| T43 | Account/address-index selector — the wallet core already derives any BIP44 path, the UI hardcodes index 0 | T0.3 | can view `m/44'/60'/0'/0/n` for arbitrary n |
+| ~~T43~~ ✅ | Account/address-index selector — the wallet core already derives any BIP44 path, the UI hardcoded index 0 | T0.3 | UP/DOWN on the address screen walk `m/44'/60'/0'/0/0..9` (`ADDRESS_INDEX_COUNT`, `screen_wallet_info_on_button` in `src/ui.c`), the title shows which, and switching wallets resets to 0. **Bounded at ten, not arbitrary n**: ten is what fits a menu with two buttons and matches what the app enumerates. The *account* level is still fixed at `0'` — that is T45 |
 | ~~T44~~ ✅ | Faster word selector: letters offered as coarse blocks, and the selector switches to whole candidate words once ≤8 still match | T0.4 | measured over all 2048 words in `sim/test_mnemonic_entry.c`: worst case 38 → 19 presses, average 19.8 → 12.0, with both figures budgeted so a regression fails the suite |
 | ~~T8~~ ✅ | Button queue backpressure ([S8j](AUDIT.md)) | T0.4 | no dropped events across a simulated 800 ms stall; queue size derived from the stall budget and the debounce floor, overflow drops the oldest and is counted |
 
@@ -228,14 +237,14 @@ one physical board.
 
 | ID | Task | Depends | Done when |
 |----|------|---------|-----------|
-| T9 | **The vault** — salted PBKDF2 KDF, AES-GCM, flash encryption + secure boot. Full design and subtask breakdown in [docs/VAULT.md](docs/VAULT.md) ([S1](AUDIT.md)) | T0.1 | see VAULT.md T9a-T11c |
+| T9 | **The vault** — salted PBKDF2 KDF, AES-GCM, flash encryption + secure boot. Full design and subtask breakdown in [docs/VAULT.md](docs/VAULT.md) ([S1](AUDIT.md)) | T0.1 | **Two thirds done**: the KDF (`components/leek-wallet/vault-kdf.c`, per-device salt, domain-separated key and verifier) and authenticated storage (T14) are in and tested. Flash encryption and secure boot are T11, and they are the part S1 turns on |
 | ~~T10~~ ✅ | Attempt counter: persist before compare, sentinel for 0 ([S4](AUDIT.md)) | T0.1 | crash-injection test grants no free attempts |
 | T11 | Flash encryption + secure boot v2 (must ship together — see [docs/VAULT.md](docs/VAULT.md)). Proven end-to-end in QEMU; the hardware burn is written up in [docs/BURN-PROCEDURE.md](docs/BURN-PROCEDURE.md) and **not yet executed** | — | `read_flash` yields no plaintext *on a real board*; unsigned image refuses to boot |
-| T11b | Migration path for wallets encrypted under the old KDF | T9 | existing device upgrades without seed loss |
+| ~~T11b~~ ✅ | Migration path for wallets encrypted under the old KDF | T9 | `migrate_vault_to_current()` in `components/leek-wallet/leek-wallet.c` re-encrypts one wallet at a time on the first successful unlock, flips the version marker last, and resumes rather than bricking if it is interrupted. Verified on hardware: a device holding three v2 wallets migrated on unlock and derived the same addresses afterwards ([S8h](AUDIT.md)) |
 | ~~T12~~ ✅ | On-device EIP-1559 decode, three-page confirmation, sign only what was displayed | T0.3 | 6 test groups on encoding and rendering; signs on hardware |
 | T12b | ERC-20 transfer and approve decoding ✅, and EIP-712 typed data (pending — needs a `signTypedData` command first) | T12, T50 | a token transfer shows the contract address and amount |
 | ~~T13~~ ✅ | Address and amount presentation: EIP-55 casing, one wei never rounds to zero, unknown chains show a number | T0.3 | covered by `sim/test_eth_tx.c` |
-| T14 | AES-GCM instead of unauthenticated CBC ([S8h](AUDIT.md)) | T9 | tampered ciphertext is rejected |
+| ~~T14~~ ✅ | AES-GCM instead of unauthenticated CBC ([S8h](AUDIT.md)) | T9 | `components/leek-wallet/vault-crypt.c`: AES-256-GCM, `nonce ‖ ciphertext ‖ tag`, nonce generated internally so a caller cannot reuse one. `sim/test_vault_crypt.c` flips a single bit in each of the three parts and all three are rejected. Shipped as storage format v3 |
 | ~~T15~~ ✅ | Entropy gate ([S6](AUDIT.md)): bootloader RNG + SP 800-90B health tests, fails closed | — | `sim/test_entropy.c` green; **dieharder run on hardware still pending** |
 | ~~T15b~~ ✅ | User entropy pool: button-timing collection screen, hashed with hardware entropy | T15 | 5 pool tests green; worst-case user cannot weaken output |
 | ~~T16~~ ✅ | Default-off, on-device-only blind-signing setting: permits signing calldata the device cannot decode, and nothing else. See [PROTOCOL.md 6bis](docs/PROTOCOL.md) | T12 | `src/blind-signing.c`; off by default and persisted, five presses behind a warning screen, no command can change it, `getFeatures` reports the real state. Contract creation, oversized calldata and unrenderable messages stay refused. When `signHash` lands it gates on this same setting |
@@ -256,7 +265,7 @@ Write the protocol spec first and both sides build against it simultaneously.
 | ~~T22c~~ ✅ | BLE transport (`btleplug`) for Android behind the same interface | T22a | identical results over both channels — desktop proven end to end; Android still needs the JVM driver class (T30) |
 | ~~T23~~ ✅ | **Mock device** implementing the protocol: session, permission tiers, confirmations, rejection, latency | T20 | 10 test groups green; UI can be built with no hardware |
 | ~~T48~~ ✅ | Transaction interpretation in the app (Rabby-style), with unlimited-approval warnings and local selector DB. Advisory only — see [PROTOCOL.md 6c](docs/PROTOCOL.md) | T24 | ERC-20 transfer and approve decoded and labelled as a preview; addresses render EIP-55 to match the device screen |
-| T49 | WalletConnect project ID: bundled default plus a user override in settings | T32 | app works out of the box and can be pointed at your own project |
+| T49 | WalletConnect project ID: bundled default plus a user override in settings | T32 | **Override done, bundled default deliberately not**: `app/src/wc/project-id.ts` takes an ID in settings, validates its 32 hex characters so a paste error is caught there, and persists it. `BUNDLED_PROJECT_ID` is empty on purpose — an ID is issued to a person and rate-limited per ID, so committing one would be either a fake string that fails at the relay or somebody else's quota. So it does *not* work out of the box, and says so instead of failing at connect time. Whoever ships a build fills it in |
 | ~~T24~~ ✅ | viem `toAccount()` adapter — structured fields only, never a serialised payload | T21 | 5 test groups; drops into any walletClient |
 | ~~T25~~ ✅ | Firmware: BLE GATT service + protocol dispatcher. `src/ble.c` (NimBLE) + `src/ble-chunk.c`; the same `protocol_handle_frame()` the cable uses, no marker on BLE, chunked to the negotiated MTU | T20 | ping answered over GATT; chunking verified against `chunkForBle` at MTU 23 and 244 in `sim/test_ble_chunk.c` |
 | ~~T57~~ ✅ | **One transport at a time**: a device setting selecting USB or BLE, with the unselected one fully off and any session torn down on switch. See [PROTOCOL.md 3b](docs/PROTOCOL.md) | T25 | both cannot be reachable simultaneously; BLE does not advertise when USB is selected. `src/transport.c` is the only door to either; Settings → Link toggles it, default USB, and a switch tears the session down |
@@ -271,15 +280,15 @@ T23 is the highest-leverage item in the plan: it decouples Track D from all firm
 
 | ID | Task | Depends | Done when |
 |----|------|---------|-----------|
-| T27a | Design tokens from [docs/DESIGN.md](docs/DESIGN.md) as CSS custom properties + base components (button, field, address, status bar) | — | renders at all 4 breakpoints, both themes |
-| T27b | Tauri v2 shell, desktop targets, capability allowlist | — | empty app builds on Linux |
+| ~~T27a~~ ✅ | Design tokens from [docs/DESIGN.md](docs/DESIGN.md) as CSS custom properties + base components (button, field, address, status bar) | — | `app/src/tokens.css` is the single source of colour, space and size; dark applies on both an explicit `data-theme` and `prefers-color-scheme`, and `prefers-reduced-motion` is honoured. `styles.css` carries the phone, tablet, desktop and coarse-pointer breakpoints |
+| ~~T27b~~ ✅ | Tauri v2 shell, desktop targets, capability allowlist | — | `app/src-tauri/` builds on Linux; `capabilities/default.json` is the whole invokable surface, which is what Tauri was chosen for. Exercised end to end against hardware by T27c |
 | ~~T27c~~ ✅ | Discovery, pairing with passkey comparison, unlock, address list, signing — against the mock and against hardware | T22, T23, T27a | verified end to end on a real device |
-| T28 | Transaction construction + send flow (viem) | T24, T27a | testnet transfer signed by the mock |
+| ~~T28~~ ✅ | Transaction construction + send flow (viem) | T24, T27a | past the done-condition: not the mock but a real device, and not only a transfer. `signPlannedTransaction()` in `app/src/main.ts` builds, signs and optionally broadcasts, refusing to broadcast to a chain other than the one signed for. Sepolia transfer `0xa035de1c…` and the Aave faucet call under T32 |
 | ~~T29~~ ✅ | Android target: `tauri android init`, build, sign | T27b | APK builds; see `app/ANDROID.md`. Never installed on a phone yet |
-| T30 | Android BLE: runtime permissions (`BLUETOOTH_SCAN`/`CONNECT`, location on older APIs), scan/pair flow, reconnect handling | T22, T29 | phone connects and survives a backgrounding |
+| T30 | Android BLE: runtime permissions (`BLUETOOTH_SCAN`/`CONNECT`, location on older APIs), scan/pair flow, reconnect handling | T22, T29 | **Built, never run.** `tauri-plugin-blec` carries its own Kotlin, `tauri-build` wires its Gradle project in automatically, its manifest supplies the Bluetooth permissions, and an arm64 APK was produced with all of it compiled in. No phone was attached: no scan, no permission dialog, no connection, no frame, no signature. The negotiated MTU has never been observed either, so silent frame truncation is possible. See `app/ANDROID.md`, "Known state" |
 | T31 | Screen-reader labels, keyboard traversal, contrast audit | T27c, T28 | pre-delivery checklist passes |
 | ~~T32~~ ✅ | WalletConnect v2 pairing (URI + QR), session list, pending-request view. **No in-app dapp browser** — see [PROTOCOL.md 6b](docs/PROTOCOL.md) | T28 | signs a request from a real dapp in the user's own browser — Aave's Base Sepolia faucet, `0x48696ca6…`, decoded and confirmed on-device, no blind signing |
-| T46 | Address enumeration in the app: derive and list addresses so the user picks there, Ledger-behind-Rabby style | T24 | list of 10 addresses with balances, selection drives the signing path |
+| T46 | Address enumeration in the app: derive and list addresses so the user picks there, Ledger-behind-Rabby style | T24 | **Listing and selection done, balances not**: `loadAddresses()` in `app/src/main.ts` derives `m/44'/60'/0'/0/0..9`, lists them, and the selection drives the signing path (with a generation counter so a second run cannot append to a list it no longer owns). No balance is fetched, so picking an address is still done by index rather than by what is in it |
 | ~~T47~~ ✅ | Show the signing *source* address on the device confirmation, not just the destination | T12 | the full checksummed address is rendered, derived on the protocol task at the signing path |
 
 T30 is still the riskiest item — Android BLE permissions and background/reconnect behaviour are
@@ -290,7 +299,7 @@ device- and OEM-specific, and none of it can be validated against the mock. But 
 
 | ID | Task | Depends | Done when |
 |----|------|---------|-----------|
-| T33 | Decide 4 MB vs N16R8; update `platformio.ini` + `partitions.csv` together | — | chosen target builds and boots |
+| ~~T33~~ ✅ | Decide 4 MB vs N16R8; update `platformio.ini` + `partitions.csv` together | — | settled on **16 MB flash, no PSRAM**, which is what the development board reports. `board_build.flash_size = 16MB` and `partitions.csv` (4 MB app, 24 KB nvs) agree, and the firmware builds and boots on it. PSRAM stays off — it is broken under QEMU, which the test strategy depends on. The comment block at the top of `platformio.ini` still says 4 MB and is wrong |
 | T34 | Enclosure / physical form | T33 | printable |
 | T35 | Add the missing `docs/leekwallet-logo.png` | — | README image resolves |
 | T36 | Assembly guide with photos | T33 | someone else can build one |
@@ -367,6 +376,12 @@ data is not) and **T30** (the Android plugin — the only piece with no mock).
 had to work all at once — entropy, vault, derivation, display, approval,
 signing, transport, session, encoding — works.
 
+**And then again from a real dapp.** Aave's Base Sepolia faucet, in an ordinary
+browser, over WalletConnect, over BLE, to a device on battery: `0x48696ca6…`,
+`mint(address,address,uint256)` decoded and confirmed on the device's own
+screen with blind signing off. Which also means the refusal path is real — the
+same faucet was refused before its selector was in the decodable set.
+
 What is still true: **flash encryption is not enabled**, so anyone holding the
 device can read the vault off the chip and attack the PIN offline. That is the
 one thing between this and real funds, and no amount of work elsewhere
@@ -393,25 +408,26 @@ could not work. Both times the fix was making the mock stricter.
 
 ## Progress
 
-Done: **T0.1** (fake NVS with crash injection and an I/O-ordering probe), **T1** (import fixed —
-2048/2048 words enterable), **T2** (explicit PIN submit, 4-8 digits), **T10** (attempt counter
-hardened, interrupted wipe resumes on boot).
+The T0 gate, all of Track A except T45, the protocol and both transports, the
+mock, the viem adapter, the app and WalletConnect are done. The full host suite
+is **18 files, all passing** (`make -C sim test`).
 
-Firmware: 34.4% flash, 14.2% RAM.
+What is left, in the order it matters:
 
-Next, mutually independent — different files, any order, safe in parallel:
-**T20** (protocol spec — unblocks all of Track C and D),
-**T3** (12/24-word selector; the entry module already handles 24, it needs a screen),
-**T41** (passphrase interop vectors — pure host test, no UI, proves the BIP39 claim),
-**T27a** (design tokens + base components from [docs/DESIGN.md](docs/DESIGN.md)).
+1. **T11** — flash encryption and secure boot. Rehearsed in QEMU, written up in
+   [docs/BURN-PROCEDURE.md](docs/BURN-PROCEDURE.md), gated by
+   `scripts/preflight-secure.sh`. No fuse has been burned. Nothing else on this
+   list changes what a person holding the device can do.
+2. **T30** — install the APK on a phone. Everything Android is currently
+   verified by a compiler and nothing else.
+3. **T26** — the mock leg of the conformance suite. USB and BLE already run
+   against each other; the mock is the one that has twice certified code that
+   could not work.
+4. Then the smaller open rows: **T45** (accounts), **T46** (balances), **T40**
+   (host passphrase entry), **T39b** (XFP on screen), **T12b** (EIP-712, which
+   needs a `signTypedData` command first), **T31** (accessibility), **T35**
+   (the missing logo), **T36**, **T37**.
 
-## Suggested first week
-
-Day 1 is T0. Then, if you have people to spread across it:
-
-- **T1** (import is 50/50 broken today, contained fix, immediately visible win)
-- **T20** (unblocks the entire TS side; costs a document, not code)
-- **T33** (settle the hardware target before anyone tunes partitions)
-
-If you are working alone, that same order still holds — T1 is a morning, T20 is an afternoon,
-and after those two the rest of the plan stops being sequential.
+Firmware size figures were removed rather than carried forward — the last ones
+recorded predate the protocol, BLE and decoding work, and nobody has measured
+since.
