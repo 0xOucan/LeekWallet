@@ -47,15 +47,21 @@ Your cryptocurrency keys are like the warm tortillas of the digital age - they m
 
 | Feature | Description |
 |---------|-------------|
-| **HD Wallet** | BIP39/BIP32/BIP44 hierarchical deterministic wallet |
-| **Multi-Wallet** | Up to 30 independent seed phrases, each encrypted separately |
-| **PIN Protection** | 4-8 digit PIN, 3-attempt wipe, counter hardened against power-cut attacks |
-| **Vault** | Per-device salted PBKDF2-HMAC-SHA512, ~1 s on hardware, domain-separated key and verifier |
-| **Seed Phrases** | 12 or 24-word mnemonic generation and import |
-| **QR Codes** | Display addresses as scannable QR codes |
-| **Air-Gapped** | No internet required for key operations |
-| **WiFi Testing** | AP mode for connectivity verification |
-| **BLE Support** | NimBLE stack for future integrations |
+| **HD wallet** | BIP39/BIP32/BIP44, secp256k1 signing (RFC6979) |
+| **Multi-wallet** | Up to 30 independent seed phrases, each encrypted under its own nonce |
+| **Seed phrases** | 12 or 24-word generation and import; BIP39 passphrase entered on-device |
+| **PIN** | 4-8 digits, 3-attempt wipe, counter hardened against power-cut attacks |
+| **Change PIN** | Re-encrypts every wallet atomically — a power cut leaves exactly one PIN that opens everything (`sim/test_pin_change.c`) |
+| **Vault** | Per-device salted PBKDF2-HMAC-SHA512, ~1 s on hardware, AES-256-GCM, domain-separated key and verifier |
+| **Entropy** | Hardware RNG behind a fails-closed SP 800-90B gate, plus an optional button-timing pool that is mixed in, never substituted |
+| **Transaction signing** | EIP-1559, re-serialised and re-hashed on-device, displayed page by page, signed only as rendered |
+| **Decodable set** | Native transfer, ERC-20 `transfer`/`approve`/`transferFrom`, `setApprovalForAll`, WETH `deposit`/`withdraw`, three `mint` shapes. Anything else — including contract creation — is **refused** (`src/eth-decode.c`) |
+| **Blind signing** | Off by default, set on the device only, five presses past a warning screen. No command can turn it on |
+| **Link** | USB CDC-ACM **or** BLE GATT, one at a time, chosen on the device (Settings → Link) |
+| **BLE name** | User-set, 1-29 printable ASCII, refused rather than truncated — an over-long name would silently stop advertising |
+| **Session** | X25519 handshake with a passkey compared on the device's own screen; ChaCha20-Poly1305 frames |
+| **QR codes** | Display addresses as scannable QR codes |
+| **Companion app** | Tauri v2 on Linux/macOS/Windows and an Android APK, with WalletConnect v2 for real dapps |
 
 ### Capacity
 
@@ -64,16 +70,16 @@ Your cryptocurrency keys are like the warm tortillas of the digital age - they m
 | Seed phrases stored | **30** | `MAX_WALLETS`, bounded by the 24 KB NVS partition |
 | Words per phrase | 12 or 24 | BIP39 |
 | Addresses per phrase | **2³¹ accounts x 2³¹ indices** | BIP44; the derivation is unbounded because addresses are computed, not stored |
-| Addresses reachable in the UI | **1** (`m/44'/60'/0'/0/0`) | no account/index selector yet — see T43 |
+| Addresses reachable on the device | **10** (`m/44'/60'/0'/0/0`…`/9`) | `ADDRESS_INDEX_COUNT` in `src/ui.c`; UP/DOWN on the address screen |
+| Addresses reachable from the app | **10** per wallet | the app derives `m/44'/60'/0'/0/0..9` and lets you pick |
 
 Each phrase is encrypted under its own IV with the vault key, so wallets are
 independent: the 30 slots are 30 separate seeds, not 30 addresses.
 
-The gap worth knowing: the device *can* derive any BIP44 path
-(`wallet_select_path()` takes a full five-level path), but the UI only ever
-asks for index 0. Reaching the rest needs either an on-device selector or the
-companion app, both of which are roadmap items rather than limitations of the
-crypto.
+The gap worth knowing: the device *can* derive any BIP44 path, but both the UI
+and the app fix the account level at `0'` and offer the first ten indices. One
+seed covering several *accounts* (`m/44'/60'/account'/0/0`) is T45, and it is a
+missing selector rather than a limitation of the crypto.
 
 ### Hardware
 
@@ -81,11 +87,11 @@ crypto.
 ┌─────────────────────────────────────┐
 │         LeekWallet Hardware         │
 ├─────────────────────────────────────┤
-│  MCU:     ESP32-S3 Mini             │
-│  Flash:   4MB                       │
+│  MCU:     ESP32-S3 Mini, no PSRAM   │
+│  Flash:   16MB (4MB app partition)  │
 │  Display: SSD1306 OLED 128x64       │
 │  Input:   4 tactile buttons         │
-│  USB:     USB-C (Serial + HID)      │
+│  Links:   USB-C (CDC) or BLE GATT   │
 └─────────────────────────────────────┘
 ```
 
@@ -169,7 +175,7 @@ compiler — start there if you just want to read and poke at the logic.
 | `python3`, `pyserial` | Serial monitoring | `sudo apt install python3 python3-serial` |
 | Node 22+ | Companion app core | [nodejs.org](https://nodejs.org) or `nvm install 22` |
 | pnpm 9+ | Companion app workspace | `corepack enable pnpm` (ships with Node) |
-| Rust + Cargo | Companion app shell | [rustup.rs](https://rustup.rs) |
+| Rust 1.88+ | Companion app shell and transports | [rustup.rs](https://rustup.rs) — a distro Rust is usually too old for Tauri |
 | `qemu-system-xtensa` (Espressif fork) | Emulated firmware testing | see [docs/QEMU.md](docs/QEMU.md) |
 
 PlatformIO downloads the ESP-IDF toolchain itself on first build — expect a few
@@ -249,13 +255,29 @@ module at `0x3C`. If the KDF benchmark reports a wildly different figure than
 └──────────────┘     └──────────────┘
 ```
 
+The main menu is built from what exists: "View Address" appears once there is a
+wallet, "Select Wallet" once there is more than one, and "New Wallet" /
+"Import Wallet" only while there are none — after that they live in Settings.
+UP/DOWN on the address screen walks indices 0-9.
+
 ### Settings Menu
 
-- **WiFi Test** - Broadcasts AP "LeekWallet" (password: leek1234)
-- **BLE Test** - Enables NimBLE advertising as "LeekWallet"
-- **USB HID Test** - Keyboard emulation (in development)
-- **Change PIN** - Update your PIN
-- **Wipe Device** - Factory reset (erases all data)
+In the order they appear (`settings_items` in `src/ui.c`):
+
+- **Show Seed** — displays the phrase, and always re-asks for the PIN rather than riding an open session
+- **New Wallet** / **Import Wallet** — generate or type a 12 or 24-word phrase
+- **Passphrase** — BIP39 passphrase, typed on the device; the resulting address is shown before anything else so a typo is caught
+- **Brightness**, **Auto-lock** (1/5/10/30 min), **Word entry** (Blocks or Simple)
+- **Change PIN** — re-encrypts every wallet under the new PIN, atomically
+- **Link** — `Link USB` or `Link BLE`. One at a time; the unselected one is off, and switching tears down any session. See [docs/PROTOCOL.md](docs/PROTOCOL.md) §3b
+- **BLE Name** — what the device broadcasts, and therefore a privacy control. 1-29 printable ASCII; longer is refused, not truncated
+- **USB HID Test** — a stub. It logs what it would type and nothing more; there is no keyboard emulation
+- **Blind sign** — `[ON]`/`[OFF]`, off by default. Turning it on costs five OK presses past a warning screen; turning it off costs one
+- **Wipe Device** — factory reset, three deliberate presses, resumable if power is cut mid-wipe
+
+**WiFi Test** appears only in `pio run -e esp32s3-wifi`. It is compiled out of the
+default build entirely — it shipped a hardcoded WPA2 password and was reachable
+while the wallet was unlocked (AUDIT S8g).
 
 ---
 
@@ -265,17 +287,23 @@ module at `0x3C`. If the KDF benchmark reports a wildly different figure than
 
 | Component | Algorithm |
 |-----------|-----------|
-| Seed Generation | BIP39 via `esp_random()` — entropy unverified, see S6 |
-| Key Derivation | BIP32/BIP44 |
-| Storage Encryption | AES-256-CBC, unauthenticated, key = `SHA256²(pin)` — see S1 |
-| PIN Hashing | SHA-256, 101 rounds, unsalted — see S1 |
+| Seed generation | BIP39 over `src/entropy.c` — hardware RNG plus optional button-timing pool, SP 800-90B health tests, fails closed |
+| Key derivation | BIP32/BIP44 |
+| Vault key | PBKDF2-HMAC-SHA512 over a per-device random salt, ~1 s on hardware; key and verifier domain-separated so the stored verifier is not an oracle for the key |
+| Storage encryption | AES-256-GCM, `nonce ‖ ciphertext ‖ tag`, format v3, with crash-safe migration from the older CBC vaults |
+| Transport session | X25519 → HKDF → ChaCha20-Poly1305, passkey compared on the device screen |
 | Signing | ECDSA secp256k1 (RFC6979) |
 
 ### Security Features
 
-- **Secure Storage**: Encrypted mnemonics in NVS partition
-- **PIN Protection**: 3 failed attempts triggers device wipe
-- **No External Communication**: Keys never leave the device
+- **Encrypted at rest**: mnemonics in the NVS partition, each under its own nonce, authenticated
+- **PIN**: 4-8 digits; 3 failed attempts wipes the device, and the counter is written before the compare so a power cut grants no free attempts
+- **Keys never leave the device**: the protocol has no method that returns a private key or a seed
+- **What you see is what you sign**: the device re-serialises and re-hashes the transaction itself and signs only what it rendered
+
+The one thing this does **not** protect against is someone who has the device in
+their hand: flash encryption is not enabled, so the vault can be read off the
+chip. See [S1 in AUDIT.md](AUDIT.md), and the box below.
 
 ### Why a DIY wallet, when commercial ones have secure elements?
 
@@ -308,8 +336,9 @@ failed in the field are the parts you can inspect here:
   gate, so `mnemonic_generate()` cannot bypass it. The failure that hit Coldcard would abort
   this device instead of silently producing a weak seed. Covered by `sim/test_entropy.c`.
 - **The host is never trusted.** Transactions are re-serialised and re-hashed on-device and
-  signed only as rendered; blind hash signing is off by default. See
-  [docs/PROTOCOL.md](docs/PROTOCOL.md) §1.
+  signed only as rendered. Calldata the device cannot decode is **refused**, not shown as a hex
+  blob with an OK button; contract creation is refused outright, and no command can change that
+  from the host. See [docs/PROTOCOL.md](docs/PROTOCOL.md) §1 and 6bis.
 - **Every claim is a test you can run**, on your own machine, without buying anything:
   `make -C sim test`.
 - **You build the firmware**, so there is no supply chain between the source and your device.
@@ -319,7 +348,7 @@ the goal is "your seed survives losing the device," not "your seed survives a fu
 That second claim would need a secure element, and we do not make it.
 
 None of this makes an $8 board equal to a certified secure element for physical-extraction
-resistance — it does not, and [the open findings below](#-do-not-put-real-funds-on-this-yet) are
+resistance — it does not, and the open findings below are
 real. It makes a different bet: that verifiability is worth more than tamper-resistance against
 the attacks that actually happen, and that you should be able to check rather than trust.
 
@@ -330,13 +359,32 @@ standard-compliant and verified against the spec's known-answer vectors
 
 ### Status: it works, on testnets
 
-A LeekWallet has signed and broadcast a real Sepolia transaction end to end —
-seed generated on-device from user-supplied entropy, stored under a salted
-PBKDF2 key with authenticated encryption, derived to `m/44'/60'/0'/0/0`,
-displayed page by page on the OLED, approved by button, signed by secp256k1,
-carried over an X25519-authenticated channel, and accepted by the network.
+**Over a cable.** A LeekWallet has signed and broadcast a real Sepolia
+transaction end to end — seed generated on-device from user-supplied entropy,
+stored under a salted PBKDF2 key with authenticated encryption, derived to
+`m/44'/60'/0'/0/0`, displayed page by page on the OLED, approved by button,
+signed by secp256k1, carried over an X25519-authenticated channel, and accepted
+by the network.
 
 [`0xa035de1c…`](https://sepolia.etherscan.io/tx/0xa035de1cb50860956dd8cfead9efd204e8d94dbb857a4bc26b4e1350bc20d96c)
+— 0.0001 ETH, EIP-1559, nonce 0, confirmed.
+
+**Over the radio, from a real dapp.** Aave's Base Sepolia faucet, reached in an
+ordinary browser, routed through WalletConnect v2 to the companion app and over
+BLE to a device running on battery. `mint(address,address,uint256)` was decoded
+and confirmed on the device's own screen with blind signing off
+(tx `0x48696ca6…`; the full hash was not recorded, so take that one as a
+build note rather than something you can go and check).
+
+That transaction is also where the decoding limits show. The device displayed
+`10000000000` raw units where the explorer says `10,000 USDT`: the explorer
+asked the contract for its `decimals`, and the device cannot. A scale taken from
+the host is exactly the unverifiable claim that turns a confirmation into
+decoration, so it shows the true number and says what it is.
+
+**Not yet on a phone.** The Android APK builds, with both BLE and USB wired up,
+but it has never been installed or run on a device — no permission dialog, no
+enumeration, no signature. See `app/ANDROID.md`, "Known state".
 
 ### ⚠️ Testnets only — verify it yourself before trusting it with anything
 
@@ -349,36 +397,42 @@ derivation against a wallet you already trust, and move a token amount first.
 Anyone recommending otherwise about software this young, including us, should be
 ignored.
 
-Concretely, the outstanding items that make this a testnet device today:
-
 LeekWallet is a work in progress and has **not** been independently audited. The self-audit in
-[AUDIT.md](AUDIT.md) tracks eight findings; most are closed and covered by tests. What remains:
+[AUDIT.md](AUDIT.md) tracks eight findings. Most are closed and covered by tests. One is not, and
+it is the one that matters:
 
-**Blocking, and the only reason this is not usable with real funds:**
+> ### S1 is open: anyone holding the device can read the vault off it
+>
+> **Flash encryption and secure boot are not enabled.** Someone with the board
+> in their hand runs `esptool read_flash`, walks away with the encrypted vault,
+> and attacks your PIN on their own hardware, at their own pace, with the
+> 3-attempt wipe counter never involved — because that attack never goes through
+> the firmware.
+>
+> The key derivation is salted PBKDF2 at roughly a second per guess and storage
+> is authenticated AES-256-GCM, so a 4-8 digit PIN costs days rather than
+> microseconds. **That is a delay, not a defence. It does not stop the read.**
+>
+> The procedure to close it is written
+> ([docs/BURN-PROCEDURE.md](docs/BURN-PROCEDURE.md)), gated by a pre-flight
+> script (`scripts/preflight-secure.sh`), and rehearsed end to end against
+> QEMU's emulated eFuses. **No fuse has been burned on real silicon.** Until
+> one is, treat a LeekWallet you cannot physically account for as compromised.
 
-- **The vault can be read off the chip.** Flash encryption and secure boot are not enabled, so
-  anyone with the device runs `esptool read_flash` and attacks the PIN offline. The key
-  derivation is now salted PBKDF2 at ~1 s per attempt and storage is authenticated AES-256-GCM,
-  which turns an instant break into a slow one. **It does not stop the read.** (S1)
+**Also open, lower severity:**
 
-**Open, lower severity:**
-
-- **Some seed material lingers in RAM** after use. The screens that display a phrase clear it,
-  but not every exit path does. (S5)
-- **Wiping is not atomic.** The PIN and the wallets are erased by two separate calls, so a power
-  cut between them leaves one without the other. It is confirmed and warns about unverified
-  backups, but a resume-on-boot flag is still missing. (S7)
-- **Assorted robustness items** — see S8.
+- **A re-entrant render path** in the wallet-creation screen — works, but the screen contract now has two ways in. (S8f)
+- **Button events can be dropped** if the 8-slot queue fills during a long render. (S8j)
+- The entropy gate's output has **never been run through dieharder on hardware** — the health tests pass, but the statistical certification is still owed. (S6)
 
 **Closed since the first audit**, each with a regression test: the four-digit PIN ceiling (S2),
 110 BIP39 words being unreachable so that roughly half of all seeds could not be imported (S3),
-the attempt counter resetting after a power cut (S4), silent entropy degradation (S6), the
+the attempt counter resetting after a power cut (S4), seed material lingering in `.bss` (S5),
+non-atomic wiping (S7), silent entropy degradation (S6), unauthenticated CBC storage (S8h), the
 unlabelled seed-reveal shortcut (S8i), and the display composing frames in front of the user
 (S8k).
 
-Progress against these is tracked in [ROADMAP.md](ROADMAP.md). The blocking one is flash
-encryption: until it lands, anyone holding the device can read the encrypted vault off the chip
-and attack the PIN offline, and no amount of care elsewhere compensates for that.
+Progress against these is tracked in [ROADMAP.md](ROADMAP.md).
 
 ---
 
@@ -390,12 +444,17 @@ You do not need hardware to work on most of this firmware:
 make -C sim test
 ```
 
+That is **18 suites and they all pass** — PIN, PIN change under crash injection, vault KDF and
+AES-GCM, entropy health, mnemonic and text entry, CBOR, session, protocol conformance, BLE
+chunking, transaction encoding, calldata decoding, device wipe, UI screens, buttons, master
+fingerprint. `make -C sim asan` builds the protocol and chunking suites under sanitizers.
+
 Three tiers are available — host-native logic tests, the ESP-IDF Linux target, and QEMU's
 `esp32s3` machine (which emulates eFuses, so flash encryption and secure boot can be developed
 without burning anything irreversible). See [sim/README.md](sim/README.md).
 
-The suite currently **fails on purpose**: `sim/test_mnemonic_entry.c` pins down the import bug
-above so the fix has something to turn green.
+`./scripts/check.sh` runs the lot — host suites, app tests, typecheck and the firmware build —
+and is what CI calls.
 
 ---
 
@@ -404,62 +463,88 @@ above so the fix has something to turn green.
 ```
 leekwallet/
 ├── src/
-│   ├── main.c          # Application entry point
-│   ├── ui.c/h          # Screen state machine
-│   ├── oled.c/h        # SSD1306 display driver
-│   ├── button.c/h      # Button input handler
-│   ├── pin.c/h         # PIN management
-│   ├── qrcode.c/h      # QR code generation
-│   └── rand_esp32.c    # Hardware RNG bridge
+│   ├── main.c            # Application entry point
+│   ├── ui.c/h            # Screen state machine
+│   ├── oled.c/h          # SSD1306 display driver
+│   ├── button.c/h        # Button input handler
+│   ├── pin.c/h           # PIN management
+│   ├── entropy.c/h       # RNG gate, health tests, user pool
+│   ├── mnemonic-entry.c  # BIP39 word selector
+│   ├── text-entry.c      # Free-text selector (passphrase, BLE name)
+│   ├── eth-tx.c/h        # EIP-1559 encoding and rendering
+│   ├── eth-decode.c/h    # Calldata decoding — the refuse-by-default set
+│   ├── blind-signing.c/h # The default-off hatch past a refusal
+│   ├── protocol.c/h      # Command dispatch, transport-blind
+│   ├── session.c/h       # X25519 / ChaCha20-Poly1305
+│   ├── cbor.c/h          # Frame encoding
+│   ├── transport.c/h     # USB or BLE — the only door to either
+│   ├── ble.c/h           # NimBLE GATT service
+│   ├── ble-chunk.c/h     # MTU chunking and reassembly
+│   ├── ble-name.c/h      # Advertised name, validated and persisted
+│   ├── device-wipe.c/h   # Atomic wipe with a resume-on-boot marker
+│   ├── qrcode.c/h        # QR code generation
+│   └── rand_esp32.c      # Hardware RNG bridge
 ├── components/
-│   ├── trezor-crypto/  # Cryptographic primitives
-│   └── colibri-wallet/ # HD wallet core
-├── sim/                # Host-native test harness (no hardware needed)
-├── AUDIT.md            # Known defects, by severity
-├── ROADMAP.md          # Parallelizable task breakdown
-├── platformio.ini      # Build configuration
-├── partitions.csv      # Flash partition table
-└── sdkconfig.defaults  # ESP-IDF configuration
+│   ├── trezor-crypto/    # Cryptographic primitives (vendored, MIT)
+│   └── leek-wallet/      # HD wallet core, vault-kdf, vault-crypt
+├── sim/                  # Host-native test harness (no hardware needed)
+├── app/                  # Tauri v2 companion app + Rust transports
+├── docs/                 # PROTOCOL, VAULT, CLEAR-SIGNING, BURN-PROCEDURE, QEMU, DESIGN
+├── scripts/              # check.sh, preflight-secure.sh, QEMU helpers
+├── AUDIT.md              # Known defects, by severity
+├── ROADMAP.md            # Parallelizable task breakdown
+├── platformio.ini        # Build configuration
+├── partitions.csv        # Flash partition table
+└── sdkconfig.defaults    # ESP-IDF configuration
 ```
 
 ---
 
-## Connectivity Testing
+## Connectivity
 
-### WiFi AP Mode
+**One link at a time, chosen on the device.** Settings → Link picks USB or BLE;
+the other is fully off, not merely unpaired, and switching tears down any
+session. The reasoning is in [docs/PROTOCOL.md](docs/PROTOCOL.md) §3b, and it is
+not a preference: the session layer holds one pair of nonce counters, the framing
+has no request IDs, and a device advertising while you believe you are on a cable
+is reachable by someone you cannot see.
 
-When enabled, LeekWallet broadcasts:
-- **SSID**: `LeekWallet`
-- **Password**: `leek1234`
-- **IP**: `192.168.4.1`
+| | USB | BLE |
+|---|---|---|
+| Wire | USB-Serial-JTAG CDC, sync-marked so it shares the console port | NimBLE GATT, chunked to the negotiated MTU |
+| Default | yes | no |
+| Advertised name | — | `LeekWallet`, or whatever you set in Settings → BLE Name |
 
-### BLE Mode
+Both carry identical frames, and `sim/test_protocol.c` runs every conformance
+case down both channels and compares the replies — which is how a `getMnemonic`
+that was answered on the cable and silently dropped on the radio was found.
 
-When enabled, LeekWallet advertises as:
-- **Device Name**: `LeekWallet`
-- **Stack**: NimBLE
+**Wi-Fi is gone from the default build** (AUDIT S8g). `pio run -e esp32s3-wifi`
+still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
+`192.168.4.1` — and you should not run it on a device holding anything.
 
 ---
 
 ## Roadmap
 
-- [x] HD Wallet (BIP39/BIP32/BIP44)
-- [x] Multi-wallet support (up to 30)
-- [x] PIN protection with auto-wipe
+- [x] HD wallet (BIP39/BIP32/BIP44), up to 30 seeds
+- [x] PIN protection with auto-wipe, and Change PIN with atomic re-encryption
 - [x] QR code display for addresses
-- [x] WiFi AP mode
-- [x] BLE NimBLE stack
-- [x] Host test harness (no hardware required)
-- [ ] Fix seed import (110 unreachable BIP39 words)
-- [x] Salted vault KDF, tuned on hardware (504 ms/derivation, measured)
+- [x] Host test harness (no hardware required) — 18 suites
+- [x] Seed import fixed: all 2048 BIP39 words reachable
+- [x] Salted vault KDF, tuned on hardware
 - [x] Authenticated storage (AES-256-GCM, format v3 with crash-safe migration)
-- [x] Encrypted USB session with on-device passkey comparison
-- [x] On-device transaction decode and confirmation
+- [x] Encrypted session with on-device passkey comparison
+- [x] On-device transaction decode and confirmation, with a refuse-by-default set
+- [x] Blind-signing hatch, off by default, device-only
+- [x] USB and BLE protocol layer, one link at a time
 - [x] Companion app (Tauri v2) signing real transactions
+- [x] WalletConnect v2 — a real dapp request signed over BLE
+- [x] Android APK builds with both transports — never run on a phone
 - [ ] Flash encryption + secure boot — **the gate before real funds**
-- [ ] On-device transaction decode & confirmation
-- [ ] BLE + USB protocol layer
-- [ ] Companion app — Tauri v2 (Linux/macOS/Windows + Android)
+- [ ] Account selector (`m/44'/60'/account'/0/0`)
+- [ ] EIP-712 typed data (needs a `signTypedData` command first)
+- [ ] Airgapped QR signing (needs a camera)
 - [ ] Secure element integration
 
 **Chains.** EVM only, and chain-agnostic within it — chains differ by a chain ID
@@ -473,13 +558,25 @@ would rather not write.
 
 ### Companion app
 
-One [Tauri v2](https://tauri.app) codebase targets Linux, macOS, Windows and Android, with one
-transport per platform: **BLE on Android, USB cable on desktop.** Both sit behind a single
-transport-blind protocol ([docs/PROTOCOL.md](docs/PROTOCOL.md)), so commands are written once.
-The app can also act as a keyboard for the BIP39 passphrase over an encrypted, MITM-checked
-session — with the wallet fingerprint confirmed on the device screen before it is used. Chain interaction
-uses [viem](https://viem.sh), with the wallet exposed as a custom `toAccount()` signer so any
-wagmi/RainbowKit dapp can use it unmodified.
+One [Tauri v2](https://tauri.app) codebase targets Linux, macOS, Windows and Android. Both
+transports are built on both — desktop over USB CDC (`serialport`) or BLE (`btleplug`), Android
+over BLE (`tauri-plugin-blec`) or a USB cable (`tauri-plugin-serialplugin`, since Android cannot
+open `/dev/ttyACM*` unrooted). They sit behind a single transport-blind protocol
+([docs/PROTOCOL.md](docs/PROTOCOL.md)), so commands are written once. Which one is live is the
+device's decision, not the app's.
+
+Chain interaction uses [viem](https://viem.sh), with the wallet exposed as a custom `toAccount()`
+signer so any wagmi/RainbowKit dapp can use it unmodified.
+[WalletConnect v2](https://walletconnect.network) pairs it with dapps in your own browser — there
+is deliberately no in-app dapp browser. You supply your own WalletConnect project ID; none is
+bundled, because a committed one would be either fake or somebody else's quota.
+
+The app shows a Rabby-style preview of what a transaction does, including ERC-7730 descriptor
+labels for a few pinned contracts (WETH, Lido, Aave). **This is advisory and the device never
+sees it.** Descriptors are unsigned and nothing cryptographic ties them to the contract being
+called; the device's own refuse-by-default decoding is the thing that decides. Why the industry
+does it this way, and what it would take to make it trustworthy on-device, is in
+[docs/CLEAR-SIGNING.md](docs/CLEAR-SIGNING.md) — a research spike, not a plan of record.
 
 Visual language — minimal, mono-forward, no pixel art — is specified in
 [docs/DESIGN.md](docs/DESIGN.md).
