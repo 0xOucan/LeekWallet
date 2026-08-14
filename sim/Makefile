@@ -12,7 +12,7 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
@@ -81,6 +81,23 @@ $(BUILD)/test_xfp: test_xfp.c host_stubs.c \
 # and under a sanitiser.
 $(BUILD)/test_ble_chunk: test_ble_chunk.c ../src/ble-chunk.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
+
+# SLIP-39. The core has no ESP-IDF dependency, so the host drives it directly;
+# entropy.c comes along because share values must come from the entropy gate.
+# shamir.c and slip39_english.c are trezor-crypto's own (the SLIP-39 authors'),
+# so the wordlist and the GF(256) interpolation are not duplicated here.
+$(BUILD)/test_slip39: test_slip39.c ../src/slip39-backup.c ../src/entropy.c \
+                     $(CRYPTO)/shamir.c $(CRYPTO)/slip39_english.c \
+                     $(CRYPTO)/sha2.c $(CRYPTO)/hmac.c $(CRYPTO)/pbkdf2.c \
+                     $(CRYPTO)/memzero.c | $(BUILD)
+	$(CC) $(CFLAGS) -DLEEK_HOST_TEST -o $@ $^
+
+$(BUILD)/test_slip39_asan: test_slip39.c ../src/slip39-backup.c ../src/entropy.c \
+                     $(CRYPTO)/shamir.c $(CRYPTO)/slip39_english.c \
+                     $(CRYPTO)/sha2.c $(CRYPTO)/hmac.c $(CRYPTO)/pbkdf2.c \
+                     $(CRYPTO)/memzero.c | $(BUILD)
+	$(CC) $(CFLAGS) -DLEEK_HOST_TEST \
+	      -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $^
 
 $(BUILD)/test_cbor: test_cbor.c ../src/cbor.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
@@ -208,9 +225,12 @@ $(BUILD)/test_protocol_asan: $(PROTOCOL_SRC) | $(BUILD)
 $(BUILD)/test_ble_chunk_asan: test_ble_chunk.c ../src/ble-chunk.c | $(BUILD)
 	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $^
 
-asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan
+# SLIP-39 too: it does its own bit packing over caller-supplied strings, which
+# is exactly the shape of code that reads one word past the end.
+asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan $(BUILD)/test_slip39_asan
 	./$(BUILD)/test_protocol_asan
 	./$(BUILD)/test_ble_chunk_asan
+	./$(BUILD)/test_slip39_asan
 
 $(BUILD):
 	mkdir -p $(BUILD)
