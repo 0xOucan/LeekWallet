@@ -52,6 +52,36 @@
             requested — what it shows on its own screen is the authority.
           </p>
           <div class="addr-list" id="addrs"></div>
+
+          <!--
+            Balances (T63). Everything in here was fetched by this app from a
+            public RPC operator; the device neither reports nor confirms a
+            balance, and the line under each figure says so. Nothing refreshes
+            on a timer — each fetch tells an operator which address you care
+            about, so they happen on connect, on a chain or address change, and
+            when the button below is pressed. The age is shown instead.
+          -->
+          <section class="balances" id="balances">
+            <div class="row">
+              <span class="balances__native" id="balnative">—</span>
+              <button id="balrefresh" class="secondary">Refresh</button>
+            </div>
+            <p class="muted" id="balprov"></p>
+
+            <h3>Tokens</h3>
+            <p class="muted">
+              Add a token by its contract address — the address is the only part
+              of a token this app can be sure of. Balances are shown in raw
+              units; any name or decimal point beside them is a guess.
+            </p>
+            <div class="row">
+              <input id="tokenaddr" class="addr" spellcheck="false" autocomplete="off"
+                     placeholder="Token contract 0x…" />
+              <button id="tokenadd" class="secondary">Watch token</button>
+            </div>
+            <p class="muted" id="tokenerr" aria-live="polite"></p>
+            <ul class="tokenlist" id="tokenlist"></ul>
+          </section>
         </div>
 
         <div class="panel" id="signpanel" hidden>
@@ -113,16 +143,37 @@
             <p class="muted" id="ccnotice"></p>
             <ul class="cclist" id="cclist"></ul>
           </details>
+          <!-- Native or one of the watched tokens. A token send is an ERC-20
+               transfer(address,uint256), which is in the set the device decodes
+               and draws on its own screen. -->
+          <label class="field">
+            <span>Asset</span>
+            <select id="asset" class="addr"></select>
+          </label>
+          <p class="muted" id="assetnote"></p>
+
           <label class="field">
             <span>To</span>
             <input id="to" class="addr" spellcheck="false"
                    placeholder="0x…" autocomplete="off" />
+          </label>
+          <!-- Which unit the number below is in. Present for tokens because
+               the scaled unit is built on decimals this app cannot verify, so
+               typing raw units has to stay available rather than be the
+               expert-mode option. -->
+          <label class="field" id="unitfield" hidden>
+            <span>Amount unit</span>
+            <select id="amountunit" class="addr"></select>
           </label>
           <label class="field">
             <span id="amountlabel">Amount (ETH)</span>
             <input id="amount" class="addr" spellcheck="false"
                    value="0.0001" autocomplete="off" />
           </label>
+          <!-- The conversion, spelled out at the point of entry rather than in
+               a footnote: if this says "5 USDC = 5000000 raw units" it is
+               because a contract claimed six decimals, and nothing checked it. -->
+          <p class="muted amountnote" id="amountnote" aria-live="polite"></p>
 
           <!-- Advisory preview (T48). Deliberately styled as a note rather
                than a verdict: nothing in here has been checked by anything the

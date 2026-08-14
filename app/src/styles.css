@@ -374,6 +374,52 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   padding: var(--space-1) 0;
 }
 
+/* ---------------------------------------------------------------- balances
+ *
+ * The visual rule mirrors the trust rule: raw units and the contract address
+ * are set in the ordinary text colour, and anything scaled or named sits in a
+ * dashed warning-coloured box with the word UNVERIFIED in front of it — the
+ * same treatment the ERC-7730 descriptor block gets, because it is the same
+ * kind of claim. A stale figure is dimmed and prefixed in the markup, so it
+ * cannot read as current even at a glance.
+ */
+
+.balances { margin-top: var(--space-4); }
+.balances__native { font-family: var(--font-mono); font-size: var(--text-lg); }
+.balances__native[data-stale="true"] { color: var(--muted); }
+
+.tokenlist { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
+.token {
+  border-top: 1px solid var(--border);
+  padding: var(--space-3) 0;
+}
+.token__addr { font-size: var(--text-xs); color: var(--muted); overflow-wrap: anywhere; }
+.token__amount { font-family: var(--font-mono); font-size: var(--text-sm); }
+
+.unverified-amount {
+  border: 1px dashed var(--warn);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-2) 0;
+  font-size: var(--text-sm);
+}
+.unverified-amount__tag {
+  color: var(--warn);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: var(--text-xs);
+  margin-right: var(--space-2);
+}
+
+/* The conversion note under the amount field. Warning-coloured because the
+ * multiplication it describes rests on a number nothing checked. */
+.amountnote:not(:empty) {
+  border-left: 2px solid var(--warn);
+  padding: var(--space-1) var(--space-3);
+  margin-top: var(--space-2);
+}
+
 /* --------------------------------------------------------------- handheld */
 
 /* The layout was drawn for a desktop window; these rules are what it needs to
