@@ -43,12 +43,14 @@ export function invoker(): Invoke | null {
  * a wallet UI must never tell, and an `invoke` bridge exists on Android
  * whether or not anything is wired behind it.
  *
- * Since T30 the Android build answers `["ble"]`: serial is still compiled out
- * (no ports to enumerate) but BLE is real there, carrying its Android driver
- * inside `tauri-plugin-blec`. An empty *scan* on that build is a separate
- * thing from an absent transport — permissions, a radio switched off, or a
- * device on USB — and each of those comes back as an error with its own
- * message rather than as a missing capability.
+ * Since T59 every build answers `["usb", "ble"]`, Android included: each
+ * transport crate carries a second backend that ships its Android driver
+ * inside a Tauri mobile plugin — `tauri-plugin-blec` for the radio,
+ * `tauri-plugin-serialplugin` for the USB Host API. A failure to *find*
+ * something on either — no cable, a denied USB permission, a radio switched
+ * off, a device that is on the other link — is a separate thing from an absent
+ * transport, and each comes back as an error carrying its own instructions
+ * rather than as a missing capability.
  *
  * Asked of the backend rather than sniffed from the user agent, which is what
  * this did before: the backend is the only thing that knows what was compiled

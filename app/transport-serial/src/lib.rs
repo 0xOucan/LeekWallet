@@ -10,215 +10,68 @@
 //! │ 'L'  │ 'K'  │ len:u16│ type + CBOR │
 //! └──────┴──────┴────────┴─────────────┘
 //! ```
+//!
+//! The split here follows `leek-transport-ble`: `wire` is pure and unit-tested,
+//! and the backends are the platform plumbing, kept as small as they can be
+//! because they cannot be tested without hardware.
+//!
+//! There are two backends because there are two ways to reach a CDC-ACM device
+//! worth having. On desktop the OS presents one as a character device and the
+//! `serialport` crate opens it (`transport`). On Android nothing may open
+//! `/dev/ttyACM*` unrooted; the device is reached through the Java USB Host
+//! API, behind a permission the user grants per device, and
+//! `tauri-plugin-serialplugin` carries that Kotlin into the APK (`android`).
+//! Exactly one is compiled; both expose the same `PortInfo`, the same
+//! `TransportError` and the same `send`/`recv`, so nothing above this crate
+//! knows which it is talking to.
 
-use std::io::{Read, Write};
-use std::time::{Duration, Instant};
+pub mod error;
+pub mod wire;
 
-pub const SYNC: [u8; 2] = [b'L', b'K'];
+#[cfg(feature = "serialport")]
+pub mod transport;
 
-/// Above any response the device produces, and small enough that a garbage
-/// length is rejected rather than allocated. The device applies the same cap.
-pub const MAX_FRAME: usize = 4096;
+#[cfg(feature = "android")]
+pub mod android;
 
-pub const FRAME_REQUEST: u8 = 0x01;
-pub const FRAME_RESPONSE: u8 = 0x02;
-pub const FRAME_ENC_REQUEST: u8 = 0x11;
-pub const FRAME_ENC_RESPONSE: u8 = 0x12;
-pub const FRAME_ERROR: u8 = 0x7F;
+// Both define `list_ports`, and silently picking one would mean a build that
+// quietly used the wrong way of reaching the device. Better to refuse.
+#[cfg(all(feature = "serialport", feature = "android"))]
+compile_error!(
+    "features `serialport` (desktop) and `android` (tauri-plugin-serialplugin) \
+     are alternative backends for the same transport; enable exactly one"
+);
 
-#[derive(Debug)]
-pub enum TransportError {
-    Io(std::io::Error),
-    Serial(serialport::Error),
-    Timeout,
-    /// A length field no device of ours would send.
-    BadFrame(String),
-}
+pub use error::TransportError;
+pub use wire::{
+    encode_frame, FrameDecoder, WireError, FRAME_ENC_REQUEST, FRAME_ENC_RESPONSE, FRAME_ERROR,
+    FRAME_REQUEST, FRAME_RESPONSE, MAX_FRAME, SYNC,
+};
 
-impl std::fmt::Display for TransportError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TransportError::Io(e) => write!(f, "io: {e}"),
-            TransportError::Serial(e) => write!(f, "serial: {e}"),
-            TransportError::Timeout => write!(f, "timed out waiting for the device"),
-            TransportError::BadFrame(m) => write!(f, "bad frame: {m}"),
-        }
-    }
-}
+#[cfg(feature = "serialport")]
+pub use transport::{list_ports, SerialTransport};
 
-impl std::error::Error for TransportError {}
+#[cfg(feature = "android")]
+pub use android::{list_ports, UsbTransport};
 
-impl From<std::io::Error> for TransportError {
-    fn from(e: std::io::Error) -> Self {
-        TransportError::Io(e)
-    }
-}
-impl From<serialport::Error> for TransportError {
-    fn from(e: serialport::Error) -> Self {
-        TransportError::Serial(e)
-    }
-}
+/// Espressif's vendor ID. Used to rank ports, never to trust one: a matching
+/// VID says something about the cable, not about what is on the other end.
+///
+/// Shared by both backends, and the reason it is public: on Android the same
+/// number goes into the enumeration filter, and two copies of it would be one
+/// copy too many.
+pub const ESPRESSIF_VID: u16 = 0x303A;
 
+/// One attached device, as far as a chooser needs to know it.
+///
+/// `name` is the platform's own handle for the port — a `/dev/tty*` path on
+/// desktop, a `UsbDevice.deviceName` on Android — and is what `open` takes. It
+/// is not a stable identity across replugs on either platform, which is why
+/// nothing but the immediately following `open` may hold onto it.
 #[derive(Debug, Clone)]
 pub struct PortInfo {
     pub name: String,
     pub description: String,
-    /// True when the USB VID/PID matches an Espressif device.
+    /// True when the USB VID matches an Espressif device.
     pub likely_device: bool,
-}
-
-/// Espressif's vendor ID. Used to rank ports, never to trust one: a matching
-/// VID says something about the cable, not about what is on the other end.
-const ESPRESSIF_VID: u16 = 0x303A;
-
-/// USB serial ports only.
-///
-/// A typical Linux box enumerates twenty or more `/dev/ttyS*` legacy ports that
-/// no hardware wallet will ever appear on. Listing them buries the one entry
-/// that matters and makes a connect dialog useless.
-pub fn list_ports() -> Result<Vec<PortInfo>, TransportError> {
-    let mut out = Vec::new();
-    for p in serialport::available_ports()? {
-        let serialport::SerialPortType::UsbPort(usb) = &p.port_type else {
-            continue;
-        };
-        let description = usb
-            .product
-            .clone()
-            .unwrap_or_else(|| format!("{:04x}:{:04x}", usb.vid, usb.pid));
-        out.push(PortInfo {
-            name: p.port_name,
-            description,
-            likely_device: usb.vid == ESPRESSIF_VID,
-        });
-    }
-    // Likely devices first, so a UI can default sensibly without guessing.
-    out.sort_by_key(|p| !p.likely_device);
-    Ok(out)
-}
-
-pub struct SerialTransport {
-    port: Box<dyn serialport::SerialPort>,
-    /// Bytes seen but not yet consumed. A read can split a frame or carry two.
-    buffer: Vec<u8>,
-}
-
-impl SerialTransport {
-    pub fn open(path: &str) -> Result<Self, TransportError> {
-        let port = serialport::new(path, 115_200)
-            .timeout(Duration::from_millis(100))
-            // No DTR/RTS toggling: on the ESP32-S3's USB-Serial-JTAG that
-            // resets the chip, which would reboot the device every time the
-            // app connected.
-            .dtr_on_open(false)
-            .open()?;
-
-        /* Let the port settle, then drop whatever the device had queued.
-         *
-         * The ESP32-S3's USB-Serial-JTAG hands over its buffered TX shortly
-         * AFTER the host opens the port, so clearing immediately clears
-         * nothing and the stale bytes land on the next read. Since the
-         * protocol has no request IDs, that reply then looks like an answer to
-         * whatever is sent first. */
-        std::thread::sleep(Duration::from_millis(250));
-        let mut port = port;
-        let _ = port.clear(serialport::ClearBuffer::Input);
-        let _ = &mut port;
-
-        Ok(Self { port, buffer: Vec::with_capacity(MAX_FRAME) })
-    }
-
-    pub fn send(&mut self, frame_type: u8, payload: &[u8]) -> Result<(), TransportError> {
-        let body = payload.len() + 1;
-        if body + 4 > MAX_FRAME {
-            return Err(TransportError::BadFrame(format!("{body} bytes is over the cap")));
-        }
-
-        let mut out = Vec::with_capacity(body + 4);
-        out.extend_from_slice(&SYNC);
-        out.push((body >> 8) as u8);
-        out.push(body as u8);
-        out.push(frame_type);
-        out.extend_from_slice(payload);
-
-        /* Drop anything already sitting in the OS buffer before sending.
-         *
-         * There is no request ID, so a reply is matched to whichever request
-         * went out last - which means a leftover reply from an earlier run is
-         * indistinguishable from an answer to this one. That is not
-         * theoretical: it made a device that was correctly silent on USB (BLE
-         * was the selected transport) look like it was answering, and a
-         * transport-exclusivity bug get reported that did not exist. */
-        self.port.clear(serialport::ClearBuffer::Input)?;
-
-        self.port.write_all(&out)?;
-        self.port.flush()?;
-        Ok(())
-    }
-
-    /// Read one frame, discarding any console text that precedes it.
-    pub fn recv(&mut self, timeout: Duration) -> Result<(u8, Vec<u8>), TransportError> {
-        let deadline = Instant::now() + timeout;
-
-        loop {
-            if let Some(frame) = self.take_frame()? {
-                return Ok(frame);
-            }
-            if Instant::now() >= deadline {
-                return Err(TransportError::Timeout);
-            }
-
-            let mut chunk = [0u8; 256];
-            match self.port.read(&mut chunk) {
-                Ok(0) => {}
-                Ok(n) => {
-                    if self.buffer.len() + n > MAX_FRAME * 4 {
-                        // Only reachable if the device is emitting console text
-                        // faster than frames arrive. Drop the oldest rather
-                        // than grow without bound.
-                        let excess = self.buffer.len() + n - MAX_FRAME * 4;
-                        self.buffer.drain(..excess);
-                    }
-                    self.buffer.extend_from_slice(&chunk[..n]);
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(e) => return Err(TransportError::Io(e)),
-            }
-        }
-    }
-
-    /// Pull one complete frame out of the buffer, resynchronising past noise.
-    fn take_frame(&mut self) -> Result<Option<(u8, Vec<u8>)>, TransportError> {
-        loop {
-            // Console output shares this port, so leading text is expected.
-            let start = self
-                .buffer
-                .windows(2)
-                .position(|w| w == SYNC)
-                .unwrap_or(self.buffer.len().saturating_sub(1));
-            if start > 0 {
-                self.buffer.drain(..start);
-            }
-            if self.buffer.len() < 4 {
-                return Ok(None);
-            }
-
-            let body = ((self.buffer[2] as usize) << 8) | self.buffer[3] as usize;
-            if body < 1 || body + 4 > MAX_FRAME {
-                // Not a length we would send. Drop the marker and rescan rather
-                // than trusting it and waiting forever for bytes that are not
-                // coming.
-                self.buffer.drain(..2);
-                continue;
-            }
-            if self.buffer.len() < body + 4 {
-                return Ok(None);
-            }
-
-            let frame_type = self.buffer[4];
-            let payload = self.buffer[5..body + 4].to_vec();
-            self.buffer.drain(..body + 4);
-            return Ok(Some((frame_type, payload)));
-        }
-    }
 }

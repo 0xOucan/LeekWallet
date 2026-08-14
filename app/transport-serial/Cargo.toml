@@ -3,15 +3,33 @@ name = "leek-transport-serial"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "USB CDC transport for LeekWallet. Desktop only; Android uses BLE."
+description = "USB CDC transport for LeekWallet. One wire format, two backends: serialport on desktop, the Android USB Host API on a phone."
 
 # Deliberately standalone rather than a module inside the Tauri app. The
 # transport is the part worth testing against real hardware, and a crate that
 # builds in seconds gets tested far more often than one behind Tauri's
 # dependency tree.
 [dependencies]
-serialport = "4"
+# Desktop backend. Optional so that `wire` — the part that is actually
+# unit-tested — builds with no platform dependency at all, and so that the
+# Android build does not drag in a crate that cannot reach the device there.
+serialport = { version = "4", optional = true }
+
+# Android backend. A Tauri mobile plugin rather than the `serialport` crate,
+# because an unrooted app cannot open /dev/ttyACM* and the USB Host API that
+# can is on the JVM side — see `src/android.rs` for the full reasoning.
+tauri = { version = "2", optional = true }
+tauri-plugin-serialplugin = { version = "3.0.2", optional = true }
+
+[features]
+default = ["serialport"]
+# Two names for one transport, and mutually exclusive: `lib.rs` would define
+# `list_ports` twice, so a build that turns on both fails rather than silently
+# picking a backend. Same contract as `leek-transport-ble`'s `ble`/`blec`.
+serialport = ["dep:serialport"]
+android = ["dep:tauri", "dep:tauri-plugin-serialplugin"]
 
 [[bin]]
 name = "leek-probe"
 path = "src/bin/probe.rs"
+required-features = ["serialport"]
