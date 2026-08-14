@@ -1,6 +1,9 @@
 # LeekWallet Code Audit
 
-Scope: `src/` (3,367 lines) and `components/colibri-wallet/` (1,253 lines) as of this audit.
+Scope: `src/` and `components/leek-wallet/` as of the original audit. Line counts and some file
+paths below are from that snapshot — the component was named `colibri-wallet` then — and the code
+has moved on considerably. Where a finding is marked fixed, the fix is the current state; where a
+*description* cites an old path or line number, read it as history.
 `components/trezor-crypto/` is upstream Trezor code and was reviewed only where LeekWallet calls into it.
 
 Findings are ordered by severity. Each one names the file and line so it can be turned into a
@@ -13,8 +16,11 @@ than argued about.
 **S1 is the one that still matters.** Its key derivation and storage encryption are done — salted
 PBKDF2 and authenticated AES-GCM — but **flash encryption and secure boot are not enabled**, so
 an attacker with the device still reads the vault off the chip and attacks the PIN offline. The
-KDF turns that from instant into days. It does not stop the read. S5 and the remainder of S8
-also stand.
+KDF turns that from instant into days. It does not stop the read.
+
+Still open besides S1: **S8f** (a re-entrant `ui_render()` in the wallet-create handler) and
+**S8j**'s remaining half — the button queue is fixed and tested, but `dieharder` has never been
+run against the hardware RNG on real silicon. Everything else listed above is closed.
 
 ---
 
@@ -46,9 +52,13 @@ on the first successful unlock, one wallet at a time, with the version marker fl
 an alternate-key fallback so an interrupted migration resumes instead of bricking the vault.
 
 **Still open, and still disqualifying without them:**
-- Iteration count (12000) is a placeholder — 7 ms on a desktop, needs tuning to ~500 ms on the
+- ~~Iteration count (12000) is a placeholder~~ **Superseded.** The KDF is salted
+  PBKDF2-HMAC-SHA512, tuned on this silicon: `vault_kdf_benchmark_ms()` reports ~508 ms for 2250
+  iterations at boot. The original note read:
+- ~~7 ms on a desktop, needs tuning to ~500 ms on the
   S3 (T9c).
-- Storage is still unauthenticated AES-CBC; AES-GCM is T14.
+- ~~Storage is still unauthenticated AES-CBC~~ **Superseded.** AES-256-GCM shipped as format v3
+  (see S8h), with crash-safe migration verified on a device holding three v2 wallets.
 - **Flash encryption and secure boot are not enabled** (T11). Until they are, an attacker can
   still dump NVS — the KDF raises the cost from instant to days, but does not stop the read.
 
@@ -265,7 +275,7 @@ function exists for exactly that, and it has not been run yet.
 
 ---
 
-## S7 — ~~Wipe is incomplete and unconfirmed~~ PARTIALLY FIXED
+## S7 — ~~Wipe is incomplete and unconfirmed~~ FIXED
 
 **Where:** `src/pin.c:252-267`, `src/ui.c:1560-1566`, `src/ui.c:592-597`.
 
