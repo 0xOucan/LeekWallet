@@ -25,6 +25,15 @@ uint8_t fake_wallet_preload(const char *mnemonic);
  */
 void fake_wallet_fail_derivation(bool fail);
 
+/**
+ * Make only the master fingerprint fail, leaving addresses working.
+ *
+ * Separate from fail_derivation because the screens combine the two: an
+ * address the device could derive next to a fingerprint it could not is the
+ * case where a placeholder would be read as a value.
+ */
+void fake_wallet_fail_fingerprint(bool fail);
+
 /** True once the UI has called wallet_mark_backup_verified for `index`. */
 bool fake_wallet_backup_verified(uint8_t index);
 

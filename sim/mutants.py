@@ -133,23 +133,91 @@ MUTANTS = [
     ("src/ble-name.c", "    if (!ble_name_is_valid(n)) {", "    if (false) {",
      "ble_name_set stores whatever it is given"),
 
+    # T60: the passphrase selector. Entry cost is a security property here -
+    # an expensive selector is what pushes people to short passphrases - so the
+    # press budget is a mutant target like any other bound.
+    ("src/text-entry.c",
+     "    if (text_entry_on_group(e)) {\n        e->in_group = true;\n        return TEXT_ENTRY_CONTINUE;\n    }",
+     "    if (false) {\n        e->in_group = true;\n        return TEXT_ENTRY_CONTINUE;\n    }",
+     "opening a block types a character"),
+    ("src/text-entry.c", "    e->in_group = false;\n\n    switch (option) {",
+     "    /* mutant: the block stays open */\n\n    switch (option) {",
+     "a block stays open after a character"),
+    ("src/text-entry.c", "    if (text_entry_group_size(e) > 0 && e->in_group) {",
+     "    if (false) {", "CANCEL inside a block deletes a character"),
+    ("src/text-entry.c", "    while (g * g < n) {\n        g++;\n    }\n    return g;",
+     "    return 12;", "blocks are a fixed size rather than sqrt(n)"),
+    ("src/text-entry.c",
+     "            return (e->set == TEXT_SET_SYMBOL) ? TEXT_ENTRY_MODE_CAPS\n                                               : TEXT_ENTRY_MODE_NUM;",
+     "            return TEXT_ENTRY_MODE_NUM;",
+     "a set offers a switch to itself, and one set is two switches away"),
+    ("src/text-entry.c", "    if (text_entry_on_group(e)) {\n        int blocks = (n + g - 1) / g;",
+     "    if (false) {\n        int blocks = (n + g - 1) / g;",
+     "a block is labelled with one of its characters"),
+    ("src/ui.c", "    text_entry_set_blocks(enabled);",
+     "    /* mutant: only the seed selector */",
+     "the Entry setting never reaches the passphrase screen"),
+
+    # T61: on the entropy screen each button does one thing.
+    ("src/ui.c", "        if (events >= ENTROPY_TARGET_EVENTS) {", "        if (true) {",
+     "NEXT proceeds before the pool is full"),
+    ("src/ui.c",
+     "        return;\n    }\n\n    /* UP and DOWN collect.",
+     "    }\n\n    /* UP and DOWN collect.",
+     "ACCEPT is a sample as well as the proceed button"),
+    ("src/ui.c", '        oled_draw_string(7, 0, "MIX MIX BCK ----");',
+     '        oled_draw_string(7, 0, "MIX MIX BCK MIX");',
+     "the footer offers ACCEPT as a third way to collect"),
+
+    # T39b: the fingerprint is what tells two passphrase wallets apart.
+    ("src/ui.c",
+     '        set_address_error("Addr failed");\n    }\n\n    refresh_master_xfp();',
+     '        set_address_error("Addr failed");\n    }',
+     "the wallet screen shows no fingerprint"),
+    ("src/ui.c", "    if (master_xfp[0] == '\\0') {\n        return;\n    }",
+     "    if (false) {\n        return;\n    }",
+     "an underivable fingerprint renders as a placeholder"),
+    ("src/ui.c", '    draw_master_xfp(5, "XFP");',
+     "    /* mutant: no fingerprint */",
+     "the passphrase confirmation drops the fingerprint"),
+    ("src/ui.c", '        draw_master_xfp(6, "Match XFP");',
+     '        oled_draw_string(6, 0, "Match your record");',
+     "the host passphrase confirmation drops the fingerprint"),
+
     # Job 4: the acknowledgement has to mark the screen dirty itself.
     ("src/ui.c", "     * within 100 ms regardless. */\n    ui_invalidate();",
      "     * within 100 ms regardless. */",
      "the Signed acknowledgement never repaints"),
 ]
 
-BINARIES = ["test_protocol", "test_ble_chunk", "test_ui", "test_eth_decode"]
+BINARIES = ["test_protocol", "test_ble_chunk", "test_ui", "test_eth_decode",
+            "test_text_entry"]
+
+# Which suites even compile the mutated file. A suite that does not link it
+# cannot notice the mutant, so building it proves nothing and costs a rebuild;
+# anything not listed here (headers especially) falls back to all of them.
+SUITES_FOR = {
+    "src/text-entry.c": ["test_text_entry", "test_ui"],
+    "src/ui.c":         ["test_ui"],
+    "src/eth-decode.c": ["test_eth_decode", "test_ui", "test_protocol"],
+    "src/ble-chunk.c":  ["test_ble_chunk", "test_ui", "test_protocol"],
+}
 
 
 def run(cmd, **kw):
-    return subprocess.run(cmd, shell=True, cwd=ROOT, capture_output=True, text=True, **kw)
+    # A mutant that sends a suite into an infinite loop is caught, not tolerated:
+    # without a deadline the whole run stalls on it and reports nothing.
+    try:
+        return subprocess.run(cmd, shell=True, cwd=ROOT, capture_output=True,
+                              text=True, timeout=120, **kw)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, returncode=124)
 
 
-def build_and_run():
+def build_and_run(binaries=None):
     """Return the set of suites that failed (build failure counts as caught)."""
     failed = set()
-    for b in BINARIES:
+    for b in (binaries if binaries is not None else BINARIES):
         r = run(f"make -C sim build/{b}")
         if r.returncode != 0:
             failed.add(b + " (build)")
@@ -161,13 +229,19 @@ def build_and_run():
 
 
 def main():
+    # An optional substring selects a subset, for iterating on one change
+    # without paying for the whole matrix. A bare run is still the whole thing.
+    only = sys.argv[1] if len(sys.argv) > 1 else None
+
     baseline = build_and_run()
     if baseline:
         print("baseline is not green:", baseline)
         return 1
 
+    selected = [m for m in MUTANTS if only is None or only in m[3] or only in m[0]]
+
     killed, survived = 0, []
-    for path, find, repl, label in MUTANTS:
+    for path, find, repl, label in selected:
         full = os.path.join(ROOT, path)
         original = open(full).read()
         if find not in original:
@@ -176,7 +250,7 @@ def main():
             continue
         open(full, "w").write(original.replace(find, repl, 1))
         try:
-            failed = build_and_run()
+            failed = build_and_run(SUITES_FOR.get(path))
         finally:
             open(full, "w").write(original)
         if failed:
@@ -189,7 +263,7 @@ def main():
     # Leave the tree rebuilt from pristine sources.
     build_and_run()
 
-    print(f"\n{killed}/{len(MUTANTS)} mutants killed")
+    print(f"\n{killed}/{len(selected)} mutants killed")
     for s in survived:
         print("  survived:", s)
     return 0 if not survived else 1

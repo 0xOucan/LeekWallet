@@ -36,6 +36,10 @@ wallet's encrypt/decrypt round-trip belong. What is already here:
   `app/packages/core/src/mock-device.ts` has to match: the rule is that the mock must never be
   more permissive than the device, and until this existed there was nothing to check it against.
   Run it under sanitizers with `make -C sim asan` — it parses attacker-controlled bytes.
+- `test_text_entry.c` — `src/text-entry.c`, the passphrase selector. Reachability of every
+  printable character, and a measured press budget for both selectors (T60): entry cost is a
+  security property, because an expensive selector is what pushes people towards a short
+  guessable passphrase.
 - `esp_stubs.c` + `shim/` — in-memory NVS and logging; `shim/` shadows the ESP-IDF headers so
   firmware sources compile unmodified.
 - `host_stubs.c` — deterministic `random32()` so runs repeat.

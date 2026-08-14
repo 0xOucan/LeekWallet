@@ -617,6 +617,19 @@ static const char *brightness_label(int choice)
     }
 }
 
+/* One setting, both selectors (T60).
+ *
+ * The seed-word selector and the passphrase selector are the same two-level
+ * control over different alphabets, and a mode on four unlabelled buttons is a
+ * real cost. A user who has decided how they want to be asked for letters has
+ * decided it for both screens, so "Entry: Simple/Blocks" drives both and there
+ * is deliberately no second preference to get out of step with this one. */
+static void entry_blocks_apply(bool enabled)
+{
+    mnemonic_entry_set_blocks(enabled);
+    text_entry_set_blocks(enabled);
+}
+
 static void settings_load(void)
 {
     nvs_handle_t nvs;
@@ -634,7 +647,7 @@ static void settings_load(void)
         brightness_choice = (int)stored;
     }
     if (nvs_get_u8(nvs, UI_KEY_ENTRY_BLOCKS, &stored) == ESP_OK) {
-        mnemonic_entry_set_blocks(stored != 0);
+        entry_blocks_apply(stored != 0);
     }
     nvs_close(nvs);
 }
@@ -1466,6 +1479,44 @@ static void screen_main_menu_on_button(button_id_t btn)
  * single gate every consumer asks. */
 static char address_error[24] = {0};
 
+/* ------------------------------------------------------------ XFP (T39b)
+ *
+ * The BIP32 master fingerprint: eight hex characters that identify the *seed*
+ * rather than one address off it. That is what makes it worth the row it costs
+ * on a 128x64 screen - a wrong passphrase does not fail, it derives a
+ * different, perfectly valid, empty-looking wallet, and the fingerprint is the
+ * cheapest way to see that has happened. It is the same value Electrum, Trezor
+ * Suite and every PSBT show, so it can be checked against something.
+ *
+ * Not a secret: it is published in every watch-only descriptor.
+ *
+ * Cached rather than derived per render, because deriving it runs PBKDF2 on a
+ * cold seed cache and the render path runs on every repaint. */
+static char master_xfp[9] = {0};
+
+static void refresh_master_xfp(void)
+{
+    uint32_t fp = 0;
+
+    master_xfp[0] = '\0';
+    if (wallet_get_master_fingerprint(&fp) == WALLET_OK) {
+        snprintf(master_xfp, sizeof(master_xfp), "%08lX", (unsigned long)fp);
+    }
+}
+
+/* Draw the fingerprint, or nothing at all. A blank row says "not shown"; a row
+ * reading "XFP" with a placeholder after it would be read as a value. */
+static void draw_master_xfp(int row, const char *prefix)
+{
+    if (master_xfp[0] == '\0') {
+        return;
+    }
+
+    char line[22];
+    snprintf(line, sizeof(line), "%s %s", prefix, master_xfp);
+    oled_draw_string_centered(row, line);
+}
+
 static void set_address_error(const char *message)
 {
     memzero(&eth_address, sizeof(eth_address));
@@ -1520,6 +1571,8 @@ static void screen_wallet_info_enter(void)
         ESP_LOGE(TAG, "Failed to get address: %d", err);
         set_address_error("Addr failed");
     }
+
+    refresh_master_xfp();
 }
 
 static void screen_wallet_info_render(void)
@@ -1559,6 +1612,11 @@ static void screen_wallet_info_render(void)
         oled_draw_string_centered(2, line1);
         oled_draw_string_centered(3, line2);
         oled_draw_string_centered(4, line3);
+
+        /* Which seed this address came off. The address alone cannot say
+         * whether a passphrase is applied, and the wrong one looks exactly
+         * like the right one until funds fail to appear. */
+        draw_master_xfp(6, "XFP");
     }
 
     /* Offering QR for something that is not an address invites the user to
@@ -1580,6 +1638,8 @@ static void wallet_info_refresh_address(void)
         ESP_LOGE(TAG, "Failed to derive address %u", (unsigned)address_index);
         set_address_error("Derive failed");
     }
+
+    refresh_master_xfp();
 }
 
 static void screen_wallet_info_on_button(button_id_t btn)
@@ -2329,7 +2389,7 @@ static void screen_settings_on_button(button_id_t btn)
                     ui_set_screen(SCREEN_PASSPHRASE);
                     break;
                 case SET_ENTRY_STYLE:
-                    mnemonic_entry_set_blocks(!mnemonic_entry_blocks_enabled());
+                    entry_blocks_apply(!mnemonic_entry_blocks_enabled());
                     entry_blocks_save();
                     ESP_LOGI(TAG, "Word entry: %s",
                              mnemonic_entry_blocks_enabled() ? "blocks" : "simple");
@@ -2526,6 +2586,13 @@ static void screen_entropy_render(void)
     bar[18] = '\0';
     oled_draw_string_centered(4, bar);
 
+    /* One job per button, and the footer says which (T61).
+     *
+     * UP and DOWN are the only samples; ACCEPT only ever proceeds. It used to
+     * be a sample too until the target was met, which made the same press mean
+     * "collect" and then "create a wallet" - the one press on this screen that
+     * must not be reached by reflex. Until it does something it is drawn as
+     * unavailable rather than as a third way to stir the pool. */
     if (events >= target) {
         oled_draw_string_centered(5, "Ready");
         oled_draw_string(7, 0, "MIX MIX BCK NEXT");
@@ -2535,7 +2602,7 @@ static void screen_entropy_render(void)
         oled_draw_string_centered(5, remaining);
         /* No NEXT yet - the target is required, not suggested. CANCEL still
          * abandons wallet creation so nobody is stuck on this screen. */
-        oled_draw_string(7, 0, "MIX MIX BCK MIX");
+        oled_draw_string(7, 0, "MIX MIX BCK ----");
     }
 }
 
@@ -2554,16 +2621,26 @@ static void screen_entropy_on_button(button_id_t btn)
 
     int events = entropy_user_event_count();
 
-    /* ACCEPT proceeds only once the target is met; before that it is just
-     * another sample. */
-    if (btn == BUTTON_ACCEPT && events >= ENTROPY_TARGET_EVENTS) {
-        ESP_LOGI(TAG, "Collected %d events (~%d bits) for the pool",
-                 events, entropy_user_bits_estimate());
-        ui_set_screen(SCREEN_WALLET_CREATE);
+    /* ACCEPT is the "proceed" button and nothing else. It does nothing at all
+     * until the target is met, rather than quietly counting as a sample: a
+     * button whose meaning changes partway through teaches the user the wrong
+     * reflex for the one press that creates a wallet.
+     *
+     * This costs nothing in entropy. What the pool harvests is the microsecond
+     * jitter between presses, so two collecting buttons gather exactly what
+     * four would - and the seed is full strength either way, because
+     * entropy_mix_pool() hashes this pool together with the hardware RNG and
+     * user input can only add to it. */
+    if (btn == BUTTON_ACCEPT) {
+        if (events >= ENTROPY_TARGET_EVENTS) {
+            ESP_LOGI(TAG, "Collected %d events (~%d bits) for the pool",
+                     events, entropy_user_bits_estimate());
+            ui_set_screen(SCREEN_WALLET_CREATE);
+        }
         return;
     }
 
-    /* What is harvested is the microsecond timing, not which button. */
+    /* UP and DOWN collect. What is harvested is the timing, not which one. */
     entropy_add_user_event((uint8_t)btn, (uint64_t)esp_timer_get_time());
     ui_invalidate();
 }
@@ -3042,18 +3119,15 @@ static void screen_passphrase_render(void)
     shown[out] = '\0';
     oled_draw_string(2, 0, len ? shown : "(empty = no pass)");
 
-    /* Neighbours, so the mode entries are visible before they are reached. */
-    int n = text_entry_option_count(&passphrase_entry);
-    int idx = passphrase_entry.option_index;
-    char sa[4], sb[4], sc[4];
-    const char *prev = text_entry_option_label(
-        text_entry_option_at(&passphrase_entry, ((idx - 1) % n + n) % n), sa, sizeof(sa));
-    const char *cur = text_entry_option_label(
-        text_entry_option_at(&passphrase_entry, idx), sb, sizeof(sb));
-    const char *next = text_entry_option_label(
-        text_entry_option_at(&passphrase_entry, (idx + 1) % n), sc, sizeof(sc));
+    /* Neighbours, so the mode entries are visible before they are reached.
+     * With the block selector on these are whole blocks ("a-f"), because a
+     * press moves a block and the screen must say what a press does. */
+    char prev[8], cur[8], next[8];
+    text_entry_label_offset(&passphrase_entry, -1, prev, sizeof(prev));
+    text_entry_label_offset(&passphrase_entry,  0, cur,  sizeof(cur));
+    text_entry_label_offset(&passphrase_entry,  1, next, sizeof(next));
 
-    char sel[22];
+    char sel[32];
     snprintf(sel, sizeof(sel), "%s <%s> %s", prev, cur, next);
     oled_draw_string_centered(4, sel);
 
@@ -3061,7 +3135,10 @@ static void screen_passphrase_render(void)
     snprintf(count, sizeof(count), "%u chars", (unsigned)len & 0x7F);
     oled_draw_string_centered(5, count);
 
-    oled_draw_string(7, 0, "UP DN  BCK  SEL");
+    /* ACCEPT opens a block before it picks anything, so it must not say SEL. */
+    oled_draw_string(7, 0, text_entry_on_group(&passphrase_entry)
+                               ? "UP DN  BCK OPEN"
+                               : "UP DN  BCK  SEL");
 }
 
 static void screen_passphrase_on_button(button_id_t btn)
@@ -3071,7 +3148,9 @@ static void screen_passphrase_on_button(button_id_t btn)
         case BUTTON_DOWN: text_entry_scroll(&passphrase_entry, -1); break;
 
         case BUTTON_CANCEL:
-            if (!text_entry_backspace(&passphrase_entry)) {
+            /* Closes an open block first, and only then deletes: backing out
+             * of the wrong block must not cost a character the user did type. */
+            if (!text_entry_back(&passphrase_entry)) {
                 text_entry_clear(&passphrase_entry);
                 ui_set_screen(SCREEN_SETTINGS);
                 return;
@@ -3290,6 +3369,11 @@ static void screen_passphrase_confirm_render(void)
     oled_draw_string_centered(2, line1);
     oled_draw_string_centered(3, line2);
     oled_draw_string_centered(4, line3);
+
+    /* The fingerprint names the seed, so it is the fact that actually says
+     * "this is the passphrase you meant" - the address below it is only one
+     * account off that seed. */
+    draw_master_xfp(5, "XFP");
 
     oled_draw_string_centered(6, "Match your record");
     oled_draw_string(7, 0, "RETRY         OK");
@@ -4000,6 +4084,9 @@ void ui_request_passphrase_confirm(const char *address)
 static void screen_host_passphrase_enter(void)
 {
     ESP_LOGI(TAG, "Host passphrase confirmation screen");
+    /* The passphrase was typed somewhere this device cannot see. The
+     * fingerprint is what the user can compare against their own record. */
+    refresh_master_xfp();
 }
 
 static void screen_host_passphrase_render(void)
@@ -4016,7 +4103,11 @@ static void screen_host_passphrase_render(void)
 
     sign_draw_address(2, host_passphrase_address);
     oled_draw_string(5, 0, "Typed on host!");
-    oled_draw_string(6, 0, "Match your record");
+    if (master_xfp[0]) {
+        draw_master_xfp(6, "Match XFP");
+    } else {
+        oled_draw_string(6, 0, "Match your record");
+    }
     oled_draw_string(7, 0, "NO           YES");
 }
 
@@ -4289,6 +4380,10 @@ void ui__reset_static_state_for_test(void)
     memzero(entry_error, sizeof(entry_error));
     entry_choosing_length = true;
     entry_length_choice = 12;
+    /* Both selectors back to the default, together - a test that flipped the
+     * setting must not leak it into the next one. */
+    entry_blocks_apply(false);
+    text_entry_reset(&passphrase_entry);
 
     memzero(pin_entry, sizeof(pin_entry));
     memzero(pin_first_entry, sizeof(pin_first_entry));

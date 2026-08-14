@@ -27,6 +27,7 @@
 #include "button.h"
 bool fake_protocol_rx_enabled(void);
 #include "mnemonic-entry.h"
+#include "text-entry.h"
 #include "blind-signing.h"
 #include "eth-tx.h"
 #include "sha3.h"
@@ -667,6 +668,194 @@ static void test_settings_selects_one_transport(void)
 }
 
 /* ============================================================================
+ * T61 - one job per button on the entropy screen
+ * ============================================================================ */
+
+static void test_entropy_accept_only_proceeds(void)
+{
+    printf("== ACCEPT collects nothing and only ever proceeds (T61)\n");
+    boot_unlocked_with_seed();
+    go(SCREEN_ENTROPY);
+
+    CHECK_SCREEN(fake_oled_contains("0 / 32"), "the pool did not start empty");
+    CHECK_SCREEN(fake_oled_row_contains(7, "----"),
+                 "the footer offers something for ACCEPT before the target");
+    CHECK_SCREEN(!fake_oled_contains("NEXT"), "NEXT is offered before the target");
+
+    /* ACCEPT before the target does nothing at all - not a sample, not a
+     * screen change. It used to count as a sample, which taught the reflex
+     * that creates a wallet. */
+    for (int i = 0; i < 5; i++) {
+        press(BUTTON_ACCEPT);
+    }
+    CHECK(ui_get_screen() == SCREEN_ENTROPY, "ACCEPT left the screen early");
+    CHECK_SCREEN(fake_oled_contains("0 / 32"),
+                 "ACCEPT was counted as a sample");
+
+    /* UP and DOWN are the samples. */
+    press(BUTTON_UP);
+    CHECK_SCREEN(fake_oled_contains("1 / 32"), "UP did not collect a sample");
+    press(BUTTON_DOWN);
+    CHECK_SCREEN(fake_oled_contains("2 / 32"), "DOWN did not collect a sample");
+
+    for (int i = 2; i < 32; i++) {
+        press(BUTTON_UP);
+    }
+    CHECK_SCREEN(fake_oled_contains("32 / 32"), "32 presses did not fill the pool");
+    CHECK_SCREEN(fake_oled_contains("Ready"), "a full pool does not say Ready");
+    CHECK_SCREEN(fake_oled_row_contains(7, "NEXT"), "NEXT is still not offered");
+
+    press(BUTTON_ACCEPT);
+    CHECK(ui_get_screen() == SCREEN_WALLET_CREATE,
+          "ACCEPT on a full pool did not proceed");
+}
+
+static void test_entropy_cancel_abandons(void)
+{
+    printf("== CANCEL abandons wallet creation rather than lowering the bar\n");
+    boot_unlocked_with_seed();
+    go(SCREEN_ENTROPY);
+
+    for (int i = 0; i < 10; i++) {
+        press(BUTTON_UP);
+    }
+    press(BUTTON_CANCEL);
+    CHECK(ui_get_screen() == SCREEN_MAIN_MENU, "CANCEL did not leave the screen");
+
+    /* And the half-full pool does not survive to be topped up later. */
+    go(SCREEN_ENTROPY);
+    CHECK_SCREEN(fake_oled_contains("0 / 32"), "the abandoned pool was kept");
+}
+
+/* ============================================================================
+ * T39b - the master fingerprint is on screen
+ * ============================================================================ */
+
+static void test_xfp_is_shown_with_the_address(void)
+{
+    printf("== the wallet screen names the seed, not just an address (T39b)\n");
+    boot_unlocked_with_seed();
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "setup: vault would not unlock");
+
+    go(SCREEN_WALLET_INFO);
+    int row = fake_oled_find_row("XFP");
+    CHECK_SCREEN(row >= 0, "no fingerprint on the wallet screen");
+
+    uint32_t fp = 0;
+    CHECK(wallet_get_master_fingerprint(&fp) == WALLET_OK, "no fingerprint to show");
+    char expect[16];
+    snprintf(expect, sizeof(expect), "XFP %08lX", (unsigned long)fp);
+    CHECK_SCREEN(fake_oled_contains(expect), "the screen does not show %s", expect);
+
+    /* It identifies the seed, so scrolling accounts must not change it. */
+    press(BUTTON_UP);
+    CHECK_SCREEN(fake_oled_contains(expect),
+                 "the fingerprint changed when the account did");
+}
+
+static void test_xfp_tells_passphrase_wallets_apart(void)
+{
+    printf("== the passphrase confirmation shows which seed it produced (T39b)\n");
+    boot_unlocked_with_seed();
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "setup: vault would not unlock");
+
+    go(SCREEN_WALLET_INFO);
+    uint32_t plain = 0;
+    CHECK(wallet_get_master_fingerprint(&plain) == WALLET_OK, "no base fingerprint");
+
+    wallet_set_passphrase("hunter2", 7);
+    go(SCREEN_PASSPHRASE_CONFIRM);
+
+    uint32_t with = 0;
+    CHECK(wallet_get_master_fingerprint(&with) == WALLET_OK, "no passphrase fingerprint");
+    CHECK(with != plain, "the passphrase did not change the fingerprint");
+
+    char expect[16];
+    snprintf(expect, sizeof(expect), "XFP %08lX", (unsigned long)with);
+    CHECK_SCREEN(fake_oled_contains(expect),
+                 "the confirmation does not show %s", expect);
+    /* A wrong passphrase is a valid wallet, so the screen still has to say
+     * what the user is meant to do with the value. */
+    CHECK_SCREEN(fake_oled_contains("Match"), "nothing tells the user to compare");
+
+    wallet_clear_passphrase();
+}
+
+/* A fingerprint that cannot be derived must be absent, not a placeholder: a
+ * row reading "XFP --------" is read as a value. */
+static void test_xfp_is_absent_when_it_cannot_be_derived(void)
+{
+    printf("== no fingerprint is shown when none could be derived\n");
+    boot_unlocked_with_seed();
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "setup: vault would not unlock");
+
+    /* Only the fingerprint fails: the address is still real, so this is the
+     * case where an "XFP --------" placeholder would sit next to genuine data
+     * and be read as genuine too. */
+    fake_wallet_fail_fingerprint(true);
+
+    go(SCREEN_WALLET_INFO);
+    CHECK_SCREEN(fake_oled_contains("0x01"), "setup: the address failed too");
+    CHECK_SCREEN(!fake_oled_contains("XFP"), "a fingerprint was drawn without one");
+
+    fake_wallet_fail_fingerprint(false);
+}
+
+/* ============================================================================
+ * T60 - the passphrase selector honours the seed selector's setting
+ * ============================================================================ */
+
+static void test_entry_style_drives_both_selectors(void)
+{
+    printf("== one Entry setting drives seed and passphrase entry (T60)\n");
+    boot_unlocked_with_seed();
+
+    CHECK(!mnemonic_entry_blocks_enabled() && !text_entry_blocks_enabled(),
+          "the selectors did not start on the same default");
+
+    go(SCREEN_SETTINGS);
+    bool found = false;
+    for (int i = 0; i < 40 && !found; i++) {
+        found = fake_oled_contains("> Entry ");
+        if (!found) press(BUTTON_DOWN);
+    }
+    CHECK(found, "no Entry style item in the settings menu");
+    if (!found) return;
+
+    press(BUTTON_ACCEPT);
+    CHECK(mnemonic_entry_blocks_enabled(), "the seed selector did not change");
+    CHECK(text_entry_blocks_enabled(),
+          "the passphrase selector ignored the setting");
+
+    /* And the passphrase screen actually behaves as a two-level selector:
+     * ACCEPT opens a block instead of typing, and says so. */
+    go(SCREEN_PASSPHRASE);
+    CHECK_SCREEN(fake_oled_row_contains(7, "OPEN"),
+                 "the footer still claims ACCEPT selects a character");
+    CHECK_SCREEN(fake_oled_contains("a-f"), "the selector does not show blocks");
+
+    press(BUTTON_ACCEPT);
+    CHECK_SCREEN(fake_oled_contains("0 chars"), "opening a block typed a character");
+    CHECK_SCREEN(fake_oled_row_contains(7, "SEL"),
+                 "an open block still says OPEN");
+
+    press(BUTTON_ACCEPT);
+    CHECK_SCREEN(fake_oled_contains("1 chars"), "picking inside a block typed nothing");
+    /* And the block closes again, so the next press means what the footer
+     * says it means rather than what the last one did. */
+    CHECK_SCREEN(fake_oled_row_contains(7, "OPEN"),
+                 "the block stayed open after a character");
+
+    /* Back to the default so the rest of the suite finds what it expects. */
+    go(SCREEN_SETTINGS);
+    for (int i = 0; i < 40; i++) {
+        if (fake_oled_contains("> Entry ")) { press(BUTTON_ACCEPT); break; }
+        press(BUTTON_DOWN);
+    }
+    CHECK(!text_entry_blocks_enabled(), "the setting would not turn off again");
+}
+
+/* ============================================================================
  * T4 / AUDIT S8e - Change PIN is wired up and asks for three PINs
  * ============================================================================ */
 
@@ -1029,6 +1218,7 @@ static void test_host_passphrase_confirmation(void)
 {
     printf("== a host-supplied passphrase is confirmed against its address\n");
     boot_unlocked_with_seed();
+    CHECK(wallet_unlock("1234", 4) == WALLET_OK, "setup: vault would not unlock");
 
     ui_request_passphrase_confirm("0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
     go(SCREEN_HOST_PASSPHRASE_CONFIRM);
@@ -1038,6 +1228,10 @@ static void test_host_passphrase_confirmation(void)
     /* The user has to know this came from the host, which is the weaker path. */
     CHECK_SCREEN(fake_oled_contains("host"),
                  "the screen does not say the passphrase came from the app");
+    /* The address is one account; the fingerprint is the seed the host's
+     * passphrase produced, which is the thing that is either yours or not. */
+    CHECK_SCREEN(fake_oled_contains("XFP"),
+                 "the host confirmation does not name the resulting seed");
     CHECK(ui_sign_outcome() == SIGN_PENDING, "the prompt answered itself");
 
     press(BUTTON_CANCEL);
@@ -1137,6 +1331,12 @@ int main(void)
     test_settings_has_no_wifi_entry();
 
     test_settings_selects_one_transport();
+    test_entropy_accept_only_proceeds();
+    test_entropy_cancel_abandons();
+    test_xfp_is_shown_with_the_address();
+    test_xfp_tells_passphrase_wallets_apart();
+    test_xfp_is_absent_when_it_cannot_be_derived();
+    test_entry_style_drives_both_selectors();
     test_change_pin_is_reachable_and_works();
     test_change_pin_rejects_a_wrong_current_pin();
     test_change_pin_catches_a_mismatch();
