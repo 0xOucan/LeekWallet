@@ -51,6 +51,7 @@ void fake_wallet_reset(void)
     memset(&w, 0, sizeof(w));
     memzero(fake_password, sizeof(fake_password));
     fake_wallet_fail_derivation(false);
+    fake_wallet_fail_fingerprint(false);
 }
 
 uint8_t fake_wallet_preload(const char *mnemonic)
@@ -207,6 +208,46 @@ static bool fail_derivation = false;
 void fake_wallet_fail_derivation(bool fail)
 {
     fail_derivation = fail;
+}
+
+static bool fail_fingerprint = false;
+
+void fake_wallet_fail_fingerprint(bool fail)
+{
+    fail_fingerprint = fail;
+}
+
+/* A stand-in fingerprint (T39b).
+ *
+ * The real one is BIP32 over a PBKDF2 seed and is checked against published
+ * vectors in test_xfp.c; none of that decides what the screen draws. What the
+ * UI tests need is the two properties the screen depends on: it exists only
+ * when a seed is unlocked, and applying a passphrase changes it. So this is a
+ * plain hash of the mnemonic and the passphrase - deterministic, instant, and
+ * honest about being neither. */
+WalletError wallet_get_master_fingerprint(uint32_t *fingerprint_out)
+{
+    if (!fingerprint_out) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
+    if (!w.unlocked || w.active == 0) {
+        return WALLET_ERROR_LOCKED;
+    }
+    if (fail_derivation || fail_fingerprint) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
+
+    uint32_t h = 2166136261u;   /* FNV-1a */
+    const char *parts[2] = { w.mnemonics[w.active - 1], w.passphrase };
+    for (int i = 0; i < 2; i++) {
+        for (const char *p = parts[i]; *p; p++) {
+            h = (h ^ (uint8_t)*p) * 16777619u;
+        }
+        h = (h ^ 0xFFu) * 16777619u;   /* separator, so "ab"+"" != "a"+"b" */
+    }
+
+    *fingerprint_out = h;
+    return WALLET_OK;
 }
 
 /* Not a signature. It is a receipt: r and s carry the digest and the path
