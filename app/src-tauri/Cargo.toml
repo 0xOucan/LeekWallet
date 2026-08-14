@@ -9,12 +9,16 @@ description = "LeekWallet companion app"
 tauri-build = { version = "2", features = [] }
 
 [features]
-# The RPC proxy's HTTP client (T62 stage 2). Off by default because every TLS
-# stack available to reqwest compiles C, which needs the Android NDK toolchain
-# on hand for `cargo check --target aarch64-linux-android` — a requirement not
-# every checkout can meet, and not one worth imposing to type-check the rest of
-# the app. The proxy's policy (src/rpc.rs) is compiled and tested either way;
-# only the socket is behind this. Release builds turn it on.
+# The RPC proxy's HTTP client. On by default: without it the app cannot reach a
+# user-added custom chain at all, since a URL typed at runtime can never be in a
+# build-time CSP allowlist (docs/RPC-ACCESS.md).
+#
+# It was briefly off because `cargo check --target aarch64-linux-android` failed
+# to build reqwest's TLS. That was not an Android limitation: cc-rs looks for
+# `aarch64-linux-android-clang` and the NDK ships the name with the API level in
+# it, so CC_/AR_ have to point at the real files. The android scripts in
+# package.json set them; with that done the target builds.
+default = ["rpc-proxy"]
 rpc-proxy = ["dep:reqwest"]
 
 [dependencies]

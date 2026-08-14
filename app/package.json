@@ -17,8 +17,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "tauri": "tauri",
     "android:dev": "tauri android dev",
-    "android:build": "tauri android build --debug",
-    "android:build:arm64": "tauri android build --debug --target aarch64",
+    "android:build": "CC_aarch64_linux_android=\"$NDK_HOME\"/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang AR_aarch64_linux_android=\"$NDK_HOME\"/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar tauri android build --debug",
+    "android:build:arm64": "CC_aarch64_linux_android=\"$NDK_HOME\"/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang AR_aarch64_linux_android=\"$NDK_HOME\"/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar tauri android build --debug --target aarch64",
     "android:check": "cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-linux-android"
   },
   "devDependencies": {

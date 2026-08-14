@@ -1,7 +1,8 @@
 # How the app reaches an RPC node
 
-Decided, not yet built. This note exists so the implementation inherits the
-reasoning instead of rediscovering it.
+**Built.** Failover in `app/packages/core/src/rpc.ts`, the proxy in
+`app/src-tauri/src/rpc.rs`, both on by default. This note is kept as the
+reasoning behind them.
 
 ## The problem
 
