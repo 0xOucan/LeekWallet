@@ -807,11 +807,11 @@ static void test_xfp_is_absent_when_it_cannot_be_derived(void)
 
 static void test_entry_style_drives_both_selectors(void)
 {
-    printf("== one Entry setting drives seed and passphrase entry (T60)\n");
+    printf("== the Entry setting drives seed entry only (T60)\n");
     boot_unlocked_with_seed();
 
     CHECK(!mnemonic_entry_blocks_enabled() && !text_entry_blocks_enabled(),
-          "the selectors did not start on the same default");
+          "the selectors did not start flat");
 
     go(SCREEN_SETTINGS);
     bool found = false;
@@ -824,35 +824,22 @@ static void test_entry_style_drives_both_selectors(void)
 
     press(BUTTON_ACCEPT);
     CHECK(mnemonic_entry_blocks_enabled(), "the seed selector did not change");
-    CHECK(text_entry_blocks_enabled(),
-          "the passphrase selector ignored the setting");
 
-    /* And the passphrase screen actually behaves as a two-level selector:
-     * ACCEPT opens a block instead of typing, and says so. */
+    /* The passphrase ring deliberately stays flat, whatever the setting says.
+     *
+     * Blocks are fewer presses there too - 9.1 per character against 14.4 -
+     * and were still reported worse to use on hardware. The reason is
+     * structural: seed entry has one dimension, 26 letters narrowing as you
+     * type, while the passphrase ring already carries a character-set mode on
+     * top of ~95 characters. Blocks make that three levels of navigation on
+     * four unlabelled buttons. A passphrase typed wrong is worse than one
+     * typed slowly, so speed loses here. */
+    CHECK(!text_entry_blocks_enabled(),
+          "blocks reached the passphrase ring; it is meant to stay flat");
+
     go(SCREEN_PASSPHRASE);
-    CHECK_SCREEN(fake_oled_row_contains(7, "OPEN"),
-                 "the footer still claims ACCEPT selects a character");
-    CHECK_SCREEN(fake_oled_contains("a-f"), "the selector does not show blocks");
-
-    press(BUTTON_ACCEPT);
-    CHECK_SCREEN(fake_oled_contains("0 chars"), "opening a block typed a character");
-    CHECK_SCREEN(fake_oled_row_contains(7, "SEL"),
-                 "an open block still says OPEN");
-
-    press(BUTTON_ACCEPT);
-    CHECK_SCREEN(fake_oled_contains("1 chars"), "picking inside a block typed nothing");
-    /* And the block closes again, so the next press means what the footer
-     * says it means rather than what the last one did. */
-    CHECK_SCREEN(fake_oled_row_contains(7, "OPEN"),
-                 "the block stayed open after a character");
-
-    /* Back to the default so the rest of the suite finds what it expects. */
-    go(SCREEN_SETTINGS);
-    for (int i = 0; i < 40; i++) {
-        if (fake_oled_contains("> Entry ")) { press(BUTTON_ACCEPT); break; }
-        press(BUTTON_DOWN);
-    }
-    CHECK(!text_entry_blocks_enabled(), "the setting would not turn off again");
+    CHECK_SCREEN(!fake_oled_row_contains(7, "OPEN"),
+                 "the passphrase footer offers a block level it should not have");
 }
 
 /* ============================================================================

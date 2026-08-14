@@ -624,10 +624,25 @@ static const char *brightness_label(int choice)
  * real cost. A user who has decided how they want to be asked for letters has
  * decided it for both screens, so "Entry: Simple/Blocks" drives both and there
  * is deliberately no second preference to get out of step with this one. */
+/* The setting drives the seed selector only.
+ *
+ * Blocks are measurably faster on both screens - 9.1 presses per character
+ * against 14.4 on the passphrase ring - and were reported worse to use there
+ * anyway. The reason they differ is structural rather than a matter of taste.
+ * Seed entry offers one dimension: 26 letters, narrowing as you type. The
+ * passphrase ring already has a mode dimension on top of its ~95 characters,
+ * so adding blocks makes it three levels of navigation on four unlabelled
+ * buttons - open a block, pick a character, and separately remember which
+ * character set you are in.
+ *
+ * So the passphrase keeps the flat ring, which still improved: it now offers
+ * the two sets you are NOT in, which is where most of its gain came from.
+ * Fewer presses is not the only axis, and a passphrase typed wrong is worse
+ * than a passphrase typed slowly. */
 static void entry_blocks_apply(bool enabled)
 {
     mnemonic_entry_set_blocks(enabled);
-    text_entry_set_blocks(enabled);
+    text_entry_set_blocks(false);
 }
 
 static void settings_load(void)

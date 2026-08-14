@@ -154,9 +154,11 @@ MUTANTS = [
     ("src/text-entry.c", "    if (text_entry_on_group(e)) {\n        int blocks = (n + g - 1) / g;",
      "    if (false) {\n        int blocks = (n + g - 1) / g;",
      "a block is labelled with one of its characters"),
-    ("src/ui.c", "    text_entry_set_blocks(enabled);",
-     "    /* mutant: only the seed selector */",
-     "the Entry setting never reaches the passphrase screen"),
+    # The passphrase ring is meant to stay flat whatever the setting says, so
+    # the mutation is letting the setting through - the old behaviour.
+    ("src/ui.c", "    text_entry_set_blocks(false);",
+     "    text_entry_set_blocks(enabled);",
+     "the Entry setting leaks into the passphrase ring"),
 
     # T61: on the entropy screen each button does one thing.
     ("src/ui.c", "        if (events >= ENTROPY_TARGET_EVENTS) {", "        if (true) {",
