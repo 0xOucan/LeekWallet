@@ -74,10 +74,15 @@
             <select id="chain" class="addr"></select>
           </label>
           <p class="muted chainnote" id="chainnote"></p>
+          <!-- A first choice, not a promise: if it does not answer, the app
+               moves to the next operator this chain lists (T62). The line
+               below says which one was actually reached, because that is who
+               learned which addresses were asked about. -->
           <label class="field">
-            <span>RPC endpoint</span>
+            <span>RPC endpoint (first choice)</span>
             <select id="rpc" class="addr"></select>
           </label>
+          <p class="muted rpcused" id="rpcused">No endpoint contacted yet.</p>
           <label class="field">
             <span>To</span>
             <input id="to" class="addr" spellcheck="false"

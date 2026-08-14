@@ -175,6 +175,14 @@ button.danger { color: var(--danger); border-color: var(--danger); }
  * the same grey hint the testnets get. */
 .chainnote[data-net="mainnet"] { color: var(--danger); }
 
+/* Which operator was actually reached. Sits directly under the selector it
+ * qualifies, and is a plain report rather than a warning: failing over is
+ * normal, and the only thing being said is who ended up hearing the request. */
+.rpcused {
+  margin-top: calc(var(--space-2) * -1);
+  font-size: var(--text-sm);
+}
+
 /* ------------------------------------------------------- advisory preview */
 
 /* Visually a margin note, not a result. Dashed border and no accent colour on
