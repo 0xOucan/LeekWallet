@@ -11,6 +11,7 @@
  * that looks verified is the attack section 6d describes.
  */
 
+import { TOKEN_LIST_URLS } from "../src/token-list.ts";
 import { readFileSync } from "node:fs";
 
 import {
@@ -162,6 +163,13 @@ group("the CSP allowlist still bounds the registry, by exact origin");
    * be wss:// rather than https://. */
   const NON_RPC_ALLOWED = new Set([
     "wss://relay.walletconnect.org",   // WalletConnect v2 relay (PROTOCOL.md 6b)
+    /* The published token lists behind the opt-in "update token list" button.
+     * Derived from TOKEN_LIST_URLS rather than typed again here, so
+     * an origin cannot be added to one and forgotten in the other: a source the
+     * app would fetch but the CSP blocks fails only at runtime, and a stale CSP
+     * entry outlives the source that justified it. Fetching a list is a
+     * disclosure, never a check — see TOKEN_LIST_NOTICE. */
+    ...TOKEN_LIST_URLS.map((s) => new URL(s.url).origin),
   ]);
 
   for (const entry of allowed) {
@@ -186,7 +194,13 @@ group("the CSP allowlist still bounds the registry, by exact origin");
   const reachable = CHAINS.filter((c) =>
     c.rpcUrls.every((u) => allowed.has(new URL(u).origin)),
   ).map((c) => c.id);
-  for (const id of [1, 10, 56, 137, 8453, 42161, 11155111, 84532, 17000]) {
+  /* 17000 (Holesky) was in this list until 2026-08-14 and is deliberately gone:
+   * the Ethereum Foundation shut the network down at the end of September 2025
+   * and it is frozen at block 5765077, so "reachable" was no longer something
+   * worth guarding. Removed here rather than the guard being weakened -- the
+   * list still fails if a live chain silently loses an allowlisted origin.
+   * Hoodi (560048) is its replacement and is checked by the loop above. */
+  for (const id of [1, 10, 56, 137, 8453, 42161, 11155111, 84532]) {
     check(reachable.includes(id), `chain ${id} was reachable before and is not now`);
   }
 

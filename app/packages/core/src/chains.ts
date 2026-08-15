@@ -104,7 +104,16 @@ type CuratedEntry = Omit<ChainInfo, "source">;
  * Selection rule: chains people actually hold balances on, plus the testnet
  * each of those is developed against. Two independent RPC operators per chain
  * minimum, so one of them being down or rate-limiting does not remove the
- * chain from the app. Anything not here is reachable as a custom chain, which
+ * chain from the app.
+ *
+ * A chain must also be ALIVE, not merely well-known. Being listed here is an
+ * offer to sign and broadcast on that network, and the offer is false if
+ * nothing will accept the transaction -- so a chain that has stopped producing
+ * blocks comes out, whether it was formally shut down (Polygon zkEVM, Holesky)
+ * or has simply stalled with no announcement (Scroll Sepolia). Note that a dead
+ * chain can keep answering reads perfectly: Holesky served eth_chainId and
+ * eth_blockNumber for months after its shutdown, frozen at one height. Liveness
+ * is a block-height question, and `./scripts/check.sh rpc` is how it is asked. Anything not here is reachable as a custom chain, which
  * is the honest place for "we did not check this".
  */
 const CURATED: readonly CuratedEntry[] = [
@@ -168,18 +177,21 @@ const CURATED: readonly CuratedEntry[] = [
     id: 324,
     name: "zkSync Era",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: ["https://zksync-rpc.publicnode.com", "https://zksync.drpc.org"],
+    rpcUrls: ["https://mainnet.era.zksync.io", "https://zksync.drpc.org", "https://rpc.ankr.com/zksync_era"],
     explorerUrl: "https://era.zksync.network",
     testnet: false,
   },
-  {
-    id: 1101,
-    name: "Polygon zkEVM",
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: ["https://polygon-zkevm-rpc.publicnode.com", "https://polygon-zkevm.drpc.org"],
-    explorerUrl: "https://zkevm.polygonscan.com",
-    testnet: false,
-  },
+  /* Polygon zkEVM (1101) was removed on 2026-08-14. Polygon Labs shut the
+   * network down on 2026-07-01, after announcing the wind-down in June 2025;
+   * the sequencer is off and its public RPCs answer 404. Left in the table it
+   * would be a network the user can select, sign for, and broadcast into
+   * nothing — an offered chain is a claim that it works.
+   *
+   * Anyone who held funds there: assets in a self-custodied address were
+   * auto-migrated to Ethereum L1 and are recoverable through Polygon's zkEVM
+   * Claims interface. Assets left inside a DeFi contract were not migrated.
+   * This note is here because deleting the entry also deletes the only place
+   * the app ever mentioned the chain. */
   {
     id: 5000,
     name: "Mantle",
@@ -269,14 +281,17 @@ const CURATED: readonly CuratedEntry[] = [
     explorerUrl: "https://sepolia.uniscan.xyz",
     testnet: true,
   },
-  {
-    id: 17000,
-    name: "Holesky",
-    nativeCurrency: { name: "Holesky Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: ["https://ethereum-holesky-rpc.publicnode.com", "https://holesky.drpc.org"],
-    explorerUrl: "https://holesky.etherscan.io",
-    testnet: true,
-  },
+  /* Holesky (17000) was removed on 2026-08-14. The Ethereum Foundation shut it
+   * down at the end of September 2025, after Pectra testing left it with an
+   * exit queue it never recovered from; Hoodi (560048), already in this table,
+   * is its designated replacement.
+   *
+   * Worth recording HOW this was caught, because responding is not the same as
+   * working: one endpoint still answered eth_chainId and eth_blockNumber
+   * correctly, so every liveness check based on "did it reply" passed it. The
+   * block number was frozen at 5765077 across samples 45 seconds apart. That is
+   * why scripts/check-rpc-liveness.mjs compares block height over time instead
+   * of just asking whether the endpoint is up. */
   {
     id: 43113,
     name: "Avalanche Fuji",
@@ -329,14 +344,16 @@ const CURATED: readonly CuratedEntry[] = [
     explorerUrl: "https://sepolia.arbiscan.io",
     testnet: true,
   },
-  {
-    id: 534351,
-    name: "Scroll Sepolia",
-    nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: ["https://scroll-sepolia-rpc.publicnode.com", "https://scroll-sepolia.drpc.org"],
-    explorerUrl: "https://sepolia.scrollscan.com",
-    testnet: true,
-  },
+  /* Scroll Sepolia (534351) was removed on 2026-08-14. Unlike Polygon zkEVM and
+   * Holesky there is no shutdown announcement -- the chain is simply not
+   * producing blocks. Every operator, including Scroll's own
+   * sepolia-rpc.scroll.io ("No nodes available"), was frozen at block 19039813
+   * across samples half an hour apart, while Scroll mainnet advanced normally.
+   *
+   * Listed-but-down is still down. A chain in this table is an offer to sign
+   * and broadcast on it, and that offer is false while nothing accepts the
+   * transaction. If Scroll Sepolia comes back, it comes back with a
+   * scripts/check-rpc-liveness.mjs run showing blocks moving. */
   {
     id: 560048,
     name: "Hoodi",
