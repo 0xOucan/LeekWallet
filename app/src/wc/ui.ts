@@ -105,6 +105,13 @@ export function initWalletConnect(bridge: WalletBridge): {
    * twice; the relay drops the duplicate, but the device would be asked to sign
    * twice, which is a confirmation the user did not intend to give. */
   let settling = false;
+  /* Whether a pairing has gone through and the dapp has not answered yet.
+   *
+   * Exists for one message. A scan pairs on its own, so pressing Pair a moment
+   * later finds an empty field and used to answer "Nothing to pair with" --
+   * which reads as a failure directly underneath a line saying the pairing
+   * succeeded. The state is what makes the difference sayable. */
+  let pairedAwaitingProposal = false;
 
   const connection = new WalletConnectConnection({
     onProposal: (p) => { proposal = p; drawProposal(); },
@@ -166,6 +173,7 @@ export function initWalletConnect(bridge: WalletBridge): {
       await ensureStarted();
       await connection.pair(uri);
       ($("wcuri") as HTMLInputElement).value = "";
+      pairedAwaitingProposal = true;
       bridge.log("paired; waiting for the dapp's connection request");
     } catch (e) {
       bridge.log(`walletconnect: ${(e as Error).message}`);
@@ -176,6 +184,15 @@ export function initWalletConnect(bridge: WalletBridge): {
   }
 
   $("wcpair").addEventListener("click", () => {
+    const typed = ($("wcuri") as HTMLInputElement).value.trim();
+    if (typed === "" && pairedAwaitingProposal) {
+      const message =
+        "Already paired — waiting for the dapp to send its connection request. " +
+        "If nothing arrives, the code may have expired; generate a fresh one.";
+      bridge.log(`walletconnect: ${message}`);
+      setStatus(message);
+      return;
+    }
     void pair(($("wcuri") as HTMLInputElement).value);
   });
 
@@ -198,6 +215,12 @@ export function initWalletConnect(bridge: WalletBridge): {
          * a pasted one are the same two log lines, and telling them apart was
          * guesswork at exactly the moment it mattered. */
         bridge.log(`scanned a pairing link from the camera (${uri.slice(0, 12)}…)`);
+        /* Put it in the field the way a paste would, so what was scanned is
+         * visible and the two routes look like the same operation. Pairing
+         * still starts on its own -- making someone press Pair after aiming a
+         * camera is a second step for no decision -- but the value is on
+         * screen either way. */
+        ($("wcuri") as HTMLInputElement).value = uri;
         void pair(uri);
       },
       (message) => { scan = null; video.hidden = true; bridge.log(`camera: ${message}`); },
