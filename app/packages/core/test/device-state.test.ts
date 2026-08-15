@@ -16,7 +16,7 @@ const check = (c: boolean, m: string) => { if (!c) { console.log(`  FAIL: ${m}`)
 const group = (n: string) => console.log(`== ${n}`);
 
 const S = (o: Partial<DeviceStatus>): DeviceStatus => ({
-  unlocked: true, walletCount: 1, activeWallet: 1, passphrase: false, ...o,
+  unlocked: true, walletCount: 1, activeWallet: 1, passphrase: false, account: 0, ...o,
 });
 
 async function call(dev: MockDevice, method: string, params: Record<string, CborValue> = {}) {
@@ -80,6 +80,7 @@ async function main() {
       walletCount: Number(s["walletCount"]),
       activeWallet: Number(s["activeWallet"]),
       passphrase: s["passphrase"] === 1,
+      account: Number(s["account"] ?? 0),
     };
     check(derivationsInvalidated(S({ passphrase: true }), now),
       "polling must notice a lock the app did not cause");
@@ -89,6 +90,30 @@ async function main() {
   {
     check(PERSIST_DERIVED_ADDRESSES === false,
       "persisting them would reveal that a hidden wallet exists, which is what the passphrase protects");
+  }
+
+
+  group("the account the device is browsing is part of the tuple");
+  {
+    /* The device's account selector is a separate identity off the same seed.
+     * It was invisible to the host until it joined getStatus, which meant
+     * turning it on the device left the app listing the previous account's
+     * addresses with nothing saying so. Signing was never at risk -- the
+     * confirmation screens render the whole path -- but a receive address read
+     * off the app while the device browsed elsewhere is somebody watching the
+     * wrong balance. */
+    check(derivationsInvalidated(S({ account: 0 }), S({ account: 1 })),
+      "changing the account did not invalidate derived addresses");
+    check(!derivationsInvalidated(S({ account: 2 }), S({ account: 2 })),
+      "the same account invalidated for no reason");
+
+    const dev = new MockDevice({ startUnlocked: true });
+    await dev.open();
+    const before = await call(dev, "getStatus");
+    dev.hdAccount = 3;                      // the user pressed the button
+    const after = await call(dev, "getStatus");
+    check(Number(before["account"]) === 0 && Number(after["account"]) === 3,
+      `the device did not report its account (${String(before["account"])} -> ${String(after["account"])})`);
   }
 
   console.log(`\n${failures ? "FAILED" : "PASSED"} (${failures} failure${failures === 1 ? "" : "s"})`);

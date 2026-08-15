@@ -766,6 +766,11 @@ static void entry_blocks_save(void)
  * are unrelated addresses, so carrying the index across a change would leave
  * the screen at an address the user never chose in an account they just
  * entered. Callers change the account through here for that reason. */
+uint32_t ui_hd_account(void)
+{
+    return hd_account;
+}
+
 static void hd_account_set(uint32_t account)
 {
     hd_account = account % HD_ACCOUNT_COUNT;

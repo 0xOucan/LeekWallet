@@ -105,6 +105,14 @@ static size_t shown_message_len;
 static int  passphrase_prompts;    /* ui_request_passphrase_confirm calls */
 static char shown_passphrase_address[64];
 
+/* What the device's own screens are browsing. A variable rather than a constant
+ * so a test can move it the way a button press does, and check getStatus
+ * reports it -- the field exists precisely so the host can follow a change the
+ * user made on the device without telling the app. */
+static uint32_t stub_hd_account;
+
+uint32_t ui_hd_account(void)          { return stub_hd_account; }
+
 void ui_request_session_confirm(void) { session_confirm_prompts++; }
 void ui_request_unlock(void)          { unlock_prompts++; }
 void ui_request_lock(void)            { lock_requests++; }
@@ -428,6 +436,7 @@ static void fresh_device(void)
      * device that has not yet chosen a transport and answers nothing. */
     protocol_set_rx_enabled(true);
 
+    stub_hd_account = 0;
     stash_len = 0;
     host_tx = host_rx = 0;
     session_up = false;

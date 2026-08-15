@@ -353,6 +353,11 @@ async function readStatus(): Promise<DeviceStatus> {
     walletCount: Number(s["walletCount"] ?? 0),
     activeWallet: Number(s["activeWallet"] ?? 0),
     passphrase: s["passphrase"] === 1,
+    /* Absent on firmware older than this field. Defaulting to 0 makes such a
+     * device look permanently parked on the default account, which is what it
+     * effectively is from the host's side: it never reports a change, so
+     * nothing is ever invalidated for a reason the app cannot see. */
+    account: Number(s["account"] ?? 0),
   };
 }
 
