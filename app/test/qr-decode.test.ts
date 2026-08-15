@@ -15,7 +15,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import jsQR from "jsqr";
+import { readBarcodes } from "zxing-wasm/reader";
 import qrcodegen from "qrcode-generator";
 import { parsePaymentUri } from "../packages/core/src/payment-uri.ts";
 
@@ -53,47 +53,56 @@ function render(matrix: number[][], scale: number): { data: Uint8ClampedArray; w
   return { data, width };
 }
 
-const decode = (f: Fixture, scale = 6): string | undefined => {
+/* The decoder that ships. Async, so every caller awaits -- worth the churn:
+ * a test that exercises a different decoder than the app proves nothing about
+ * the app, which is how a scanner that could not read a pairing code passed a
+ * green suite. */
+const decode = async (f: Fixture, scale = 6): Promise<string | undefined> => {
   const { data, width } = render(f.matrix, scale);
-  return jsQR(data, width, width, { inversionAttempts: "attemptBoth" })?.data;
+  const found = await readBarcodes(
+    { data, width, height: width, colorSpace: "srgb" } as ImageData,
+    { formats: ["QRCode"], tryHarder: true },
+  );
+  return found[0]?.text;
 };
 
+async function main(): Promise<void> {
 group("the bundled decoder reads every payload the app expects");
 for (const [name, f] of Object.entries(fixtures)) {
-  check(decode(f) === f.text, `${name}: decoded to ${JSON.stringify(decode(f))}, wanted ${JSON.stringify(f.text)}`);
+  check(await decode(f) === f.text, `${name}: decoded to ${JSON.stringify(await decode(f))}, wanted ${JSON.stringify(f.text)}`);
 }
 
 group("decoding survives the module sizes a camera actually produces");
 {
   // 3px per module is a code held well back; 12px is one held close.
   for (const scale of [3, 4, 8, 12]) {
-    const got = decode(fixtures["eip681"] as Fixture, scale);
+    const got = await decode(fixtures["eip681"] as Fixture, scale);
     check(got === fixtures["eip681"]?.text, `at ${scale}px per module the code did not decode (got ${JSON.stringify(got)})`);
   }
 }
 
 group("a scanned code becomes the right recipient, or is refused");
 {
-  const eip681 = parsePaymentUri(decode(fixtures["eip681"] as Fixture) as string);
+  const eip681 = parsePaymentUri(await decode(fixtures["eip681"] as Fixture) as string);
   check(eip681.ok && eip681.payment.recipient === "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
     "an EIP-681 code did not yield its address");
   check(eip681.ok && eip681.payment.kind === "native" && eip681.payment.chainId === 1,
     "the chain id was lost between the camera and the parser");
 
-  const bare = parsePaymentUri(decode(fixtures["bare"] as Fixture) as string);
+  const bare = parsePaymentUri(await decode(fixtures["bare"] as Fixture) as string);
   check(bare.ok && bare.payment.recipient === "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
     "a bare address code did not yield its address");
 
   // No checksum information in a single-case address, so it must be accepted
   // and normalised rather than rejected as a bad checksum.
-  const lower = parsePaymentUri(decode(fixtures["lowercase"] as Fixture) as string);
+  const lower = parsePaymentUri(await decode(fixtures["lowercase"] as Fixture) as string);
   check(lower.ok && lower.payment.recipient === "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
     "an all-lowercase address was not accepted and checksummed");
 
   /* The orientation that costs money if it is wrong: in the transfer form the
    * recipient is the `address` parameter and the token contract is the path
    * target. Swapped, this pays the token contract instead of the person. */
-  const transfer = parsePaymentUri(decode(fixtures["transfer"] as Fixture) as string);
+  const transfer = parsePaymentUri(await decode(fixtures["transfer"] as Fixture) as string);
   check(transfer.ok && transfer.payment.kind === "token-transfer", "the transfer form was not recognised");
   /* Narrowed rather than asserted through: `token` and `amount` exist only on
    * the transfer variant, which is the whole point of the discriminant -- a
@@ -111,9 +120,9 @@ group("a scanned code becomes the right recipient, or is refused");
 
   /* A pairing link and a random URL are both things that can be on a screen
    * behind the one being scanned. Neither may become a recipient. */
-  check(!parsePaymentUri(decode(fixtures["wc"] as Fixture) as string).ok,
+  check(!parsePaymentUri(await decode(fixtures["wc"] as Fixture) as string).ok,
     "a WalletConnect pairing link was accepted as a payment");
-  check(!parsePaymentUri(decode(fixtures["nonsense"] as Fixture) as string).ok,
+  check(!parsePaymentUri(await decode(fixtures["nonsense"] as Fixture) as string).ok,
     "an unrelated URL was accepted as a payment");
 }
 
@@ -155,7 +164,11 @@ group("an address this app draws scans back as the same address");
       }
     }
 
-    const read = jsQR(data, width, width, { inversionAttempts: "attemptBoth" })?.data;
+    const found = await readBarcodes(
+      { data, width, height: width, colorSpace: "srgb" } as ImageData,
+      { formats: ["QRCode"], tryHarder: true },
+    );
+    const read = found[0]?.text;
     check(read === address, `${address} scanned back as ${JSON.stringify(read)}`);
 
     // And the scanner's own parser must accept it as a recipient.
@@ -190,14 +203,18 @@ group("a real pairing link decodes, not just a short one");
   // 1080-capable and the decoder is given up to 1080, so a code filling a
   // quarter of the frame clears this comfortably.
   for (const scale of [4, 6, 10]) {
-    check(decode(wc, scale) === wc.text,
+    check(await decode(wc, scale) === wc.text,
       `a 65-module pairing link did not decode at ${scale}px per module`);
   }
 
   // And it must still be refused as a payment recipient.
-  check(!parsePaymentUri(decode(wc) as string).ok,
+  check(!parsePaymentUri(await decode(wc) as string).ok,
     "a pairing link was accepted as a payment address");
 }
+
+}
+
+await main();
 
 if (failures) {
   console.log(`${failures} failure(s)`);

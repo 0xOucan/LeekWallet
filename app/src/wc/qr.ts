@@ -1,12 +1,24 @@
 /**
  * Camera QR scanning (T32).
  *
- * Decoding is done in-process by the bundled `jsqr` (Apache-2.0, pure JS, no
- * WASM, no network). This module used to call the platform's own
- * `BarcodeDetector` instead, on the reasoning that ~40 KB of image-processing
- * code was not worth adding to the process that talks to a signing device for a
- * convenience feature. That reasoning rested on a premise that measurement
- * killed:
+ * Decoding is done in-process by the bundled `zxing-wasm` (MIT, ~1.1 MB of
+ * WebAssembly, no network -- the binary ships with the app).
+ *
+ * It was `jsqr` before, chosen for being 40 KB of readable JavaScript, which is
+ * a real virtue here. It was replaced for one reason: it could not read a
+ * WalletConnect pairing code. Not in theory -- the actual code, captured from
+ * the device's own camera at full resolution and in focus, was handed to both
+ * decoders. jsQR found nothing; ZXing read it. A decoder that cannot decode is
+ * not smaller, it is absent.
+ *
+ * The costs are real and worth stating: a megabyte of opaque binary instead of
+ * auditable source, and `wasm-unsafe-eval` added to a CSP this project
+ * otherwise keeps tight. Both were accepted deliberately, with the failing
+ * image in hand.
+ *
+ * Before either, this called the platform's own `BarcodeDetector`, on the
+ * reasoning that a bundled decoder was not worth it for a convenience feature.
+ * That reasoning rested on a premise that measurement killed:
  *
  *   - Linux desktop (WebKitGTK 2.52, which is what Tauri uses there) has no
  *     `BarcodeDetector` at all — `window.BarcodeDetector` is undefined, so the
@@ -35,41 +47,18 @@
  * knowledge of what a valid code looks like lives with whoever asked to scan.
  */
 
-import jsQR from "jsqr";
+import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
+import { firstAccepted, QR_UNAVAILABLE, qrScanningAvailable, scanStep } from "./qr-loop.ts";
 
-/**
- * Whether this webview can scan at all, before any camera permission prompt.
- *
- * Only the camera is in question now. The decoder ships with the app, so unlike
- * the `BarcodeDetector` era there is no platform on which scanning is simply
- * missing — if there is a camera and permission for it, this works.
- */
-export function qrScanningAvailable(): boolean {
-  return typeof navigator?.mediaDevices?.getUserMedia === "function";
-}
+export { firstAccepted, QR_UNAVAILABLE, qrScanningAvailable, qrUnavailable, scanStep } from "./qr-loop.ts";
+/* Bundled, not fetched. zxing-wasm downloads its .wasm from a CDN by default,
+ * which in this app would be a remote code fetch into the process that talks to
+ * a signing device -- and would fail the CSP anyway. Vite turns this import
+ * into a local asset URL, so the binary ships inside the app and is served from
+ * 'self' like everything else. */
+import zxingWasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";
 
-/**
- * Said in the UI when it is not.
- *
- * Kept free of any one caller's vocabulary: this is shown both where the
- * fallback is "paste the wc: link" and where it is "type the address", and a
- * message that names only one of those is a lie in the other place. Callers
- * that know which form they are in should use `qrUnavailable()` and name the
- * workaround exactly.
- */
-export const QR_UNAVAILABLE =
-  "This window cannot reach a camera. Enter the value by hand instead.";
-
-/**
- * The same explanation with the caller's own fallback spelled out.
- *
- * Naming the workaround is the whole value of the message — "scanning is
- * unavailable" on its own leaves the user stuck, so `fallback` is required
- * rather than optional.
- */
-export function qrUnavailable(fallback: string): string {
-  return `This window cannot reach a camera. ${fallback}`;
-}
+prepareZXingModule({ overrides: { locateFile: () => zxingWasmUrl } });
 
 export interface QrScan {
   /** Stops the camera and releases the device. Safe to call twice. */
@@ -88,25 +77,6 @@ export interface QrScan {
    * report one.
    */
   resolution: { width: number; height: number; focusMode: string };
-}
-
-/**
- * The first decoded value the caller accepts, or `undefined` if not this frame.
- *
- * Split out from the polling loop so the "ignore a QR code that happens to be
- * in shot" behaviour can be tested without a camera. jsQR returns at most one
- * code per frame, so this takes a list to keep the shape the tests already
- * pin down and to stay correct if that ever changes.
- */
-export function firstAccepted<T>(
-  codes: Array<{ rawValue: string }>,
-  accept: (raw: string) => T | undefined,
-): T | undefined {
-  for (const code of codes) {
-    const value = accept(code.rawValue.trim());
-    if (value !== undefined) return value;
-  }
-  return undefined;
 }
 
 /**
@@ -129,38 +99,6 @@ const SCAN_INTERVAL_MS = 100;
 
 /** Consecutive decoder exceptions tolerated before the scan gives up. */
 const MAX_DECODE_FAILURES = 20;
-
-/**
- * One pass of the scan loop: what should happen next.
- *
- * Extracted because the control flow here has already been wrong once, in a way
- * nothing could see. The loop used to run on setInterval, where returning early
- * from a frame that did not decode simply skipped that tick. When it became
- * self-pacing -- each pass scheduling the next -- those same early returns
- * stopped rescheduling, so the scan died on the first frame without a code,
- * which is essentially every first frame. The camera opened, one frame was
- * examined, and nothing ever happened again.
- *
- * So the decision lives in one function with one caller, and "no code in this
- * frame" is a first-class outcome rather than a return statement in the middle
- * of a try block.
- */
-export function scanStep<T>(
-  attempt: () => T | undefined,
-  onResult: (value: T) => void,
-  onError: (message: string) => void,
-): "continue" | "done" {
-  let hit: T | undefined;
-  try {
-    hit = attempt();
-  } catch (e) {
-    onError((e as Error).message ?? String(e));
-    return "done";
-  }
-  if (hit === undefined) return "continue";
-  onResult(hit);
-  return "done";
-}
 
 /**
  * Scan until `accept` recognises a code, then stop.
@@ -302,7 +240,7 @@ export async function scanQr<T>(
    * floor stays at 100 ms: a person lining a code up takes far longer than
    * that, so faster buys nothing and costs battery. */
   /** Grab a frame and decode it. `undefined` means "nothing usable yet". */
-  const attempt = (): T | undefined => {
+  const attempt = async (): Promise<T | undefined> => {
     const w = video.videoWidth;
     const h = video.videoHeight;
     // Frames arrive before the intrinsic size does; not an error, just not yet.
@@ -336,10 +274,12 @@ export async function scanQr<T>(
     /* Both inversion attempts: a QR printed light-on-dark is still a QR, and
      * this is the difference between "it just works" and a user holding a
      * phone at a screen wondering why. */
-    const code = jsQR(frame.data, dw, dh, { inversionAttempts: "attemptBoth" });
+    /* `tryHarder` is the point of this decoder: it is what reads a pairing code
+     * off a screen, with a logo in the middle of it, through a camera. */
+    const found = await readBarcodes(frame, { formats: ["QRCode"], tryHarder: true });
     decodeFailures = 0;                 // this frame got through the decoder
-    if (!code) return undefined;
-    return firstAccepted([{ rawValue: code.data }], accept);
+    if (found.length === 0) return undefined;
+    return firstAccepted(found.map((f) => ({ rawValue: f.text })), accept);
   };
 
   /* Self-pacing rather than a fixed interval: a decode is synchronous and not
@@ -354,29 +294,29 @@ export async function scanQr<T>(
 
   const tick = (): void => {
     if (stopped) return;
-    const outcome = scanStep(
+    void scanStep(
       attempt,
       onResult,
       (m) => {
         decodeFailures += 1;
-        if (decodeFailures < MAX_DECODE_FAILURES) return;   // skip this frame
+        if (decodeFailures < MAX_DECODE_FAILURES) return;   // tolerate this frame
         stop();
         onError(`${m} (the decoder failed on ${decodeFailures} frames in a row)`);
       },
-    );
-    // A tolerated decode failure is not a reason to stop scanning.
-    if (outcome === "done" && decodeFailures > 0 && decodeFailures < MAX_DECODE_FAILURES && !stopped) {
+    ).then((outcome) => {
+      if (stopped) return;
+      /* A tolerated decoder failure came back as "done" without stopping, so
+       * carry on: only a real hit or a real give-up ends the scan. */
+      const tolerated = outcome === "done" && decodeFailures > 0 && decodeFailures < MAX_DECODE_FAILURES;
+      if (outcome === "done" && !tolerated) {
+        // The camera is released before the caller's handler runs.
+        stop();
+        return;
+      }
       timer = setTimeout(tick, SCAN_INTERVAL_MS);
-      return;
-    }
-    if (outcome === "done" || stopped) {
-      // A hit resolves through onResult; stop() is the caller's job there so
-      // the camera is released before the handler runs.
-      if (outcome === "done") stop();
-      return;
-    }
-    timer = setTimeout(tick, SCAN_INTERVAL_MS);
+    });
   };
+
   timer = setTimeout(tick, SCAN_INTERVAL_MS);
 
   return { stop, resolution };
