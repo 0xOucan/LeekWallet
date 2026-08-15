@@ -541,3 +541,26 @@ main {
 /* An unset project ID is not an error the user caused, so it is not styled as
  * one — but it does stop the panel working, so it is not muted away either. */
 #wcprojecthint[data-problem="yes"] { color: var(--text); }
+
+/* The selected address, shown on its own.
+ *
+ * The QR sits on white regardless of theme: a scanner needs dark-on-light, and
+ * a QR that inverts with the page is one that stops working at night. */
+.addr-detail {
+  margin: 0.75rem 0 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line, #333);
+  border-radius: 6px;
+}
+.addr-qr {
+  display: flex;
+  justify-content: center;
+  margin: 0.75rem 0;
+}
+.addr-qr svg {
+  background: #fff;
+  padding: 8px;
+  border-radius: 4px;
+  max-width: 100%;
+  height: auto;
+}

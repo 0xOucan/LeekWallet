@@ -576,10 +576,10 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
 - [x] WalletConnect v2 — a real dapp request signed over BLE
 - [x] Android APK runs on a tablet: camera scan, BLE signing, broadcast
 - [x] Send flow with camera QR recipient scanning, Max amount, and token discovery
+- [x] Address panel: selector, QR, copy, and share where a share sheet exists
 - [ ] Flash encryption + secure boot — **the gate before real funds**
 - [ ] Account selector reachable from the app (the device has one; the app
       hardcodes `m/44'/60'/0'/0/i`, so the two can disagree — ROADMAP T45a)
-- [ ] Address panel: selector, QR, copy, share (on `feat/address-panel`)
 - [ ] Firmware flasher in the companion app (ROADMAP T65, gated on secure boot)
 - [ ] EIP-712 typed data (needs a `signTypedData` command first)
 - [ ] Airgapped QR signing (needs a camera)

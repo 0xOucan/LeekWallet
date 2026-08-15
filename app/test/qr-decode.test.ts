@@ -16,6 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import jsQR from "jsqr";
+import qrcodegen from "qrcode-generator";
 import { parsePaymentUri } from "../packages/core/src/payment-uri.ts";
 
 let failures = 0;
@@ -116,6 +117,53 @@ group("a scanned code becomes the right recipient, or is refused");
     "an unrelated URL was accepted as a payment");
 }
 
+
+group("an address this app draws scans back as the same address");
+{
+  /* The receive side, end to end, with no camera: encode exactly as the
+   * address panel does, rasterise, and read it back with the decoder that runs
+   * on scanned frames. A QR the app draws but nothing can read is a support
+   * ticket; one that reads back as a DIFFERENT string is somebody's funds.
+   *
+   * Checksummed input on purpose -- mixed case carries EIP-55, so a corrupted
+   * read is caught by the parser rather than becoming a valid-looking address.
+   */
+  const addresses = [
+    "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+    "0xbDEB381a7c77040bf2a99E2990C116774CCb339f",
+    "0xc095c7cA2B56b0F0DC572d5d4A9Eb1B37f4306a0",
+  ];
+
+  for (const address of addresses) {
+    const qr = qrcodegen(0, "M");
+    qr.addData(address);
+    qr.make();
+
+    const n = qr.getModuleCount();
+    const quiet = 4;
+    const scale = 6;
+    const width = (n + quiet * 2) * scale;
+    const data = new Uint8ClampedArray(width * width * 4);
+    for (let y = 0; y < width; y++) {
+      for (let x = 0; x < width; x++) {
+        const mx = Math.floor(x / scale) - quiet;
+        const my = Math.floor(y / scale) - quiet;
+        const dark = mx >= 0 && my >= 0 && mx < n && my < n && qr.isDark(my, mx);
+        const v = dark ? 0 : 255;
+        const i = (y * width + x) * 4;
+        data[i] = v; data[i + 1] = v; data[i + 2] = v; data[i + 3] = 255;
+      }
+    }
+
+    const read = jsQR(data, width, width, { inversionAttempts: "attemptBoth" })?.data;
+    check(read === address, `${address} scanned back as ${JSON.stringify(read)}`);
+
+    // And the scanner's own parser must accept it as a recipient.
+    const parsed = parsePaymentUri(read ?? "");
+    check(parsed.ok && parsed.payment.recipient === address,
+      `${address} did not survive the parser after a round trip`);
+  }
+}
 
 if (failures) {
   console.log(`${failures} failure(s)`);
