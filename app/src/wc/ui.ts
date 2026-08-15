@@ -196,7 +196,7 @@ export function initWalletConnect(bridge: WalletBridge): {
     )
       .then((handle) => {
         scan = handle;
-        bridge.log(`camera ${handle.resolution.width}x${handle.resolution.height}; point it at the dapp's QR code`);
+        bridge.log(`camera ${handle.resolution.width}x${handle.resolution.height} focus=${handle.resolution.focusMode || "unreported"}; point it at the dapp's QR code`);
       })
       .catch((e: unknown) => {
         video.hidden = true;

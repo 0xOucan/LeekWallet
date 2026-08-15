@@ -81,8 +81,13 @@ export interface QrScan {
    * 640x480 capture and a 1920x1080 one look identical on screen and decode
    * very differently. When a scan fails, this is the first number worth
    * knowing, and guessing at it cost a debugging round already.
+   *
+   * `focusMode` is here for the same reason: a camera parked at its macro
+   * limit produces a preview that looks fine to a person and is unreadable to
+   * a decoder, and that cost another round. Empty when the platform does not
+   * report one.
    */
-  resolution: { width: number; height: number };
+  resolution: { width: number; height: number; focusMode: string };
 }
 
 /**
@@ -233,7 +238,35 @@ export async function scanQr<T>(
   const resolution = {
     width: Number(settings.width ?? 0),
     height: Number(settings.height ?? 0),
+    focusMode: "",
   };
+
+  /* Ask for continuous autofocus, explicitly.
+   *
+   * Measured on a Galaxy Tab A7: the lens sits at its 8 cm macro limit
+   * (minimumFocusDistance 12.5 diopters, focusDistance 12.5) and reports
+   * PASSIVE_FOCUSED -- it believes it is done. A screen held at arm's length is
+   * then badly out of focus, and the preview looks it. A coarse code like an
+   * address survives that blur; a 61-module pairing link does not, which is
+   * exactly the difference between the two that worked and did not.
+   *
+   * `focusMode` is not in the base MediaTrackConstraints type and is not
+   * supported everywhere, so it goes through `advanced` -- which browsers
+   * ignore rather than reject when unsupported -- and any failure is swallowed.
+   * Scanning at a bad focus is worse than scanning; it is not worth failing the
+   * whole scan over. */
+  try {
+    await track?.applyConstraints?.({
+      advanced: [{ focusMode: "continuous" } as unknown as MediaTrackConstraintSet],
+    });
+  } catch {
+    /* Nothing to do: the camera keeps whatever focus it had. */
+  }
+  // Read back rather than assume: applyConstraints can succeed and change
+  // nothing, which looks identical from here unless the value is checked.
+  resolution.focusMode = String(
+    (track?.getSettings?.() as { focusMode?: string } | undefined)?.focusMode ?? "",
+  );
 
   // The dismissal may already have happened while the prompt was up.
   if (signal?.aborted) {

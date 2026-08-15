@@ -1788,7 +1788,7 @@ function initToScanner(): void {
     )
       .then((handle) => {
         toScan = handle;
-        log(`camera ${handle.resolution.width}x${handle.resolution.height}`);
+        log(`camera ${handle.resolution.width}x${handle.resolution.height} focus=${handle.resolution.focusMode || "unreported"}`);
       })
       .catch((e: unknown) => {
         stopToScan();
