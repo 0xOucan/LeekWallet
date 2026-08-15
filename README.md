@@ -564,7 +564,7 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
 - [x] HD wallet (BIP39/BIP32/BIP44), up to 30 seeds
 - [x] PIN protection with auto-wipe, and Change PIN with atomic re-encryption
 - [x] QR code display for addresses
-- [x] Host test harness (no hardware required) — 18 suites
+- [x] Host test harness (no hardware required) — 19 suites
 - [x] Seed import fixed: all 2048 BIP39 words reachable
 - [x] Salted vault KDF, tuned on hardware
 - [x] Authenticated storage (AES-256-GCM, format v3 with crash-safe migration)
@@ -574,9 +574,13 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
 - [x] USB and BLE protocol layer, one link at a time
 - [x] Companion app (Tauri v2) signing real transactions
 - [x] WalletConnect v2 — a real dapp request signed over BLE
-- [x] Android APK builds with both transports — never run on a phone
+- [x] Android APK runs on a tablet: camera scan, BLE signing, broadcast
+- [x] Send flow with camera QR recipient scanning, Max amount, and token discovery
 - [ ] Flash encryption + secure boot — **the gate before real funds**
-- [ ] Account selector (`m/44'/60'/account'/0/0`)
+- [ ] Account selector reachable from the app (the device has one; the app
+      hardcodes `m/44'/60'/0'/0/i`, so the two can disagree — ROADMAP T45a)
+- [ ] Address panel: selector, QR, copy, share (on `feat/address-panel`)
+- [ ] Firmware flasher in the companion app (ROADMAP T65, gated on secure boot)
 - [ ] EIP-712 typed data (needs a `signTypedData` command first)
 - [ ] Airgapped QR signing (needs a camera)
 - [ ] Secure element integration

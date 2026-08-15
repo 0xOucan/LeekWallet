@@ -265,7 +265,7 @@ Write the protocol spec first and both sides build against it simultaneously.
 | ~~T22c~~ ✅ | BLE transport (`btleplug`) for Android behind the same interface | T22a | identical results over both channels — desktop proven end to end; Android still needs the JVM driver class (T30) |
 | ~~T23~~ ✅ | **Mock device** implementing the protocol: session, permission tiers, confirmations, rejection, latency | T20 | 10 test groups green; UI can be built with no hardware |
 | ~~T48~~ ✅ | Transaction interpretation in the app (Rabby-style), with unlimited-approval warnings and local selector DB. Advisory only — see [PROTOCOL.md 6c](docs/PROTOCOL.md) | T24 | ERC-20 transfer and approve decoded and labelled as a preview; addresses render EIP-55 to match the device screen |
-| T49 | WalletConnect project ID: bundled default plus a user override in settings | T32 | **Override done, bundled default deliberately not**: `app/src/wc/project-id.ts` takes an ID in settings, validates its 32 hex characters so a paste error is caught there, and persists it. `BUNDLED_PROJECT_ID` is empty on purpose — an ID is issued to a person and rate-limited per ID, so committing one would be either a fake string that fails at the relay or somebody else's quota. So it does *not* work out of the box, and says so instead of failing at connect time. Whoever ships a build fills it in |
+| T49 | WalletConnect project ID: bundled default plus a user override in settings | T32 | **Override done; bundled default on `feat/wc-project-id` until a pairing has actually been made with it.** `project-id.ts` resolves the user override first, then `BUNDLED_PROJECT_ID`. The override validates its 32 hex characters so a paste error is caught there rather than at the relay. A fork should replace the bundled value: quota is per ID, and borrowing one means somebody else's runs out |
 | ~~T24~~ ✅ | viem `toAccount()` adapter — structured fields only, never a serialised payload | T21 | 5 test groups; drops into any walletClient |
 | ~~T25~~ ✅ | Firmware: BLE GATT service + protocol dispatcher. `src/ble.c` (NimBLE) + `src/ble-chunk.c`; the same `protocol_handle_frame()` the cable uses, no marker on BLE, chunked to the negotiated MTU | T20 | ping answered over GATT; chunking verified against `chunkForBle` at MTU 23 and 244 in `sim/test_ble_chunk.c` |
 | ~~T57~~ ✅ | **One transport at a time**: a device setting selecting USB or BLE, with the unselected one fully off and any session torn down on switch. See [PROTOCOL.md 3b](docs/PROTOCOL.md) | T25 | both cannot be reachable simultaneously; BLE does not advertise when USB is selected. `src/transport.c` is the only door to either; Settings → Link toggles it, default USB, and a switch tears the session down |
@@ -288,7 +288,7 @@ T23 is the highest-leverage item in the plan: it decouples Track D from all firm
 | ~~T30~~ ✅ | Android BLE: runtime permissions (`BLUETOOTH_SCAN`/`CONNECT`, location on older APIs), scan/pair flow, reconnect handling | T22, T29 | `tauri-plugin-blec`; permissions requested at first scan, denial and adapter-off are distinct errors; BLE signed a real transaction from a tablet |
 | T31 | Screen-reader labels, keyboard traversal, contrast audit | T27c, T28 | pre-delivery checklist passes |
 | ~~T32~~ ✅ | WalletConnect v2 pairing (URI + QR), session list, pending-request view. **No in-app dapp browser** — see [PROTOCOL.md 6b](docs/PROTOCOL.md) | T28 | signs a request from a real dapp in the user's own browser — Aave's Base Sepolia faucet, `0x48696ca6…`, decoded and confirmed on-device, no blind signing |
-| T46 | Address enumeration in the app: derive and list addresses so the user picks there, Ledger-behind-Rabby style | T24 | **Listing and selection done, balances not**: `loadAddresses()` in `app/src/main.ts` derives `m/44'/60'/0'/0/0..9`, lists them, and the selection drives the signing path (with a generation counter so a second run cannot append to a list it no longer owns). No balance is fetched, so picking an address is still done by index rather than by what is in it |
+| ~~T46~~ ✅ | Address enumeration in the app: derive and list addresses so the user picks there, Ledger-behind-Rabby style | T24 | `loadAddresses()` derives `m/44'/60'/0'/0/0..9` behind a generation counter, and the selection drives the signing path. The chosen address is listed with its native balance. A selector with QR, Copy and Share is on `feat/address-panel`, not yet exercised by hand. Balances land through `balances.ts` and are labelled as fetched-from-an-operator, never attested. **Note the account level is still hardcoded to `0'`** — see T45a |
 | ~~T47~~ ✅ | Show the signing *source* address on the device confirmation, not just the destination | T12 | the full checksummed address is rendered, derived on the protocol task at the signing path |
 
 T30 is still the riskiest item — Android BLE permissions and background/reconnect behaviour are
@@ -304,6 +304,11 @@ device- and OEM-specific, and none of it can be validated against the mock. But 
 | T35 | Add the missing `docs/leekwallet-logo.png` | — | README image resolves |
 | T36 | Assembly guide with photos | T33 | someone else can build one |
 | T37 | Reproducible builds + release signing | — | two machines produce identical binaries |
+| ~~T63~~ ✅ | Send flow: scan a recipient by camera, Max amount, token discovery | T46, T51 | camera → jsQR → EIP-681 parser → device-confirmed signature → broadcast, proven on Sepolia from both desktop and Android (`0xe84c3e48…`, `0x600b51e4…`). `maxSendableNative` reserves the fee at the 1559 **cap**, not the expected fee, so a "send everything" transaction cannot become unpayable after a base-fee spike. Token discovery batches every listed `balanceOf` through Multicall3 in one call, and a contract that fails to answer stays distinguishable from one holding zero |
+| ~~T64~~ ✅ | Bundled Uniswap/CoinGecko token list with an opt-in refresh | T51 | `token-list.ts` validates an untrusted list into `TokenHint` (`verified: false`, always), sanitises symbols against RTL-override and lookalike spoofing, and lets the hand-typed table in chains.ts win. `scripts/fetch-token-lists.mjs` regenerates the snapshot deterministically; a re-run is byte-identical |
+| T45a | App-side account selection: let the app reach the device's BIP-44 account, not only `0'` | T45 | **Device done, app not.** `hd_account` (0–9 on its own screens, unbounded in the protocol) picks which identity the *device* browses; every app request hardcodes `m/44'/60'/0'/0/i`. Select account 3 on the device and its address browser and the app disagree about which address is yours, with nothing saying so. Needs an account control in the app, `account` sent explicitly on every signing request rather than leaning on a default that happens to match, and a decision on whether `getStatus` should report the device's selection so the two can be shown in sync |
+| T65 | Firmware flasher in the companion app | T11 | desktop first, `espflash` as a library rather than a bundled CLI; Android reuses the two-backend split `transport-serial` already makes. **Gated on T11 in substance, not just in sequence**: without secure boot a flasher is a one-click way to install firmware that captures the PIN, so a device that is not locked must say so plainly rather than the button being quietly greyed |
+| T66 | OTA update path | T11, T65 | not possible today — the partition table has a single `factory` app slot and no `otadata`. There is room: 16 MB flash with ~4.1 MB allocated, and **`nvs` sits at 0x9000, before the app**, so `ota_0`/`ota_1` can be added without moving the vault and provisioned devices keep their wallets. USB first; radio OTA only if a sealed device ever ships (Wi-Fi is refused for the reason on `sdkconfig.wifi`, and BLE at 20–100 kB/s is minutes per image) |
 
 ---
 
@@ -410,8 +415,15 @@ could not work. Both times the fix was making the mock stricter.
 ## Progress
 
 The T0 gate, all of Track A except T45, the protocol and both transports, the
-mock, the viem adapter, the app and WalletConnect are done. The full host suite
-is **18 files, all passing** (`make -C sim test`).
+mock, the viem adapter, the app and WalletConnect are done. `./scripts/check.sh`
+runs 19 host suites, the TypeScript suites and both typechecks; `./scripts/check.sh
+rpc` is a separate, network-touching stage that checks every registry endpoint is
+alive (see below).
+
+The app now works end to end on **both** desktop Linux and Android: camera scan
+of a recipient, device-confirmed signature, broadcast — verified on Sepolia from
+each platform, with the on-chain `from` matching the address the device showed
+and the `to` matching the scanned code.
 
 What is left, in the order it matters:
 
@@ -419,15 +431,26 @@ What is left, in the order it matters:
    [docs/BURN-PROCEDURE.md](docs/BURN-PROCEDURE.md), gated by
    `scripts/preflight-secure.sh`. No fuse has been burned. Nothing else on this
    list changes what a person holding the device can do.
-2. **T30** — install the APK on a phone. Everything Android is currently
-   verified by a compiler and nothing else.
+2. ~~**T30**~~ — done. The APK is installed and driven on a tablet, and doing so
+   found four defects a compiler and 37 green suites had all passed: a missing
+   `CAMERA` permission, a `BarcodeDetector` crash by way of Play Services, an
+   uninitialised `rustls-platform-verifier` that *panicked* and so hung every RPC
+   with no error to show, and a Tauri entry point silently lost to a misplaced
+   `#[cfg_attr]`. None of them were reachable without the hardware.
 3. **T26** — the mock leg of the conformance suite. USB and BLE already run
    against each other; the mock is the one that has twice certified code that
    could not work.
-4. Then the smaller open rows: **T45** (accounts), **T46** (balances), **T40**
-   (host passphrase entry), **T39b** (XFP on screen), **T12b** (EIP-712, which
-   needs a `signTypedData` command first), **T31** (accessibility), **T35**
-   (the missing logo), **T36**, **T37**.
+4. Then the smaller open rows: **T45a** (the app cannot reach the device's
+   account level), **T40** (host passphrase entry), **T39b** (XFP on screen),
+   **T12b** (EIP-712, which needs a `signTypedData` command first), **T31**
+   (accessibility), **T35** (the missing logo), **T36**, **T37**.
+
+A standing rule learned the hard way this cycle: **a chain that has stopped
+producing blocks comes out of the registry**, whether it was formally shut down
+(Polygon zkEVM, Holesky) or merely stalled with no announcement (Scroll Sepolia).
+A dead chain can keep answering `eth_chainId` and `eth_blockNumber` perfectly —
+Holesky did, frozen at one height, for months — so liveness is a block-height
+question and `./scripts/check.sh rpc` is how it gets asked.
 
 Firmware size figures were removed rather than carried forward — the last ones
 recorded predate the protocol, BLE and decoding work, and nobody has measured

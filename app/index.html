@@ -80,6 +80,20 @@
               <button id="tokenadd" class="secondary">Watch token</button>
             </div>
             <p class="muted" id="tokenerr" aria-live="polite"></p>
+
+            <!-- Discovery over the bundled token list: one Multicall3 call per
+                 chain asks balanceOf for every listed contract at once, and
+                 only the ones with a non-zero balance are offered. The list is
+                 a convenience for finding a contract address, never evidence
+                 about it — a symbol here is still unchecked, so the address
+                 stays the heading in the results below. -->
+            <div class="row">
+              <button id="tokendiscover" type="button" class="secondary">Find tokens I hold</button>
+              <button id="tokenlistupdate" type="button" class="secondary">Update token list</button>
+            </div>
+            <p class="muted" id="tokendiscovernote" aria-live="polite"></p>
+            <ul class="tokenlist" id="tokenfound"></ul>
+
             <ul class="tokenlist" id="tokenlist"></ul>
           </section>
         </div>
@@ -152,11 +166,23 @@
           </label>
           <p class="muted" id="assetnote"></p>
 
+          <!-- Scanning beats typing here for one reason that matters: a
+               hand-copied address is checked by a human comparing 40 hex
+               characters, which is exactly the task people skip. A scan that
+               refuses a bad EIP-55 checksum catches the corruption instead.
+               The camera is the same one the wc: pairing scanner uses, and it
+               is released the moment a code is read. -->
           <label class="field">
             <span>To</span>
             <input id="to" class="addr" spellcheck="false"
                    placeholder="0x…" autocomplete="off" />
           </label>
+          <div class="row">
+            <button id="toscan" type="button" class="secondary">Scan QR</button>
+            <button id="toscanstop" type="button" class="secondary" hidden>Stop camera</button>
+          </div>
+          <p class="muted" id="toscanhint" aria-live="polite"></p>
+          <video id="tovideo" class="wc-video" hidden muted playsinline></video>
           <!-- Which unit the number below is in. Present for tokens because
                the scaled unit is built on decimals this app cannot verify, so
                typing raw units has to stay available rather than be the
@@ -170,6 +196,16 @@
             <input id="amount" class="addr" spellcheck="false"
                    value="0.0001" autocomplete="off" />
           </label>
+          <!-- Max reserves the fee at maxFeePerGas, the EIP-1559 cap, not at
+               the expected fee. Reserving at the expected fee leaves a
+               "send everything" transaction unpayable if the base fee rises
+               before inclusion; reserving at the cap leaves dust instead. The
+               note below says so, because a Max button that silently guesses
+               wrong about money is worse than no Max button. -->
+          <div class="row">
+            <button id="amountmax" type="button" class="secondary">Max</button>
+          </div>
+          <p class="muted" id="maxnote" aria-live="polite"></p>
           <!-- The conversion, spelled out at the point of entry rather than in
                a footnote: if this says "5 USDC = 5000000 raw units" it is
                because a contract claimed six decimals, and nothing checked it. -->

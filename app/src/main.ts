@@ -23,14 +23,23 @@ import { createPublicClient, custom, defineChain, parseEther, serializeTransacti
 import {
   addCustomChain, allChains, CHAINS, chainLabelDetailed, CUSTOM_CHAIN_NOTICE, formatUnits,
   getChain, loadCustomChains, removeCustomChain, resolveChain, type ChainInfo,
-  type CustomChainInput,
+  type CustomChainInput, type TokenHint,
 } from "../packages/core/src/chains.ts";
 import {
   balanceProvenance, BALANCE_SOURCE_NOTICE, describeTokenAmount, encodeErc20Transfer,
   fetchNativeBalance, fetchTokenBalance, fetchTokenMeta, freshnessOf, parseUnits,
+  maxSendableNative, maxSendableToken, MAX_SENDABLE_NOTICE,
   TOKEN_SCALE_NOTICE, type BalanceSnapshot, type EthRequest, type TokenAmountView,
   type TokenMeta,
 } from "../packages/core/src/balances.ts";
+import { parsePaymentUri } from "../packages/core/src/payment-uri.ts";
+import { fetchTokenBalancesBatched } from "../packages/core/src/multicall.ts";
+import {
+  buildTokenIndex, parseTokenList, refreshTokenList, TOKEN_LIST_NOTICE, TOKEN_LIST_URLS,
+  type TokenIndex,
+} from "../packages/core/src/token-list.ts";
+import { BUNDLED_TOKENS } from "../packages/core/src/token-list-bundled.ts";
+import { qrScanningAvailable, qrUnavailable, scanQr, type QrScan } from "./wc/qr.ts";
 import {
   endpointOrder, FailoverRpc, fetchRpcSend, preferredRpc, rememberRpc,
   type RpcSend,
@@ -1340,6 +1349,426 @@ function initBalances(): void {
   renderBalances();
 }
 
+/* ------------------------------------------------------- token discovery
+ *
+ * Finding a token you already hold, without typing its contract address.
+ *
+ * The list is a convenience for *locating* an address, never evidence about
+ * one. Every row that comes out of it is `verified: false`, the address stays
+ * the heading, and a symbol is only ever shown beside its disclaimer — the
+ * same rule the watched-token panel already follows.
+ *
+ * One Multicall3 call per chunk rather than one eth_call per token: a few
+ * hundred separate requests would be a few hundred disclosures to the operator
+ * and a rate-limit failure on any public endpoint. It is also the difference
+ * between this feature being usable and being a progress bar.
+ */
+
+const TOKEN_LIST_STORE = "leekwallet.tokenList.v1";
+
+/** Bundled snapshot, with any user-refreshed list overlaid. Rebuilt on update. */
+let tokenIndex: TokenIndex = buildTokenIndex([BUNDLED_TOKENS]);
+
+function loadStoredTokenList(): void {
+  try {
+    const raw = localStorage.getItem(TOKEN_LIST_STORE);
+    if (!raw) return;
+    const stored = JSON.parse(raw) as { tokens?: unknown };
+    if (!Array.isArray(stored.tokens)) return;
+    /* Re-validated on the way in, not trusted because it is ours: what is in
+     * local storage was fetched from a third party, and a stored copy is just
+     * an old copy of somebody else's file. */
+    const parsed = refreshTokenListSync(stored);
+    if (parsed) tokenIndex = buildTokenIndex([parsed, BUNDLED_TOKENS]);
+  } catch {
+    // A corrupt or foreign entry is ignored; the bundled snapshot still works.
+  }
+}
+
+/** `refreshTokenList` without the promise, for the synchronous load path. */
+function refreshTokenListSync(document: unknown): readonly TokenHint[] | undefined {
+  try {
+    return parseTokenList(document, { chainIds: allChains().map((c) => c.id) }).tokens;
+  } catch {
+    return undefined;
+  }
+}
+
+async function discoverTokens(): Promise<void> {
+  const note = $("tokendiscovernote");
+  const list = $("tokenfound");
+  const button = $("tokendiscover") as HTMLButtonElement;
+  const address = addresses[selectedIndex];
+  if (!address) { note.textContent = "No address is selected."; return; }
+
+  const info = activeChain();
+  const candidates = tokenIndex.forChain(info.id);
+  list.textContent = "";
+  if (candidates.length === 0) {
+    note.textContent =
+      `The token list has no entries for chain ${info.id}. Add a contract address by hand above.`;
+    return;
+  }
+
+  button.disabled = true;
+  note.textContent =
+    `Asking one contract call for ${candidates.length} balances on chain ${info.id}… ` +
+    `This tells the RPC operator which address you are asking about.`;
+
+  try {
+    const { request } = balanceRequest(info);
+    const results = await fetchTokenBalancesBatched(
+      request, info.id, address, candidates.map((t) => t.address),
+    );
+    const held = results.filter((r) => r.ok && r.raw > 0n);
+    const failed = results.filter((r) => !r.ok).length;
+
+    if (held.length === 0) {
+      note.textContent =
+        `No balance found in any of the ${candidates.length} listed contracts on chain ${info.id}` +
+        (failed ? ` (${failed} did not answer)` : "") + `. ${TOKEN_LIST_NOTICE}`;
+      return;
+    }
+
+    for (const result of held) {
+      if (!result.ok) continue;
+      const hint = tokenIndex.lookup(info.id, result.token);
+      const li = document.createElement("li");
+      li.className = "token";
+
+      // The address is the heading here too. A list membership is not a name.
+      const head = document.createElement("div");
+      head.className = "token__addr addr";
+      head.textContent = chunk(checksumAddress(result.token.slice(2)));
+      li.appendChild(head);
+
+      const view = describeTokenAmount(
+        result.token,
+        result.raw,
+        hint ? { address: result.token, chainId: info.id, symbol: hint.symbol, decimals: hint.decimals, source: "app-hint", verified: false } : undefined,
+      );
+      const amount = document.createElement("div");
+      amount.className = "token__amount";
+      amount.textContent = `${view.rawText} raw units`;
+      li.appendChild(amount);
+      if (view.scaled) li.appendChild(scaledRow(view.scaled));
+
+      const watch = document.createElement("button");
+      watch.type = "button";
+      watch.className = "secondary";
+      const already = watchedTokens(info.id).includes(result.token);
+      watch.textContent = already ? "Already watched" : "Watch and send";
+      watch.disabled = already;
+      watch.addEventListener("click", () => {
+        writeWatched(info.id, [...watchedTokens(info.id), result.token]);
+        renderBalances();
+        populateAssets();
+        ($("asset") as HTMLSelectElement).value = result.token;
+        applyAsset();
+        watch.textContent = "Already watched";
+        watch.disabled = true;
+        log(`watching ${result.token} (found by list)`);
+      });
+      const row = document.createElement("div");
+      row.className = "row";
+      row.append(watch);
+      li.appendChild(row);
+      list.appendChild(li);
+    }
+
+    note.textContent =
+      `${held.length} of ${candidates.length} listed contracts returned a balance` +
+      (failed ? `; ${failed} did not answer` : "") + `. ${TOKEN_LIST_NOTICE}`;
+  } catch (e) {
+    note.textContent = `Could not check balances: ${String((e as Error).message ?? e)}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/**
+ * Fetch the published lists and replace the stored overlay.
+ *
+ * Opt-in, and never on a timer: asking for a token list tells that server this
+ * app is running and roughly when. The bundled snapshot is what makes that a
+ * choice rather than a requirement.
+ */
+async function updateTokenList(): Promise<void> {
+  const note = $("tokendiscovernote");
+  const button = $("tokenlistupdate") as HTMLButtonElement;
+  button.disabled = true;
+  note.textContent = `Fetching ${TOKEN_LIST_URLS.length} token lists…`;
+
+  try {
+    const chainIds = allChains().map((c) => c.id);
+    const merged: TokenHint[] = [];
+    const problems: string[] = [];
+    for (const { url } of TOKEN_LIST_URLS) {
+      try {
+        const parsed = await refreshTokenList(async () => {
+          const response = await fetch(url, { redirect: "follow" });
+          if (!response.ok) throw new Error(`${new URL(url).host} answered ${response.status}`);
+          return await response.json();
+        }, { chainIds });
+        merged.push(...parsed.tokens);
+      } catch (e) {
+        problems.push(`${new URL(url).host}: ${String((e as Error).message ?? e)}`);
+      }
+    }
+
+    if (merged.length === 0) {
+      note.textContent =
+        `No list could be fetched, so nothing changed — the bundled snapshot is still in use. ` +
+        problems.join("; ");
+      return;
+    }
+
+    localStorage.setItem(TOKEN_LIST_STORE, JSON.stringify({ tokens: merged }));
+    tokenIndex = buildTokenIndex([merged, BUNDLED_TOKENS]);
+    note.textContent =
+      `Token list updated: ${merged.length} entries across ${new Set(merged.map((t) => t.chainId)).size} chains. ` +
+      (problems.length ? `Some sources failed (${problems.join("; ")}). ` : "") +
+      TOKEN_LIST_NOTICE;
+    log(`token list updated (${merged.length} entries)`);
+  } catch (e) {
+    note.textContent = `Could not update the token list: ${String((e as Error).message ?? e)}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function initTokenDiscovery(): void {
+  loadStoredTokenList();
+  $("tokendiscover").addEventListener("click", () => void discoverTokens());
+  $("tokenlistupdate").addEventListener("click", () => void updateTokenList());
+}
+
+/* ------------------------------------------------- scanning a recipient
+ *
+ * The same camera and the same scanner the wc: pairing panel uses; only the
+ * parser differs. Scanning is worth having here for a reason specific to
+ * addresses: a pasted or retyped address is checked by a human comparing forty
+ * hex characters, which is the step people skip. `parsePaymentUri` rejects a
+ * mixed-case address whose EIP-55 checksum does not match, so a misread code is
+ * refused rather than silently becoming a different valid-looking address.
+ *
+ * Nothing found in a code is acted on except the recipient. A chain id or an
+ * amount is reported and left for the user to apply: silently switching the
+ * network or overwriting a typed amount because a QR code said so would make
+ * the code, rather than the person, the one deciding where money goes.
+ */
+
+let toScan: QrScan | null = null;
+let toScanAbort: AbortController | null = null;
+
+const TO_TYPE_INSTEAD = "Type or paste the recipient address instead.";
+
+function stopToScan(): void {
+  toScanAbort?.abort();
+  toScanAbort = null;
+  toScan?.stop();
+  toScan = null;
+  $("tovideo").hidden = true;
+  ($("toscanstop") as HTMLButtonElement).hidden = true;
+}
+
+function initToScanner(): void {
+  const hint = $("toscanhint");
+  const button = $("toscan") as HTMLButtonElement;
+
+  if (!qrScanningAvailable()) {
+    button.disabled = true;
+    hint.textContent = qrUnavailable(TO_TYPE_INSTEAD);
+    return;
+  }
+
+  $("toscanstop").addEventListener("click", () => {
+    stopToScan();
+    hint.textContent = "Camera stopped.";
+  });
+
+  button.addEventListener("click", () => {
+    if (toScan) { stopToScan(); hint.textContent = "Camera stopped."; return; }
+
+    const video = $("tovideo") as HTMLVideoElement;
+    video.hidden = false;
+    ($("toscanstop") as HTMLButtonElement).hidden = false;
+    hint.textContent = "Point the camera at an address QR code.";
+
+    /* The abort handle exists before the camera does, so dismissing this while
+     * the permission prompt is still up releases the camera when the prompt is
+     * finally answered. Without it that window leaks the camera for the life
+     * of the page. */
+    const controller = new AbortController();
+    toScanAbort = controller;
+
+    void scanQr(
+      video,
+      // Only something that parses as a payment ends the scan; an unrelated
+      // code in shot is ignored rather than pasted into the recipient field.
+      (raw) => { const r = parsePaymentUri(raw); return r.ok ? r.payment : undefined; },
+      (payment) => {
+        toScan = null;
+        stopToScan();
+        ($("to") as HTMLInputElement).value = payment.recipient;
+
+        const extra: string[] = [];
+        if (payment.kind === "token-transfer") {
+          extra.push(
+            `The code asked for a transfer of token ${payment.token}. ` +
+            `Select that token above if you meant to send it — the recipient has been filled in, nothing else has.`,
+          );
+          if (payment.amount !== undefined) extra.push(`It also named ${payment.amount} raw units.`);
+        } else if (payment.kind === "native" && payment.value !== undefined) {
+          extra.push(`The code also named an amount of ${payment.value} wei. It has not been filled in.`);
+        }
+        if ("chainId" in payment && payment.chainId !== undefined && payment.chainId !== activeChain().id) {
+          extra.push(
+            `The code names chain ${payment.chainId}, but this app is set to chain ${activeChain().id}. ` +
+            `Nothing was switched — change the network yourself if that is what you meant.`,
+          );
+        }
+        hint.textContent = `Scanned ${payment.recipient}. ${extra.join(" ")}`.trim();
+        log(`scanned recipient ${payment.recipient}`);
+        renderPreview();
+      },
+      (message) => {
+        toScan = null;
+        stopToScan();
+        hint.textContent = `Camera: ${message}`;
+      },
+      controller.signal,
+    )
+      .then((handle) => { toScan = handle; })
+      .catch((e: unknown) => {
+        stopToScan();
+        hint.textContent = `Camera: ${(e as Error).message ?? String(e)}`;
+      });
+  });
+}
+
+/* ----------------------------------------------------------- the Max button
+ *
+ * "Send everything" is the one amount a user cannot compute themselves, and
+ * getting it wrong is expensive in both directions: too high and the
+ * transaction cannot be included, too low and the remainder is stranded.
+ *
+ * The arithmetic lives in core (`maxSendableNative`/`maxSendableToken`) so the
+ * boundary cases are tested without a network. This function's only job is to
+ * fetch honest inputs and render what comes back.
+ */
+
+/**
+ * Gas for a token transfer when the recipient is not yet known.
+ *
+ * `estimateGas` needs a `to`, so a Max pressed before the address is filled in
+ * has nothing to estimate against. This figure is only ever used for the
+ * "can you afford the gas" warning — the token amount itself is the whole
+ * balance either way — and it is deliberately on the high side, because the
+ * failure it guards against is telling someone they can afford a transfer they
+ * cannot.
+ */
+const TOKEN_TRANSFER_GAS_FALLBACK = 100_000n;
+
+async function fillMaxAmount(): Promise<void> {
+  const note = $("maxnote");
+  const button = $("amountmax") as HTMLButtonElement;
+  const address = addresses[selectedIndex] as Address | undefined;
+  if (!address) { note.textContent = "No address is selected."; return; }
+
+  const info = activeChain();
+  const asset = currentAsset();
+  button.disabled = true;
+  note.textContent = "Asking the network for the current fee…";
+
+  try {
+    const { chain: viemDef, transport } = rpcFor(info);
+    const rpc = createPublicClient({ chain: viemDef, transport });
+    const { request } = balanceRequest(info);
+
+    /* Fetched fresh rather than read from the balance panel: that figure may
+     * be minutes old, and "everything" computed from a stale balance is a
+     * transaction that fails at the node for a reason the user cannot see. */
+    const fees = await rpc.estimateFeesPerGas();
+    const maxFeePerGas = fees.maxFeePerGas ?? 30_000_000_000n;
+    const native = await fetchNativeBalance(request, address);
+
+    if (asset.kind === "native") {
+      const result = maxSendableNative(native, { gasLimit: 21_000n, maxFeePerGas });
+      if (result.kind === "insufficient-for-gas") {
+        note.textContent =
+          `This address cannot cover the fee. It holds ${formatUnits(result.balance, info.nativeCurrency.decimals)} ` +
+          `${info.nativeCurrency.symbol}, and the reserve alone is ` +
+          `${formatUnits(result.required, info.nativeCurrency.decimals)}. ${MAX_SENDABLE_NOTICE}`;
+        return;
+      }
+      ($("amount") as HTMLInputElement).value = formatUnits(result.amount, info.nativeCurrency.decimals);
+      note.textContent =
+        (result.zero
+          ? `The balance covers the fee and nothing more, so the maximum is zero. `
+          : ``) +
+        `Reserved ${formatUnits(result.reserved, info.nativeCurrency.decimals)} ${info.nativeCurrency.symbol} for gas ` +
+        `(21000 × ${maxFeePerGas} wei). ${MAX_SENDABLE_NOTICE}`;
+      renderAmountNote();
+      renderPreview();
+      return;
+    }
+
+    // A token: the whole balance is sendable, but the gas is paid in the
+    // native token, so the interesting question is whether that is affordable.
+    const key = balKey(info.id, asset.address);
+    const raw = await fetchTokenBalance(request, asset.address, address);
+    tokenBalances.set(key, { raw, snapshot: { chainId: info.id, address, fetchedAt: Date.now() } });
+
+    const to = ($("to") as HTMLInputElement).value.trim();
+    let gasLimit = TOKEN_TRANSFER_GAS_FALLBACK;
+    let estimated = false;
+    if (isAddress(to)) {
+      try {
+        gasLimit = await rpc.estimateGas({
+          account: address,
+          to: asset.address as Address,
+          data: encodeErc20Transfer(to, raw) as Hex,
+        });
+        estimated = true;
+      } catch {
+        // A revert here usually means the transfer itself would fail. The Max
+        // figure is still the balance; only the affordability note is weaker.
+        gasLimit = TOKEN_TRANSFER_GAS_FALLBACK;
+      }
+    }
+
+    const result = maxSendableToken(raw, native, { gasLimit, maxFeePerGas });
+    if (result.kind !== "sendable") {
+      note.textContent = `${result.reason} ${MAX_SENDABLE_NOTICE}`;
+      return;
+    }
+
+    const decimals = asset.meta?.decimals;
+    const unit = ($("amountunit") as HTMLSelectElement).value;
+    ($("amount") as HTMLInputElement).value =
+      unit === "scaled" && decimals !== undefined ? formatUnits(result.amount, decimals) : result.amount.toString();
+
+    const affordability = result.cannotAffordGas
+      ? `You hold this token but not enough ${info.nativeCurrency.symbol} to pay the gas to move it ` +
+        `(needs about ${formatUnits(result.reserved, info.nativeCurrency.decimals)}).`
+      : `Gas is paid in ${info.nativeCurrency.symbol} and is not deducted from the token amount.`;
+    note.textContent =
+      `${affordability} Fee estimated with a gas limit of ${gasLimit}` +
+      `${estimated ? "" : " (a default — fill in the recipient for a real estimate)"}. ${MAX_SENDABLE_NOTICE}`;
+    renderAmountNote();
+    renderPreview();
+  } catch (e) {
+    note.textContent = `Could not work out a maximum: ${String((e as Error).message ?? e)}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function initMaxAmount(): void {
+  $("amountmax").addEventListener("click", () => void fillMaxAmount());
+}
+
 /* ------------------------------------------------------------ what to send
  *
  * Native value, or an ERC-20 `transfer(address,uint256)`. The token path is
@@ -2027,6 +2456,9 @@ async function initRpcTransport(): Promise<void> {
 void initEnvironment();
 initChainSelector();
 initBalances();
+initTokenDiscovery();
+initToScanner();
+initMaxAmount();
 populateAssets();
 void initRpcTransport();
 
