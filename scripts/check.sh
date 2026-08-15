@@ -10,7 +10,7 @@
 #   ./scripts/check.sh sim        just the C suites
 #   ./scripts/check.sh app        just the TypeScript
 #   ./scripts/check.sh firmware   just the ESP-IDF build
-#   ./scripts/check.sh repro      byte-for-byte reproducibility (slow, opt-in)
+#   ./scripts/check.sh repro      byte-for-byte reproducibility, firmware + app (slow, opt-in)
 #   ./scripts/check.sh rpc        are the registry's RPC endpoints alive (needs network)
 #
 # Exits non-zero on the first failure, and says which stage.
@@ -78,7 +78,11 @@ fi
 if [[ "$WHAT" == "repro" ]]; then
     # Path is relative to the repo root, which this script cd'd to above -
     # $0's dirname is not usable after that cd.
-    run "reproducible build" ./scripts/repro-check.sh
+    #
+    # repro-verify.sh rather than repro-check.sh: the latter covers the
+    # firmware only, and a release is two artefacts. It calls repro-check.sh
+    # for the firmware half rather than reimplementing it.
+    run "reproducible build" ./scripts/repro-verify.sh
 fi
 
 printf '\n'

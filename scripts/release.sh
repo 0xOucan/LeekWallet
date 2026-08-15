@@ -128,6 +128,11 @@ fi
     echo "env:        ${ENV_NAME}"
     echo "platform:   $(grep -m1 '^platform *=' "${SRC}/platformio.ini" | cut -d= -f2- | tr -d ' ')"
     echo "built by:   scripts/release.sh"
+    # Recorded, not implied. A verifier whose rebuild does not match needs to
+    # be able to tell "you have a different compiler" apart from "these bytes
+    # are not from this source", and without this line those two look the same.
+    echo "pio:        $(pio --version 2>/dev/null || echo unknown)"
+    echo "host:       $(uname -s -m)"
     echo
     echo "Rebuild and compare:"
     echo "    git clone <repo> && cd leekwallet && git checkout ${TAG}"
@@ -142,6 +147,73 @@ fi
 echo
 echo "-- ${OUT}"
 cat "${OUT}/SHA256SUMS"
+
+# ---------------------------------------------------------------------------
+# Signing the manifest.
+#
+# One signature over SHA256SUMS, not one per binary: the manifest covers the
+# binaries and the signature covers the manifest, so there is exactly one thing
+# to verify and exactly one place to look. Signing each file separately gives a
+# verifier several checks, of which they will run one.
+#
+# This is opt-in through LEEK_SIGNING_KEY rather than automatic, because a
+# release script that signs by default is a release script that signs a build
+# nobody looked at yet. The intended order is: build, read the hashes, then
+# sign - and an explicit environment variable makes that order the easy one.
+#
+#   LEEK_SIGNING_KEY=0xDEADBEEF ./scripts/release.sh v0.3.0
+#
+# What this deliberately does NOT do, and will not be extended to do:
+#
+#   - generate a key. Not here, not "for convenience", not into a temp dir. A
+#     signing key this script could create is a signing key that exists on
+#     whatever machine ran a build, which is the opposite of the arrangement
+#     docs/RELEASE.md describes. `gpg --full-generate-key`, by a human, once.
+#   - print, export or copy key material. The only thing that crosses this
+#     boundary is a key *id*, which is public by construction.
+#   - write anything into the worktree. Output stays under release/, which is
+#     .gitignore'd, so a signature cannot be committed by an absent-minded
+#     `git add -A`.
+#
+# The GPG key here is not the secure boot key and must not be the same key.
+# This one says who published a file; that one says which firmware a board will
+# boot. Different exposure, different blast radius when lost - see
+# docs/RELEASE.md, "Where the signing key lives".
+# ---------------------------------------------------------------------------
+SIGNING_KEY="${LEEK_SIGNING_KEY:-}"
+if [[ -n "${SIGNING_KEY}" ]]; then
+    echo
+    echo "-- signing SHA256SUMS as ${SIGNING_KEY}"
+    if ! command -v gpg >/dev/null 2>&1; then
+        echo "release: gpg not on PATH - manifest built but NOT signed" >&2
+        exit 1
+    fi
+    # --local-user, not --default-key: if the named key is absent this must
+    # fail rather than quietly sign with whatever key the keyring happens to
+    # have first. A signature by the wrong key is worse than no signature,
+    # because it looks like one.
+    if ! gpg --armor --local-user "${SIGNING_KEY}" \
+             --detach-sign --output "${OUT}/SHA256SUMS.asc" \
+             "${OUT}/SHA256SUMS"; then
+        echo "release: signing failed - publishing this unsigned would be a lie" >&2
+        rm -f "${OUT}/SHA256SUMS.asc"
+        exit 1
+    fi
+    # Verified immediately, against the file as it now sits on disk. Signing
+    # and then never checking is how a release goes out with a signature over
+    # an earlier draft of the manifest.
+    if ! gpg --verify "${OUT}/SHA256SUMS.asc" "${OUT}/SHA256SUMS" 2>/dev/null; then
+        echo "release: the signature just written does not verify" >&2
+        rm -f "${OUT}/SHA256SUMS.asc"
+        exit 1
+    fi
+    echo "   signature verifies: SHA256SUMS.asc"
+else
+    echo
+    echo "   not signed. Set LEEK_SIGNING_KEY=<gpg-key-id> to sign the manifest,"
+    echo "   or sign it by hand:  gpg --armor --detach-sign SHA256SUMS"
+fi
+
 echo
-echo "Publish SHA256SUMS and BUILDINFO alongside the binaries, and sign"
-echo "SHA256SUMS with the maintainer's GPG key - see docs/RELEASE.md."
+echo "Publish the binaries, SHA256SUMS, SHA256SUMS.asc and BUILDINFO together."
+echo "A verifier needs all four - see docs/RELEASE.md, \"Verifying a release\"."

@@ -1,8 +1,9 @@
 # Releasing, reproducing, and signing
 
-**Status: the build is reproducible and verified as such locally. No release
-has been published, and the CI job that checks this has never run** — this
-repository has no remote. ([T37](../ROADMAP.md))
+**Status: both the firmware and the companion app are reproducible and verified
+as such locally, with one documented caveat on the companion (the build path is
+part of the recipe). No release has been published, and the CI job that checks
+this has never run** — this repository has no remote. ([T37](../ROADMAP.md))
 
 This document exists because of one sentence in
 [CAMERA-OPTIONS.md](CAMERA-OPTIONS.md) §9: *whoever assembles and flashes a
@@ -17,6 +18,18 @@ only evidence.
 ---
 
 ## What is actually true today
+
+There are two things a user downloads — the firmware and the companion app —
+and they have different answers, so they get separate sections. One script asks
+both questions:
+
+```bash
+./scripts/repro-verify.sh              # firmware + companion
+./scripts/repro-verify.sh firmware     # delegates to repro-check.sh
+./scripts/repro-verify.sh companion
+```
+
+### The firmware
 
 Two builds of the same commit, from two different directories, produce
 byte-identical `firmware.bin`, `bootloader.bin` and `partitions.bin`. Verified,
@@ -61,6 +74,99 @@ The commit hash is deliberately **kept** in the image rather than stripped for
 reproducibility. It is a function of the commit, so it is reproducible for
 anyone building that commit, and a binary that cannot name its source is worse
 than one whose bytes depend on it.
+
+### The companion app
+
+This is the newer half of the answer, and it matters for a reason the firmware
+section does not cover. The plan is to publish the companion as GitHub releases
+for Linux, Windows and macOS, and to put a firmware flasher inside it
+([T65](../ROADMAP.md)). A flasher is a program that writes to the device the
+wallet exists to protect, shipped as a binary that almost nobody will build
+themselves. A checksum beside that download proves only that the download is
+intact; without a reproducible build it says nothing about which source
+produced it, and the flasher's authority over the device would rest on nobody
+having checked.
+
+Two artefacts are compared, and both are byte-identical across two clean
+builds of the same commit:
+
+| Artefact | Result |
+|---|---|
+| `dist/` — the Vite bundle, all 7 files | identical |
+| `target/release/leekwallet-companion` | identical |
+
+The Vite bundle turned out to need nothing at all. Built from two clones at two
+paths of different length, every output file matched on the first attempt,
+content hashes and all — Rollup's filename hashes are derived from content and
+nothing in the pipeline stamps a time. `pnpm-lock.yaml` was already committed
+and `--frozen-lockfile` is what CI and these scripts use, so the dependency
+tree is pinned rather than resolved afresh per build.
+
+The Rust binary needed a pin and a documented build path. `app/rust-toolchain.toml`
+now pins rustc, for the same reason `platformio.ini` pins the firmware's
+compiler: "rebuild the tag and compare" needs one answer to *which compiler*,
+or a mismatch that really means "you have a newer rustc" is indistinguishable
+from a mismatch that means the binary is not from this source.
+
+#### The one caveat: the Rust build path is part of the recipe
+
+The same commit built at `/tmp/reprox/a` and at
+`/tmp/reprox/build-two-with-a-much-longer-name-here` does **not** produce the
+same library. This was measured rather than assumed, and the shape of the
+difference is the interesting part:
+
+| Section | Result |
+|---|---|
+| `.text` | **same**, 233 843 bytes |
+| `.rodata` | **same**, 18 536 |
+| `.data.rel.ro`, `.data` | **same** |
+| `.eh_frame` | differs, same size — reordered |
+| `.gcc_except_table` | differs, 765 556 vs 765 580 bytes |
+
+The compiled code is identical. Only the unwind and exception-handling tables
+move, and the 24-byte size change shifts every section header after it, which
+is why a plain `cmp` reports 677 830 differing bytes and looks catastrophic
+when it is not.
+
+What it is **not**: an embedded path. `strings | grep` finds zero occurrences
+of the build directory in either binary. `--remap-path-prefix` was tried over
+the manifest directory, the workspace root and `$HOME/.cargo`, and changed
+neither hash by a single byte — the useful negative result, because it means
+there is nothing being embedded for a remap to rewrite. What the path actually
+changes is cargo's `-C metadata` hash, which is derived from the absolute
+manifest path and feeds codegen-unit names; different object file names give a
+different link order, and the concatenated tables come out in a different
+order.
+
+There is no stable-Rust flag that fixes this — `-Ztrim-paths` is nightly and
+addresses embedding, which is not the problem here. So the fix is the one the
+wider ecosystem uses, Debian included: **make the build path part of the
+published recipe.** `scripts/repro-verify.sh` runs both passes in
+`/tmp/leekwallet-repro-build` (override with `LEEK_REPRO_ROOT`), and a third
+party reproducing a release must build there too.
+
+This is a genuinely weaker property than the firmware's and is not worth
+dressing up. The firmware is a function of its source. The companion is a
+function of its source *and* a path that both parties have to agree on in
+advance. Setting `LEEK_REPRO_VARY_PATH=1` runs the two-path version anyway; it
+is expected to fail on the Rust artefact, and it exists so this section stays a
+measurement anyone can re-take rather than a paragraph that quietly rots.
+
+#### What is not checked on the companion
+
+The **packaged installers** — `.deb`, `.AppImage`, `.msi`, `.dmg`. `tauri build`
+produces those by shelling out to `dpkg-deb`, WiX and `hdiutil`, none of which
+this project controls and at least two of which stamp their own timestamps into
+the archive. What `repro-verify.sh` checks is the executable that goes inside
+the package, which is the part this repository's source determines. Reproducible
+*packaging* is a separate and harder problem, and claiming it here would be
+claiming something nobody has measured.
+
+`SOURCE_DATE_EPOCH` is exported by the release and verify scripts, set to the
+commit's own timestamp so it is a function of what is built rather than of when
+someone pressed the button. Nothing in the two artefacts above currently reads
+it. It is set anyway, so that a packaging step which starts honouring it does
+not silently reintroduce wall-clock time first.
 
 ### What is not true
 
@@ -107,15 +213,38 @@ definitions of "the key is safe to use" would drift.
 | `BUILDINFO` | tag, commit, environment, platform pin, rebuild instructions |
 | `secure_boot_signing_key.pub` + its digest | the *public* half only (secure releases) |
 
-Sign the manifest, not each binary:
+Sign the manifest, not each binary. `SHA256SUMS` covers the binaries and the
+signature covers `SHA256SUMS`, so one signature is enough and there is one
+place to look — a verifier given four separate signatures runs one of them.
+
+`scripts/release.sh` will do it, given a key id:
+
+```bash
+LEEK_SIGNING_KEY=0xDEADBEEF ./scripts/release.sh v0.3.0 esp32s3-secure
+```
+
+or by hand, which is the same thing:
 
 ```bash
 cd release/v0.3.0/esp32s3-secure
 gpg --armor --detach-sign SHA256SUMS
 ```
 
-`SHA256SUMS` covers the binaries and the signature covers `SHA256SUMS`, so one
-signature is enough and there is one place to look.
+Signing is opt-in rather than automatic on purpose: a script that signs by
+default signs a build nobody has looked at yet. The intended order is build,
+read the hashes, then sign, and an explicit variable makes that the easy order.
+When it does sign, it uses `--local-user` rather than `--default-key` — an
+absent key must fail loudly rather than produce a signature from whatever the
+keyring lists first, because a signature by the wrong key is worse than no
+signature, it just looks like one — and it verifies what it wrote before
+reporting success, so a signature over an earlier draft of the manifest cannot
+ship.
+
+The script will never generate a key, never print or copy key material, and
+writes only into `release/`, which is `.gitignore`d. Creating the signing key
+is a human act performed once (`gpg --full-generate-key`), off this machine
+if possible; the only thing that crosses into automation is a key *id*, which
+is public by construction.
 
 **Never published, in any form:** `secure_boot_signing_key.pem`. It is
 `.gitignore`d along with `*.pem`, and `preflight-secure.sh` fails outright if
@@ -167,6 +296,8 @@ about any device.
 
 ### Level 2 — the binary came from the source (the real claim)
 
+For the **firmware**:
+
 ```bash
 git clone <repo> && cd leekwallet
 git checkout v0.3.0
@@ -175,9 +306,43 @@ git verify-tag v0.3.0
 sha256sum -c /path/to/downloaded/SHA256SUMS
 ```
 
+For the **companion app**, the same idea with the build path pinned, because
+of the caveat above — the Rust binary is a function of the source *and* the
+directory it was built in, so a verifier who builds somewhere else will get a
+different hash for reasons that are not tampering:
+
+```bash
+export LEEK_REPRO_ROOT=/tmp/leekwallet-repro-build   # the published path
+rm -rf "$LEEK_REPRO_ROOT"
+git clone <repo> "$LEEK_REPRO_ROOT"
+cd "$LEEK_REPRO_ROOT" && git checkout v0.3.0
+cd app && pnpm install --frozen-lockfile && pnpm build
+cd src-tauri && cargo build --release --bin leekwallet-companion
+sha256sum target/release/leekwallet-companion
+```
+
+Compare that against the companion's line in the published `SHA256SUMS`. If it
+differs, check `BUILDINFO` for the toolchain before concluding anything: a
+different rustc changes the bytes on its own, which is why the pin in
+`app/rust-toolchain.toml` exists and why the version is recorded rather than
+implied.
+
+To run the whole comparison rather than one artefact — building twice and
+diffing, which is what a maintainer should do before publishing:
+
+```bash
+./scripts/repro-verify.sh
+```
+
 Matching hashes mean the published binary contains nothing that is not in the
 published source. This is the check worth running, and the one the rest of this
 work exists to make possible. It still says nothing about any device.
+
+An honest note on what Level 2 costs: it requires the verifier to install the
+pinned toolchains and spend several minutes of CPU. Almost nobody will. The
+value is not that every user runs it — it is that any user *can*, so that a
+tampered release is a thing that can be caught by one person and then told to
+everyone, rather than a thing nobody is able to check even in principle.
 
 ### Level 3 — a device runs signed firmware (the only device-level claim)
 
@@ -239,6 +404,17 @@ They are usually enough to name the cause:
 | the last 32 bytes | the image's own appended SHA-256; also a consequence |
 | scattered, thousands of bytes | a different toolchain — check the `platform` pin resolved to `6.12.0` |
 
+For the **companion**, the diagnosis is different because the artefacts are
+ELF objects rather than flat images. `readelf -S -W` on both and compare the
+section table first: if `.text` and `.rodata` match and only `.eh_frame` and
+`.gcc_except_table` differ, that is the known build-path effect described
+above and the fix is to build at `LEEK_REPRO_ROOT`, not to go hunting. If
+`.text` itself differs, the toolchain differs — check `rustc --version`
+against `app/rust-toolchain.toml`, and remember that a distribution-packaged
+`cargo` ignores that file entirely. If the Vite bundle differs, suspect
+`pnpm install` without `--frozen-lockfile`, which is allowed to resolve a
+different dependency tree than the one that was published.
+
 The trap worth naming: PlatformIO does **not** regenerate `sdkconfig.<env>`
 when the defaults change, so an edit to `sdkconfig.defaults` can silently do
 nothing while the build reports success. If a config change appears to have no
@@ -249,8 +425,11 @@ more than once — see the header of `scripts/preflight-secure.sh`.
 
 ## CI
 
-`.github/workflows/ci.yml` has a `repro` job that runs `scripts/repro-check.sh`
-on every push. A check that runs is worth more than a procedure in a document
+`.github/workflows/ci.yml` has two reproducibility jobs — `repro` for the
+firmware and `repro-app` for the companion — both running on every push.
+They are separate because they need entirely different toolchains, and because
+two red crosses that name which half broke are worth more than one that does
+not. A check that runs is worth more than a procedure in a document
 that nobody opens, and reproducibility is exactly the property that rots
 silently — a dependency bump reintroduces a timestamp and nothing complains
 until someone tries to verify a release months later.
