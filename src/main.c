@@ -104,14 +104,26 @@ void app_main(void)
     /* Initialize UI framework */
     ui_init();
 
-    /* Protocol endpoint over the same USB cable used for flashing */
-    protocol_start();
-
-    /* Then select the one transport that may be live. Defaults to USB, and
+    /* Select the one transport that may be live. Defaults to USB, and
      * explicitly leaves BLE off rather than assuming it: a wallet that
      * advertises without being asked to is discoverable by anyone in the room
-     * (PROTOCOL.md 3b, ROADMAP T57). */
+     * (PROTOCOL.md 3b, ROADMAP T57).
+     *
+     * This must precede protocol_start(). It used to follow it, which left a
+     * window of a few milliseconds between the endpoint accepting frames and
+     * the transport decision being made. In that window the USB endpoint
+     * answered every request -- including on a device whose stored transport
+     * is BLE -- and transport_apply() mutated the receive state of a
+     * protocol_task that was already parsing a frame. A host that opens the
+     * port without resetting the board lands in exactly that window, and the
+     * device panicked (LoadProhibited in the USB-Serial-JTAG ISR) on the third
+     * request. pyserial never saw it because asserting DTR on open reboots the
+     * board, so its requests wait in the FIFO until after boot. */
     transport_init();
+
+    /* Protocol endpoint over the same USB cable used for flashing. Only now,
+     * with a transport chosen, may frames be answered. */
+    protocol_start();
 
     /* Start UI task */
     BaseType_t task_ret = xTaskCreate(

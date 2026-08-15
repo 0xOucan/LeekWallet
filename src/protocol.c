@@ -82,7 +82,12 @@ static size_t  rx_len = 0;
 static ProtocolWriter tx_writer = NULL;
 
 /* Whether the USB port is an endpoint at all. Cleared while BLE is selected. */
-static bool rx_enabled = true;
+/* Off until a transport is chosen. Defaulting this to true meant the USB
+ * endpoint answered during boot before transport_init() had run, which is both
+ * a transport-exclusivity hole and the window a remote crash was reached
+ * through. transport_apply() always sets it explicitly, so nothing depends on
+ * the initialiser being permissive. */
+static bool rx_enabled = false;
 
 /**
  * Whether the request currently being handled arrived encrypted.
@@ -114,6 +119,14 @@ static bool rx_enabled = true;
  * about frames that never decrypted — goes back the way it came.
  */
 static bool reply_encrypted = false;
+
+/* Reads the flag transport_apply() owns. Exists so the host suite can assert
+ * the boot default is off, which is the half of the fix a behavioural test
+ * cannot reach: by the time a fixture has run, the flag has been set. */
+bool protocol_rx_enabled(void)
+{
+    return rx_enabled;
+}
 
 void protocol_set_rx_enabled(bool enabled)
 {

@@ -50,6 +50,7 @@ void protocol_reset_rx(void);
  * transport, so the cable is drained but never answered (PROTOCOL.md 3b).
  */
 void protocol_set_rx_enabled(bool enabled);
+bool protocol_rx_enabled(void);
 
 /**
  * Tell the endpoint the user typed a passphrase on the device itself (T42).

@@ -422,6 +422,11 @@ static void fresh_device(void)
     fake_wallet_reset();
     session_reset();
     protocol__reset_for_test();
+    /* On hardware transport_init() always runs before the endpoint serves, and
+     * it is what turns receive on. The suite has no transport layer, so it
+     * stands in for that call -- without it every test would be exercising a
+     * device that has not yet chosen a transport and answers nothing. */
+    protocol_set_rx_enabled(true);
 
     stash_len = 0;
     host_tx = host_rx = 0;
@@ -495,6 +500,41 @@ static void confirmed_session(uint8_t seed)
 }
 
 /* ================================================================= tests */
+
+/* Boot order. protocol_start() used to run before transport_init(), so for a
+ * few milliseconds the USB endpoint answered anything -- on a BLE device too --
+ * and transport_apply() reset the receive state of a task already parsing a
+ * frame. A host that opens the port without resetting the board lands in that
+ * window; the device panicked in the USB-Serial-JTAG ISR on the third request.
+ * The endpoint must answer nothing until a transport has been chosen. */
+static void test_nothing_is_answered_before_a_transport_is_chosen(void)
+{
+    printf("== the endpoint is silent until a transport is selected\n");
+
+    /* Checked before any fixture runs: fresh_device() stands in for
+     * transport_init() and turns receive on, so after it the boot default is no
+     * longer observable. This assertion is the only place it is. */
+    CHECK(!protocol_rx_enabled(),
+          "receive is on before transport_init() has chosen a transport");
+
+    fresh_device();
+    protocol_set_rx_enabled(false);     /* the pre-transport_init() state */
+
+    uint8_t payload[64];
+    for (const char *const *m = (const char *[]){"ping", "getFeatures", "getStatus", NULL};
+         *m; m++) {
+        send_plain(payload, req(payload, sizeof(payload), *m));
+        Frame f = next_frame();
+        CHECK(!f.present, "%s was answered before a transport was chosen", *m);
+    }
+
+    /* And once transport_apply() has run, the same frames are served. */
+    protocol_set_rx_enabled(true);
+    send_plain(payload, req(payload, sizeof(payload), "ping"));
+    Frame f = next_frame();
+    CHECK(f.present && f.type == T_RESPONSE,
+          "ping went unanswered after a transport was selected");
+}
 
 static void test_plaintext_ping_and_features(void)
 {
@@ -2637,6 +2677,7 @@ static void test_a_host_passphrase_dies_with_its_session(void)
 
 int main(void)
 {
+    test_nothing_is_answered_before_a_transport_is_chosen();
     test_plaintext_ping_and_features();
     test_status_is_public_but_thin();
     test_keys_need_a_session_and_a_passkey();
