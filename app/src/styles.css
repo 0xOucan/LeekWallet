@@ -2,6 +2,55 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/* `hidden` has to win, or a panel is only pretending to be gone.
+ *
+ * The attribute's UA rule is `display: none` at the lowest possible weight, so
+ * any class rule that sets a display beats it — and half the containers in this
+ * app are toggled by setting `.hidden` from script while carrying a class that
+ * does exactly that. The amount-unit selector (`.field`, display: block) and
+ * the address QR (`.addr-qr`, display: flex) were both visible while the code
+ * that drew them believed they were not. That is worse than a layout bug here:
+ * an element that is on screen but treated as absent is also in the tab order
+ * and read out by a screen reader. */
+[hidden] { display: none !important; }
+
+/* One focus ring, on everything focusable, defined once.
+ *
+ * Per-component rules had already missed the bare selects and inputs that sit
+ * outside `.field`, the `<summary>` toggles and the explorer link — a keyboard
+ * user who tabbed into one of those had no way to tell where they were. The
+ * accent measures 6.02:1 on surface and 7.86:1 in dark, comfortably past the
+ * 3:1 that a focus indicator owes (docs/ACCESSIBILITY.md). */
+:where(a, button, select, input, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* For anything that must be announced but not seen — the live region that
+ * carries "the device is waiting for you", and the skip link until it is
+ * focused. Clip rather than `display: none`, which would take it out of the
+ * accessibility tree along with everything it is there to say. */
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.skiplink:focus {
+  position: fixed;
+  top: var(--space-2); left: var(--space-2);
+  z-index: 20;
+  width: auto; height: auto;
+  margin: 0; padding: var(--space-2) var(--space-3);
+  clip-path: none;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -107,13 +156,12 @@ button {
   font: inherit; font-size: var(--text-sm);
   height: 36px; padding: 0 var(--space-4);
   border-radius: var(--radius);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   background: var(--surface); color: var(--text);
   cursor: pointer;
   transition: background var(--motion) ease-out, border-color var(--motion) ease-out;
 }
 button:hover:not(:disabled) { border-color: var(--accent); }
-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
@@ -122,6 +170,14 @@ button.ghost { background: transparent; border-color: transparent; }
 button.danger { color: var(--danger); border-color: var(--danger); }
 
 .row { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center; }
+.row > input, .row > select { flex: 1 1 14rem; width: auto; }
+
+/* Placeholders were the one piece of text in the app whose colour nobody
+ * chose: the UA default is tuned for a white field, and these fields are
+ * --bg, which in dark mode is nearly black. --muted is measured against both
+ * (5.42:1 light, 6.48:1 dark), and `opacity: 1` stops Firefox dimming it back
+ * down again. */
+::placeholder { color: var(--muted); opacity: 1; }
 
 /* --------------------------------------------------------------- addresses */
 
@@ -294,7 +350,7 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   color: var(--muted);
   margin-bottom: var(--space-1);
 }
-.field input {
+.field input, .row > input {
   width: 100%;
   height: 36px;
   padding: 0 var(--space-3);
@@ -303,16 +359,12 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   font-size: var(--text-sm);
   color: var(--text);
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
-}
-.field input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
 }
 .field input[aria-invalid="true"] { border-color: var(--danger); }
 
-.field select {
+.field select, .row > select {
   width: 100%;
   height: 36px;
   padding: 0 var(--space-2);
@@ -320,11 +372,10 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   font-size: var(--text-sm);
   color: var(--text);
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   cursor: pointer;
 }
-.field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* Same treatment as the text inputs: an RPC URL is a monospace thing people
  * check character by character. */
@@ -336,11 +387,10 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   font-size: var(--text-sm);
   color: var(--text);
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   resize: vertical;
 }
-.field textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* The checkbox sits beside its label rather than under it; a full-width tick
  * box reads as a text field. */
 .field--check { display: flex; align-items: center; gap: var(--space-2); }
@@ -462,7 +512,7 @@ main {
   margin-bottom: var(--space-3);
   font-family: var(--font-mono); font-size: var(--text-xs);
   background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: var(--radius);
+  border: 1px solid var(--control-border); border-radius: var(--radius);
   padding: var(--space-2);
   white-space: pre;
 }

@@ -69,6 +69,40 @@ const log = (line: string): void => {
   el.textContent = `${stamp}  ${line}\n${el.textContent === "Nothing yet." ? "" : el.textContent}`;
 };
 
+/**
+ * Say something out loud, once, to whoever is listening with a screen reader.
+ *
+ * The region is `role="alert"`, so this interrupts — which is the point, and
+ * why the only callers are the moments the hardware is waiting for a person.
+ * Everything else belongs in the log, where it can be read at leisure.
+ *
+ * The cleared-then-set pair is not superstition: assistive technology
+ * announces a live region when its contents *change*, and two identical
+ * messages in a row — "check every page on the device" for a second
+ * transaction, say — are not a change. Clearing first makes the second one
+ * arrive, and a repeated instruction that never arrives is precisely the
+ * failure mode that matters here.
+ */
+function announce(text: string): void {
+  const region = $("announce");
+  region.textContent = "";
+  // A microtask is too early: the change has to survive a paint to be noticed.
+  setTimeout(() => { region.textContent = text; }, 50);
+}
+
+/**
+ * The device is waiting for the user. Log it and announce it, same words.
+ *
+ * Confirming on the device is the security step this whole protocol is built
+ * around — comparing a passkey, reading every page of a transaction — and it
+ * only works if the user knows they have been asked. A sighted user reads the
+ * log; a screen-reader user is given no reason to be in it at that moment, so
+ * without this the instruction reaches nobody and the device becomes a button
+ * that gets pressed to make the wallet work. That is not an inconvenience, it
+ * is the attack the confirmation exists to stop.
+ */
+const deviceAttention = (line: string): void => { log(line); announce(line); };
+
 /* Errors nobody caught, and resources the CSP refused.
  *
  * The WalletConnect SDK wraps proposal handling in a try/catch that reports
@@ -655,6 +689,15 @@ async function connect(): Promise<void> {
     $("pairing").hidden = false;
     log(`handshake done — compare ${passkey} with the device screen`);
     log("press ALLOW on the device to continue");
+    /* Announced rather than routed through deviceAttention, because the spoken
+     * form has to differ from the logged one: the passkey lives in a definition
+     * list a screen-reader user has no reason to be in, and six digits read as
+     * one number are not a string anybody can compare against a device screen.
+     * So it is spoken separately, and separated. */
+    announce(
+      `Compare the passkey ${passkey.split("").join(" ")} with the device screen, ` +
+      `then press ALLOW on the device to continue.`,
+    );
     setConnection("connecting", "Confirm on device…");
 
     try {
@@ -664,6 +707,7 @@ async function connect(): Promise<void> {
        * way this attempt is over and the controls must come back - the user
        * has to be able to press Connect again. */
       setConnection("error", "Not confirmed on the device");
+      announce("Not confirmed on the device. The connection attempt has ended.");
       log(String((e as Error).message ?? e));
       await transport.close().catch(() => {});
       transport = null;
@@ -698,7 +742,7 @@ async function connect(): Promise<void> {
 async function unlock(): Promise<void> {
   if (!client) return;
   busy(true);
-  log("enter your PIN on the device…");
+  deviceAttention("enter your PIN on the device…");
   try {
     const reply = await client.call("unlock");
 
@@ -1031,6 +1075,7 @@ function renderCustomChains(): void {
     remove.type = "button";
     remove.className = "secondary";
     remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove the custom network ${chainLabelDetailed(c.id).text}, chain ${c.id}`);
     remove.addEventListener("click", () => {
       removeCustomChain(c.id);
       /* Removing the network that is selected must not leave the app signing
@@ -1333,6 +1378,11 @@ function renderBalances(): void {
     send.type = "button";
     send.className = "secondary";
     send.textContent = "Send this token";
+    /* "Send this token" is unambiguous on screen, where the row above it is
+     * the context, and meaningless in a list of buttons read out one after
+     * another. The contract address is the only identity this app is entitled
+     * to use, so it is the one that goes in the label. */
+    send.setAttribute("aria-label", `Send token at contract ${token}`);
     send.addEventListener("click", () => {
       ($("asset") as HTMLSelectElement).value = token;
       applyAsset();
@@ -1342,6 +1392,7 @@ function renderBalances(): void {
     drop.type = "button";
     drop.className = "secondary";
     drop.textContent = "Stop watching";
+    drop.setAttribute("aria-label", `Stop watching the token at contract ${token}`);
     drop.addEventListener("click", () => {
       writeWatched(chain, watchedTokens(chain).filter((a) => a !== token));
       tokenBalances.delete(key);
@@ -1480,7 +1531,11 @@ function initAddressActions(): void {
     const showing = !holder.hidden;
     holder.hidden = showing;
     note.hidden = showing;
-    ($("addrqrtoggle") as HTMLButtonElement).textContent = showing ? "Show QR code" : "Hide QR code";
+    const toggle = $("addrqrtoggle") as HTMLButtonElement;
+    toggle.textContent = showing ? "Show QR code" : "Hide QR code";
+    // The label alone does not say whether the thing it controls is open; a
+    // screen reader reads that from aria-expanded or not at all.
+    toggle.setAttribute("aria-expanded", String(!showing));
     if (!showing) drawSelectedAddress();   // renders now that it is visible
   });
 
@@ -1646,6 +1701,8 @@ async function discoverTokens(): Promise<void> {
       watch.className = "secondary";
       const already = watchedTokens(info.id).includes(result.token);
       watch.textContent = already ? "Already watched" : "Watch and send";
+      watch.setAttribute("aria-label",
+        `${already ? "Already watching" : "Watch and send"} the token at contract ${result.token}`);
       watch.disabled = already;
       watch.addEventListener("click", () => {
         writeWatched(info.id, [...watchedTokens(info.id), result.token]);
@@ -1758,6 +1815,10 @@ function stopToScan(): void {
   toScan = null;
   $("tovideo").hidden = true;
   ($("toscanstop") as HTMLButtonElement).hidden = true;
+  /* The button stays "Scan QR" whether the camera is on or off, so pressed
+   * state is the only thing that tells a screen-reader user which it is —
+   * and whether a camera is running is not a detail to leave unsaid. */
+  $("toscan").setAttribute("aria-pressed", "false");
 }
 
 function initToScanner(): void {
@@ -1781,6 +1842,7 @@ function initToScanner(): void {
     const video = $("tovideo") as HTMLVideoElement;
     video.hidden = false;
     ($("toscanstop") as HTMLButtonElement).hidden = false;
+    button.setAttribute("aria-pressed", "true");
     hint.textContent = "Point the camera at an address QR code.";
 
     /* The abort handle exists before the camera does, so dismissing this while
@@ -2268,7 +2330,7 @@ async function sign(): Promise<void> {
       log(`warning: ${w.message}`);
     }
 
-    log("check every page on the device, then approve");
+    deviceAttention("check every page on the device, then approve");
 
     const SIGN_TIMEOUT_MS = 150000;   // the device gives the user 120 s
     const tx = {
@@ -2332,10 +2394,13 @@ async function sign(): Promise<void> {
      * readable rather than misleading. */
     void refreshBalances("after broadcast");
   } catch (e) {
+    /* How a signing attempt ended is as much a device event as the request to
+     * confirm it was: somebody who was told to walk to the device has to be
+     * told what happened when they got there. */
     if (e instanceof DeviceError && e.code === 0x0200) {
-      log("rejected on the device");
+      deviceAttention("rejected on the device");
     } else if (e instanceof DeviceError && e.code === 0x0201) {
-      log("timed out waiting for an answer on the device");
+      deviceAttention("timed out waiting for an answer on the device");
     } else if (e instanceof DeviceError) {
       log(`declined: ${e.message}`);
     } else {
@@ -2520,6 +2585,8 @@ const walletBridge: WalletBridge = {
   signTransaction: signPlannedTransaction,
   signMessage: signPlannedMessage,
   log,
+  announce,
+  deviceAttention,
 };
 
 const walletConnect = initWalletConnect(walletBridge);
@@ -2572,6 +2639,10 @@ function setMode(active: Transport | null): void {
     badge.title = hardware
       ? `Connected to real hardware over ${LINK_NAMES[active.kind]}`
       : "Simulated device — nothing here is signed by hardware";
+    /* A `title` is a mouse hover and nothing else. Whether the signature you
+     * are about to trust came from hardware or from a simulation is the last
+     * thing that should be reachable only with a pointer. */
+    badge.setAttribute("aria-label", badge.title);
     return;
   }
 
@@ -2581,6 +2652,7 @@ function setMode(active: Transport | null): void {
   badge.title = hasHardware
     ? "Not connected. The badge names the transport once a device answers."
     : "This build has no device transport; the mock is the only option";
+  badge.setAttribute("aria-label", badge.title);
 }
 
 /* Say plainly what this window can talk to, before anything is connected. The
