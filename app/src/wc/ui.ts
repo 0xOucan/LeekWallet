@@ -116,7 +116,13 @@ export function initWalletConnect(bridge: WalletBridge): {
   const connection = new WalletConnectConnection({
     onProposal: (p) => { proposal = p; drawProposal(); },
     onRequest: (r) => void receive(r),
-    onSessionsChanged: (s) => drawSessions(s),
+    onSessionsChanged: (s) => {
+      /* A live session ends the wait, so the Pair button must stop reporting
+       * one. Saying "waiting for the dapp" while that very dapp is listed as
+       * connected is worse than the message it replaced. */
+      if (s.length > 0) pairedAwaitingProposal = false;
+      drawSessions(s);
+    },
     log: bridge.log,
   });
 
@@ -185,6 +191,12 @@ export function initWalletConnect(bridge: WalletBridge): {
 
   $("wcpair").addEventListener("click", () => {
     const typed = ($("wcuri") as HTMLInputElement).value.trim();
+    if (typed === "" && connection.sessions().length > 0) {
+      const message = "A dapp is already connected. Paste a new code only to add another.";
+      bridge.log(`walletconnect: ${message}`);
+      setStatus(message);
+      return;
+    }
     if (typed === "" && pairedAwaitingProposal) {
       const message =
         "Already paired — waiting for the dapp to send its connection request. " +
