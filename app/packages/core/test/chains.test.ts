@@ -163,6 +163,23 @@ group("the CSP allowlist still bounds the registry, by exact origin");
    * be wss:// rather than https://. */
   const NON_RPC_ALLOWED = new Set([
     "wss://relay.walletconnect.org",   // WalletConnect v2 relay (PROTOCOL.md 6b)
+    /* Tauri's IPC on Linux, where `invoke` rides an ipc:// custom protocol
+     * rather than the app's own origin. Tauri documents these two entries but
+     * does not inject them; without them every call into Rust is refused on
+     * Linux only -- Android and Windows put IPC on the app origin, so 'self'
+     * covers it there and the omission is invisible. The one pair of entries
+     * here that is not https, and not a remote origin at all: both name the
+     * local process this webview is already part of. */
+    "ipc:",
+    "http://ipc.localhost",
+    /* WalletConnect's Verify API, which attests the origin a session proposal
+     * claims to come from. Blocked, it fails closed and every proposal is
+     * validation UNKNOWN -- a phishing check the UI appears to have and does
+     * not. connect-src only: this policy still grants no frame-src, so the
+     * attestation is fetched and never framed. Two hosts because the SDK falls
+     * back between them. */
+    "https://verify.walletconnect.org",
+    "https://verify.walletconnect.com",
     /* The published token lists behind the opt-in "update token list" button.
      * Derived from TOKEN_LIST_URLS rather than typed again here, so
      * an origin cannot be added to one and forgotten in the other: a source the

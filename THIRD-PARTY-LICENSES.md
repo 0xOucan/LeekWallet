@@ -12,7 +12,7 @@ govern those files. Nothing here is relicensed.
 | chacha20poly1305 | `components/trezor-crypto/chacha20poly1305/` | MIT | Yes |
 | QRCode | `src/qrcode.c`, `src/qrcode.h` | MIT | Yes |
 | ESP-IDF | build dependency, not vendored | Apache-2.0 | Yes |
-| jsQR | `app/` npm dependency, bundled into the app | Apache-2.0 | Yes |
+| zxing-wasm | `app/` npm dependency, WASM bundled into the app | MIT | Yes |
 
 MIT is permissive and imposes only attribution, so MIT code may be distributed
 inside an Apache-2.0 project provided the copyright notices and license text
@@ -44,21 +44,30 @@ Glozer. Full text in that directory's `LICENSE`.
 MIT, Copyright (c) 2017 Richard Moore. Upstream:
 https://github.com/ricmoo/QRCode
 
-## jsQR
+## zxing-wasm
 
-`jsqr` — QR *decoding* from camera frames in the companion app
+`zxing-wasm` — QR *decoding* from camera frames in the companion app
 (`app/src/wc/qr.ts`). Distinct from the `QRCode` entry above, which generates
 codes on the device; this reads them on the host.
 
-License: Apache-2.0, Copyright (c) 2018 Cosmo Wolfe.
-Upstream: https://github.com/cozmo/jsQR
+License: MIT (the wrapper), wrapping zxing-cpp, Apache-2.0.
+Upstream: https://github.com/Sec-ant/zxing-wasm
 
-Bundled rather than using the platform's `BarcodeDetector` because that API is
-absent from WebKitGTK (the Linux desktop webview) and, on Android, is
-implemented on top of Google Play Services — which crashed the app outright
-without the matching manifest meta-data, and would have meant linking Play
-Services into a hardware wallet to fix. Same licence as this project, pure JS,
-no WASM, no network access.
+The `.wasm` is bundled as a local asset and served from the app's own origin.
+zxing-wasm fetches it from a CDN by default; that would be remote code arriving
+in the process that talks to a signing device, and is not done here.
+
+This replaced `jsqr`, which was 40 KB of readable JavaScript and preferable on
+every axis except the decisive one: it could not read a WalletConnect pairing
+code. The actual code, captured from the device camera at full resolution and
+in focus, was handed to three decoders — jsQR found nothing, `@zxing/library`
+(the pure-JS ZXing port) found nothing, and zxing-cpp via WASM read it.
+Preprocessing the image three ways did not rescue either JS decoder.
+
+The costs were accepted deliberately: about 1.1 MB of opaque binary in place of
+auditable source, and `'wasm-unsafe-eval'` added to `script-src` so the module
+can be instantiated at all. Both are real, and both are the price of a scanner
+that works.
 
 ## Colibri — inspiration, not code
 

@@ -105,11 +105,24 @@ export function initWalletConnect(bridge: WalletBridge): {
    * twice; the relay drops the duplicate, but the device would be asked to sign
    * twice, which is a confirmation the user did not intend to give. */
   let settling = false;
+  /* Whether a pairing has gone through and the dapp has not answered yet.
+   *
+   * Exists for one message. A scan pairs on its own, so pressing Pair a moment
+   * later finds an empty field and used to answer "Nothing to pair with" --
+   * which reads as a failure directly underneath a line saying the pairing
+   * succeeded. The state is what makes the difference sayable. */
+  let pairedAwaitingProposal = false;
 
   const connection = new WalletConnectConnection({
     onProposal: (p) => { proposal = p; drawProposal(); },
     onRequest: (r) => void receive(r),
-    onSessionsChanged: (s) => drawSessions(s),
+    onSessionsChanged: (s) => {
+      /* A live session ends the wait, so the Pair button must stop reporting
+       * one. Saying "waiting for the dapp" while that very dapp is listed as
+       * connected is worse than the message it replaced. */
+      if (s.length > 0) pairedAwaitingProposal = false;
+      drawSessions(s);
+    },
     log: bridge.log,
   });
 
@@ -166,6 +179,7 @@ export function initWalletConnect(bridge: WalletBridge): {
       await ensureStarted();
       await connection.pair(uri);
       ($("wcuri") as HTMLInputElement).value = "";
+      pairedAwaitingProposal = true;
       bridge.log("paired; waiting for the dapp's connection request");
     } catch (e) {
       bridge.log(`walletconnect: ${(e as Error).message}`);
@@ -176,6 +190,21 @@ export function initWalletConnect(bridge: WalletBridge): {
   }
 
   $("wcpair").addEventListener("click", () => {
+    const typed = ($("wcuri") as HTMLInputElement).value.trim();
+    if (typed === "" && connection.sessions().length > 0) {
+      const message = "A dapp is already connected. Paste a new code only to add another.";
+      bridge.log(`walletconnect: ${message}`);
+      setStatus(message);
+      return;
+    }
+    if (typed === "" && pairedAwaitingProposal) {
+      const message =
+        "Already paired — waiting for the dapp to send its connection request. " +
+        "If nothing arrives, the code may have expired; generate a fresh one.";
+      bridge.log(`walletconnect: ${message}`);
+      setStatus(message);
+      return;
+    }
     void pair(($("wcuri") as HTMLInputElement).value);
   });
 
@@ -191,10 +220,29 @@ export function initWalletConnect(bridge: WalletBridge): {
     void scanQr(
       video,
       (raw) => (raw.toLowerCase().startsWith("wc:") ? raw : undefined),
-      (uri) => { scan = null; video.hidden = true; void pair(uri); },
+      (uri) => {
+        scan = null;
+        video.hidden = true;
+        /* Say that the CAMERA produced this. Without it, a scanned pairing and
+         * a pasted one are the same two log lines, and telling them apart was
+         * guesswork at exactly the moment it mattered. */
+        bridge.log(`scanned a pairing link from the camera (${uri.slice(0, 12)}…)`);
+        /* Put it in the field the way a paste would, so what was scanned is
+         * visible and the two routes look like the same operation. Pairing
+         * still starts on its own -- making someone press Pair after aiming a
+         * camera is a second step for no decision -- but the value is on
+         * screen either way. */
+        ($("wcuri") as HTMLInputElement).value = uri;
+        void pair(uri);
+      },
       (message) => { scan = null; video.hidden = true; bridge.log(`camera: ${message}`); },
+      undefined,
+      (status) => bridge.log(`scan: ${status}`),
     )
-      .then((handle) => { scan = handle; })
+      .then((handle) => {
+        scan = handle;
+        bridge.log(`camera ${handle.resolution.width}x${handle.resolution.height} focus=${handle.resolution.focusMode || "unreported"}; point it at the dapp's QR code`);
+      })
       .catch((e: unknown) => {
         video.hidden = true;
         bridge.log(`camera: ${(e as Error).message}`);

@@ -70,6 +70,47 @@ const log = (line: string): void => {
   el.textContent = `${stamp}  ${line}\n${el.textContent === "Nothing yet." ? "" : el.textContent}`;
 };
 
+/* Errors nobody caught, and resources the CSP refused.
+ *
+ * The WalletConnect SDK wraps proposal handling in a try/catch that reports
+ * through its own logger and then auto-rejects, so a throw in there is invisible
+ * here: the dapp is turned away and the app just keeps saying it is waiting.
+ * These three listeners are the only way an exception on a phone -- where there
+ * is no console to open -- reaches a human.
+ *
+ * The CSP listener earns its place separately: this app's policy is a security
+ * boundary worth keeping tight, which means a legitimate request can be refused
+ * by it, and a refusal is otherwise silent. Naming the blocked URI and the
+ * directive turns "nothing happened" into a one-line answer.
+ */
+window.addEventListener("error", (e) => {
+  log(`uncaught error: ${e.message} (${e.filename}:${e.lineno})`);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e.reason as { message?: string } | undefined;
+  log(`unhandled rejection: ${r?.message ?? String(e.reason)}`);
+});
+document.addEventListener("securitypolicyviolation", (e) => {
+  log(`CSP blocked ${e.blockedURI || "(inline)"} — violates ${e.violatedDirective}`);
+});
+
+/* The WalletConnect SDK reports the exception it swallowed through its own
+ * logger, which writes to the console -- a place with no reader on a phone.
+ * Mirroring it into the log panel is what makes that report arrive.
+ *
+ * Only the first line and only 200 characters: the argument is sometimes a
+ * whole rejected payload, and this panel is meant to be pasted into bug
+ * reports. The console still gets everything, untouched, for desktop devtools.
+ */
+const consoleError = console.error.bind(console);
+console.error = (...args: unknown[]): void => {
+  consoleError(...args);
+  const first = args
+    .map((a) => (a instanceof Error ? a.message : typeof a === "string" ? a : ""))
+    .find((t) => t !== "");
+  if (first !== undefined) log(`console error: ${(first.split("\n")[0] ?? "").slice(0, 200)}`);
+};
+
 /* ------------------------------------------------------------------ client */
 
 /** Minimal request/response client over a Transport. */
@@ -1786,8 +1827,12 @@ function initToScanner(): void {
         hint.textContent = `Camera: ${message}`;
       },
       controller.signal,
+      (status) => log(`scan: ${status}`),
     )
-      .then((handle) => { toScan = handle; })
+      .then((handle) => {
+        toScan = handle;
+        log(`camera ${handle.resolution.width}x${handle.resolution.height} focus=${handle.resolution.focusMode || "unreported"}`);
+      })
       .catch((e: unknown) => {
         stopToScan();
         hint.textContent = `Camera: ${(e as Error).message ?? String(e)}`;
@@ -2704,6 +2749,18 @@ function diagnosticsReport(): string {
   L.push("LeekWallet companion — diagnostics");
   L.push(new Date().toISOString());
   L.push(`User agent: ${navigator.userAgent}`);
+  /* The webview capabilities WalletConnect leans on, because the frontend
+   * bundle is byte-identical on both platforms: when a pairing works on the
+   * desktop and not on the phone, the difference is here and not in our code.
+   * `isSecureContext` gates `crypto.subtle`, and IndexedDB is where the SDK
+   * persists pairings -- either one missing is invisible until a session
+   * silently fails to arrive. Presence only; nothing is read out. */
+  L.push(
+    `Webview: origin ${location.origin}, secureContext ${String(window.isSecureContext)}, ` +
+      `crypto.subtle ${crypto?.subtle ? "yes" : "NO"}, ` +
+      `indexedDB ${typeof indexedDB !== "undefined" && indexedDB !== null ? "yes" : "NO"}, ` +
+      `WebSocket ${typeof WebSocket !== "undefined" ? "yes" : "NO"}`,
+  );
   L.push("");
 
   L.push("== Connection");
