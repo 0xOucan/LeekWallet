@@ -64,10 +64,69 @@ fn transports() -> Vec<&'static str> {
     vec!["usb", "ble"]
 }
 
+/// Let the Linux webview reach a camera.
+///
+/// WebKitGTK is not Chromium: `enable-media-stream` defaults to OFF, and every
+/// permission request is denied unless the embedder answers it. With neither
+/// done, `getUserMedia` rejects with NotAllowedError and the QR scanner is
+/// simply dead on Linux — which is what it did, five times in a row, in a user's
+/// device log before this existed.
+///
+/// Only camera requests are granted, and only because of what this webview is:
+/// it loads this app's own bundled UI and no remote page (the CSP has no
+/// frame-src and there is no address bar — see PROTOCOL.md 6b). Granting the
+/// camera here is therefore the app answering for itself, not a page answering
+/// for a stranger. Everything else — microphone, geolocation, notifications —
+/// is refused, so this cannot become a general-purpose yes.
+#[cfg(target_os = "linux")]
+fn allow_camera(window: &tauri::WebviewWindow) {
+    use webkit2gtk::{
+        PermissionRequestExt, SettingsExt, UserMediaPermissionRequestExt, WebViewExt,
+    };
+
+    if let Err(e) = window.with_webview(|webview| {
+        let view = webview.inner();
+        if let Some(settings) = WebViewExt::settings(&view) {
+            settings.set_enable_media_stream(true);
+        }
+        view.connect_permission_request(|_, request| {
+            use webkit2gtk::glib::object::Cast;
+            let media = request
+                .clone()
+                .downcast::<webkit2gtk::UserMediaPermissionRequest>()
+                .ok();
+            match media {
+                // `is_for_video_device` is the camera; audio is not asked for by
+                // this app and is not granted just because it came bundled in
+                // the same request type.
+                Some(m) if m.is_for_video_device() => {
+                    request.allow();
+                    true
+                }
+                _ => {
+                    request.deny();
+                    true
+                }
+            }
+        });
+    }) {
+        // Not fatal: the app works, scanning does not. Saying so beats a
+        // silent NotAllowedError the user has to guess at.
+        eprintln!("could not enable the camera in this webview: {e}");
+    }
+}
+
 /// Start the app.
 ///
 /// `mobile_entry_point` is what the generated Android project calls; on desktop
 /// the attribute expands to nothing and `main.rs` calls this directly.
+///
+/// Nothing may be inserted between the attribute below and `run()`. Put a new
+/// function above this comment, not under it. A function slipped in between
+/// silently takes the attribute with it, and because the attribute expands to
+/// nothing off-mobile, the desktop build and `cargo check` stay perfectly
+/// green — the only symptom is the Android APK failing to link with "does not
+/// include required runtime symbols", one build step and several minutes later.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -89,6 +148,16 @@ pub fn run() {
         .plugin(tauri_plugin_serialplugin::init());
 
     builder
+        .setup(|_app| {
+            #[cfg(target_os = "linux")]
+            {
+                use tauri::Manager;
+                if let Some(window) = _app.get_webview_window("main") {
+                    allow_camera(&window);
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             transports,
             serial::ports,

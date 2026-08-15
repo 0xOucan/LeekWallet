@@ -257,7 +257,32 @@ pub async fn rpc_call(
     let target = validate_url(&url)?;
     validate_request_body(&body)?;
     let timeout = clamp_timeout_ms(timeout_ms);
-    send(target, body, timeout).await
+
+    /* Run the request on its own task so a panic becomes an answer.
+     *
+     * A panicking Tauri command does not crash the app: the task unwinds and
+     * simply never replies, so the webview's `invoke` promise neither resolves
+     * nor rejects and the caller waits for ever. That is not hypothetical --
+     * `rustls-platform-verifier` panics on Android when uninitialised, and the
+     * whole failure presented as every RPC endpoint silently timing out, with
+     * no error anywhere to say why. Hours went into a bug that would have named
+     * itself here.
+     *
+     * Joining the task turns that into a string the frontend can show and fail
+     * over from, which is what every other error on this path already is. */
+    match tokio::spawn(send(target, body, timeout)).await {
+        Ok(result) => result,
+        Err(join) if join.is_panic() => {
+            let panic = join.into_panic();
+            let detail = panic
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "no message".to_string());
+            Err(format!("the RPC backend panicked: {detail}"))
+        }
+        Err(join) => Err(format!("the RPC task did not finish: {join}")),
+    }
 }
 
 #[cfg(not(feature = "rpc-proxy"))]
@@ -269,12 +294,66 @@ async fn send(_target: url::Url, _body: String, _timeout_ms: u64) -> Result<RpcR
     Err("proxy-unavailable: this build has no HTTP client (feature `rpc-proxy` is off)".into())
 }
 
+/// The TLS configuration every outbound request uses.
+///
+/// Built here, from bundled roots, instead of letting reqwest reach for
+/// `rustls-platform-verifier`. That crate panics on Android when it has not
+/// been given a JNI context, and a panic inside a Tauri command aborts the task
+/// without answering it — so the webview's `invoke` never settles and every RPC
+/// call hangs with nothing to report. See the note in Cargo.toml.
+///
+/// Built once and shared: assembling a root store per request is wasted work on
+/// a path a signing flow waits on.
+#[cfg(feature = "rpc-proxy")]
+fn tls_config() -> Result<rustls::ClientConfig, String> {
+    use std::sync::OnceLock;
+    static CONFIG: OnceLock<Result<rustls::ClientConfig, String>> = OnceLock::new();
+
+    CONFIG
+        .get_or_init(|| {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            if roots.is_empty() {
+                return Err("the bundled root certificate store is empty".to_string());
+            }
+
+            /* The provider is named rather than taken from the process-wide
+             * default, which is global mutable state that another crate may or
+             * may not have installed by the time this runs. */
+            let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+            rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .map_err(|e| format!("could not configure TLS: {e}"))
+                .map(|b| b.with_root_certificates(roots).with_no_client_auth())
+        })
+        .clone()
+}
+
+/// Flatten an error and everything that caused it into one line.
+///
+/// `reqwest::Error`'s Display is deliberately terse — "error sending request
+/// for url (...)" — and the actual reason lives in its `source()` chain. That
+/// terseness cost a debugging session: every RPC endpoint failed on Android
+/// with only that sentence to go on, which says nothing about whether the
+/// cause was DNS, a refused connection, or certificate verification. The chain
+/// is the diagnosis, so it travels with the message.
+fn cause_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(next) = source {
+        out.push_str(&format!(": {next}"));
+        source = next.source();
+    }
+    out
+}
+
 #[cfg(feature = "rpc-proxy")]
 async fn send(target: url::Url, body: String, timeout_ms: u64) -> Result<RpcReply, String> {
     use std::time::Duration;
 
     let start = target.clone();
     let client = reqwest::Client::builder()
+        .use_preconfigured_tls(tls_config()?)
         .timeout(Duration::from_millis(timeout_ms))
         // Redirects are decided here rather than by the default policy, which
         // would happily follow one to another host.
@@ -301,7 +380,7 @@ async fn send(target: url::Url, body: String, timeout_ms: u64) -> Result<RpcRepl
         .body(body)
         .send()
         .await
-        .map_err(|e| format!("request failed: {e}"))?;
+        .map_err(|e| format!("request failed: {}", cause_chain(&e)))?;
 
     // The origin *actually* reached: a same-host redirect can still change the
     // port, and what gets displayed must be where the request ended up.
@@ -326,7 +405,7 @@ async fn send(target: url::Url, body: String, timeout_ms: u64) -> Result<RpcRepl
     let text = response
         .text()
         .await
-        .map_err(|e| format!("could not read the response: {e}"))?;
+        .map_err(|e| format!("could not read the response: {}", cause_chain(&e)))?;
     validate_response_body(&text)?;
 
     Ok(RpcReply { status, body: text, origin })

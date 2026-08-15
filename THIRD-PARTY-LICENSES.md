@@ -12,6 +12,7 @@ govern those files. Nothing here is relicensed.
 | chacha20poly1305 | `components/trezor-crypto/chacha20poly1305/` | MIT | Yes |
 | QRCode | `src/qrcode.c`, `src/qrcode.h` | MIT | Yes |
 | ESP-IDF | build dependency, not vendored | Apache-2.0 | Yes |
+| jsQR | `app/` npm dependency, bundled into the app | Apache-2.0 | Yes |
 
 MIT is permissive and imposes only attribution, so MIT code may be distributed
 inside an Apache-2.0 project provided the copyright notices and license text
@@ -42,6 +43,22 @@ Glozer. Full text in that directory's `LICENSE`.
 `src/qrcode.c` / `src/qrcode.h` — QR generation for receive addresses.
 MIT, Copyright (c) 2017 Richard Moore. Upstream:
 https://github.com/ricmoo/QRCode
+
+## jsQR
+
+`jsqr` — QR *decoding* from camera frames in the companion app
+(`app/src/wc/qr.ts`). Distinct from the `QRCode` entry above, which generates
+codes on the device; this reads them on the host.
+
+License: Apache-2.0, Copyright (c) 2018 Cosmo Wolfe.
+Upstream: https://github.com/cozmo/jsQR
+
+Bundled rather than using the platform's `BarcodeDetector` because that API is
+absent from WebKitGTK (the Linux desktop webview) and, on Android, is
+implemented on top of Google Play Services — which crashed the app outright
+without the matching manifest meta-data, and would have meant linking Play
+Services into a hardware wallet to fix. Same licence as this project, pure JS,
+no WASM, no network access.
 
 ## Colibri — inspiration, not code
 

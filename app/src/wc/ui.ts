@@ -29,7 +29,7 @@ import {
   type JsonRpcErrorBody,
 } from "./errors.ts";
 import { planRequest, type PlannedTx, type RequestPlan } from "./requests.ts";
-import { qrScanningAvailable, scanQr, QR_UNAVAILABLE, type QrScan } from "./qr.ts";
+import { qrScanningAvailable, scanQr, qrUnavailable, type QrScan } from "./qr.ts";
 import {
   isValidProjectId, resolveProjectId, setStoredProjectId, storedProjectId,
 } from "./project-id.ts";
@@ -56,6 +56,11 @@ export interface WalletBridge {
   signMessage(address: string, message: string): Promise<string>;
   log(line: string): void;
 }
+
+/* The fallback named when this webview cannot scan. Specific to this panel:
+ * the generic message in qr.ts has to serve the send form too, where the
+ * workaround is typing an address rather than pasting a link. */
+const WC_PASTE_INSTEAD = "Copy the wc: link from the dapp and paste it above instead.";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -176,11 +181,16 @@ export function initWalletConnect(bridge: WalletBridge): {
 
   $("wcscan").addEventListener("click", () => {
     if (scan) { scan.stop(); scan = null; $("wcvideo").hidden = true; return; }
-    if (!qrScanningAvailable()) { bridge.log(QR_UNAVAILABLE); setStatus(QR_UNAVAILABLE); return; }
+    if (!qrScanningAvailable()) { const m = qrUnavailable(WC_PASTE_INSTEAD); bridge.log(m); setStatus(m); return; }
     const video = $("wcvideo") as HTMLVideoElement;
     video.hidden = false;
+    /* The `wc:` test that used to live inside the scanner. It stays exactly as
+     * strict as it was: a QR code in shot that happens to be a URL is ignored
+     * rather than handed to the pairing code, so a poster on the wall behind
+     * the laptop cannot interrupt the scan. */
     void scanQr(
       video,
+      (raw) => (raw.toLowerCase().startsWith("wc:") ? raw : undefined),
       (uri) => { scan = null; video.hidden = true; void pair(uri); },
       (message) => { scan = null; video.hidden = true; bridge.log(`camera: ${message}`); },
     )
@@ -437,7 +447,7 @@ export function initWalletConnect(bridge: WalletBridge): {
     `a third party that sees that a dapp and this wallet are talking, and when — ` +
     `never the contents, and never a key.`,
   );
-  if (!qrScanningAvailable()) $("wcscanhint").textContent = QR_UNAVAILABLE;
+  if (!qrScanningAvailable()) $("wcscanhint").textContent = qrUnavailable(WC_PASTE_INSTEAD);
 
   return {
     chainChanged(chainId: number): void {

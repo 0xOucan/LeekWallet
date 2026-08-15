@@ -19,7 +19,7 @@ tauri-build = { version = "2", features = [] }
 # it, so CC_/AR_ have to point at the real files. The android scripts in
 # package.json set them; with that done the target builds.
 default = ["rpc-proxy"]
-rpc-proxy = ["dep:reqwest"]
+rpc-proxy = ["dep:reqwest", "dep:rustls", "dep:webpki-roots"]
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -31,11 +31,36 @@ serde_json = "1"
 # directly and a dependency you rely on should be one you declared.
 url = "2"
 
-# The proxy's HTTP client. `rustls` rather than the system TLS because a wallet
-# should not be at the mercy of whatever a phone's certificate store has had
-# added to it, and default features are off to keep http2 (and its own C-ish
-# dependency tail) out of a client that only ever makes one POST at a time.
+# The proxy's HTTP client. Default features are off to keep http2 (and its own
+# C-ish dependency tail) out of a client that only ever makes one POST at a
+# time.
+#
+# This comment used to claim that picking `rustls` over native-tls kept the
+# wallet clear of "whatever a phone's certificate store has had added to it".
+# That was not true: reqwest's `rustls` feature verifies through
+# `rustls-platform-verifier`, which IS the OS store. The intent was right and
+# the mechanism was absent; the entry below is what actually delivers it.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset"], optional = true }
+
+# TLS trust anchors, bundled rather than taken from the OS.
+#
+# reqwest's `rustls` feature always routes verification through
+# `rustls-platform-verifier`, which on Android PANICS ("Expect
+# rustls-platform-verifier to be initialized") unless it is handed a JNI
+# context at startup. Inside a Tauri command that panic aborts the task
+# without sending a reply, so `invoke` never settles: every RPC on Android hung
+# with no error to show. Proven with a standalone binary on the device.
+#
+# Rather than wire up JNI to reach a trust store we did not want anyway, the
+# root store is built here from webpki-roots and handed to reqwest via
+# `use_preconfigured_tls`, so the platform verifier is never constructed on any
+# platform. This is also what the comment above always claimed: a wallet is not
+# at the mercy of whatever CA a phone has had added to it.
+#
+# The cost is real and worth stating: revocations and new roots arrive only
+# when this dependency is bumped and a release is cut.
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"], optional = true }
+webpki-roots = { version = "1", optional = true }
 
 # `#[tokio::test]` for the policy tests. Not a runtime dependency: the command
 # itself runs on the async runtime Tauri already provides.
@@ -53,7 +78,18 @@ tokio = { version = "1", features = ["macros", "rt"] }
 [target.'cfg(not(target_os = "android"))'.dependencies]
 leek-transport-serial = { path = "../transport-serial" }
 leek-transport-ble = { path = "../transport-ble" }
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "rt"] }
+
+# The Linux webview, reached directly to turn the camera on.
+#
+# WebKitGTK ships with `enable-media-stream` OFF and denies every permission
+# request it is not explicitly told to grant, so `getUserMedia` fails with
+# NotAllowedError and QR scanning is dead on Linux desktop. Neither is
+# reachable through Tauri's own API, so this drops to the underlying webview.
+# Version tracks the one Tauri already resolves (see Cargo.lock); a second,
+# different webkit2gtk in the tree would be two bindings to one library.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"
 
 # Android gets the same BLE transport crate with its other backend selected:
 # `blec` swaps btleplug for `tauri-plugin-blec`, which is a Tauri mobile plugin
@@ -66,7 +102,7 @@ tokio = { version = "1", features = ["sync"] }
 [target.'cfg(target_os = "android")'.dependencies]
 leek-transport-ble = { path = "../transport-ble", default-features = false, features = ["blec"] }
 tauri-plugin-blec = "0.12"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "rt"] }
 
 # The same trick again for USB. `tauri-plugin-serialplugin` is a Tauri mobile
 # plugin, so the Kotlin that drives the USB Host API — enumeration, the
@@ -79,6 +115,17 @@ tokio = { version = "1", features = ["sync"] }
 # with the default `serialport` feature still on, the crate refuses to build.
 leek-transport-serial = { path = "../transport-serial", default-features = false, features = ["android"] }
 tauri-plugin-serialplugin = "3.0.2"
+
+# Symbols out of the shipped library.
+#
+# Android stores .so entries in the APK uncompressed so they can be mmap'd, so
+# debug symbols are not merely large in the build tree — they are carried at
+# full size in the artifact. Unstripped, this library is 220 MB and the debug
+# APK is 381 MB; stripped, the same code is a fraction of that. Nothing is lost
+# for a release build, which is not the artifact anyone debugs a native crash
+# from; `cargo build` without --release is still unstripped and still symbolic.
+[profile.release]
+strip = true
 
 # Tauri builds Android as a shared library loaded by the JVM, not an executable
 # with a main(). Without this the linker produces something the APK cannot load.
