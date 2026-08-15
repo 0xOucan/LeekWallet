@@ -165,6 +165,40 @@ group("an address this app draws scans back as the same address");
   }
 }
 
+
+group("a real pairing link decodes, not just a short one");
+{
+  /* The gap that let a bug ship. The `wc` fixture above is 56 characters and
+   * 41 modules; a real WalletConnect v2 URI carries a 64-hex topic and a 64-hex
+   * symmetric key, which is 187 characters and 65 modules. Addresses are 37.
+   *
+   * Decoding is a function of PIXELS PER MODULE, so a code with two thirds
+   * again as many modules needs two thirds more resolution to read at the same
+   * framing. The scanner captured at whatever the webview offered -- 640x480 on
+   * Android -- and then threw it down to 640 anyway, which left a pairing link
+   * near the floor while an address had margin to spare. Addresses scanned,
+   * pairing links did not, and nothing here noticed because the only wc:
+   * fixture was a short one.
+   *
+   * So this asserts the density that actually ships, at the pixels per module
+   * the capture settings now provide. */
+  const wc = fixtures["wcRealistic"] as Fixture;
+  const modules = wc.matrix.length;
+  check(modules >= 60, `the realistic pairing fixture is only ${modules} modules; it is not exercising density`);
+
+  // 4 px/module is about where real optics stop being reliable. The capture is
+  // 1080-capable and the decoder is given up to 1080, so a code filling a
+  // quarter of the frame clears this comfortably.
+  for (const scale of [4, 6, 10]) {
+    check(decode(wc, scale) === wc.text,
+      `a 65-module pairing link did not decode at ${scale}px per module`);
+  }
+
+  // And it must still be refused as a payment recipient.
+  check(!parsePaymentUri(decode(wc) as string).ok,
+    "a pairing link was accepted as a payment address");
+}
+
 if (failures) {
   console.log(`${failures} failure(s)`);
   process.exit(1);

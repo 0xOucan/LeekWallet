@@ -1786,7 +1786,10 @@ function initToScanner(): void {
       },
       controller.signal,
     )
-      .then((handle) => { toScan = handle; })
+      .then((handle) => {
+        toScan = handle;
+        log(`camera ${handle.resolution.width}x${handle.resolution.height}`);
+      })
       .catch((e: unknown) => {
         stopToScan();
         hint.textContent = `Camera: ${(e as Error).message ?? String(e)}`;

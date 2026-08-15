@@ -74,6 +74,15 @@ export function qrUnavailable(fallback: string): string {
 export interface QrScan {
   /** Stops the camera and releases the device. Safe to call twice. */
   stop(): void;
+  /**
+   * What the camera actually gave, which is not always what was asked for.
+   *
+   * Reported because the difference is the whole ball game for a dense code: a
+   * 640x480 capture and a 1920x1080 one look identical on screen and decode
+   * very differently. When a scan fails, this is the first number worth
+   * knowing, and guessing at it cost a debugging round already.
+   */
+  resolution: { width: number; height: number };
 }
 
 /**
@@ -98,12 +107,20 @@ export function firstAccepted<T>(
 /**
  * Longest edge the decoder is given, in pixels.
  *
- * A tablet hands over 1080p or better, and jsQR's cost is proportional to the
- * pixel count — decoding full frames ten times a second is enough work to make
- * the UI stutter and the battery drain, for no gain: a QR code that fills a
- * useful part of the frame is still comfortably readable at this size.
+ * jsQR's cost is proportional to pixel count, so this is a trade between CPU
+ * and how small a code may appear in frame. It was 640, which threw away most
+ * of a 1080p capture and left a 65-module pairing link at roughly half the
+ * pixels per module it needed once real blur was involved.
+ *
+ * At 1080 the same framing gives about 8 px/module for a WalletConnect code
+ * instead of about 5, at roughly twice the decode cost per frame. The loop
+ * below paces itself rather than running on a fixed timer, so a slower device
+ * scans less often instead of falling behind.
  */
-const DECODE_MAX_EDGE = 640;
+const DECODE_MAX_EDGE = 1080;
+
+/** Shortest gap between decode attempts. See the loop below for why. */
+const SCAN_INTERVAL_MS = 100;
 
 /**
  * Scan until `accept` recognises a code, then stop.
@@ -134,9 +151,25 @@ export async function scanQr<T>(
   if (!qrScanningAvailable()) throw new Error(QR_UNAVAILABLE);
   if (signal?.aborted) throw new Error("Scan cancelled before the camera started.");
 
+  /* Resolution is asked for, not left to the default.
+   *
+   * A WalletConnect pairing URI is ~190 characters and its QR is 65 modules a
+   * side; an Ethereum address is 37. At the default capture size -- 640x480 on
+   * many Android webviews -- a 65-module code held at a comfortable distance
+   * lands near two pixels per module, which real optics and a little motion
+   * blur push under the floor. The address code, being far coarser, decoded
+   * fine at the same framing, which is exactly the symptom: addresses scanned,
+   * pairing links did not.
+   *
+   * `ideal` rather than `exact`: a camera that cannot do 1080p gets to offer
+   * whatever it has instead of the request failing outright. */
   const stream = await navigator.mediaDevices.getUserMedia({
-    // The rear camera on a phone; ignored on a laptop with one camera.
-    video: { facingMode: "environment" },
+    video: {
+      // The rear camera on a phone; ignored on a laptop with one camera.
+      facingMode: "environment",
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+    },
     audio: false,
   });
 
@@ -149,15 +182,22 @@ export async function scanQr<T>(
   };
 
   let stopped = false;
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
 
   const stop = (): void => {
     if (stopped) return;
     stopped = true;
-    if (timer) clearInterval(timer);
+    if (timer) clearTimeout(timer);
     release();
     video.srcObject = null;
     signal?.removeEventListener("abort", stop);
+  };
+
+  const track = stream.getVideoTracks()[0];
+  const settings = track?.getSettings?.() ?? {};
+  const resolution = {
+    width: Number(settings.width ?? 0),
+    height: Number(settings.height ?? 0),
   };
 
   // The dismissal may already have happened while the prompt was up.
@@ -183,12 +223,17 @@ export async function scanQr<T>(
   }
 
   // `stop()` during the awaited play() leaves nothing to poll.
-  if (stopped) return { stop };
+  if (stopped) return { stop, resolution };
 
-  /* Ten frames a second. Faster burns battery on a phone for no gain: a person
-   * holding a phone at a screen takes well over a tenth of a second to line the
-   * code up. */
-  timer = setInterval(() => {
+  /* Self-pacing rather than a fixed interval.
+   *
+   * A decode is synchronous and now costs more than it did, so a timer that
+   * fires every 100 ms regardless would queue attempts behind each other on a
+   * slow device and lock the UI. Scheduling the next attempt only after the
+   * previous one returns means a slower phone simply scans less often. The
+   * floor stays at 100 ms: a person lining a code up takes far longer than
+   * that, so faster buys nothing and costs battery. */
+  const tick = (): void => {
     if (stopped) return;
     try {
       const w = video.videoWidth;
@@ -219,8 +264,11 @@ export async function scanQr<T>(
       if (stopped) return;
       stop();
       onError((e as Error).message ?? String(e));
+      return;
     }
-  }, 100);
+    if (!stopped) timer = setTimeout(tick, SCAN_INTERVAL_MS);
+  };
+  timer = setTimeout(tick, SCAN_INTERVAL_MS);
 
-  return { stop };
+  return { stop, resolution };
 }
