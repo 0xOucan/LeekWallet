@@ -274,14 +274,27 @@
           <h2>Dapps (WalletConnect)</h2>
           <p id="wcstatus" class="muted"></p>
 
+          <!-- This field is the OVERRIDE, never the value in use. It reads
+               empty on a normal install because the bundled ID is doing the
+               work, and an empty box under a heading called "Project ID" reads
+               as "there is no project ID" — which is what it was mistaken for.
+               The placeholder now says which of the two it is; the hint above
+               says which one is actually in effect. -->
           <details>
             <summary>Project ID</summary>
             <p class="muted" id="wcprojecthint"></p>
             <div class="row">
               <input id="wcprojectid" class="addr" spellcheck="false"
-                     autocomplete="off" placeholder="32 hex characters" />
+                     autocomplete="off"
+                     placeholder="Optional — your own 32-hex ID" />
               <button id="wcprojectsave">Save</button>
             </div>
+            <p class="muted">
+              Leave this empty to use the ID bundled with this build. Set your
+              own from cloud.reown.com if you would rather not share relay quota
+              with other users of this app — clearing it again falls back to the
+              bundled one.
+            </p>
           </details>
 
           <label class="field">
