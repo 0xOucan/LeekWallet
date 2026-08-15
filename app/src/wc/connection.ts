@@ -115,6 +115,12 @@ function namespaceChains(key: string, ns: { chains?: string[] }): string[] {
   return key.includes(":") ? [key] : [];
 }
 
+/** The slice of the SDK's relayer this app watches; it is not in the public types. */
+interface RelayerEvents {
+  on(event: string, listener: (arg: unknown) => void): unknown;
+  connected?: boolean;
+}
+
 export class WalletConnectConnection {
   private client: SignClientInstance | null = null;
   private readonly handlers: WcHandlers;
@@ -166,7 +172,29 @@ export class WalletConnectConnection {
   }
 
   private wire(client: SignClientInstance): void {
+    /* The relay socket is the one thing in this app that reaches the network
+     * from inside the webview -- every other call is proxied through Rust. That
+     * makes it the only path whose health says nothing about the others', and
+     * on Android it had never been observed at all: a pairing that subscribes
+     * and hears nothing looks identical whether the socket is up or was never
+     * opened, because `pair()` queues subscriptions and resolves either way.
+     *
+     * These four lines are the difference between "it does not work" and
+     * knowing which half is broken. They carry no payload -- only the fact that
+     * a transition happened -- so they are safe to leave on in a release. */
+    const relayer = (client.core as { relayer?: RelayerEvents }).relayer;
+    if (relayer && typeof relayer.on === "function") {
+      relayer.on("relayer_connect", () => this.handlers.log("relay: connected"));
+      relayer.on("relayer_disconnect", () => this.handlers.log("relay: disconnected"));
+      relayer.on("relayer_error", (e: unknown) =>
+        this.handlers.log(`relay: error — ${(e as Error)?.message ?? String(e)}`),
+      );
+    } else {
+      this.handlers.log("relay: this SDK exposes no relayer events to watch");
+    }
+
     client.on("session_proposal", (event) => {
+      this.clearProposalWatchdog();
       try {
         this.handleProposal(event);
       } catch (e) {
@@ -263,6 +291,32 @@ export class WalletConnectConnection {
     });
   }
 
+  /**
+   * How long a pairing may sit with no proposal before the app says so.
+   *
+   * A pairing that subscribes successfully and then hears nothing is the one
+   * failure this app cannot detect from the inside: a `wc:` code is single-use,
+   * so if another wallet already paired with the same QR, the dapp has sent its
+   * one proposal and settled, and our subscribe is listening to a finished
+   * conversation. The relay reports no error for that -- there is nothing
+   * wrong with the subscription. Silence is the only symptom.
+   *
+   * Twenty seconds is well past a healthy dapp, which proposes within about a
+   * second of the pairing appearing, and short enough that the user has not yet
+   * concluded the app is broken. It is a message, never a teardown: a slow dapp
+   * that answers at second thirty still connects normally.
+   */
+  private static readonly PROPOSAL_TIMEOUT_MS = 20_000;
+
+  private proposalWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+  /** Stop waiting out loud. Safe to call when no wait is in flight. */
+  private clearProposalWatchdog(): void {
+    if (this.proposalWatchdog === null) return;
+    clearTimeout(this.proposalWatchdog);
+    this.proposalWatchdog = null;
+  }
+
   /** Feed a pasted or scanned URI to the relay. Rejects with a user-readable reason. */
   async pair(rawUri: string): Promise<void> {
     if (!this.client) throw new Error("WalletConnect is not connected to the relay yet.");
@@ -274,6 +328,23 @@ export class WalletConnectConnection {
     // The redacted form only: the symKey decrypts the session proposal.
     this.handlers.log(`pairing with ${redactWcUri(parsed.uri)}`);
     await this.client.pair({ uri: rawUri.trim() });
+
+    const relayer = (this.client.core as { relayer?: { connected?: boolean } }).relayer;
+    this.handlers.log(
+      `relay socket at pairing: ${relayer?.connected === true ? "connected" : "NOT connected"}`,
+    );
+
+    /* Only one wait is ever outstanding: pairing again replaces the previous
+     * one, so a second attempt cannot fire a stale warning about the first. */
+    this.clearProposalWatchdog();
+    this.proposalWatchdog = setTimeout(() => {
+      this.proposalWatchdog = null;
+      this.handlers.log(
+        "walletconnect: paired, but the dapp has not sent a connection request. " +
+          "A QR code works only once — if another wallet already scanned this one, " +
+          "or the dapp page was reloaded, press its Connect button for a fresh code.",
+      );
+    }, WalletConnectConnection.PROPOSAL_TIMEOUT_MS);
   }
 
   async approveProposal(id: number): Promise<void> {
