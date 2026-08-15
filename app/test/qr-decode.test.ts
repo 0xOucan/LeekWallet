@@ -212,6 +212,50 @@ group("a real pairing link decodes, not just a short one");
     "a pairing link was accepted as a payment address");
 }
 
+
+group("a code that is not dead centre is still read");
+{
+  /* The bug this exists for: the decoder was handed a centre square crop of a
+   * portrait frame, which keeps only the middle 56% of the height. A code that
+   * filled the frame and sat slightly high lost its top edge -- both upper
+   * finder patterns -- and fifty sharp frames in a row decoded nothing while
+   * the preview looked perfect.
+   *
+   * So: render a code into a portrait frame, offset from centre the way a hand
+   * -held camera actually frames one, and require it to decode. */
+  const wc = fixtures["wcRealistic"] as Fixture;
+  const FW = 540, FH = 960;              // a portrait frame, scaled down for speed
+  const n = wc.matrix.length;
+
+  const place = async (topFrac: number): Promise<string | undefined> => {
+    const side = Math.floor(FW * 0.85);
+    const scale = side / n;
+    const ox = Math.floor((FW - side) / 2);
+    const oy = Math.floor(FH * topFrac);
+    const data = new Uint8ClampedArray(FW * FH * 4).fill(255);
+    for (let y = 0; y < FH; y++) {
+      for (let x = 0; x < FW; x++) {
+        const mx = Math.floor((x - ox) / scale);
+        const my = Math.floor((y - oy) / scale);
+        const dark = mx >= 0 && my >= 0 && mx < n && my < n && wc.matrix[my]?.[mx] === 1;
+        const i = (y * FW + x) * 4;
+        const v = dark ? 0 : 255;
+        data[i] = v; data[i+1] = v; data[i+2] = v; data[i+3] = 255;
+      }
+    }
+    const found = await readBarcodes(
+      { data, width: FW, height: FH, colorSpace: "srgb" } as ImageData,
+      { formats: ["QRCode"], tryHarder: true },
+    );
+    return found[0]?.text;
+  };
+
+  // 0.14 is where the real one sat when this broke; 0.5 is the bottom half.
+  for (const top of [0.05, 0.14, 0.3, 0.5]) {
+    check(await place(top) === wc.text,
+      `a code starting ${Math.round(top*100)}% down the frame did not decode`);
+  }
+}
 }
 
 await main();

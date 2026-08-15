@@ -80,7 +80,7 @@ export interface QrScan {
 }
 
 /**
- * Longest edge of the square the decoder is given, in pixels.
+ * Longest edge the decoder is given, in pixels.
  *
  * jsQR's cost is proportional to pixel count, so this is a trade between CPU
  * and how small a code may appear in frame. It was 640, which threw away most
@@ -92,7 +92,7 @@ export interface QrScan {
  * below paces itself rather than running on a fixed timer, so a slower device
  * scans less often instead of falling behind.
  */
-const DECODE_MAX_EDGE = 1080;
+const DECODE_MAX_EDGE = 1920;
 
 /** Shortest gap between decode attempts. See the loop below for why. */
 const SCAN_INTERVAL_MS = 100;
@@ -256,30 +256,30 @@ export async function scanQr<T>(
     // Frames arrive before the intrinsic size does; not an error, just not yet.
     if (w === 0 || h === 0) return undefined;
 
-    /* A centre square at native resolution, not the whole frame scaled down.
+    /* The WHOLE frame, at native resolution. Not a crop, not a downscale.
      *
-     * Scaling the LONGEST edge to the cap is wrong for a portrait frame, which
-     * is what a tablet held upright gives: 1080x1920 became 607x1080, throwing
-     * away 44% of the width -- and the width is what decides how many pixels a
-     * centred code gets. Measured on a real pairing QR filling about half the
-     * preview, that was the difference between roughly four pixels per module
-     * and roughly eight.
+     * Both previous attempts were wrong in opposite directions. Scaling the
+     * longest edge to a cap threw away 44% of the width on a portrait frame,
+     * which is the dimension a centred code needs. Cropping to a centre square
+     * fixed that and introduced something worse: it keeps only the middle 56%
+     * of the height, so a code that filled the frame and sat slightly high had
+     * its top sliced off -- including both upper finder patterns, which is
+     * exactly what a decoder locates a code by. Measured on the device: the
+     * code spanned y 0.145-0.658 of the frame, the crop kept 0.219-0.781, and
+     * fifty sharp frames in a row decoded nothing.
      *
-     * The square keeps the full short edge, which in portrait is the whole
-     * width, so nothing a user would aim at is lost: the crop only removes
-     * top and bottom, where a code being aimed at the centre is not. */
-    const side = Math.min(w, h);
-    const target = Math.min(side, DECODE_MAX_EDGE);
-    const sx = Math.floor((w - side) / 2);
-    const sy = Math.floor((h - side) / 2);
-    if (canvas.width !== target || canvas.height !== target) {
-      canvas.width = target;
-      canvas.height = target;
+     * A 1080x1920 frame is about 2 megapixels and costs roughly 25 ms to
+     * decode, which the self-pacing loop absorbs by scanning a little less
+     * often. The cap only engages on cameras larger than this. */
+    const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(w, h));
+    const dw = Math.max(1, Math.round(w * scale));
+    const dh = Math.max(1, Math.round(h * scale));
+    if (canvas.width !== dw || canvas.height !== dh) {
+      canvas.width = dw;
+      canvas.height = dh;
     }
-    ctx.drawImage(video, sx, sy, side, side, 0, 0, target, target);
-    const frame = ctx.getImageData(0, 0, target, target);
-    const dw = target;
-    const dh = target;
+    ctx.drawImage(video, 0, 0, dw, dh);
+    const frame = ctx.getImageData(0, 0, dw, dh);
 
     /* Both inversion attempts: a QR printed light-on-dark is still a QR, and
      * this is the difference between "it just works" and a user holding a
