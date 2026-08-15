@@ -52,6 +52,8 @@ import {
 import {
   checksumAddress, interpretTransaction, type TxInterpretation,
 } from "../packages/core/src/tx-interpret.ts";
+import { evaluateRules, type Finding, type RuleContext } from "../packages/core/src/rules.ts";
+import { simulateTransaction, SIMULATION_NOTICE } from "../packages/core/src/simulate.ts";
 import { chunk, renderInterpretation } from "./interpretation-view.ts";
 import { initWalletConnect, type WalletBridge } from "./wc/ui.ts";
 import { resolveProjectId } from "./wc/project-id.ts";
@@ -2196,6 +2198,70 @@ function plannedSend(): Planned {
 /* ---------------------------------------------------------------- preview */
 
 /**
+ * Addresses this wallet has paid before — the basis of the poisoning rule.
+ *
+ * Local, and only ever written from a send this user actually completed. It is
+ * deliberately not a reputation feed: asking a service whether an address is
+ * known would hand that service every address the user touches, which
+ * docs/ANTI-SCAM.md rules out on privacy grounds, and would make a warning
+ * depend on somebody else's uptime.
+ *
+ * Untrusted on the way back in, like every other value that survives in
+ * storage: anything that can write to this origin can write here, and a
+ * poisoned history could only ever produce a false *warning*, never suppress a
+ * real one, because the rule fires on near-misses and stays quiet on matches.
+ * Entries that are not addresses are dropped rather than compared.
+ */
+const RECIPIENTS_KEY = "leekwallet.recipients.v1";
+const MAX_REMEMBERED_RECIPIENTS = 64;
+
+function knownRecipients(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(RECIPIENTS_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((a): a is string => typeof a === "string" && /^0x[0-9a-fA-F]{40}$/.test(a));
+  } catch {
+    return [];
+  }
+}
+
+function rememberRecipient(address: string): void {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return;
+  try {
+    const seen = knownRecipients().filter((a) => a.toLowerCase() !== address.toLowerCase());
+    seen.unshift(address);
+    localStorage.setItem(RECIPIENTS_KEY, JSON.stringify(seen.slice(0, MAX_REMEMBERED_RECIPIENTS)));
+  } catch {
+    /* A history that cannot be saved costs one missed lookalike warning. */
+  }
+}
+
+/**
+ * Everything the pure rules are allowed to look at, gathered in one place.
+ *
+ * The clock is read here rather than inside the rules so that they stay pure
+ * and testable without freezing time — see the header of rules.ts. The token
+ * list is the advisory one (`verified: false` by construction), which is
+ * enough to raise a warning about a recipient and not enough to suppress one.
+ *
+ * This wallet's own addresses go in beside the paid ones, because sending to a
+ * lookalike of your OWN other account is the same mistake with the same cost.
+ */
+function ruleContext(
+  tx: { to?: string; value?: bigint; data?: string },
+  typed?: RuleContext["typed"],
+): RuleContext {
+  return {
+    chainId,
+    tx,
+    ...(typed !== undefined ? { typed } : {}),
+    nowSeconds: Math.floor(Date.now() / 1000),
+    knownAddresses: [...knownRecipients(), ...addresses],
+    knownTokens: tokenIndex.forChain(chainId).map((t) => t.address),
+  };
+}
+
+/**
  * Draw the advisory interpretation of whatever is currently in the form.
  *
  * It updates as the user types rather than appearing at the moment they press
@@ -2243,8 +2309,65 @@ function renderPreview(fee?: { gas: bigint; maxFeePerGas: bigint }): void {
     },
     view,
     activeChain().nativeCurrency.symbol,
+    /* Layer A findings, drawn into the same warnings list as the
+     * interpreter's own: both are host-side advisory judgements of identical
+     * standing, and nothing about either is a safety result. Passed even when
+     * empty, because the renderer's closing line has to appear either way —
+     * "these rules had no opinion" is the honest reading of an empty list and
+     * the UI must not let it read as an all-clear. */
+    evaluateRules(ruleContext({
+      to: plan.to,
+      value: plan.value,
+      ...(plan.data !== undefined ? { data: plan.data } : {}),
+    })),
   );
   panel.hidden = false;
+}
+
+/**
+ * Ask the RPC what this transaction would actually do, and say so — including
+ * when the answer is that nobody could tell us.
+ *
+ * Only at signing time, never on every keystroke: a simulation is a request to
+ * an operator carrying the whole transaction, and firing one per character
+ * typed would disclose a dozen half-formed drafts to buy nothing.
+ *
+ * Nothing here blocks or gates. A simulation that fails, times out, or lands
+ * on an endpoint without `eth_simulateV1` is reported as an absence in the
+ * log and the signing run continues — refusing to sign on a missing preview
+ * would teach the user that this app decides what is safe, and it does not.
+ */
+async function logSimulation(
+  info: ChainInfo,
+  call: { from: string; to?: string; value?: bigint; data?: string },
+): Promise<void> {
+  const outcome = await simulateTransaction(
+    (urls) => new FailoverRpc({ chainId: info.id, rpcUrls: urls, send: rpcSend }),
+    { rpcUrls: info.rpcUrls, call },
+  );
+
+  if (outcome.kind === "unavailable") {
+    // A stated absence, in the log, in words. Never a spinner that stops.
+    log(`simulation unavailable: ${outcome.why}`);
+    return;
+  }
+  if (outcome.kind === "reverted") {
+    log(`simulation: this transaction would fail on chain — ${outcome.why}`);
+    return;
+  }
+  for (const t of outcome.leaving) {
+    log(`simulation: LEAVES ${t.amount} raw units${t.token ? ` of ${t.token}` : " (native)"} → ${t.to}`);
+  }
+  for (const t of outcome.arriving) {
+    log(`simulation: arrives ${t.amount} raw units${t.token ? ` of ${t.token}` : " (native)"} ← ${t.from}`);
+  }
+  if (outcome.transfers.length === 0) {
+    /* Said explicitly rather than left as silence: an empty transfer list is
+     * a result ("the node saw no value move") and not the same thing as no
+     * simulation, and neither of them means the transaction is harmless. */
+    log("simulation: the node saw no value move. That is not a safety result.");
+  }
+  log(SIMULATION_NOTICE);
 }
 
 /**
@@ -2329,6 +2452,25 @@ async function sign(): Promise<void> {
     }).warnings) {
       log(`warning: ${w.message}`);
     }
+    /* The rule findings alongside them, in the same log, at the same weight.
+     * A finding that only ever appeared in a panel the user has scrolled past
+     * is a finding that was not shown. */
+    for (const f of evaluateRules(ruleContext({
+      to: toValue, value, ...(data !== undefined ? { data } : {}),
+    }))) {
+      log(`finding (${f.severity}): ${f.message}${f.subject ? ` — ${f.subject}` : ""}`);
+    }
+
+    /* Awaited rather than fired off: the point of a preview is that it is read
+     * before the device is touched, and a result that lands after the user has
+     * already pressed approve is decoration. It cannot hang — simulate.ts has
+     * its own deadline and every path out of it settles. */
+    await logSimulation(chain, {
+      from,
+      to: toValue,
+      value,
+      ...(data !== undefined ? { data } : {}),
+    });
 
     deviceAttention("check every page on the device, then approve");
 
@@ -2383,6 +2525,14 @@ async function sign(): Promise<void> {
     const hash = await rpc.sendRawTransaction({ serializedTransaction: raw });
 
     log(`sent: ${hash}`);
+    /* Only once it is actually on the wire, and only the address the user was
+     * paying: the poisoning rule compares against addresses this person really
+     * transacted with, so remembering an abandoned draft would seed the
+     * history with an address they never chose. For a token send that is the
+     * recipient inside the calldata, not the token contract. */
+    rememberRecipient(interpretTransaction({
+      chainId: chain.id, to: toValue, value, ...(data !== undefined ? { data } : {}),
+    }).recipient ?? toValue);
     $("txresult").innerHTML =
       `Sent. <a href="${chain.explorerUrl}/tx/${hash}" target="_blank" rel="noreferrer">View on explorer</a>`;
 
@@ -2611,6 +2761,13 @@ const walletBridge: WalletBridge = {
   log,
   announce,
   deviceAttention,
+  /* The same local facts the send form's own preview is judged against, so a
+   * dapp request and a hand-typed send cannot disagree about whether a
+   * recipient is a lookalike. Nothing here is fetched, and nothing leaves. */
+  ruleFacts: () => ({
+    knownAddresses: [...knownRecipients(), ...addresses],
+    knownTokens: tokenIndex.forChain(chainId).map((t) => t.address),
+  }),
 };
 
 const walletConnect = initWalletConnect(walletBridge);

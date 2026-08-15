@@ -614,3 +614,29 @@ main {
   max-width: 100%;
   height: auto;
 }
+
+/* --------------------------------------------- rule-engine findings (Layer A)
+
+   Findings share the warnings list rather than getting a box of their own:
+   they are host-side advisory judgements of exactly the same standing as the
+   interpreter's own warnings, and a prettier box would be this app rating its
+   own opinions. Nothing here has a "pass" state to style, because there is no
+   such value to render - see rules.ts.
+
+   The closing note is dimmed and borderless so it reads as a caveat rather
+   than as one more finding. It is drawn even when the list above it is empty,
+   because "no findings" is a statement about these rules and not about the
+   transaction. */
+.preview__warnings li[data-severity="medium"] { border-left-color: var(--warn); }
+.preview__warnings li[data-severity="note"] {
+  border-left-color: transparent;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.finding__subject {
+  display: inline-block;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}

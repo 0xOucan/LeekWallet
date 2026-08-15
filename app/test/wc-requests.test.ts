@@ -158,7 +158,10 @@ group("typed data: v4 is planned, the older spellings are refused by name");
   check(!SUPPORTED_METHODS.includes("eth_signTypedData_v3"), "v3 is advertised but refused");
 
   const permit = planRequest("eth_signTypedData_v4", [A, JSON.stringify(PERMIT_JSON)], ctx);
-  check(permit.kind === "typed-data", `a Permit was not planned: ${JSON.stringify(permit)}`);
+  /* `kind` rather than the whole plan: a typed-data plan now carries the
+   * device's own render, whose chainId is a bigint, and JSON.stringify throws
+   * on one — eagerly, in the template, even when the check passes. */
+  check(permit.kind === "typed-data", `a Permit was not planned: ${permit.kind}`);
   if (permit.kind === "typed-data") {
     check(/UNLIMITED value/.test(permit.summary),
           `the preview does not name the infinite allowance: ${permit.summary}`);

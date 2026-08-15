@@ -31,7 +31,7 @@ import {
   checksumAddress, interpretTransaction, type TxInterpretation,
 } from "../../packages/core/src/tx-interpret.ts";
 import {
-  describeTypedData, inspectTypedData, toDeviceTypedData,
+  describeTypedData, inspectTypedData, toDeviceTypedData, type TypedRender,
 } from "../../packages/core/src/eip712.ts";
 import type { CborValue } from "../../packages/core/src/cbor.ts";
 import {
@@ -95,6 +95,17 @@ export type RequestPlan =
       request: Record<string, unknown>;
       /** What the device's own screens will say, for the pending-request card. */
       summary: string;
+      /**
+       * The same structure the device's mirror produced, for the host-side
+       * rules (rules.ts) to read — domain chainId, deadlines, the Permit2
+       * spender.
+       *
+       * Reused rather than re-derived from the dapp's JSON: a second reading
+       * would be a second chance to disagree with the one the device is about
+       * to perform, and a rule that fired on a field the device never saw
+       * would be describing a different document.
+       */
+      render: TypedRender;
       /** The dapp's document, verbatim, for the card's detail view. */
       document: Record<string, unknown>;
     }
@@ -410,6 +421,7 @@ function planTypedData(args: unknown[], ctx: WalletContext): RequestPlan {
     address: from,
     request: request as Record<string, unknown>,
     summary,
+    render: verdict.render,
     document: document as Record<string, unknown>,
   };
 }

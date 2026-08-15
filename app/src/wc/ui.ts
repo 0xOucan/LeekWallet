@@ -22,7 +22,9 @@
 import { DeviceError, ErrorCode } from "../../packages/core/src/transport.ts";
 import { getChain } from "../../packages/core/src/chains.ts";
 import { chainText, resolveChainForDapp } from "./chain-view.ts";
-import { renderInterpretation } from "../interpretation-view.ts";
+import { drawFindings, renderInterpretation } from "../interpretation-view.ts";
+import { evaluateRules, type Finding } from "../../packages/core/src/rules.ts";
+import type { TypedRender } from "../../packages/core/src/eip712.ts";
 import { WalletConnectConnection, RELAY_URL, type WcProposal, type WcRequest, type WcSession } from "./connection.ts";
 import {
   internalError, USER_REJECTED, DEVICE_TIMEOUT, deviceCannotDisplay,
@@ -73,6 +75,18 @@ export interface WalletBridge {
    */
   signTypedData(address: string, request: Record<string, unknown>): Promise<string>;
   log(line: string): void;
+  /**
+   * The local facts the Layer A rules compare against (rules.ts).
+   *
+   * Supplied by the app rather than gathered here, for two reasons. The
+   * addresses come from this user's own history and the token addresses from
+   * the advisory token list, and both already live in main.ts — a second copy
+   * would mean a dapp request and the app's own send form could disagree about
+   * whether a recipient is a lookalike. And it keeps this file with no reach
+   * into storage: everything a dapp can cause is still answerable by reading
+   * the bridge.
+   */
+  ruleFacts(): { knownAddresses: readonly string[]; knownTokens: readonly string[] };
 }
 
 /* The fallback named when this webview cannot scan. Specific to this panel:
@@ -370,6 +384,27 @@ export function initWalletConnect(bridge: WalletBridge): {
     drawRequest();
   }
 
+  /**
+   * The rules' verdict on one pending request.
+   *
+   * The clock and the local history come from outside the rules so that they
+   * stay pure (rules.ts header); this is the one place in the WalletConnect
+   * path that supplies them, so a dapp request and the app's own send form are
+   * judged against exactly the same facts.
+   */
+  function findingsFor(
+    subject: { tx?: { to: string; value: bigint; data: string }; typed?: TypedRender },
+  ): Finding[] {
+    const facts = bridge.ruleFacts();
+    return evaluateRules({
+      chainId: bridge.chainId(),
+      ...subject,
+      nowSeconds: Math.floor(Date.now() / 1000),
+      knownAddresses: facts.knownAddresses,
+      knownTokens: facts.knownTokens,
+    });
+  }
+
   function drawRequest(): void {
     const card = $("wcrequest");
     const head = queue[0];
@@ -397,6 +432,7 @@ export function initWalletConnect(bridge: WalletBridge): {
         },
         head.plan.interpretation,
         symbol,
+        findingsFor({ tx: { to: head.plan.tx.to, value: head.plan.tx.value, data: head.plan.tx.data } }),
       );
       preview.hidden = false;
       body.textContent = head.plan.broadcast
@@ -423,6 +459,17 @@ export function initWalletConnect(bridge: WalletBridge): {
         `The device will show: ${head.plan.summary}`,
         pre,
       );
+      /* The Layer A findings go here and nowhere else on this card: this is
+       * where a phished Permit actually arrives, and it is the one request
+       * shape where the device genuinely cannot make one of the checks for
+       * itself — it has no reference chain to compare the domain's chainId
+       * against (rules.ts). Still advisory, still drawn in the same list style
+       * as a transaction's, and the closing line drawn with them says an empty
+       * list is not an all-clear. */
+      const list = document.createElement("ul");
+      list.className = "preview__warnings";
+      drawFindings(list, findingsFor({ typed: head.plan.render }));
+      body.append(list);
     } else if (head.plan.kind === "switch-chain") {
       const chain = resolveChainForDapp(head.plan.chainId);
       body.textContent =

@@ -15,6 +15,7 @@
 
 import { TOKEN_HINT_NOTICE, formatUnits, tokenHint } from "../packages/core/src/chains.ts";
 import { DESCRIPTOR_NOTICE, type DescriptorMatch } from "../packages/core/src/erc7730.ts";
+import { RULES_NOTICE, type Finding } from "../packages/core/src/rules.ts";
 import { ADVISORY_NOTICE, type TxInterpretation } from "../packages/core/src/tx-interpret.ts";
 
 /** The four slots a preview card needs. Ids differ between the two cards. */
@@ -41,6 +42,7 @@ export function renderInterpretation(
   targets: PreviewTargets,
   view: TxInterpretation,
   symbol: string,
+  findings?: readonly Finding[],
 ): void {
   targets.summary.textContent = view.summary;
 
@@ -96,8 +98,58 @@ export function renderInterpretation(
     li.textContent = w.message;
     list.appendChild(li);
   }
+  if (findings !== undefined) drawFindings(list, findings);
 
   targets.authority.textContent = ADVISORY_NOTICE;
+}
+
+/**
+ * Draw the rule engine's findings into a warnings list.
+ *
+ * Same list as `interpretTransaction`'s own warnings, on purpose: both are
+ * host-side advisory judgements of exactly the same standing, and giving the
+ * newer ones their own prettier box would be this app rating its own opinions.
+ *
+ * Two things this must never do, both of them from docs/ANTI-SCAM.md:
+ *
+ *   - Show anything green, ticked, or worded as a pass. The closing line drawn
+ *     below says "had no opinion" when the list is empty, because "no findings"
+ *     is a statement about this app's rules and not about the transaction, and
+ *     a green tick that means "our scanner had no opinion" is worse than no
+ *     tick at all.
+ *   - Let the absence of that line be possible. `RULES_NOTICE` is appended
+ *     whether or not there is anything above it, so a caller cannot draw the
+ *     findings and quietly drop the caveat.
+ *
+ * Exported separately because the WalletConnect typed-data card has no
+ * interpretation to render around it — a Permit is not a transaction — and it
+ * needs the same rows, in the same shape, with the same closing line.
+ */
+export function drawFindings(list: HTMLElement, findings: readonly Finding[]): void {
+  for (const f of findings) {
+    const li = document.createElement("li");
+    li.dataset["severity"] = f.severity;
+    li.dataset["source"] = "rules";
+    li.textContent = f.message;
+    /* The subject on its own line, grouped in fours. For the Permit2 spender
+     * this IS the finding — the sentence explains why the address matters, and
+     * the address is the thing the user has to actually look at, so it gets
+     * the same treatment a transfer recipient gets in the field list above. */
+    if (f.subject !== undefined) {
+      const code = document.createElement("code");
+      code.className = "finding__subject";
+      code.textContent = chunk(f.subject);
+      li.append(document.createElement("br"), code);
+    }
+    list.appendChild(li);
+  }
+
+  const note = document.createElement("li");
+  note.dataset["severity"] = "note";
+  note.textContent = findings.length === 0
+    ? `This app's rules had no opinion on this. ${RULES_NOTICE}`
+    : RULES_NOTICE;
+  list.appendChild(note);
 }
 
 /**
