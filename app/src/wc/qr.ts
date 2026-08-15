@@ -123,6 +123,38 @@ const DECODE_MAX_EDGE = 1080;
 const SCAN_INTERVAL_MS = 100;
 
 /**
+ * One pass of the scan loop: what should happen next.
+ *
+ * Extracted because the control flow here has already been wrong once, in a way
+ * nothing could see. The loop used to run on setInterval, where returning early
+ * from a frame that did not decode simply skipped that tick. When it became
+ * self-pacing -- each pass scheduling the next -- those same early returns
+ * stopped rescheduling, so the scan died on the first frame without a code,
+ * which is essentially every first frame. The camera opened, one frame was
+ * examined, and nothing ever happened again.
+ *
+ * So the decision lives in one function with one caller, and "no code in this
+ * frame" is a first-class outcome rather than a return statement in the middle
+ * of a try block.
+ */
+export function scanStep<T>(
+  attempt: () => T | undefined,
+  onResult: (value: T) => void,
+  onError: (message: string) => void,
+): "continue" | "done" {
+  let hit: T | undefined;
+  try {
+    hit = attempt();
+  } catch (e) {
+    onError((e as Error).message ?? String(e));
+    return "done";
+  }
+  if (hit === undefined) return "continue";
+  onResult(hit);
+  return "done";
+}
+
+/**
  * Scan until `accept` recognises a code, then stop.
  *
  * Only values `accept` returns something for resolve the scan — a QR code in
@@ -233,40 +265,45 @@ export async function scanQr<T>(
    * previous one returns means a slower phone simply scans less often. The
    * floor stays at 100 ms: a person lining a code up takes far longer than
    * that, so faster buys nothing and costs battery. */
+  /** Grab a frame and decode it. `undefined` means "nothing usable yet". */
+  const attempt = (): T | undefined => {
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    // Frames arrive before the intrinsic size does; not an error, just not yet.
+    if (w === 0 || h === 0) return undefined;
+
+    const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(w, h));
+    const dw = Math.max(1, Math.round(w * scale));
+    const dh = Math.max(1, Math.round(h * scale));
+    if (canvas.width !== dw || canvas.height !== dh) {
+      canvas.width = dw;
+      canvas.height = dh;
+    }
+    ctx.drawImage(video, 0, 0, dw, dh);
+    const frame = ctx.getImageData(0, 0, dw, dh);
+
+    /* Both inversion attempts: a QR printed light-on-dark is still a QR, and
+     * this is the difference between "it just works" and a user holding a
+     * phone at a screen wondering why. */
+    const code = jsQR(frame.data, dw, dh, { inversionAttempts: "attemptBoth" });
+    if (!code) return undefined;
+    return firstAccepted([{ rawValue: code.data }], accept);
+  };
+
+  /* Self-pacing rather than a fixed interval: a decode is synchronous and not
+   * cheap at this resolution, so a timer firing regardless would queue passes
+   * behind each other on a slow device and stall the UI. Exactly one place
+   * reschedules, and it is reached unless the scan is over. */
   const tick = (): void => {
     if (stopped) return;
-    try {
-      const w = video.videoWidth;
-      const h = video.videoHeight;
-      if (w === 0 || h === 0) return;    // first frames arrive before the size does
-
-      const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(w, h));
-      const dw = Math.max(1, Math.round(w * scale));
-      const dh = Math.max(1, Math.round(h * scale));
-      if (canvas.width !== dw || canvas.height !== dh) {
-        canvas.width = dw;
-        canvas.height = dh;
-      }
-      ctx.drawImage(video, 0, 0, dw, dh);
-      const frame = ctx.getImageData(0, 0, dw, dh);
-
-      /* Both inversion attempts: a QR printed light-on-dark is still a QR, and
-       * this is the difference between "it just works" and a user holding a
-       * phone at a screen wondering why. */
-      const code = jsQR(frame.data, dw, dh, { inversionAttempts: "attemptBoth" });
-      if (!code || stopped) return;
-
-      const hit = firstAccepted([{ rawValue: code.data }], accept);
-      if (hit === undefined) return;
-      stop();
-      onResult(hit);
-    } catch (e) {
-      if (stopped) return;
-      stop();
-      onError((e as Error).message ?? String(e));
+    const outcome = scanStep(attempt, onResult, (m) => { stop(); onError(m); });
+    if (outcome === "done" || stopped) {
+      // A hit resolves through onResult; stop() is the caller's job there so
+      // the camera is released before the handler runs.
+      if (outcome === "done") stop();
       return;
     }
-    if (!stopped) timer = setTimeout(tick, SCAN_INTERVAL_MS);
+    timer = setTimeout(tick, SCAN_INTERVAL_MS);
   };
   timer = setTimeout(tick, SCAN_INTERVAL_MS);
 

@@ -11,6 +11,7 @@
  * user is in a screen they are not.
  */
 
+import { scanStep } from "../src/wc/qr.ts";
 import { firstAccepted, QR_UNAVAILABLE, qrUnavailable, qrScanningAvailable } from "../src/wc/qr.ts";
 
 let failures = 0;
@@ -85,6 +86,40 @@ group("availability is false where there is no camera to reach");
    * ONLY remaining reason scanning can be unavailable -- there is no longer a
    * platform where the decoder itself is missing. */
   check(!qrScanningAvailable(), "claimed scanning works with no camera API");
+}
+
+
+group("the scan loop survives frames that decode nothing");
+{
+  /* The regression this exists for. The loop went from setInterval, where an
+   * early return skipped one tick, to self-pacing, where each pass schedules
+   * the next -- and the early returns silently stopped rescheduling. The
+   * camera opened, one frame was examined, and the scan was over. Every symptom
+   * was "nothing happened".
+   *
+   * A frame with no code is the NORMAL case: it is what every frame looks like
+   * until the user lines the code up. If that is not "continue", scanning
+   * cannot work at all. */
+  let results = 0, errors = 0;
+  check(scanStep(() => undefined, () => results++, () => errors++) === "continue",
+    "a frame with no code ended the scan instead of continuing it");
+  check(results === 0 && errors === 0, "an empty frame reported a result or an error");
+
+  // A hit ends it, exactly once.
+  check(scanStep(() => "wc:abc", (v) => { results++; check(v === "wc:abc", "wrong value passed on"); }, () => errors++) === "done",
+    "a decoded, accepted code did not end the scan");
+  check(results === 1, "a hit did not reach onResult");
+
+  // A throwing frame ends it and is reported, rather than spinning forever.
+  check(scanStep(() => { throw new Error("camera died"); }, () => results++, (m) => { errors++; check(m === "camera died", `error text lost: ${m}`); }) === "done",
+    "a throwing frame did not end the scan");
+  check(errors === 1, "a throwing frame did not reach onError");
+
+  /* A value the caller's parser rejects is also "continue": accept() returning
+   * undefined means the code in shot was not the one being looked for -- a
+   * poster on the wall, not a reason to stop. */
+  check(scanStep(() => undefined, () => results++, () => errors++) === "continue",
+    "an unaccepted code ended the scan");
 }
 
 if (failures) {
