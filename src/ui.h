@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "button.h"
+#include "eip712.h"
 #include "eth-tx.h"
 #include "leek-wallet.h"
 
@@ -232,6 +233,25 @@ void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from);
  */
 void ui_request_sign_message(const char *message, size_t length,
                              const HDPath *path, const char *from);
+
+/**
+ * Show EIP-712 typed data and ask the user to approve signing it (T12b).
+ *
+ * `render` is what eip712.c produced from the same walk that produced
+ * `digest` — the caller does not get to assemble one from the other, and there
+ * is no path here that renders a value the hash did not cover. The domain gets
+ * a page of its own ahead of the message: a Permit's contract and chain are
+ * what decide whose tokens the signature moves, and no amount of reading the
+ * fields tells you that.
+ *
+ * `blind` is true when the structure hashed but could not be shown in full,
+ * which the caller only permits with blind signing on. The screen then leads
+ * with a warning and shows the digest, rather than a partial field list that
+ * would read like a complete one.
+ */
+void ui_request_sign_typed_data(const Eip712Render *render,
+                                const uint8_t digest[32], bool blind,
+                                const HDPath *path, const char *from);
 
 /**
  * Show the wallet a host-supplied passphrase produced, and ask the user to

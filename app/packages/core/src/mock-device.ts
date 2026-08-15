@@ -19,6 +19,7 @@ import { encodeCbor, decodeCbor, type CborValue } from "./cbor.ts";
 import { encodeFrame, FrameDecoder, FrameType } from "./framing.ts";
 import { ErrorCode, type Transport } from "./transport.ts";
 import { describeCall, isDecodable } from "./eth-decode.ts";
+import { describeTypedData, inspectTypedData } from "./eip712.ts";
 
 export interface MockOptions {
   /** Milliseconds each command takes. Real key derivation costs ~1 s. */
@@ -53,6 +54,17 @@ export interface MockOptions {
    * exercise it.
    */
   autoConfirmSession?: boolean;
+
+  /**
+   * Whether the simulated device has blind signing switched on (T16).
+   *
+   * Default false, which is a real device out of the box. On the hardware this
+   * is five deliberate button presses behind a warning screen and no command
+   * can change it, so it is an option here rather than a method: a test asks
+   * for a device that is already in the weaker mode, it does not put one there
+   * over the wire.
+   */
+  blindSigning?: boolean;
 }
 
 type Handler = (params: Record<string, CborValue>) => CborValue;
@@ -136,6 +148,7 @@ export class MockDevice implements Transport {
       autoConfirmSession: options.autoConfirmSession ?? true,
       autoPin: options.autoPin ?? true,
       pinEntryMs: options.pinEntryMs ?? 400,
+      blindSigning: options.blindSigning ?? false,
     };
     this.unlocked = this.opts.startUnlocked;
   }
@@ -271,7 +284,10 @@ export class MockDevice implements Transport {
     getFeatures: () => ({
       model: "LeekWallet-mock",
       firmware: "0.1.0-mock",
-      blindSigning: 0,
+      /* The real state, as the device reports it. An app that decides whether
+       * to refuse a call before the walk to the device reads this field, so a
+       * mock that always said 0 would never exercise the other branch. */
+      blindSigning: this.opts.blindSigning ? 1 : 0,
     }),
 
     getStatus: () => ({
@@ -447,6 +463,54 @@ export class MockDevice implements Transport {
         index,
         r: new Uint8Array(32).fill(0x33),
         s: new Uint8Array(32).fill(0x44),
+        yParity: index & 1,
+      };
+    },
+
+    signTypedData: (p) => {
+      this.requireUnlocked();
+      const index = addressIndex(p);
+
+      /* The order of these three refusals is the order protocol.c applies
+       * them, and the codes differ because they mean different things to a
+       * client. A request with no `types` is malformed (0x0001) — the host
+       * built it wrong. A document the device cannot hash and one it cannot
+       * show are both 0x0202, but only the second is reopened by blind
+       * signing, and getting that backwards would let a host believe an array
+       * document becomes signable once the owner opts in. It never does: the
+       * only way to sign it would be to take a digest from the host, which is
+       * the thing this device exists not to do. */
+      const verdict = inspectTypedData(p);
+      if (verdict.kind === "malformed") {
+        throw new MockRejection(ErrorCode.MalformedFrame, "typed data request is incomplete");
+      }
+      if (verdict.kind === "unhashable") {
+        throw new MockRejection(
+          ErrorCode.Undecodable,
+          "this device cannot compute that structure's hash",
+        );
+      }
+      if (verdict.kind === "unrenderable" && !this.opts.blindSigning) {
+        throw new MockRejection(
+          ErrorCode.Undecodable,
+          "this device cannot show all of that structure",
+        );
+      }
+
+      /* What the device screen would say. Blind is a different screen, not a
+       * shorter one: it leads with the warning and shows the digest rather
+       * than a field list that would read as complete. */
+      const where = `from m/44'/60'/0'/0/${index}`;
+      this.confirm(
+        verdict.kind === "unrenderable"
+          ? `BLIND typed data ${verdict.render.primaryType} ${where}`
+          : `Sign ${describeTypedData(verdict.render)} ${where}`,
+      );
+
+      return {
+        index,
+        r: new Uint8Array(32).fill(0x55),
+        s: new Uint8Array(32).fill(0x66),
         yParity: index & 1,
       };
     },

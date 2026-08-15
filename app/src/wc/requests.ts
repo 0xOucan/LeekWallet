@@ -31,6 +31,10 @@ import {
   checksumAddress, interpretTransaction, type TxInterpretation,
 } from "../../packages/core/src/tx-interpret.ts";
 import {
+  describeTypedData, inspectTypedData, toDeviceTypedData,
+} from "../../packages/core/src/eip712.ts";
+import type { CborValue } from "../../packages/core/src/cbor.ts";
+import {
   deviceCannotDisplay, invalidParams, unrecognisedChain, unsupportedMethod,
   UNAUTHORIZED_ACCOUNT, type JsonRpcErrorBody,
 } from "./errors.ts";
@@ -84,23 +88,37 @@ export type RequestPlan =
       interpretation: TxInterpretation;
     }
   | { kind: "message"; address: string; message: string }
+  | {
+      kind: "typed-data";
+      address: string;
+      /** The request as the device parses it, already transcribed from JSON. */
+      request: Record<string, unknown>;
+      /** What the device's own screens will say, for the pending-request card. */
+      summary: string;
+      /** The dapp's document, verbatim, for the card's detail view. */
+      document: Record<string, unknown>;
+    }
   | { kind: "switch-chain"; chainId: number }
   | { kind: "error"; error: JsonRpcErrorBody };
 
 /**
  * The EVM methods this wallet advertises in its session namespace.
  *
- * `eth_signTypedData_v4` is deliberately absent: the device has no
- * `signTypedData` command (PROTOCOL.md 6bis), and advertising a method that
- * always fails is worse for a dapp than not advertising it — it picks typed
- * data over `personal_sign` on the strength of the advertisement and then
- * cannot fall back. It is still handled below, because dapps ask regardless.
+ * `eth_signTypedData_v4` is here as of T12b: the device has a `signTypedData`
+ * command, it recomputes the digest from the structure the dapp sent, and it
+ * refuses anything it could not put on its screen. Advertising it is honest in
+ * a way it was not before — a dapp picks typed data over `personal_sign` on the
+ * strength of this list, and until the device could sign one that choice led
+ * nowhere.
+ *
+ * The older spellings stay off the list and are still refused by name below.
  */
 export const SUPPORTED_METHODS: readonly string[] = [
   "eth_accounts",
   "eth_chainId",
   "eth_sendTransaction",
   "eth_signTransaction",
+  "eth_signTypedData_v4",
   "personal_sign",
   "wallet_switchEthereumChain",
 ] as const;
@@ -200,18 +218,32 @@ export function planRequest(
         ),
       };
 
-    /* The firmware has no signTypedData command yet, and a typed-data structure
-     * the device could not render would be blind signing even once it does
-     * (PROTOCOL.md 6bis). Refusing by name means the dapp can fall back to
-     * personal_sign rather than hanging. */
+    case "eth_signTypedData_v4":
+      return planTypedData(args, ctx);
+
+    /* v1 and v3 stay refused, and the reasons are different for each.
+     *
+     * v1 is not a typed-data document at all: it is an array of
+     * {name, type, value} triples with no domain, so there is no
+     * verifyingContract and no chainId — nothing binding the signature to a
+     * contract or a network. The device's typed-data screen leads with exactly
+     * those two facts and would have nothing true to put there.
+     *
+     * v3 is v4 without nested structs or arrays, and every dapp that speaks it
+     * speaks v4. Accepting it would mean a second encoding to get right for no
+     * dapp that needs it, and a wrong one produces a valid signature over a
+     * document nobody wrote.
+     *
+     * Refusing by name means the dapp can fall back rather than hang. */
     case "eth_signTypedData":
     case "eth_signTypedData_v3":
-    case "eth_signTypedData_v4":
       return {
         kind: "error",
         error: unsupportedMethod(
           method,
-          "the device has no typed-data signing command yet, and cannot display a structure it cannot parse. Use personal_sign if the dapp offers it.",
+          method === "eth_signTypedData_v3"
+            ? "this wallet signs eth_signTypedData_v4 only — ask for that instead."
+            : "the v1 form carries no domain, so the device cannot show which contract or chain the signature is for. Ask for eth_signTypedData_v4.",
         ),
       };
 
@@ -299,6 +331,87 @@ function planMessage(args: unknown[], ctx: WalletContext): RequestPlan {
   }
 
   return { kind: "message", address: from, message };
+}
+
+/**
+ * Plan an `eth_signTypedData_v4`.
+ *
+ * Two conversions and one prediction. The document is transcribed into the
+ * device's wire encoding driven by its own declared types, then run through the
+ * same inspection the firmware performs, so a structure the device would refuse
+ * is refused here — before the user walks over to press a button that will not
+ * appear (PROTOCOL.md 6bis).
+ *
+ * The prediction can only ever refuse what the device refuses, never more: the
+ * unrenderable case is reopened by `ctx.blindSigning`, exactly as protocol.c
+ * reopens it, because that setting belongs to the device's owner and an app
+ * that overruled it would produce an identical refusal after they opted in.
+ */
+function planTypedData(args: unknown[], ctx: WalletContext): RequestPlan {
+  /* [address, document] per the spec, and the document arrives as a JSON
+   * string from about half of the dapps that send one. */
+  const [a, b] = args;
+  const address = isHexAddress(a) ? a : isHexAddress(b) ? b : undefined;
+  const raw = isHexAddress(a) ? b : a;
+  if (address === undefined) {
+    return { kind: "error", error: invalidParams("eth_signTypedData_v4 needs an address.") };
+  }
+
+  const from = authorised(ctx.accounts, address);
+  if (from === undefined) return { kind: "error", error: UNAUTHORIZED_ACCOUNT };
+
+  let document: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      document = JSON.parse(raw);
+    } catch {
+      return { kind: "error", error: invalidParams("the typed data is not valid JSON.") };
+    }
+  }
+  if (typeof document !== "object" || document === null || Array.isArray(document)) {
+    return { kind: "error", error: invalidParams("the typed data is not an object.") };
+  }
+
+  let request: Record<string, CborValue>;
+  try {
+    request = toDeviceTypedData(document);
+  } catch (e) {
+    /* A document this app could not transcribe faithfully is one the device
+     * would hash differently from what the dapp meant, so it is refused rather
+     * than approximated. */
+    return {
+      kind: "error",
+      error: invalidParams(e instanceof Error ? e.message : "the typed data cannot be read."),
+    };
+  }
+
+  const verdict = inspectTypedData(request);
+  if (verdict.kind === "malformed") {
+    return { kind: "error", error: invalidParams(verdict.why) };
+  }
+  if (verdict.kind === "unhashable") {
+    return {
+      kind: "error",
+      error: deviceCannotDisplay(
+        `${verdict.why} — the device computes the digest itself and will not take one from this app.`,
+      ),
+    };
+  }
+  if (verdict.kind === "unrenderable" && !ctx.blindSigning) {
+    return { kind: "error", error: deviceCannotDisplay(verdict.why) };
+  }
+
+  const summary = verdict.kind === "ok"
+    ? describeTypedData(verdict.render)
+    : `${verdict.render.primaryType} — the device cannot show this in full`;
+
+  return {
+    kind: "typed-data",
+    address: from,
+    request: request as Record<string, unknown>,
+    summary,
+    document: document as Record<string, unknown>,
+  };
 }
 
 function planTransaction(args: unknown[], ctx: WalletContext, broadcast: boolean): RequestPlan {

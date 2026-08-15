@@ -89,6 +89,46 @@ MUTANTS = [
     ("src/ui.c", "            sign_page_kind[n++] = SIGN_PAGE_BLIND_WARN;",
      "            /* mutant: no warning page */", "blind confirmation drops the warning"),
 
+    # EIP-712 (T12b). A wrong hash here is not a crash: it is a valid signature
+    # over a document nobody wrote, so every mutant below is one that a suite
+    # without known-answer vectors would sail past. The last four are the
+    # refusal split — which documents may be signed at all, and which of those
+    # the blind-signing hatch reaches.
+    ("src/eip712.c", "    preimage[0] = 0x19;", "    preimage[0] = 0x18;",
+     "the EIP-191 prefix byte is wrong"),
+    ("src/eip712.c", "    sort_types(c, deps, ndeps);", "    /* mutant: unsorted */",
+     "referenced types emitted in declaration order"),
+    ("src/eip712.c",
+     "    if (!append_fragment(c, t, out, out_size, &used)) return false;",
+     "    if (ndeps == 0 && !append_fragment(c, t, out, out_size, &used)) return false;",
+     "the primary type dropped from encodeType"),
+    ("src/eip712.c", "    if (bits < 64) {\n        return false;\n    }",
+     "    if (bits < 0) {\n        return false;\n    }",
+     "unlimited flagged on narrow fields"),
+    ("src/eip712.c", "    return (word[top_byte] & 0x80) != 0;", "    return false;",
+     "an infinite allowance reads as a number"),
+    ("src/eip712.c",
+     "        f->is_deadline = name_hints(name, \"deadline\") ||",
+     "        f->is_deadline = false || name_hints(name, \"zzzz\") ||",
+     "a deadline is not labelled as one"),
+    # Not a mutant of collect_refs' own array check: classify() rejects the
+    # same type a moment later and the document is refused either way, so
+    # flipping it is equivalent code. It stays in collect_refs because that is
+    # where the refusal is cheapest and clearest, not because a test needs it
+    # there; "arrays are unhashable" is covered by test_arrays_are_refused.
+    ("src/eip712.c", "    int spare_bits = 256 - bits;", "    int spare_bits = 0;",
+     "a value wider than its declared type is masked"),
+    ("src/eip712.c", "    if (col.overflow || render->field_count == 0) {",
+     "    if (false) {", "an unshowable document reports itself renderable"),
+    ("src/protocol.c", "        if (typed_result == EIP712_UNHASHABLE) {",
+     "        if (false) {", "a document with no computable digest is signed"),
+    ("src/protocol.c", "        if (typed_blind && !blind_signing_enabled()) {",
+     "        if (false) {", "unshowable typed data signed without the hatch"),
+    ("src/protocol.c",
+     "        ui_request_sign_typed_data(&typed, typed_digest, typed_blind,",
+     "        ui_request_sign_typed_data(&typed, typed_digest, false,",
+     "a blind typed-data confirmation looks like a normal one"),
+
     # Job 1: a reply must match the frame type of the request that caused it.
     # Each of these is the old, state-driven behaviour, or its mirror.
     ("src/protocol.c",
@@ -322,7 +362,7 @@ MUTANTS = [
 ]
 
 BINARIES = ["test_protocol", "test_ble_chunk", "test_ui", "test_eth_decode",
-            "test_text_entry", "test_slip39"]
+            "test_eip712", "test_text_entry", "test_slip39"]
 
 # Which suites even compile the mutated file. A suite that does not link it
 # cannot notice the mutant, so building it proves nothing and costs a rebuild;
@@ -331,6 +371,10 @@ SUITES_FOR = {
     "src/text-entry.c": ["test_text_entry", "test_ui"],
     "src/ui.c":         ["test_ui"],
     "src/eth-decode.c": ["test_eth_decode", "test_ui", "test_protocol"],
+    # The vectors live in test_eip712; the command that uses them in
+    # test_protocol. A hashing mutant has to be caught by the first and a
+    # refusal mutant by the second, so both run.
+    "src/eip712.c":     ["test_eip712", "test_protocol", "test_ui"],
     "src/ble-chunk.c":  ["test_ble_chunk", "test_ui", "test_protocol"],
     "src/slip39-backup.c": ["test_slip39"],
     # session.c is linked by both endpoint suites; the protocol one is what

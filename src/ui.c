@@ -3677,12 +3677,16 @@ typedef enum {
     SIGN_PAGE_CONTRACT,     /* the token contract being called, and the chain */
     SIGN_PAGE_BLIND_WARN,   /* blind signing: the device cannot read this call */
     SIGN_PAGE_BLIND_DATA,   /* blind signing: calldata length and its hash */
+    SIGN_PAGE_TYPED_DOMAIN, /* EIP-712: which contract, which chain, what name */
+    SIGN_PAGE_TYPED_FIELD,  /* EIP-712: one leaf of the struct, one page */
+    SIGN_PAGE_TYPED_BLIND,  /* EIP-712: hashed, but not showable in full */
     SIGN_PAGE_FROM          /* the address that will sign (T47) */
 } SignPageKind;
 
-/* The longest plan is the blind one: warning, value, recipient, calldata
- * digest, source. Everything decodable needs fewer. */
-#define SIGN_MAX_PAGES 6
+/* The longest plan is typed data: the domain, one page for each of the six
+ * struct leaves the screen will carry, and the source. A transaction, blind or
+ * not, needs at most five. */
+#define SIGN_MAX_PAGES (EIP712_MAX_RENDER_FIELDS + 2)
 
 static EthTx        sign_tx;
 static EthCall      sign_call;
@@ -3709,6 +3713,16 @@ static volatile bool sign_request_pending = false;
 static bool sign_is_message = false;
 static char sign_message[ETH_MAX_MESSAGE + 1];
 
+/* Typed data rides the same screen for the same reason, and carries the render
+ * model eip712.c built rather than a re-parse of the request. There is exactly
+ * one traversal of a typed-data document on this device and this is what it
+ * produced; a second one here could disagree with the digest. */
+static bool         sign_is_typed = false;
+static Eip712Render sign_typed;
+/* Which struct leaf each page shows. Parallel to sign_page_kind[] and only
+ * meaningful for SIGN_PAGE_TYPED_FIELD. */
+static int          sign_page_field[SIGN_MAX_PAGES];
+
 /* Set when the request got here only because blind signing is on. The screen
  * has to look different from a normal confirmation - same buttons, same paging
  * rule, but nobody should be able to approve one while thinking they approved
@@ -3734,6 +3748,7 @@ void ui_request_sign_message(const char *message, size_t length,
     sign_message[length] = '\0';
 
     sign_is_message = true;
+    sign_is_typed = false;
     /* A message that reached this screen was renderable in full; blind
      * signing does not and must not reopen the ones that were not. */
     sign_blind = false;
@@ -3753,10 +3768,69 @@ void ui_request_sign_message(const char *message, size_t length,
     sign_request_pending = true;
 }
 
+void ui_request_sign_typed_data(const Eip712Render *render,
+                                const uint8_t digest[32], bool blind,
+                                const HDPath *path, const char *from)
+{
+    memzero(&sign_tx, sizeof(sign_tx));
+    memzero(&sign_call, sizeof(sign_call));
+    memzero(sign_message, sizeof(sign_message));
+    memzero(&sign_typed, sizeof(sign_typed));
+
+    if (!render || !digest) {
+        sign_outcome = SIGN_REJECTED;
+        return;
+    }
+    sign_typed = *render;
+
+    sign_is_message = false;
+    sign_is_typed = true;
+    sign_blind = blind;
+    /* The typed-data digest, not a calldata hash — but the same field, because
+     * the page that draws it is asking the same question: which exact bytes is
+     * this signature over, so they can be checked somewhere else. */
+    memcpy(sign_data_hash, digest, sizeof(sign_data_hash));
+
+    sign_path_shown = path ? *path : (HDPath)HDPATH_ETH_DEFAULT;
+    if (from) {
+        snprintf(sign_from, sizeof(sign_from), "%s", from);
+    } else {
+        sign_from[0] = '\0';
+    }
+
+    int n = 0;
+    memset(sign_page_field, 0, sizeof(sign_page_field));
+    if (blind) {
+        /* No field pages at all. Showing the leaves that happened to fit would
+         * read as the whole document, and the one thing this page has to
+         * communicate is that it is not. */
+        sign_page_kind[n++] = SIGN_PAGE_TYPED_BLIND;
+        sign_page_kind[n++] = SIGN_PAGE_TYPED_DOMAIN;
+        sign_page_kind[n++] = SIGN_PAGE_BLIND_DATA;
+    } else {
+        /* Domain first: a Permit's fields are meaningless until you know which
+         * contract on which chain will honour them, and that is the field a
+         * lookalike token gets wrong. */
+        sign_page_kind[n++] = SIGN_PAGE_TYPED_DOMAIN;
+        for (int i = 0; i < sign_typed.field_count &&
+                        n < SIGN_MAX_PAGES - 1; i++) {
+            sign_page_field[n] = i;
+            sign_page_kind[n++] = SIGN_PAGE_TYPED_FIELD;
+        }
+    }
+    sign_page_kind[n++] = SIGN_PAGE_FROM;
+    sign_page_count = n;
+
+    sign_outcome = SIGN_PENDING;
+    sign_request_pending = true;
+}
+
 void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
 {
     sign_is_message = false;
+    sign_is_typed = false;
     memzero(sign_message, sizeof(sign_message));
+    memzero(&sign_typed, sizeof(sign_typed));
     memcpy(&sign_tx, tx, sizeof(sign_tx));
     sign_path_shown = path ? *path : (HDPath)HDPATH_ETH_DEFAULT;
 
@@ -3928,7 +4002,9 @@ void ui_sign_clear(void)
     memzero(&sign_call, sizeof(sign_call));
     memzero(sign_from, sizeof(sign_from));
     memzero(sign_message, sizeof(sign_message));
+    memzero(&sign_typed, sizeof(sign_typed));
     sign_is_message = false;
+    sign_is_typed = false;
     sign_blind = false;
     memzero(sign_data_hash, sizeof(sign_data_hash));
 }
@@ -4001,7 +4077,8 @@ static void screen_sign_confirm_render(void)
      * normal confirmation" belongs. A blind request has to be distinguishable
      * at a glance from one the device understood. */
     const char *title = sign_blind ? "!BLIND SIGN!"
-                                   : (sign_is_message ? "Sign msg?" : "Sign?");
+                      : sign_is_typed ? "Sign data?"
+                      : (sign_is_message ? "Sign msg?" : "Sign?");
     snprintf(line, sizeof(line), "%s  %u/%u", title,
              (unsigned)(sign_page + 1), (unsigned)sign_page_count);
     oled_draw_string_centered(0, line);
@@ -4199,13 +4276,95 @@ static void screen_sign_confirm_render(void)
             oled_draw_string(6, 0, "the app, not this.");
             break;
         }
+        case SIGN_PAGE_TYPED_DOMAIN: {
+            /* Which contract, on which chain, calling itself what.
+             *
+             * The domain is the half of an EIP-712 signature that decides where
+             * it is valid, and it is where a lookalike hides: a Permit whose
+             * fields all read correctly against a verifyingContract that is not
+             * the token you think it is drains the token that it is. The name
+             * is shown last and lowest on purpose - it is the one field of the
+             * three the contract does not have to prove. */
+            snprintf(line, sizeof(line), "%.20s", sign_typed.primary_type);
+            oled_draw_string(1, 0, line);
+            if (sign_typed.has_verifying_contract) {
+                char addr[43];
+                oled_draw_string(2, 0, "Contract");
+                if (eth_format_address(sign_typed.verifying_contract, addr, sizeof(addr))) {
+                    sign_draw_address(3, addr);
+                }
+            } else {
+                /* Legal, and worth saying out loud: a domain with no contract
+                 * binds the signature to nothing on chain. */
+                oled_draw_string(2, 0, "No contract named");
+            }
+            if (sign_typed.has_chain_id) {
+                oled_draw_string(6, 0,
+                    eth_chain_name(sign_typed.chain_id, scratch, sizeof(scratch)));
+            } else {
+                oled_draw_string(6, 0, "Any chain!");
+            }
+            break;
+        }
+        case SIGN_PAGE_TYPED_FIELD: {
+            const Eip712Field *f = &sign_typed.fields[sign_page_field[sign_page]];
+
+            snprintf(line, sizeof(line), "%.20s", f->label);
+            oled_draw_string(1, 0, line);
+            if (f->is_deadline) {
+                /* Seconds since the epoch, which the device cannot turn into a
+                 * date — it has no clock. Saying what the number means is
+                 * still worth a row: a signature that stays good for a decade
+                 * is a standing authorisation, not a one-off. */
+                oled_draw_string(2, 0, "valid until (unix)");
+            }
+
+            if (f->is_address) {
+                sign_draw_address(3, f->value);
+            } else if (f->unlimited) {
+                /* The same words the ERC-20 approve screen uses, because it is
+                 * the same thing being agreed to and a user should not have to
+                 * learn two vocabularies for one risk. A Permit is worse than
+                 * an approve only in that it costs nothing and leaves no trace
+                 * on chain. */
+                oled_draw_string(3, 0, "UNLIMITED amount");
+                oled_draw_string(4, 0, "Spender can take");
+                oled_draw_string(5, 0, "all of this token");
+            } else {
+                /* Wrapped over four rows, never cut. A shortened value is a
+                 * different value, and a uint256 in decimal needs the room. */
+                size_t vlen = strlen(f->value);
+                for (int row = 0; row < 4; row++) {
+                    size_t off = (size_t)row * 21;
+                    if (off >= vlen) break;
+                    char part[22];
+                    snprintf(part, sizeof(part), "%.21s", f->value + off);
+                    oled_draw_string(3 + row, 0, part);
+                }
+            }
+            break;
+        }
+        case SIGN_PAGE_TYPED_BLIND: {
+            oled_draw_string(1, 0, "UNREADABLE DATA");
+            oled_draw_string(2, 0, "Device hashed this");
+            oled_draw_string(3, 0, "but cannot show");
+            oled_draw_string(4, 0, "all of it. You");
+            oled_draw_string(5, 0, "trust the app,");
+            oled_draw_string(6, 0, "not this screen.");
+            break;
+        }
         case SIGN_PAGE_BLIND_DATA: {
             /* Which bytes, since not what they mean. The length says how much
              * is hidden and the digest lets it be checked against a second
              * source - the only two honest facts available about calldata the
-             * device cannot parse. */
-            snprintf(line, sizeof(line), "Calldata %u bytes",
-                     (unsigned)sign_tx.data_length);
+             * device cannot parse. Typed data has no calldata to measure, so it
+             * names the digest for what it is instead. */
+            if (sign_is_typed) {
+                snprintf(line, sizeof(line), "Typed data");
+            } else {
+                snprintf(line, sizeof(line), "Calldata %u bytes",
+                         (unsigned)sign_tx.data_length);
+            }
             oled_draw_string(1, 0, line);
             oled_draw_string(2, 0, "keccak256:");
 
@@ -4266,6 +4425,11 @@ static void screen_sign_confirm_render(void)
                 /* No value, no chain: a personal_sign moves nothing by itself.
                  * Saying so stops the page reading as "+0 ETH transfer". */
                 oled_draw_string(6, 0, "Message signature");
+            } else if (sign_is_typed) {
+                /* Same reasoning as a message, and more easily forgotten: a
+                 * Permit moves nothing when it is signed, which is exactly what
+                 * makes it comfortable to sign. */
+                oled_draw_string(6, 0, "Typed data sig");
             } else if (sign_call.kind == ETH_CALL_EMPTY) {
                 oled_draw_string(6, 0, "Plain transfer");
             } else {

@@ -12,7 +12,7 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
@@ -51,6 +51,14 @@ $(BUILD)/test_eth_tx: test_eth_tx.c ../src/eth-tx.c $(CRYPTO)/sha3.c \
 
 $(BUILD)/test_eth_decode: test_eth_decode.c ../src/eth-decode.c ../src/eth-tx.c \
                           $(CRYPTO)/sha3.c $(CRYPTO)/memzero.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# EIP-712, driven straight from the EIP's own worked example. cbor.c is here
+# because the tests build their requests with the real writer rather than
+# hand-rolled hex - a vector that only passes against a bespoke encoder proves
+# nothing about the bytes that arrive on the wire.
+$(BUILD)/test_eip712: test_eip712.c ../src/eip712.c ../src/cbor.c ../src/eth-tx.c \
+                      $(CRYPTO)/sha3.c $(CRYPTO)/memzero.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
 # BIP32/BIP39 only - the wallet wrapper needs an unlocked vault, and that
@@ -133,8 +141,8 @@ $(BUILD)/test_ui: test_ui.c esp_stubs.c host_stubs.c fake_oled.c fake_wallet.c \
                   ../src/ble-name.c ../src/ble-chunk.c \
                   ../src/ui.c ../src/pin.c ../src/mnemonic-entry.c \
                   ../src/entropy.c ../src/session.c ../src/text-entry.c \
-                  ../src/eth-tx.c ../src/eth-decode.c ../src/blind-signing.c \
-                  ../src/device-wipe.c \
+                  ../src/eth-tx.c ../src/eth-decode.c ../src/eip712.c ../src/blind-signing.c \
+                  ../src/cbor.c ../src/device-wipe.c \
                   $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                   $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
                   $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
@@ -187,7 +195,7 @@ $(BUILD)/test_pin_change: test_pin_change.c esp_stubs.c host_stubs.c \
 PROTOCOL_SRC := test_protocol.c esp_stubs.c host_stubs.c fake_usb.c fake_wallet.c \
                 ../src/protocol.c ../src/cbor.c ../src/session.c ../src/pin.c \
                 ../src/ble-chunk.c ../src/ble.c ../src/ble-name.c ../src/transport.c \
-                ../src/eth-tx.c ../src/eth-decode.c ../src/blind-signing.c \
+                ../src/eth-tx.c ../src/eth-decode.c ../src/eip712.c ../src/blind-signing.c \
                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
                 $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
@@ -225,10 +233,19 @@ $(BUILD)/test_protocol_asan: $(PROTOCOL_SRC) | $(BUILD)
 $(BUILD)/test_ble_chunk_asan: test_ble_chunk.c ../src/ble-chunk.c | $(BUILD)
 	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $^
 
+# And EIP-712, which is the newest parser and the most recursive: it walks a
+# host-supplied document of maps inside arrays inside maps, borrowing pointers
+# into the caller's buffer rather than copying. That is the shape of code that
+# reads one item past the end.
+$(BUILD)/test_eip712_asan: test_eip712.c ../src/eip712.c ../src/cbor.c ../src/eth-tx.c \
+                           $(CRYPTO)/sha3.c $(CRYPTO)/memzero.c | $(BUILD)
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $^
+
 # SLIP-39 too: it does its own bit packing over caller-supplied strings, which
 # is exactly the shape of code that reads one word past the end.
-asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan $(BUILD)/test_slip39_asan
+asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan $(BUILD)/test_slip39_asan $(BUILD)/test_eip712_asan
 	./$(BUILD)/test_protocol_asan
+	./$(BUILD)/test_eip712_asan
 	./$(BUILD)/test_ble_chunk_asan
 	./$(BUILD)/test_slip39_asan
 

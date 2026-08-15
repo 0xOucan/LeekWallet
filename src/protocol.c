@@ -40,6 +40,7 @@
 #include "session.h"
 #include "eth-tx.h"
 #include "eth-decode.h"
+#include "eip712.h"
 #include "ui.h"
 
 static const char *TAG = "protocol";
@@ -872,6 +873,116 @@ static void dispatch(const uint8_t *payload, size_t len)
         cbor_write_text(&w, "yParity");
         cbor_write_uint(&w, (msg_sig.v >= 27) ? (uint32_t)(msg_sig.v - 27)
                                               : (uint32_t)(msg_sig.v & 1));
+
+    } else if (strcmp(method, "signTypedData") == 0) {
+        /* EIP-712 (T12b). The same rule as everything else here: the host sends
+         * the structure, the device recomputes the digest from it and signs
+         * only what it put on the screen. There is deliberately no way to pass
+         * a domain separator or a struct hash — either would be signHash with a
+         * schema attached, and this is precisely the request shape that drains
+         * wallets when a device shows a hash and shrugs. */
+        if (!request_is_authenticated()) {
+            send_session_error(ERR_SESSION, "session required");
+            return;
+        }
+        if (!pin_is_unlocked()) {
+            send_error(ERR_NOT_UNLOCKED, "device is locked");
+            return;
+        }
+
+        uint8_t      typed_digest[32];
+        Eip712Render typed;
+        Eip712Result typed_result = eip712_prepare(payload, len, typed_digest, &typed);
+
+        if (typed_result == EIP712_MALFORMED) {
+            send_error(ERR_MALFORMED, "typed data request is incomplete");
+            return;
+        }
+        if (typed_result == EIP712_UNHASHABLE) {
+            /* Not reopened by blind signing, and this is the one refusal here
+             * worth being loud about in the code. The device could not compute
+             * the digest at all — arrays, an undefined type, a value that
+             * contradicts its declared type — so the only way to sign would be
+             * to take a digest from the host. That is the thing this device
+             * exists not to do, so it stays refused however the settings are
+             * set, exactly as contract creation does. */
+            send_error(ERR_UNDECODABLE,
+                       "this device cannot compute that structure's hash");
+            return;
+        }
+
+        bool typed_blind = (typed_result == EIP712_UNRENDERABLE);
+        if (typed_blind && !blind_signing_enabled()) {
+            /* Hashable but not showable: too many fields for the screen, a
+             * string it has no glyphs for, a label that does not fit. The
+             * digest is real, so the owner who turned blind signing on may take
+             * it — with a warning screen and the digest, and no field list
+             * pretending to be complete. Same code as undecodable calldata,
+             * because it is the same sentence: the device cannot say what this
+             * does. */
+            send_error(ERR_UNDECODABLE,
+                       "this device cannot show all of that structure");
+            return;
+        }
+
+        HDPath typed_path = HDPATH_ETH_DEFAULT;
+        request_path(payload, len, &typed_path);
+        if (!hd_path_in_range(&typed_path)) {
+            send_error(ERR_MALFORMED, "derivation path out of range");
+            return;
+        }
+        uint32_t typed_index = typed_path.address_index;
+
+        EthAddress typed_from;
+        if (wallet_get_address_at_path(&typed_path, &typed_from) != WALLET_OK) {
+            send_error(ERR_NO_WALLET, "derivation failed");
+            return;
+        }
+
+        if (typed_blind) {
+            ESP_LOGW(TAG, "Blind signing: unrenderable typed data, %s",
+                     typed.primary_type);
+        }
+
+        /* The screen is handed the digest the signature will be taken over,
+         * not a second computation of it. There is one traversal of a
+         * typed-data document on this device and both the pages and the hash
+         * come out of it (T47, PROTOCOL.md 6bis). */
+        ui_request_sign_typed_data(&typed, typed_digest, typed_blind,
+                                   &typed_path, typed_from.hex);
+
+        SignOutcome typed_outcome = wait_for_user();
+        if (typed_outcome == SIGN_PENDING) {
+            send_error(ERR_USER_TIMEOUT, "no answer on the device");
+            return;
+        }
+        if (typed_outcome != SIGN_APPROVED) {
+            send_error(ERR_USER_REJECTED, "rejected on device");
+            return;
+        }
+
+        EthSignature typed_sig;
+        if (wallet_sign_hash_at_path(&typed_path, typed_digest, &typed_sig) != WALLET_OK) {
+            ui_sign_report(false);
+            send_error(ERR_NO_WALLET, "signing failed");
+            return;
+        }
+        ui_sign_report(true);
+
+        /* The reply shape signTransaction and signMessage already use. A client
+         * that reassembles one reassembles all three. */
+        cbor_write_map(&w, 1);
+        cbor_write_text(&w, "result");
+        cbor_write_map(&w, 4);
+        cbor_write_text(&w, "index");
+        cbor_write_uint(&w, typed_index);
+        cbor_write_text(&w, "r");
+        cbor_write_bytes(&w, typed_sig.r, sizeof(typed_sig.r));
+        cbor_write_text(&w, "s");
+        cbor_write_bytes(&w, typed_sig.s, sizeof(typed_sig.s));
+        cbor_write_text(&w, "yParity");
+        cbor_write_uint(&w, (typed_sig.v >= 27) ? (uint32_t)(typed_sig.v - 27)
+                                                : (uint32_t)(typed_sig.v & 1));
 
     } else if (strcmp(method, "selectWallet") == 0) {
         /* Which stored seed is active. No confirmation: it reveals nothing and

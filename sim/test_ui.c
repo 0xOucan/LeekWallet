@@ -987,6 +987,125 @@ static void test_message_confirmation_shows_all_of_it(void)
     ui_sign_clear();
 }
 
+/* A typed-data confirmation has to answer three questions the fields alone do
+ * not: which contract will honour this, on which chain, and is the amount a
+ * number or an infinity. A Permit costs no gas and leaves no trace on chain,
+ * which is exactly what makes it comfortable to approve without reading. */
+static void test_typed_data_confirmation_names_the_contract_and_the_amount(void)
+{
+    printf("== the typed-data screen shows the domain, then each field (T12b)\n");
+    boot_unlocked_with_seed();
+
+    Eip712Render render;
+    memset(&render, 0, sizeof(render));
+    snprintf(render.primary_type, sizeof(render.primary_type), "Permit");
+    snprintf(render.domain_name, sizeof(render.domain_name), "USD Coin");
+    render.has_domain_name = true;
+    render.chain_id = 1;
+    render.has_chain_id = true;
+    /* USDC. */
+    static const uint8_t usdc[20] = {
+        0xa0,0xb8,0x69,0x91,0xc6,0x21,0x8b,0x36,0xc1,0xd1,
+        0x9d,0x4a,0x2e,0x9e,0xb0,0xce,0x36,0x06,0xeb,0x48
+    };
+    memcpy(render.verifying_contract, usdc, 20);
+    render.has_verifying_contract = true;
+
+    snprintf(render.fields[0].label, sizeof(render.fields[0].label), "spender");
+    render.fields[0].is_address = true;
+    snprintf(render.fields[0].value, sizeof(render.fields[0].value),
+             "0x1111111254EEB25477B68fb85Ed929f73A960582");
+    snprintf(render.fields[1].label, sizeof(render.fields[1].label), "value");
+    render.fields[1].unlimited = true;
+    snprintf(render.fields[2].label, sizeof(render.fields[2].label), "deadline");
+    render.fields[2].is_deadline = true;
+    snprintf(render.fields[2].value, sizeof(render.fields[2].value), "1893456000");
+    render.field_count = 3;
+
+    uint8_t digest[32];
+    memset(digest, 0xab, sizeof(digest));
+
+    HDPath path = HDPATH_ETH_DEFAULT;
+    ui_request_sign_typed_data(&render, digest, false, &path,
+                               "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_SIGN_CONFIRM);
+
+    CHECK_SCREEN(fake_oled_contains("Sign data?"),
+                 "the header does not say this is typed data");
+    CHECK_SCREEN(fake_oled_contains("Permit"), "the struct is not named");
+    /* The domain page, before any field. A Permit whose fields all read
+     * correctly against the wrong contract drains the wrong token. */
+    CHECK_SCREEN(fake_oled_contains("Contract"), "the domain page names no contract");
+    CHECK_SCREEN(fake_oled_contains("0xA0b86991c6218b"),
+                 "the verifying contract is not on the domain page");
+    CHECK_SCREEN(fake_oled_contains("Ethereum"), "the chain is not on the domain page");
+
+    press(BUTTON_DOWN);
+    CHECK_SCREEN(fake_oled_contains("spender"), "no spender page");
+    CHECK_SCREEN(fake_oled_contains("0x1111111254EEB2"),
+                 "the spender address is not shown");
+
+    press(BUTTON_DOWN);
+    /* The word, not seventy-eight digits. Same wording as the ERC-20 approve
+     * screen, because it is the same thing being agreed to. */
+    CHECK_SCREEN(fake_oled_contains("UNLIMITED amount"),
+                 "an infinite allowance is not named as one");
+
+    press(BUTTON_DOWN);
+    CHECK_SCREEN(fake_oled_contains("1893456000"), "the deadline value is missing");
+    CHECK_SCREEN(fake_oled_contains("valid until"),
+                 "the deadline is not labelled as one");
+
+    press(BUTTON_DOWN);
+    CHECK_SCREEN(fake_oled_contains("From"), "no source page");
+    CHECK_SCREEN(fake_oled_contains("Typed data sig"),
+                 "the source page does not say a signature moves nothing by itself");
+
+    press(BUTTON_ACCEPT);
+    CHECK(ui_sign_outcome() == SIGN_APPROVED, "paging through every page did not approve");
+    ui_sign_clear();
+}
+
+/* The blind form of the same screen. It must not look like the one above: the
+ * warning leads, and the digest replaces a field list that would read as
+ * complete when it is not. */
+static void test_blind_typed_data_leads_with_the_warning(void)
+{
+    printf("== an unshowable structure gets a warning and a digest, not a field list\n");
+    boot_unlocked_with_seed();
+
+    Eip712Render render;
+    memset(&render, 0, sizeof(render));
+    snprintf(render.primary_type, sizeof(render.primary_type), "Wide");
+    render.chain_id = 1;
+    render.has_chain_id = true;
+
+    uint8_t digest[32];
+    for (int i = 0; i < 32; i++) digest[i] = (uint8_t)i;
+
+    HDPath path = HDPATH_ETH_DEFAULT;
+    ui_request_sign_typed_data(&render, digest, true, &path,
+                               "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_SIGN_CONFIRM);
+
+    CHECK_SCREEN(fake_oled_contains("!BLIND SIGN!"),
+                 "a blind typed-data request is not marked as blind");
+    CHECK_SCREEN(fake_oled_contains("UNREADABLE DATA"), "no warning page");
+
+    press(BUTTON_DOWN);
+    press(BUTTON_DOWN);
+    CHECK_SCREEN(fake_oled_contains("keccak256:"), "the digest page is missing");
+    /* All 64 characters, four rows of sixteen, never a prefix: a truncated
+     * hash is trivially forged, and checking it against a second source is the
+     * only thing a blind approval has going for it. */
+    CHECK_SCREEN(fake_oled_contains("0001020304050607"), "digest row 1 missing");
+    CHECK_SCREEN(fake_oled_contains("08090a0b0c0d0e0f"), "digest row 2 missing");
+    CHECK_SCREEN(fake_oled_contains("1011121314151617"), "digest row 3 missing");
+    CHECK_SCREEN(fake_oled_contains("18191a1b1c1d1e1f"),
+                 "the last quarter of the digest is missing");
+    ui_sign_clear();
+}
+
 /* ------------------------------------------------- blind signing (T16) */
 
 /* Walk the settings list until `label` is the selected row. The list scrolls
@@ -1745,6 +1864,8 @@ int main(void)
     test_blind_confirmation_is_marked_and_shows_the_digest();
     test_a_decoded_call_is_not_marked_blind();
     test_message_confirmation_shows_all_of_it();
+    test_typed_data_confirmation_names_the_contract_and_the_amount();
+    test_blind_typed_data_leads_with_the_warning();
     test_the_signed_acknowledgement_actually_appears();
     test_host_passphrase_confirmation();
     test_harness_sees_the_screen();

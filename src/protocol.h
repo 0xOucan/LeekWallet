@@ -14,8 +14,25 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/** Largest frame the device will assemble in either direction. */
-#define PROTOCOL_MAX_FRAME 512
+/**
+ * Largest frame the device will assemble in either direction.
+ *
+ * Raised from 512 to make room for EIP-712 (T12b), and this is the one command
+ * whose request is genuinely large: typed data carries its own type
+ * definitions, and it has to, because the device recomputes the digest from
+ * them rather than trusting one the host worked out. An ERC-2612 `Permit`
+ * lands near 600 bytes and a Permit2 `PermitSingle` near 800 once the nested
+ * struct's types are spelled out. The alternative — a known-shapes table on the
+ * device — would mean signing a `Permit` whose declared type the device never
+ * actually read, which is the same trust the whole design refuses.
+ *
+ * Still far inside the 4 KB the specification allows and both host transports
+ * already accept (docs/PROTOCOL.md 2), so nothing off-device changes. The cost
+ * is one kilobyte of static RAM, rx_buf and tx_buf together, and it is spent
+ * where the peer still cannot dictate an allocation: the declared length is
+ * checked against this bound before a single byte is buffered.
+ */
+#define PROTOCOL_MAX_FRAME 1024
 
 /** Install the USB-Serial-JTAG driver and start the listener task. */
 void protocol_start(void);

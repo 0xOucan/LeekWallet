@@ -144,6 +144,28 @@ void ui_request_sign_message(const char *message, size_t length,
     snprintf(shown_from, sizeof(shown_from), "%s", from ? from : "");
 }
 
+/* Typed data. The rendering itself is eip712.c's business and is checked
+ * against the EIP's vectors in test_eip712.c; what matters at this tier is that
+ * the device asked at all, what digest it says it will sign, and whether it
+ * admitted to being blind. */
+static int          typed_prompts;
+static uint8_t      shown_typed_digest[32];
+static bool         shown_typed_blind;
+static Eip712Render shown_typed;
+
+void ui_request_sign_typed_data(const Eip712Render *render,
+                                const uint8_t digest[32], bool blind,
+                                const HDPath *path, const char *from)
+{
+    typed_prompts++;
+    shown_typed = *render;
+    memcpy(shown_typed_digest, digest, sizeof(shown_typed_digest));
+    shown_typed_blind = blind;
+    shown_path = *path;
+    shown_index = path->address_index;
+    snprintf(shown_from, sizeof(shown_from), "%s", from ? from : "");
+}
+
 void ui_request_passphrase_confirm(const char *address)
 {
     passphrase_prompts++;
@@ -265,7 +287,7 @@ static void collect_output(void)
 /** Frame a payload the way the device expects and hand it over. */
 static void send_frame(uint8_t type, const uint8_t *payload, size_t len)
 {
-    uint8_t frame[1024];
+    uint8_t frame[PROTOCOL_MAX_FRAME + 8];
     size_t body = len + 1;
 
     frame[0] = 'L';
@@ -286,7 +308,11 @@ static void send_plain(const uint8_t *payload, size_t len)
 
 static void send_encrypted(const uint8_t *payload, size_t len)
 {
-    uint8_t buf[512];
+    /* Sized to the device's own limit rather than to today's longest request:
+     * signTypedData carries its type definitions and is several times the size
+     * of anything else here, and a harness buffer that quietly overflowed
+     * would look exactly like a firmware bug. */
+    uint8_t buf[PROTOCOL_MAX_FRAME];
     memcpy(buf, payload, len);
     send_frame(T_ENC_REQUEST, buf, host_seal(buf, len));
 }
@@ -294,7 +320,7 @@ static void send_encrypted(const uint8_t *payload, size_t len)
 typedef struct {
     bool    present;
     uint8_t type;
-    uint8_t payload[512];
+    uint8_t payload[PROTOCOL_MAX_FRAME];
     size_t  len;
 } Frame;
 
@@ -443,7 +469,10 @@ static void fresh_device(void)
     confirm_requests = unlock_prompts = lock_requests = session_confirm_prompts = 0;
     sign_reports = 0;
     last_sign_report = -1;
-    message_prompts = passphrase_prompts = 0;
+    message_prompts = passphrase_prompts = typed_prompts = 0;
+    shown_typed_blind = false;
+    memset(&shown_typed, 0, sizeof(shown_typed));
+    memset(shown_typed_digest, 0, sizeof(shown_typed_digest));
     memset(shown_message, 0, sizeof(shown_message));
     shown_message_len = 0;
     memset(shown_passphrase_address, 0, sizeof(shown_passphrase_address));
@@ -1536,6 +1565,260 @@ static bool address_of_index_zero(char *out, size_t out_size)
     return cbor_text_copy(&it, out, out_size);
 }
 
+/* ------------------------------------------------------- signTypedData */
+
+/* An ERC-2612 Permit against USDC. The digest this hashes to is pinned in
+ * test_eip712.c against viem; here the question is only what the command does
+ * with it, so the value is a parameter and the rest is fixed.
+ *
+ * `field_type` is a parameter for one reason: swapping "uint256" for
+ * "uint256[]" turns a document the device can hash into one it cannot, without
+ * changing anything else about the request. */
+static size_t permit_request(uint8_t *buf, size_t cap, const uint8_t value[32],
+                             const char *field_type, uint32_t index)
+{
+    static const uint8_t USDC[20] = {
+        0xa0,0xb8,0x69,0x91,0xc6,0x21,0x8b,0x36,0xc1,0xd1,
+        0x9d,0x4a,0x2e,0x9e,0xb0,0xce,0x36,0x06,0xeb,0x48
+    };
+    static const uint8_t OWNER[20] = {
+        0x5b,0x38,0xda,0x6a,0x70,0x1c,0x56,0x85,0x45,0xdc,
+        0xfc,0xb0,0x3f,0xcb,0x87,0x5f,0x56,0xbe,0xdd,0xc4
+    };
+    static const uint8_t SPENDER[20] = {
+        0x11,0x11,0x11,0x12,0x54,0xee,0xb2,0x54,0x77,0xb6,
+        0x8f,0xb8,0x5e,0xd9,0x29,0xf7,0x3a,0x96,0x05,0x82
+    };
+
+    CborWriter w;
+    cbor_writer_init(&w, buf, cap);
+    cbor_write_map(&w, 6);
+
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signTypedData");
+
+    cbor_write_text(&w, "types");
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "EIP712Domain");
+    cbor_write_array(&w, 4);
+    static const char *dom_names[] = {"name", "version", "chainId", "verifyingContract"};
+    static const char *dom_types[] = {"string", "string", "uint256", "address"};
+    for (int i = 0; i < 4; i++) {
+        cbor_write_map(&w, 2);
+        cbor_write_text(&w, "name");
+        cbor_write_text(&w, dom_names[i]);
+        cbor_write_text(&w, "type");
+        cbor_write_text(&w, dom_types[i]);
+    }
+    cbor_write_text(&w, "Permit");
+    cbor_write_array(&w, 5);
+    static const char *p_names[] = {"owner", "spender", "value", "nonce", "deadline"};
+    for (int i = 0; i < 5; i++) {
+        cbor_write_map(&w, 2);
+        cbor_write_text(&w, "name");
+        cbor_write_text(&w, p_names[i]);
+        cbor_write_text(&w, "type");
+        cbor_write_text(&w, i < 2 ? "address" : (i == 2 ? field_type : "uint256"));
+    }
+
+    cbor_write_text(&w, "primaryType");
+    cbor_write_text(&w, "Permit");
+
+    cbor_write_text(&w, "domain");
+    cbor_write_map(&w, 4);
+    cbor_write_text(&w, "name");
+    cbor_write_text(&w, "USD Coin");
+    cbor_write_text(&w, "version");
+    cbor_write_text(&w, "2");
+    cbor_write_text(&w, "chainId");
+    cbor_write_uint(&w, 1);
+    cbor_write_text(&w, "verifyingContract");
+    cbor_write_bytes(&w, USDC, 20);
+
+    cbor_write_text(&w, "message");
+    cbor_write_map(&w, 5);
+    cbor_write_text(&w, "owner");
+    cbor_write_bytes(&w, OWNER, 20);
+    cbor_write_text(&w, "spender");
+    cbor_write_bytes(&w, SPENDER, 20);
+    cbor_write_text(&w, "value");
+    cbor_write_bytes(&w, value, 32);
+    cbor_write_text(&w, "nonce");
+    cbor_write_uint(&w, 0);
+    cbor_write_text(&w, "deadline");
+    cbor_write_uint(&w, 1893456000u);
+
+    cbor_write_text(&w, "index");
+    cbor_write_uint(&w, index);
+
+    return cbor_writer_ok(&w) ? w.length : 0;
+}
+
+static void test_sign_typed_data_signs_what_it_showed(void)
+{
+    printf("== signTypedData shows the domain and the fields, then signs that digest\n");
+    fresh_device();
+    device_unlocked();
+    confirmed_session(30);
+
+    uint8_t max[32];
+    memset(max, 0xff, sizeof(max));
+
+    uint8_t payload[2048];
+    size_t  len = permit_request(payload, sizeof(payload), max, "uint256", 3);
+    CHECK(len > 0, "the permit request did not fit");
+
+    scripted_outcome = SIGN_APPROVED;
+    send_encrypted(payload, len);
+    Frame f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE, "a well-formed Permit was refused");
+    CHECK(typed_prompts == 1, "the Permit was signed without a confirmation");
+    CHECK(!shown_typed_blind, "a renderable Permit was shown as blind");
+
+    /* The digest test_eip712.c pins against viem. Checked again here because
+     * this is the path where a signature actually comes out: a command that
+     * hashed correctly and then signed something else would pass every test in
+     * that file. */
+    static const uint8_t WANT[32] = {
+        0x42,0x3a,0x95,0x8e,0xc7,0x2d,0xaf,0x49, 0x6f,0xde,0x79,0xb1,0x2e,0x29,0x2d,0xd6,
+        0xed,0xe3,0x71,0xac,0x07,0x07,0xc0,0xcc, 0x84,0x8d,0xfe,0x6d,0x7d,0x45,0xd1,0x11,
+    };
+    CHECK(memcmp(shown_typed_digest, WANT, 32) == 0,
+          "the device signed a digest other than the Permit's");
+
+    /* The screen was given the fields, not a summary of them - and the
+     * infinite allowance is named rather than printed. */
+    CHECK(shown_typed.field_count == 5, "the screen got %d fields",
+          shown_typed.field_count);
+    CHECK(shown_typed.fields[2].unlimited,
+          "an infinite Permit reached the screen as an ordinary number");
+    CHECK(shown_typed.fields[4].is_deadline, "the deadline was not flagged");
+    CHECK(shown_typed.has_verifying_contract,
+          "the screen was not told which contract honours this");
+
+    /* Same reply shape as the other two signing commands, and the index the
+     * request asked for. */
+    CborItem it;
+    CHECK(cbor_map_find(f.payload, f.len, "result", &it), "no result map");
+    /* The signature rides in the result map; what matters here is that the
+     * path the screen saw is the path the request named. */
+    CHECK(shown_path.address_index == 3, "signed at index %u, asked for 3",
+          (unsigned)shown_path.address_index);
+}
+
+static void test_sign_typed_data_refuses_what_it_cannot_show(void)
+{
+    printf("== signTypedData refuses tiers, arrays, and structures it cannot render\n");
+    fresh_device();
+    device_has_a_wallet();
+
+    uint8_t value[32];
+    memset(value, 0, sizeof(value));
+    value[31] = 1;
+
+    uint8_t payload[2048];
+    size_t  len = permit_request(payload, sizeof(payload), value, "uint256", 0);
+
+    send_plain(payload, len);
+    expect_error(T_ERROR, E_SESSION, "signTypedData before any handshake");
+    CHECK(typed_prompts == 0, "a session-less request reached the screen");
+
+    confirmed_session(31);
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_NOT_UNLOCKED, "signTypedData while locked");
+    CHECK(typed_prompts == 0, "a locked device put typed data on screen");
+
+    pin_set("123456");
+    pin_verify("123456");
+
+    /* Nothing typed-data-shaped in the request at all. A protocol error, not a
+     * policy one, and it must not read as a refusal to display. */
+    CborWriter w;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 1);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signTypedData");
+    send_encrypted(payload, w.length);
+    expect_error(T_ENC_ERROR, E_MALFORMED, "signTypedData with no structure");
+
+    /* An array field. The device can neither hash nor show it, and this is the
+     * refusal blind signing does NOT reopen - checked below. */
+    len = permit_request(payload, sizeof(payload), value, "uint256[]", 0);
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_UNDECODABLE, "a typed-data array");
+    CHECK(typed_prompts == 0, "an array structure reached the screen");
+
+    CHECK(blind_signing_set(true), "could not enable blind signing");
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_UNDECODABLE,
+                 "an array structure with blind signing on");
+    CHECK(typed_prompts == 0,
+          "blind signing reopened a document the device cannot hash");
+    CHECK(blind_signing_set(false), "could not disable blind signing");
+}
+
+static void test_unrenderable_typed_data_is_the_blind_case(void)
+{
+    printf("== an unshowable structure is refused by default and blind-signable after\n");
+    fresh_device();
+    device_unlocked();
+    confirmed_session(32);
+
+    /* A string with no glyphs on this screen. It hashes perfectly well, which
+     * is exactly what separates it from the array above. */
+    CborWriter w;
+    uint8_t   payload[1024];
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 5);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signTypedData");
+    cbor_write_text(&w, "types");
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "EIP712Domain");
+    cbor_write_array(&w, 1);
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "name");
+    cbor_write_text(&w, "name");
+    cbor_write_text(&w, "type");
+    cbor_write_text(&w, "string");
+    cbor_write_text(&w, "Note");
+    cbor_write_array(&w, 1);
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "name");
+    cbor_write_text(&w, "body");
+    cbor_write_text(&w, "type");
+    cbor_write_text(&w, "string");
+    cbor_write_text(&w, "primaryType");
+    cbor_write_text(&w, "Note");
+    cbor_write_text(&w, "domain");
+    cbor_write_map(&w, 1);
+    cbor_write_text(&w, "name");
+    cbor_write_text(&w, "Notes");
+    cbor_write_text(&w, "message");
+    cbor_write_map(&w, 1);
+    cbor_write_text(&w, "body");
+    cbor_write_text(&w, "approve \xf0\x9f\x92\xb8 now");
+    size_t len = w.length;
+
+    send_encrypted(payload, len);
+    expect_error(T_ENC_ERROR, E_UNDECODABLE,
+                 "a structure the screen cannot draw");
+    CHECK(typed_prompts == 0, "an unrenderable structure reached the screen");
+
+    /* With the hatch open it signs — but the screen is told it is blind, so it
+     * can lead with the warning and the digest rather than a field list that
+     * would read as complete. */
+    CHECK(blind_signing_set(true), "could not enable blind signing");
+    scripted_outcome = SIGN_APPROVED;
+    send_encrypted(payload, len);
+    Frame f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE,
+          "blind signing did not admit an unrenderable structure");
+    CHECK(typed_prompts == 1, "it signed without asking");
+    CHECK(shown_typed_blind, "the screen was not told the request was blind");
+    CHECK(blind_signing_set(false), "could not disable blind signing");
+}
+
 static void test_select_wallet(void)
 {
     printf("== selectWallet moves between stored seeds, and refuses the rest\n");
@@ -1795,7 +2078,7 @@ static void ble_writer(const uint8_t *frame, size_t len)
  * marker, split it at the MTU, and deliver each chunk as its own GATT write. */
 static void ble_send_frame(uint8_t type, const uint8_t *payload, size_t len)
 {
-    uint8_t frame[1024];
+    uint8_t frame[PROTOCOL_MAX_FRAME + 8];
     size_t body = len + 1;
     frame[0] = (uint8_t)(body >> 8);
     frame[1] = (uint8_t)body;
@@ -2701,6 +2984,9 @@ int main(void)
     test_tampered_frame_tears_down_the_session();
     test_sign_message_signs_what_it_showed();
     test_sign_message_refuses_what_it_cannot_show();
+    test_sign_typed_data_signs_what_it_showed();
+    test_sign_typed_data_refuses_what_it_cannot_show();
+    test_unrenderable_typed_data_is_the_blind_case();
     test_select_wallet();
     test_set_passphrase();
     test_ble_carries_the_same_frames();

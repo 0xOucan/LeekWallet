@@ -9,6 +9,16 @@ import { encodeCbor, decodeCbor, type CborValue } from "../src/cbor.ts";
 import { encodeFrame, FrameDecoder, FrameType } from "../src/framing.ts";
 import { MockDevice } from "../src/mock-device.ts";
 import { ErrorCode } from "../src/transport.ts";
+import { toDeviceTypedData } from "../src/eip712.ts";
+import { PERMIT } from "./eip712-vectors.ts";
+
+/* A dapp's payload: bigints arrive as decimal strings over a JSON-RPC relay,
+ * and the transcription has to survive that, so the tests feed it that way. */
+const dappJson = (v: typeof PERMIT): Record<string, unknown> =>
+  JSON.parse(JSON.stringify(
+    { types: v.types, primaryType: v.primaryType, domain: v.domain, message: v.message },
+    (_k, value) => (typeof value === "bigint" ? value.toString() : value),
+  ));
 
 let failures = 0;
 const check = (c: boolean, m: string) => { if (!c) { console.log(`  FAIL: ${m}`); failures++; } };
@@ -453,6 +463,69 @@ async function main(): Promise<void> {
     check(dev.session === "none", "reopening left a session behind");
     const r = await call(dev, "getAddress", { path: "m/44'/60'/0'/0/0" });
     check(r.error?.code === ErrorCode.SessionRequired, "a new connection needs a new session");
+  }
+
+  group("signTypedData refuses what the firmware refuses, and no more");
+  {
+    const permit = toDeviceTypedData(dappJson(PERMIT));
+
+    const dev = await connected({ startUnlocked: true });
+    const ok = await call(dev, "signTypedData", { index: 0, ...permit });
+    check(ok.result !== undefined, "a well-formed Permit was refused");
+    check(
+      dev.confirmations.some((c) => c.includes("UNLIMITED value")),
+      `an infinite allowance was not named on the confirmation: ${dev.confirmations.join(" | ")}`,
+    );
+    check(
+      dev.confirmations.some((c) => c.includes("0xA0b86991")),
+      "the confirmation did not name the contract the Permit is for",
+    );
+
+    /* Hashable, unshowable. Refused by default; the same request is signed once
+     * the owner has turned blind signing on at the device, which is precisely
+     * the split protocol.c draws. */
+    const wide = {
+      types: {
+        EIP712Domain: [{ name: "name", type: "string" }],
+        Wide: Array.from({ length: 7 }, (_, i) => ({ name: `f${i}`, type: "uint256" })),
+      },
+      primaryType: "Wide",
+      domain: { name: "Wide" },
+      message: Object.fromEntries(Array.from({ length: 7 }, (_, i) => [`f${i}`, i])),
+    };
+    const refused = await call(dev, "signTypedData", {
+      index: 0, ...toDeviceTypedData(wide),
+    });
+    check(refused.error?.code === ErrorCode.Undecodable,
+          `an unshowable structure was not 0x0202: ${JSON.stringify(refused)}`);
+
+    const blind = await connected({ startUnlocked: true, blindSigning: true });
+    const admitted = await call(blind, "signTypedData", {
+      index: 0, ...toDeviceTypedData(wide),
+    });
+    check(admitted.result !== undefined, "blind signing did not admit an unshowable structure");
+    check(blind.confirmations.some((c) => c.startsWith("BLIND typed data")),
+          "the blind confirmation did not say it was blind");
+
+    /* An array is the other refusal, and the setting must not reach it: the
+     * device could not compute the digest, so signing would mean taking one
+     * from the host. */
+    const array = await call(blind, "signTypedData", {
+      index: 0,
+      types: {
+        EIP712Domain: [{ name: "name", type: "string" }],
+        Batch: [{ name: "amounts", type: "uint256[]" }],
+      },
+      primaryType: "Batch",
+      domain: { name: "Batch" },
+      message: { amounts: [1, 2] },
+    });
+    check(array.error?.code === ErrorCode.Undecodable,
+          "an array structure was not refused with blind signing on");
+
+    const empty = await call(dev, "signTypedData", { index: 0 });
+    check(empty.error?.code === ErrorCode.MalformedFrame,
+          "a request with no structure was not malformed");
   }
 
   group("latency is modelled");
