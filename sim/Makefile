@@ -257,7 +257,20 @@ test: all
 	  echo "== $$t"; ./$(BUILD)/$$t || fail=1; \
 	done; exit $$fail
 
+# The mock leg of T26. The firmware's own answers, written down as bytes for
+# the TypeScript suite to compare against.
+#
+# Regenerated rather than checked in and trusted: the file is a recording of
+# what protocol.c does today, so it has to be re-made from today's protocol.c
+# or the mock is being compared against a memory. check.sh runs this before the
+# app tests for exactly that reason, and git will show any change in the
+# firmware's answers as a diff in a reviewed file.
+VECTORS := ../app/packages/core/test/conformance-vectors.json
+
+conformance: $(BUILD)/test_protocol
+	./$(BUILD)/test_protocol --emit-vectors $(VECTORS)
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test asan clean
+.PHONY: all test asan conformance clean

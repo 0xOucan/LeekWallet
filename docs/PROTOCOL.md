@@ -758,7 +758,10 @@ permissive than the device:
   message)` — and the device displays the message in full on the confirmation
   screen before signing it. So the message must be printable ASCII (0x20–0x7E,
   no newlines or tabs) and at most 120 bytes, the six twenty-character rows the
-  screen has. Anything else is `0x0202`, refused *before* any prompt. Showing a
+  screen has. Text the screen cannot draw is `0x0202`; text that would not fit
+  is `0x0001`, a distinction this paragraph got wrong until the conformance
+  corpus in 6f compared it against the code. Either way, refused *before* any
+  prompt. Showing a
   mangled rendering of what is being signed, or a hash beside "undisplayable
   content", is the same bargain as blind signing (6bis) — the confirmation would
   carry no information. Non-ASCII messages are a real limitation and belong in
@@ -781,6 +784,47 @@ permissive than the device:
 above now states where the marker is present (USB) and where it is not (BLE),
 with the byte layout for each, because anything bridging to real hardware has to
 know and a mismatch looks like corruption rather than disagreement.
+
+## 6f. The mock leg, mechanised (T26 closed)
+
+Section 6e was written by hand, and by the time T26 came round it was already
+describing a mock that no longer existed in two places — including its own
+claim that an over-long `signMessage` is `0x0202`, which the firmware has never
+answered. A table maintained by whoever last remembered to update it is the
+same instrument that let the mock certify broken code twice.
+
+So the comparison is now made by machine and cannot be forgotten:
+
+    make -C sim conformance     # protocol.c answers 48 requests, byte for byte
+    pnpm --dir app test         # the mock answers the same bytes; diff or die
+
+`sim/test_protocol.c --emit-vectors` replays a fixed corpus through the real
+dispatch and records the request and the plaintext reply as hex.
+`app/packages/core/test/mock-conformance.test.ts` feeds the *same bytes* to
+`MockDevice` and compares frame type, map shape, every field name and every
+value. Only four fields are exempt from an exact comparison, because the mock
+has neither BIP32 nor secp256k1 — `address`, `r`, `s`, `yParity`, each still
+checked for shape — plus build identity and free-text error `message`s. Error
+`code`s are compared exactly. `./scripts/check.sh` regenerates the corpus
+before running the app suite, so a firmware change that alters an answer shows
+up as a mock failure in the same run rather than months later on a board.
+
+The first run found seven divergences. All seven were the **mock** being wrong,
+and all seven are fixed:
+
+| # | Firmware | Mock, before | Why the firmware is right |
+|---|---|---|---|
+| 9 | unknown method with no session → `0x0001` | `0x0400` "no session" | `dispatch()` matches the name first and only the handlers it found check the tier. Answering "pair with me first" for `getMnemonic` tells a stranger a method exists that does not |
+| 10 | undecodable calldata + blind signing on + a recipient → signs | always `0x0202` | The mock was *stricter*, which is not safe, only untested: the app's blind-signing branch had never been executed by anything |
+| 11 | `signMessage` over 120 bytes → `0x0001` | `0x0202` | Too long is a request the device could not have held; unrenderable is a screen it cannot draw. The app retries one and not the other |
+| 12 | `signMessage` with `""` → signs it | `0x0202` | `personal_sign("")` is a real dapp request and `eth_message_is_displayable()` accepts an empty string |
+| 13 | `selectWallet` with no `index` → `0x0001` | `{activeWallet:1}` | Defaulting made a host that dropped the field look correct here and select nothing there |
+| 14 | `setPassphrase` → `{address, passphrase:1}` | `{fingerprint:"3A7B1C22"}` | An invented eight-hex-digit field that is not a BIP32 fingerprint, and that no firmware sends. 6e settled this in the firmware and the mock never followed |
+| 15 | `setPassphrase` validates length and charset → `0x0001` | applied anything, including `""` | A passphrase enterable from the app but not from the device's own keyboard is a wallet the owner cannot reach without the app |
+
+`hello` is the one exchange the corpus cannot compare: the device answers with
+an X25519 public key and the mock has no key agreement at all. The test replays
+it only for its side effect, a session for the next request to travel inside.
 
 ## 7. Versioning
 

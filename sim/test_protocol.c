@@ -2967,7 +2967,526 @@ static void test_a_host_passphrase_dies_with_its_session(void)
     wallet_clear_passphrase();
 }
 
-int main(void)
+/* ==========================================================================
+ * The mock leg of the conformance suite (ROADMAP T26)
+ *
+ * The two transports above are compared against each other because both are
+ * this file's code. The Node mock is not: it lives in another language, in
+ * another package, and every host test in the repository is only as
+ * trustworthy as its agreement with what is compiled here. Twice it has
+ * drifted and certified code the device refuses.
+ *
+ * A prose specification did not hold that line and cannot, so the comparison
+ * is made mechanical: this pass replays a fixed corpus through the real
+ * dispatch and writes down, byte for byte, the request that went in and the
+ * plaintext reply that came out. mock-conformance.test.ts feeds the SAME
+ * bytes to MockDevice and compares. Neither side gets to describe its own
+ * behaviour in words.
+ *
+ * The requests are emitted rather than restated in TypeScript for the same
+ * reason the tests above hand-roll frames: a corpus written twice is two
+ * corpora, and they agree only until someone edits one of them.
+ * ========================================================================== */
+
+static const char *case_name_mock(int c);
+static int run_all_tests(void);
+
+typedef enum {
+    MC_PING,
+    MC_GET_FEATURES,
+    MC_GET_FEATURES_BLIND_ON,
+    MC_GET_STATUS_PLAIN,
+    MC_GET_STATUS_IN_SESSION,
+    MC_GET_STATUS_PLAIN_IN_SESSION,
+    MC_UNKNOWN_METHOD_NO_SESSION,
+    MC_UNKNOWN_METHOD_IN_SESSION,
+    MC_NO_METHOD_KEY,
+    MC_GET_ADDRESS_NO_SESSION,
+    MC_GET_ADDRESS_LOCKED,
+    MC_GET_ADDRESS_INDEX_0,
+    MC_GET_ADDRESS_INDEX_5,
+    MC_GET_ADDRESS_BY_PATH,
+    MC_GET_ADDRESS_HARDENED_INDEX,
+    MC_UNLOCK_WHILE_LOCKED,
+    MC_UNLOCK_WHILE_UNLOCKED,
+    MC_UNLOCK_NO_SESSION,
+    MC_LOCK,
+    MC_LOCK_NO_SESSION,
+    MC_SIGN_TX_TRANSFER,
+    MC_SIGN_TX_NO_CHAIN_ID,
+    MC_SIGN_TX_UNDECODABLE,
+    MC_SIGN_TX_UNDECODABLE_BLIND_ON,
+    MC_SIGN_TX_OVERSIZED_DATA,
+    MC_SIGN_TX_OVERSIZED_DATA_BLIND_ON,
+    MC_SIGN_TX_REJECTED,
+    MC_SIGN_TX_HARDENED_INDEX,
+    MC_SIGN_MESSAGE,
+    MC_SIGN_MESSAGE_AT_LIMIT,
+    MC_SIGN_MESSAGE_EMPTY,
+    MC_SIGN_MESSAGE_TOO_LONG,
+    MC_SIGN_MESSAGE_UNRENDERABLE,
+    MC_SIGN_MESSAGE_AS_BYTES,
+    MC_SIGN_MESSAGE_REJECTED,
+    MC_SIGN_TYPED_PERMIT,
+    MC_SIGN_TYPED_UNHASHABLE,
+    MC_SIGN_TYPED_UNRENDERABLE,
+    MC_SIGN_TYPED_UNRENDERABLE_BLIND_ON,
+    MC_SIGN_TYPED_MALFORMED,
+    MC_SELECT_WALLET_1,
+    MC_SELECT_WALLET_MISSING_INDEX,
+    MC_SELECT_WALLET_UNKNOWN,
+    MC_SET_PASSPHRASE,
+    MC_SET_PASSPHRASE_EMPTY,
+    MC_SET_PASSPHRASE_NON_ASCII,
+    MC_SET_PASSPHRASE_REJECTED,
+    MC_SET_PASSPHRASE_LOCKED,
+    MC_CASE_COUNT
+} MockCase;
+
+/* What the device has to be for the case to mean anything, in the four terms
+ * the mock also has: does it hold a seed, is the PIN in, is a session up, is
+ * blind signing on, and does the simulated user say yes. Written into the
+ * vector file so the TypeScript side configures an equivalent device rather
+ * than guessing from the case name. */
+typedef struct {
+    const char *name;
+    bool        wallet;
+    bool        unlocked;
+    bool        session;
+    bool        blind;
+    bool        approve;
+    bool        encrypted;      /* sent as 0x11 rather than 0x01 */
+} MockSetup;
+
+static MockSetup mock_setup(MockCase c)
+{
+    /* Defaults: a device with a seed, unlocked, session up, protections on,
+     * user approves. Each case names only what it changes. */
+    MockSetup s = { case_name_mock((int)c), true, true, true, false, true, true };
+
+    switch (c) {
+        case MC_PING:
+        case MC_GET_FEATURES:
+        case MC_GET_STATUS_PLAIN:
+        case MC_UNKNOWN_METHOD_NO_SESSION:
+        case MC_NO_METHOD_KEY:
+        case MC_GET_ADDRESS_NO_SESSION:
+        case MC_UNLOCK_NO_SESSION:
+        case MC_LOCK_NO_SESSION:
+            s.session = false;
+            s.unlocked = false;
+            s.encrypted = false;
+            break;
+        case MC_GET_FEATURES_BLIND_ON:
+            s.session = false; s.unlocked = false; s.encrypted = false;
+            s.blind = true;
+            break;
+        case MC_GET_STATUS_PLAIN_IN_SESSION:
+            s.encrypted = false;    /* session up, request sent in the clear */
+            break;
+        case MC_GET_ADDRESS_LOCKED:
+        case MC_UNLOCK_WHILE_LOCKED:
+        case MC_SET_PASSPHRASE_LOCKED:
+            s.unlocked = false;
+            break;
+        case MC_SIGN_TX_UNDECODABLE_BLIND_ON:
+        case MC_SIGN_TX_OVERSIZED_DATA_BLIND_ON:
+        case MC_SIGN_TYPED_UNRENDERABLE_BLIND_ON:
+            s.blind = true;
+            break;
+        case MC_SIGN_TX_REJECTED:
+        case MC_SIGN_MESSAGE_REJECTED:
+        case MC_SET_PASSPHRASE_REJECTED:
+            s.approve = false;
+            break;
+        default:
+            break;
+    }
+    return s;
+}
+
+/* The corpus. One buffer, one builder per case, and the frame type comes from
+ * the setup so a case cannot be sent down a channel its tier does not allow. */
+static size_t mock_request(MockCase c, uint8_t *buf, size_t cap)
+{
+    static const uint8_t TO[20] = {
+        0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,
+        0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0
+    };
+    static const uint8_t GARBAGE[36] = { 0xde, 0xad, 0xbe, 0xef };
+    static uint8_t huge[300] = { 0xde, 0xad, 0xbe, 0xef };
+    /* 1 token, as a 32-byte big-endian quantity - the shape signTypedData
+     * wants for a uint256. */
+    static uint8_t one_token[32];
+    one_token[31] = 1;
+
+    CborWriter w;
+
+    switch (c) {
+        case MC_PING:
+            return req(buf, cap, "ping");
+        case MC_GET_FEATURES:
+        case MC_GET_FEATURES_BLIND_ON:
+            return req(buf, cap, "getFeatures");
+        case MC_GET_STATUS_PLAIN:
+        case MC_GET_STATUS_IN_SESSION:
+        case MC_GET_STATUS_PLAIN_IN_SESSION:
+            return req(buf, cap, "getStatus");
+
+        /* The request that started all of this: an unknown method, which the
+         * cable answered and the radio did not. Here it asks a different
+         * question - whether the mock refuses it for the same REASON. */
+        case MC_UNKNOWN_METHOD_NO_SESSION:
+        case MC_UNKNOWN_METHOD_IN_SESSION:
+            return req(buf, cap, "getMnemonic");
+
+        case MC_NO_METHOD_KEY:
+            cbor_writer_init(&w, buf, cap);
+            cbor_write_map(&w, 1);
+            cbor_write_text(&w, "notmethod");
+            cbor_write_uint(&w, 1);
+            return cbor_writer_ok(&w) ? w.length : 0;
+
+        case MC_GET_ADDRESS_NO_SESSION:
+        case MC_GET_ADDRESS_LOCKED:
+        case MC_GET_ADDRESS_INDEX_0:
+            cbor_writer_init(&w, buf, cap);
+            cbor_write_map(&w, 2);
+            cbor_write_text(&w, "method");
+            cbor_write_text(&w, "getAddress");
+            cbor_write_text(&w, "index");
+            cbor_write_uint(&w, 0);
+            return cbor_writer_ok(&w) ? w.length : 0;
+
+        case MC_GET_ADDRESS_INDEX_5:
+            cbor_writer_init(&w, buf, cap);
+            cbor_write_map(&w, 2);
+            cbor_write_text(&w, "method");
+            cbor_write_text(&w, "getAddress");
+            cbor_write_text(&w, "index");
+            cbor_write_uint(&w, 5);
+            return cbor_writer_ok(&w) ? w.length : 0;
+
+        /* A path rather than an index. The two spellings have disagreed
+         * before, in both implementations and in opposite directions. */
+        case MC_GET_ADDRESS_BY_PATH:
+            cbor_writer_init(&w, buf, cap);
+            cbor_write_map(&w, 2);
+            cbor_write_text(&w, "method");
+            cbor_write_text(&w, "getAddress");
+            cbor_write_text(&w, "path");
+            cbor_write_text(&w, "m/44'/60'/0'/0/7");
+            return cbor_writer_ok(&w) ? w.length : 0;
+
+        case MC_GET_ADDRESS_HARDENED_INDEX:
+            cbor_writer_init(&w, buf, cap);
+            cbor_write_map(&w, 2);
+            cbor_write_text(&w, "method");
+            cbor_write_text(&w, "getAddress");
+            cbor_write_text(&w, "index");
+            cbor_write_uint(&w, 0x80000000u);
+            return cbor_writer_ok(&w) ? w.length : 0;
+
+        case MC_UNLOCK_WHILE_LOCKED:
+        case MC_UNLOCK_WHILE_UNLOCKED:
+        case MC_UNLOCK_NO_SESSION:
+            return req(buf, cap, "unlock");
+        case MC_LOCK:
+        case MC_LOCK_NO_SESSION:
+            return req(buf, cap, "lock");
+
+        case MC_SIGN_TX_TRANSFER:
+        case MC_SIGN_TX_REJECTED:
+            return native_transfer_request(buf, cap, TO, 0);
+
+        case MC_SIGN_TX_HARDENED_INDEX:
+            return native_transfer_request(buf, cap, TO, 0x80000000u);
+
+        case MC_SIGN_TX_NO_CHAIN_ID:
+            cbor_writer_init(&w, buf, cap);
+            cbor_write_map(&w, 2);
+            cbor_write_text(&w, "method");
+            cbor_write_text(&w, "signTransaction");
+            cbor_write_text(&w, "to");
+            cbor_write_bytes(&w, TO, 20);
+            return cbor_writer_ok(&w) ? w.length : 0;
+
+        case MC_SIGN_TX_UNDECODABLE:
+        case MC_SIGN_TX_UNDECODABLE_BLIND_ON:
+            return undecodable_request(buf, cap, TO, GARBAGE, sizeof(GARBAGE));
+
+        /* Over ETH_MAX_DATA. Emitted twice, once with the hatch open, because
+         * the two refusals differ in code and only one of them is reopened. */
+        case MC_SIGN_TX_OVERSIZED_DATA:
+        case MC_SIGN_TX_OVERSIZED_DATA_BLIND_ON:
+            return undecodable_request(buf, cap, TO, huge, sizeof(huge));
+
+        case MC_SIGN_MESSAGE:
+        case MC_SIGN_MESSAGE_REJECTED:
+            return sign_message_request(buf, cap, "hello from leek", 0);
+
+        /* Empty text. personal_sign("") is a real request a dapp can make, and
+         * the two implementations disagreed about it in the direction that is
+         * hardest to notice: the device signs it, the mock refused it. */
+        case MC_SIGN_MESSAGE_EMPTY:
+            return sign_message_request(buf, cap, "", 0);
+
+        case MC_SIGN_MESSAGE_AT_LIMIT: {
+            char at_limit[ETH_MAX_MESSAGE + 1];
+            memset(at_limit, 'B', ETH_MAX_MESSAGE);
+            at_limit[ETH_MAX_MESSAGE] = '\0';
+            return sign_message_request(buf, cap, at_limit, 0);
+        }
+        case MC_SIGN_MESSAGE_TOO_LONG: {
+            char over[ETH_MAX_MESSAGE + 2];
+            memset(over, 'B', ETH_MAX_MESSAGE + 1);
+            over[ETH_MAX_MESSAGE + 1] = '\0';
+            return sign_message_request(buf, cap, over, 0);
+        }
+        case MC_SIGN_MESSAGE_UNRENDERABLE:
+            return sign_message_request(buf, cap, "caf\xc3\xa9 \x01 now", 0);
+
+        case MC_SIGN_MESSAGE_AS_BYTES:
+            cbor_writer_init(&w, buf, cap);
+            cbor_write_map(&w, 2);
+            cbor_write_text(&w, "method");
+            cbor_write_text(&w, "signMessage");
+            cbor_write_text(&w, "message");
+            cbor_write_bytes(&w, (const uint8_t *)"hi", 2);
+            return cbor_writer_ok(&w) ? w.length : 0;
+
+        case MC_SIGN_TYPED_PERMIT:
+            return permit_request(buf, cap, one_token, "uint256", 0);
+        /* One character of the type changes a document the device can hash
+         * into one it cannot, and nothing else about the request moves. */
+        case MC_SIGN_TYPED_UNHASHABLE:
+            return permit_request(buf, cap, one_token, "uint256[]", 0);
+
+        case MC_SIGN_TYPED_UNRENDERABLE:
+        case MC_SIGN_TYPED_UNRENDERABLE_BLIND_ON:
+            /* Hashable, but carries a glyph the OLED does not have. */
+            cbor_writer_init(&w, buf, cap);
+            cbor_write_map(&w, 5);
+            cbor_write_text(&w, "method");
+            cbor_write_text(&w, "signTypedData");
+            cbor_write_text(&w, "types");
+            cbor_write_map(&w, 2);
+            cbor_write_text(&w, "EIP712Domain");
+            cbor_write_array(&w, 1);
+            cbor_write_map(&w, 2);
+            cbor_write_text(&w, "name");
+            cbor_write_text(&w, "name");
+            cbor_write_text(&w, "type");
+            cbor_write_text(&w, "string");
+            cbor_write_text(&w, "Note");
+            cbor_write_array(&w, 1);
+            cbor_write_map(&w, 2);
+            cbor_write_text(&w, "name");
+            cbor_write_text(&w, "body");
+            cbor_write_text(&w, "type");
+            cbor_write_text(&w, "string");
+            cbor_write_text(&w, "primaryType");
+            cbor_write_text(&w, "Note");
+            cbor_write_text(&w, "domain");
+            cbor_write_map(&w, 1);
+            cbor_write_text(&w, "name");
+            cbor_write_text(&w, "Notes");
+            cbor_write_text(&w, "message");
+            cbor_write_map(&w, 1);
+            cbor_write_text(&w, "body");
+            cbor_write_text(&w, "approve \xf0\x9f\x92\xb8 now");
+            return cbor_writer_ok(&w) ? w.length : 0;
+
+        case MC_SIGN_TYPED_MALFORMED:
+            /* No types, no domain: the host built it wrong, which is a
+             * different sentence from "the device cannot show this". */
+            cbor_writer_init(&w, buf, cap);
+            cbor_write_map(&w, 2);
+            cbor_write_text(&w, "method");
+            cbor_write_text(&w, "signTypedData");
+            cbor_write_text(&w, "primaryType");
+            cbor_write_text(&w, "Permit");
+            return cbor_writer_ok(&w) ? w.length : 0;
+
+        case MC_SELECT_WALLET_1:
+            return select_wallet_request(buf, cap, 1);
+        case MC_SELECT_WALLET_UNKNOWN:
+            return select_wallet_request(buf, cap, 9);
+        case MC_SELECT_WALLET_MISSING_INDEX:
+            return req(buf, cap, "selectWallet");
+
+        case MC_SET_PASSPHRASE:
+        case MC_SET_PASSPHRASE_REJECTED:
+        case MC_SET_PASSPHRASE_LOCKED:
+            return set_passphrase_request(buf, cap, "hunter2");
+        case MC_SET_PASSPHRASE_EMPTY:
+            return set_passphrase_request(buf, cap, "");
+        case MC_SET_PASSPHRASE_NON_ASCII:
+            return set_passphrase_request(buf, cap, "caf\xc3\xa9");
+
+        default:
+            return 0;
+    }
+}
+
+static const char *case_name_mock(int c)
+{
+    switch ((MockCase)c) {
+        case MC_PING:                          return "ping";
+        case MC_GET_FEATURES:                  return "getFeatures";
+        case MC_GET_FEATURES_BLIND_ON:         return "getFeatures, blind signing on";
+        case MC_GET_STATUS_PLAIN:              return "getStatus, no session";
+        case MC_GET_STATUS_IN_SESSION:         return "getStatus in a session";
+        case MC_GET_STATUS_PLAIN_IN_SESSION:   return "plaintext getStatus in a session";
+        case MC_UNKNOWN_METHOD_NO_SESSION:     return "unknown method, no session";
+        case MC_UNKNOWN_METHOD_IN_SESSION:     return "unknown method in a session";
+        case MC_NO_METHOD_KEY:                 return "a request with no method";
+        case MC_GET_ADDRESS_NO_SESSION:        return "getAddress with no session";
+        case MC_GET_ADDRESS_LOCKED:            return "getAddress while locked";
+        case MC_GET_ADDRESS_INDEX_0:           return "getAddress index 0";
+        case MC_GET_ADDRESS_INDEX_5:           return "getAddress index 5";
+        case MC_GET_ADDRESS_BY_PATH:           return "getAddress by path";
+        case MC_GET_ADDRESS_HARDENED_INDEX:    return "getAddress index above 0x7FFFFFFF";
+        case MC_UNLOCK_WHILE_LOCKED:           return "unlock while locked";
+        case MC_UNLOCK_WHILE_UNLOCKED:         return "unlock while already unlocked";
+        case MC_UNLOCK_NO_SESSION:             return "unlock with no session";
+        case MC_LOCK:                          return "lock";
+        case MC_LOCK_NO_SESSION:               return "lock with no session";
+        case MC_SIGN_TX_TRANSFER:              return "signTransaction, native transfer";
+        case MC_SIGN_TX_NO_CHAIN_ID:           return "signTransaction with no chainId";
+        case MC_SIGN_TX_UNDECODABLE:           return "signTransaction, undecodable calldata";
+        case MC_SIGN_TX_UNDECODABLE_BLIND_ON:  return "signTransaction, undecodable calldata, blind signing on";
+        case MC_SIGN_TX_OVERSIZED_DATA:        return "signTransaction, oversized calldata";
+        case MC_SIGN_TX_OVERSIZED_DATA_BLIND_ON: return "signTransaction, oversized calldata, blind signing on";
+        case MC_SIGN_TX_REJECTED:              return "signTransaction rejected on device";
+        case MC_SIGN_TX_HARDENED_INDEX:        return "signTransaction index above 0x7FFFFFFF";
+        case MC_SIGN_MESSAGE:                  return "signMessage";
+        case MC_SIGN_MESSAGE_AT_LIMIT:         return "signMessage at the display limit";
+        case MC_SIGN_MESSAGE_EMPTY:            return "signMessage with empty text";
+        case MC_SIGN_MESSAGE_TOO_LONG:         return "signMessage one byte over the limit";
+        case MC_SIGN_MESSAGE_UNRENDERABLE:     return "signMessage the screen cannot draw";
+        case MC_SIGN_MESSAGE_AS_BYTES:         return "signMessage sent as bytes";
+        case MC_SIGN_MESSAGE_REJECTED:         return "signMessage rejected on device";
+        case MC_SIGN_TYPED_PERMIT:             return "signTypedData, ERC-2612 permit";
+        case MC_SIGN_TYPED_UNHASHABLE:         return "signTypedData the device cannot hash";
+        case MC_SIGN_TYPED_UNRENDERABLE:       return "signTypedData the screen cannot draw";
+        case MC_SIGN_TYPED_UNRENDERABLE_BLIND_ON: return "signTypedData the screen cannot draw, blind signing on";
+        case MC_SIGN_TYPED_MALFORMED:          return "signTypedData with no types";
+        case MC_SELECT_WALLET_1:               return "selectWallet 1";
+        case MC_SELECT_WALLET_MISSING_INDEX:   return "selectWallet with no index";
+        case MC_SELECT_WALLET_UNKNOWN:         return "selectWallet, no such wallet";
+        case MC_SET_PASSPHRASE:                return "setPassphrase";
+        case MC_SET_PASSPHRASE_EMPTY:          return "setPassphrase, empty";
+        case MC_SET_PASSPHRASE_NON_ASCII:      return "setPassphrase, not printable ASCII";
+        case MC_SET_PASSPHRASE_REJECTED:       return "setPassphrase rejected on device";
+        case MC_SET_PASSPHRASE_LOCKED:         return "setPassphrase while locked";
+        default:                               return "?";
+    }
+}
+
+static void write_hex(FILE *out, const uint8_t *bytes, size_t len)
+{
+    for (size_t i = 0; i < len; i++) fprintf(out, "%02x", bytes[i]);
+}
+
+/** Run one case against the real dispatch and write its vector. */
+static void emit_case(FILE *out, MockCase c, bool first)
+{
+    MockSetup s = mock_setup(c);
+
+    fresh_device();
+    if (s.wallet) {
+        device_has_a_wallet();
+    }
+    if (s.unlocked) {
+        pin_set("123456");
+        pin_verify("123456");
+    }
+    if (s.blind) {
+        CHECK(blind_signing_set(true), "%s: could not enable blind signing", s.name);
+    }
+    if (s.session) {
+        confirmed_session((uint8_t)(0x80 + c));
+    }
+    scripted_outcome = s.approve ? SIGN_APPROVED : SIGN_REJECTED;
+
+    uint8_t payload[1024];
+    size_t len = mock_request(c, payload, sizeof(payload));
+    if (len == 0) {
+        printf("  FAIL: %s: the request did not fit its buffer\n", s.name);
+        failures++;
+        return;
+    }
+
+    if (s.encrypted) {
+        send_encrypted(payload, len);
+    } else {
+        send_plain(payload, len);
+    }
+
+    Frame f = next_reply();
+    if (!f.present) {
+        /* Silence is the one answer that cannot be compared, and the one that
+         * kills a session. Nothing downstream can catch it, so it dies here. */
+        printf("  FAIL: %s: the device did not answer at all\n", s.name);
+        failures++;
+        return;
+    }
+
+    fprintf(out, "%s\n  {\n", first ? "" : ",");
+    fprintf(out, "    \"name\": \"%s\",\n", s.name);
+    fprintf(out, "    \"setup\": { \"wallet\": %s, \"unlocked\": %s, "
+                 "\"session\": %s, \"blindSigning\": %s, \"approve\": %s },\n",
+            s.wallet ? "true" : "false", s.unlocked ? "true" : "false",
+            s.session ? "true" : "false", s.blind ? "true" : "false",
+            s.approve ? "true" : "false");
+    fprintf(out, "    \"frameType\": %u,\n", s.encrypted ? T_ENC_REQUEST : T_REQUEST);
+    fprintf(out, "    \"request\": \"");
+    write_hex(out, payload, len);
+    fprintf(out, "\",\n");
+    fprintf(out, "    \"replyType\": %u,\n", f.type);
+    fprintf(out, "    \"reply\": \"");
+    write_hex(out, f.payload, f.len);
+    fprintf(out, "\"\n  }");
+
+    /* Whatever the case left on, the next one starts from a fresh device -
+     * except this, which is cached outside the simulated flash. */
+    blind_signing_set(false);
+}
+
+static int emit_vectors(const char *path)
+{
+    FILE *out = fopen(path, "w");
+    if (!out) {
+        fprintf(stderr, "cannot write %s\n", path);
+        return 1;
+    }
+
+    fprintf(out, "[");
+    for (int c = 0; c < MC_CASE_COUNT; c++) {
+        emit_case(out, (MockCase)c, c == 0);
+    }
+    fprintf(out, "\n]\n");
+    fclose(out);
+
+    printf("wrote %d conformance vectors to %s\n", (int)MC_CASE_COUNT, path);
+    return failures ? 1 : 0;
+}
+
+int main(int argc, char **argv)
+{
+    /* Emitting is a mode rather than a second binary: the corpus has to go
+     * through the same stubs, the same fixtures and the same real protocol.c
+     * the suite below exercises, and a separate program would be a second
+     * copy of all three that drifts from this one exactly as the mock did. */
+    if (argc == 3 && strcmp(argv[1], "--emit-vectors") == 0) {
+        return emit_vectors(argv[2]);
+    }
+
+    return run_all_tests();
+}
+
+static int run_all_tests(void)
 {
     test_nothing_is_answered_before_a_transport_is_chosen();
     test_plaintext_ping_and_features();

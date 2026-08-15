@@ -272,7 +272,7 @@ Write the protocol spec first and both sides build against it simultaneously.
 | ~~T25b~~ ✅ | Firmware protocol endpoint over USB-Serial-JTAG, sync-marked so it shares the console port. `scripts/probe-device.py` talks to it | T20 | ping/getFeatures/getStatus answered on hardware; key commands correctly refused |
 | ~~T25c~~ ✅ | Session layer wired in: X25519 handshake, on-device passkey comparison screen, encrypted frames, `getAddress` behind a confirmed session | T25b | handshake works on hardware; key commands refused without confirmation |
 | ~~T56~~ ✅ | Configurable BLE device name, as Ledger allows. Affects advertising, so it is also a privacy control: a name is broadcast to anyone scanning | T25 | name set on-device, persists, appears in the advertisement. Settings → BLE Name; `src/ble-name.c` bounds it at 29 bytes, the scan-response limit, and REFUSES anything longer rather than truncating — an over-long name would make `ble_gap_adv_rsp_set_fields()` reject the lot and the radio would silently never advertise |
-| T26 | Conformance suite against mock, BLE firmware, USB firmware | T23, T25, T25b | all three identical — this is what keeps the two transports honest. **USB and BLE done**: `sim/test_protocol.c` runs the real `protocol.c` on the host and found 12 divergences ([PROTOCOL.md 6e](docs/PROTOCOL.md)); every conformance case now runs down BOTH channels and the replies are compared, after `getMnemonic` was answered on the cable and silently dropped on the radio. Mock still outstanding |
+| ~~T26~~ ✅ | Conformance suite against mock, BLE firmware, USB firmware | T23, T25, T25b | all three identical, and compared by machine rather than by document. **USB and BLE**: `sim/test_protocol.c` runs the real `protocol.c` on the host and found 12 divergences ([PROTOCOL.md 6e](docs/PROTOCOL.md)); every conformance case runs down BOTH channels and the replies are compared, after `getMnemonic` was answered on the cable and silently dropped on the radio. **Mock**: `--emit-vectors` records what the firmware answers to a 48-request corpus, byte for byte, and `mock-conformance.test.ts` feeds the same bytes to `MockDevice` and diffs frame type, map shape, field names, values and error codes — only `address`/`r`/`s`/`yParity` are exempt, since the mock has no BIP32 and no secp256k1, and those are still checked for shape. Seven more divergences, all of them the mock ([PROTOCOL.md 6f](docs/PROTOCOL.md)): `setPassphrase` answered an invented `fingerprint` field, `selectWallet` with no index selected wallet 1 instead of refusing, blind signing was unreachable on `signTransaction`, an over-long message and an empty one both got the wrong code, and an unknown method with no session claimed to need pairing. `./scripts/check.sh` regenerates the corpus before the app suite, so a firmware change that alters an answer fails in the same run |
 
 T23 is the highest-leverage item in the plan: it decouples Track D from all firmware work.
 
@@ -439,9 +439,10 @@ What is left, in the order it matters:
    uninitialised `rustls-platform-verifier` that *panicked* and so hung every RPC
    with no error to show, and a Tauri entry point silently lost to a misplaced
    `#[cfg_attr]`. None of them were reachable without the hardware.
-3. **T26** — the mock leg of the conformance suite. USB and BLE already run
-   against each other; the mock is the one that has twice certified code that
-   could not work.
+3. ~~**T26**~~ — done. The mock leg is no longer a document: the firmware
+   records its own answers and the TypeScript suite diffs the mock against
+   them, which turned up seven divergences on the first run, every one of them
+   the mock.
 4. Then the smaller open rows: **T45a** (the app cannot reach the device's
    account level), **T40** (host passphrase entry), **T39b** (XFP on screen),
    **T52** (the coin abstraction, worth doing before a second chain rather

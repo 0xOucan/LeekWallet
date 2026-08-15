@@ -233,15 +233,21 @@ export class MockDevice implements Transport {
       method === "hello" || method === "getFeatures" ||
       method === "getStatus" || method === "ping";
 
+    /* A method that does not exist is malformed BEFORE it is unauthorised, and
+     * that order is the firmware's rather than the tidier-looking one: dispatch
+     * in protocol.c matches the name first and only the handlers it found check
+     * the session. So `getMnemonic` with no session is 0x0001 on the device and
+     * was 0x0400 here — the mock telling a host that a method it does not have
+     * exists and merely needs pairing. */
+    const handler = this.handlers[method];
+    if (!handler) {
+      return this.error(ErrorCode.MalformedFrame, `unknown method ${method}`);
+    }
+
     /* PENDING is not established. Until the user has compared the passkey,
      * the device refuses everything else, and so must this. */
     if (!preSession && this.sessionState !== "active") {
       return this.error(ErrorCode.SessionRequired, "no session");
-    }
-
-    const handler = this.handlers[method];
-    if (!handler) {
-      return this.error(ErrorCode.MalformedFrame, `unknown method ${method}`);
     }
 
     try {
@@ -340,7 +346,14 @@ export class MockDevice implements Transport {
 
     selectWallet: (p) => {
       this.requireUnlocked();
-      const index = Number(p["index"] ?? 1);
+      /* No index is a malformed request, not wallet 1. Defaulting made the
+       * mock answer `{activeWallet:1}` where the device answers 0x0001, and a
+       * host that lost the field would look correct here and select nothing
+       * there. */
+      const index = p["index"];
+      if (typeof index !== "number" || !Number.isInteger(index)) {
+        throw new MockRejection(ErrorCode.MalformedFrame, "index required");
+      }
       if (index < 1 || index > this.opts.walletCount) {
         throw new MockRejection(ErrorCode.NoWallet, `no wallet ${index}`);
       }
@@ -350,11 +363,44 @@ export class MockDevice implements Transport {
       return { activeWallet: index };
     },
 
-    setPassphrase: () => {
+    setPassphrase: (p) => {
       this.requireUnlocked();
-      this.confirm("Confirm wallet fingerprint on device");
+
+      /* The passphrase was not looked at here at all: any request applied one,
+       * including an empty one and one the device's own keyboard cannot type.
+       * protocol.c bounds it at 1..63 printable-ASCII bytes and refuses the
+       * rest as malformed — an empty string is the base wallet, not a
+       * passphrase, and a wallet reachable from the app but not from the device
+       * is one the owner cannot get back to without the app. */
+      const raw = p["passphrase"];
+      if (typeof raw !== "string") {
+        throw new MockRejection(ErrorCode.MalformedFrame, "passphrase required");
+      }
+      if (raw.length === 0 || raw.length > PASSPHRASE_MAX_BYTES) {
+        throw new MockRejection(ErrorCode.MalformedFrame, "passphrase length out of range");
+      }
+      if (!/^[\x20-\x7e]+$/.test(raw)) {
+        throw new MockRejection(ErrorCode.MalformedFrame, "passphrase must be printable ASCII");
+      }
+
+      /* The device applies it, derives the resulting wallet and asks the owner
+       * to recognise the ADDRESS. That address is the whole safety argument for
+       * letting a host type a passphrase at all, so it is what the reply
+       * carries. The mock used to answer `{fingerprint}`, a field no firmware
+       * ever sends, which meant app code could be written against a
+       * confirmation the device cannot produce.
+       *
+       * Account 0 whatever the device is browsing, as protocol.c does: the
+       * question the screen asks is which SEED, and the answer must not depend
+       * on an unrelated menu setting. */
+      const address = mockAddress("0", this.activeWallet, true);
+      this.confirm(`Confirm passphrase wallet ${address} on device`);
+      /* Set only after the confirmation: a rejection must leave the device in
+       * the wallet it was already in, or the owner ends up signing from one
+       * they refused. confirm() throws on refusal, so this line is the
+       * approval. */
       this.passphraseActive = true;
-      return { fingerprint: "3A7B1C22" };
+      return { address, passphrase: 1 };
     },
 
     getAddress: (p) => {
@@ -405,15 +451,33 @@ export class MockDevice implements Transport {
        * which has happened twice. */
       const { ok, call } = isDecodable({ to, data: p["data"] });
       if (!ok) {
-        throw new MockRejection(
-          ErrorCode.Undecodable,
-          "this device cannot show what that call does",
-        );
+        /* The escape hatch (T16), and exactly as narrow as protocol.c makes it:
+         * blind signing on AND a recipient still present. The mock refused
+         * both cases unconditionally, which reads as the safer error to make
+         * but is the same class of bug in the other direction — an app whose
+         * blind-signing branch nothing ever executed, certified by a mock that
+         * could not reach it. Contract creation stays refused however the
+         * setting is set: with no recipient the confirmation has nothing true
+         * left on it. */
+        const hasTo = to instanceof Uint8Array ? to.length === 20 : typeof to === "string" && to.length > 2;
+        if (!(hasTo && this.opts.blindSigning)) {
+          throw new MockRejection(
+            ErrorCode.Undecodable,
+            "this device cannot show what that call does",
+          );
+        }
       }
 
       // The confirmation names the source as well as the destination: a host
       // that quietly changes the path must be visible on the device (T47).
-      this.confirm(`Sign ${describeCall(call)} from ${path} to ${toHex}`);
+      /* A blind confirmation is a different screen, not a vaguer one: it leads
+       * with the warning, because the only true things left on it are the
+       * recipient and the amount. */
+      this.confirm(
+        ok
+          ? `Sign ${describeCall(call)} from ${path} to ${toHex}`
+          : `BLIND call from ${path} to ${toHex}`,
+      );
       /* `{index, r, s, yParity}` - the device's shape. yParity is 0 or 1 and
        * never the legacy 27/28: a client that masks the low bit of 27 inverts
        * it, and the resulting signature recovers to an address nobody owns,
@@ -447,8 +511,21 @@ export class MockDevice implements Transport {
        * string - it is written for calldata and reads text as hex. Printable
        * ASCII makes the two the same number, which is exactly why the
        * printability check comes first. */
-      const printable = /^[\x20-\x7e]+$/.test(raw);
-      if (!printable || raw.length > MESSAGE_MAX_BYTES) {
+      /* Two refusals, two codes, and in the firmware's order. Too long is
+       * MALFORMED: the host built a request the device could not have held,
+       * and no setting reopens it. Unrenderable is UNDECODABLE: the bytes
+       * fitted, the screen has no glyphs for them. The mock answered 0x0202 to
+       * both, so a client branching on the two — and the app does, since one is
+       * worth retrying shorter and the other is not — was tested against a
+       * distinction that did not exist here. */
+      if (raw.length > MESSAGE_MAX_BYTES) {
+        throw new MockRejection(ErrorCode.MalformedFrame, "message too long to display");
+      }
+      /* `*`, not `+`: the empty message is displayable and the device signs it.
+       * personal_sign("") is a request dapps really make, and a mock that
+       * refused it meant app code could carry a branch for an error the
+       * hardware never sends. */
+      if (!/^[\x20-\x7e]*$/.test(raw)) {
         throw new MockRejection(
           ErrorCode.Undecodable,
           "this device cannot display that message",
@@ -553,6 +630,9 @@ const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")
 
 /** `ETH_MAX_DATA` in src/eth.h — what the device can hold and describe. */
 const ETH_MAX_DATA = 256;
+
+/** Longest passphrase protocol.c will accept: 63 bytes plus its terminator. */
+const PASSPHRASE_MAX_BYTES = 63;
 
 /** Highest address index the device will derive; see protocol.c. */
 const MAX_ADDRESS_INDEX = 0x7fffffff;

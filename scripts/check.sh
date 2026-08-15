@@ -50,6 +50,14 @@ if [[ "$WHAT" == "all" || "$WHAT" == "sim" ]]; then
 fi
 
 if [[ "$WHAT" == "all" || "$WHAT" == "app" ]]; then
+    # Re-record what the firmware answers before the TypeScript suite compares
+    # the mock against it. Deliberately not a checked-in file that is merely
+    # trusted: a corpus generated from an older protocol.c would let the mock
+    # agree with a device that no longer exists, which is the same class of
+    # mistake as the divergences this catches. Cheap - it is one already-built
+    # binary replaying 48 requests.
+    run "conformance vectors" make -C sim conformance
+
     if command -v pnpm >/dev/null 2>&1; then
         run "app tests" pnpm --dir app test
         run "app typecheck" pnpm --dir app typecheck
