@@ -8,9 +8,17 @@
  * looking.
  *
  * So the rule is narrow and absolute: **derived state is only valid for the
- * exact (unlocked, wallet, passphrase) tuple it was derived under.** Any change
- * invalidates it, including a change the user made on the device without
- * telling the app.
+ * exact (unlocked, wallet, passphrase, account) tuple it was derived under.**
+ * Any change invalidates it, including a change the user made on the device
+ * without telling the app.
+ *
+ * `account` joined that tuple late. The device has always had an account
+ * selector — a separate identity off the same seed — but it was invisible to
+ * the host, so turning it on the device left the app listing the old account's
+ * addresses with nothing saying so. Signing was never at risk (the device
+ * renders the whole path on its confirmation screens), but a receive address
+ * copied from the app while the device browsed elsewhere is somebody watching
+ * the wrong balance.
  */
 
 export interface DeviceStatus {
@@ -19,6 +27,14 @@ export interface DeviceStatus {
   activeWallet: number;
   /** Whether a passphrase is applied. Never *which* one — see docs/VAULT.md. */
   passphrase: boolean;
+  /**
+   * The BIP44 account the device's own screens are browsing.
+   *
+   * Not a secret and not a security boundary: every account comes off the same
+   * master key, so anyone with the seed can derive all of them. It separates
+   * identities, it does not hide them.
+   */
+  account: number;
 }
 
 export const UNKNOWN_STATUS: DeviceStatus = {
@@ -26,6 +42,7 @@ export const UNKNOWN_STATUS: DeviceStatus = {
   walletCount: 0,
   activeWallet: 0,
   passphrase: false,
+  account: 0,
 };
 
 /**
@@ -40,6 +57,7 @@ export function derivationsInvalidated(before: DeviceStatus, after: DeviceStatus
   if (!before.unlocked && after.unlocked) return true;      // fresh unlock, passphrase may differ
   if (before.activeWallet !== after.activeWallet) return true;
   if (before.passphrase !== after.passphrase) return true;
+  if (before.account !== after.account) return true;
   return false;
 }
 

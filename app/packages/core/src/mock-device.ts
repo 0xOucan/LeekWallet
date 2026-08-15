@@ -140,6 +140,14 @@ export class MockDevice implements Transport {
     this.unlocked = this.opts.startUnlocked;
   }
 
+  /**
+   * The BIP44 account the simulated device's own screens are on.
+   *
+   * Settable so a test can do what a user does with the button: change it
+   * behind the app's back and check the app notices.
+   */
+  hdAccount = 0;
+
   get isOpen(): boolean {
     return this.opened;
   }
@@ -271,6 +279,9 @@ export class MockDevice implements Transport {
       walletCount: this.opts.walletCount,
       activeWallet: this.activeWallet,
       passphrase: this.passphraseActive ? 1 : 0,
+      /* Reported like the real device, so the mock cannot certify an app that
+       * ignores the field -- the failure this suite exists to catch. */
+      account: this.hdAccount,
     }),
 
     /**

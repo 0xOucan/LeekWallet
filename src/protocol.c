@@ -511,7 +511,13 @@ static void dispatch(const uint8_t *payload, size_t len)
         WalletStatus status = wallet_get_status();
         cbor_write_map(&w, 1);
         cbor_write_text(&w, "result");
-        cbor_write_map(&w, 4);
+        cbor_write_map(&w, 5);
+        /* The account the device's own screens are on. Reported so the host can
+         * follow it: the app invalidates everything it derived whenever this
+         * changes, exactly as it does for the passphrase, which stops the
+         * device browsing one account while the app lists another. */
+        cbor_write_text(&w, "account");
+        cbor_write_uint(&w, ui_hd_account());
         cbor_write_text(&w, "activeWallet");
         cbor_write_uint(&w, status.active_wallet_index);
         cbor_write_text(&w, "passphrase");

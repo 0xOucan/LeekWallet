@@ -174,6 +174,18 @@ void ui_poll_deferred(void);
  * Called from the protocol task when a handshake begins. The UI task picks it
  * up on its next pass rather than switching screens from another task.
  */
+/**
+ * Which BIP44 account the device's own screens are browsing.
+ *
+ * Exposed so `getStatus` can report it. The host derives under whatever path it
+ * asks for and does not have to agree with this — but if it does not *know*
+ * what the device is set to, the device's address browser and the app's address
+ * list can show different addresses for the same wallet with nothing saying so.
+ * That is a receive-side hazard only: every signing confirmation renders the
+ * whole path, so nothing can be signed from an account the user did not see.
+ */
+uint32_t ui_hd_account(void);
+
 void ui_request_session_confirm(void);
 
 /**
