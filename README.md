@@ -626,7 +626,11 @@ does it this way, and what it would take to make it trustworthy on-device, is in
 [docs/CLEAR-SIGNING.md](docs/CLEAR-SIGNING.md) — a research spike, not a plan of record.
 
 Visual language — minimal, mono-forward, no pixel art — is specified in
-[docs/DESIGN.md](docs/DESIGN.md).
+[docs/DESIGN.md](docs/DESIGN.md). What the companion owes a user who cannot see
+it is in [docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md), which treats one thing
+as a security requirement rather than a courtesy: if the app cannot tell you
+that the device is waiting for a confirmation, the confirmation is not doing its
+job.
 
 See [ROADMAP.md](ROADMAP.md) for the detailed task breakdown, and
 [NEXT-SESSION.md](NEXT-SESSION.md) for a cold-start brief covering current

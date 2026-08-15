@@ -8,6 +8,13 @@
   --bg:        #F4F5F2;
   --surface:   #FFFFFF;
   --border:    #D8DCD6;
+  /* The edge of anything you can operate, kept separate from --border for one
+   * reason: WCAG 1.4.11 asks 3:1 of a control's boundary, and a button here is
+   * surface-on-surface — the border is the only thing that says it is a button
+   * at all. --border measures 1.39:1 against surface, so it may go on panels
+   * and rules and must not go on a button, an input or a select. Measured:
+   * 3.75:1 on surface, 3.42:1 on bg (docs/ACCESSIBILITY.md). */
+  --control-border: #7E867F;
   --text:      #1A1D1A;
   --muted:     #5E665F;
   --accent:    #3F6E31;
@@ -35,6 +42,7 @@
  * in-app toggle, and the attribute alone ignores the OS. */
 :root[data-theme="dark"] {
   --bg: #0F1210; --surface: #171B18; --border: #2A302B;
+  --control-border: #6A716B;
   --text: #E8EDE9; --muted: #909A91;
   --accent: #7ABF6A; --accent-fg: #0F1210;
   --danger: #E5796A; --warn: #D9A441; --ok: #7ABF6A;
@@ -43,6 +51,7 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0F1210; --surface: #171B18; --border: #2A302B;
+    --control-border: #6A716B;
     --text: #E8EDE9; --muted: #909A91;
     --accent: #7ABF6A; --accent-fg: #0F1210;
     --danger: #E5796A; --warn: #D9A441; --ok: #7ABF6A;

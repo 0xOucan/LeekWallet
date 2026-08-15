@@ -8,45 +8,75 @@
   </head>
   <body>
     <div class="app">
+      <a class="visually-hidden skiplink" href="#main">Skip to the main content</a>
+      <!-- The whole bar is one status region. The dot is colour and nothing
+           else, so it is kept out of the accessibility tree and the sentence
+           beside it does the work; a screen reader that announced "circle"
+           would be announcing the decoration and not the state. -->
       <header class="statusbar">
-        <span class="statusbar__dot" id="dot" data-state="disconnected"></span>
-        <span id="conn">Disconnected</span>
+        <span class="statusbar__dot" id="dot" data-state="disconnected" aria-hidden="true"></span>
+        <span id="conn" role="status">Disconnected</span>
         <span class="statusbar__spacer"></span>
-        <span class="muted" id="wallet"></span>
+        <span class="muted" id="wallet" role="status"></span>
         <span class="badge" id="mode" title="Which backend this window is using">—</span>
         <button class="ghost" id="theme" aria-label="Toggle theme">◐</button>
       </header>
 
-      <main>
-        <div class="notice notice--danger">
+      <!--
+        Where the device's own demands are announced.
+
+        Confirming on the device is a security step, not a convenience: the
+        page tells you to compare a passkey, to type a PIN, to read every page
+        of a transaction. Those lines are written to the log, which is a
+        scrolling text box a screen-reader user has no reason to be sitting in
+        at the moment they appear. A user who cannot tell that the device is
+        waiting is a user who either misses the confirmation or presses the
+        button on the device without having been told what it is for — and the
+        second is the failure this whole flow exists to prevent.
+
+        assertive, and deliberately: this interrupts. It carries only the
+        handful of lines in main.ts and wc/ui.ts that mean "the device is
+        waiting for you", never ordinary log traffic, so it interrupts about as
+        often as the hardware asks for something.
+      -->
+      <div id="announce" class="visually-hidden" role="alert" aria-live="assertive"></div>
+
+      <main id="main">
+        <h1 class="visually-hidden">LeekWallet companion</h1>
+        <div class="notice notice--danger" role="note">
           Testnets only. This is a proof of concept and has not been audited
           independently — see AUDIT.md before using real funds.
         </div>
 
-        <div class="panel">
-          <h1>Device</h1>
+        <section class="panel" aria-labelledby="devicehead">
+          <h2 id="devicehead">Device</h2>
           <p id="devicehint">Checking for a device…</p>
           <div class="row">
             <!-- The device serves one transport at a time (PROTOCOL.md 3b), so
                  this is a real choice the user has to make, not a preference.
                  Populated from what the backend reports it can do. -->
+            <!-- No aria-label here. One that read "Transport" over a visible
+                 label reading "Link" left the two names disagreeing, which is
+                 exactly what breaks voice control: the user says the word they
+                 can see and nothing happens. -->
             <label class="muted" for="transport">Link</label>
-            <select id="transport" class="addr" aria-label="Transport"></select>
+            <select id="transport" class="addr"></select>
             <button class="primary" id="connect">Connect</button>
             <button id="unlock" disabled>Unlock</button>
             <button id="disconnect" disabled>Disconnect</button>
           </div>
-          <div id="pairing" hidden style="margin-top: var(--space-4)">
+          <div id="pairing" hidden style="margin-top: var(--space-4)"
+               role="group" aria-label="Passkey to compare with the device">
             <dl class="kv">
               <dt>Passkey</dt>
               <dd id="passkey"></dd>
             </dl>
             <p>Compare this with the code on the device screen before continuing.</p>
           </div>
-        </div>
+        </section>
 
-        <div class="panel" id="addrpanel" hidden>
-          <h2>Addresses</h2>
+        <section class="panel" id="addrpanel" aria-labelledby="addrhead" hidden>
+          <h2 id="addrhead">Addresses</h2>
           <p>
             Pick the address to sign with. The device signs whichever path is
             requested — what it shows on its own screen is the authority.
@@ -60,7 +90,9 @@
             <select id="addrselect" class="addr"></select>
           </label>
 
-          <div class="addr-detail" id="addrdetail" hidden>
+          <div class="addr-detail" id="addrdetail" hidden
+               role="group" aria-labelledby="addrfulllabel">
+            <span class="visually-hidden" id="addrfulllabel">Selected address, in full</span>
             <div class="addr" id="addrfull"></div>
             <!-- Copy is always here because it always works. The QR is behind a
                  button: it is only wanted when somebody is pointing a camera at
@@ -68,10 +100,13 @@
                  down the page. Share only appears where a share sheet exists,
                  rather than being a button that quietly does something else. -->
             <div class="row">
-              <button id="addrqrtoggle" type="button" class="secondary">Show QR code</button>
+              <button id="addrqrtoggle" type="button" class="secondary"
+                      aria-expanded="false" aria-controls="addrqr">Show QR code</button>
               <button id="addrcopy" type="button" class="secondary">Copy address</button>
               <button id="addrshare" type="button" class="secondary" hidden>Share</button>
             </div>
+            <!-- The SVG inside carries an aria-label with the whole address,
+                 so this container needs no label of its own. -->
             <div class="addr-qr" id="addrqr" hidden></div>
             <!-- The device draws this same address as a QR on its own screen.
                  That one is evidence; this one is convenience. If this app were
@@ -95,9 +130,10 @@
             about, so they happen on connect, on a chain or address change, and
             when the button below is pressed. The age is shown instead.
           -->
-          <section class="balances" id="balances">
+          <section class="balances" id="balances" aria-labelledby="balanceshead">
+            <h3 id="balanceshead" class="visually-hidden">Balances</h3>
             <div class="row">
-              <span class="balances__native" id="balnative">—</span>
+              <span class="balances__native" id="balnative" role="status">—</span>
               <button id="balrefresh" class="secondary">Refresh</button>
             </div>
             <p class="muted" id="balprov"></p>
@@ -126,14 +162,14 @@
               <button id="tokenlistupdate" type="button" class="secondary">Update token list</button>
             </div>
             <p class="muted" id="tokendiscovernote" aria-live="polite"></p>
-            <ul class="tokenlist" id="tokenfound"></ul>
+            <ul class="tokenlist" id="tokenfound" aria-label="Tokens found by the list search"></ul>
 
-            <ul class="tokenlist" id="tokenlist"></ul>
+            <ul class="tokenlist" id="tokenlist" aria-label="Watched tokens"></ul>
           </section>
-        </div>
+        </section>
 
-        <div class="panel" id="signpanel" hidden>
-          <h2>Sign a transaction</h2>
+        <section class="panel" id="signpanel" aria-labelledby="signhead" hidden>
+          <h2 id="signhead">Sign a transaction</h2>
           <p>
             This preview is drawn by this app and cannot be trusted. Verify the
             fields on the device before approving. The device shows every field on its own
@@ -187,7 +223,7 @@
             <label class="field field--check">
               <input id="cctestnet" type="checkbox" /> <span>This is a testnet</span></label>
             <button id="ccadd" class="secondary" type="button">Add network</button>
-            <ul class="preview__warnings" id="ccerrors"></ul>
+            <ul class="preview__warnings" id="ccerrors" role="alert"></ul>
             <p class="muted" id="ccnotice"></p>
             <ul class="cclist" id="cclist"></ul>
           </details>
@@ -212,11 +248,17 @@
                    placeholder="0x…" autocomplete="off" />
           </label>
           <div class="row">
-            <button id="toscan" type="button" class="secondary">Scan QR</button>
+            <button id="toscan" type="button" class="secondary" aria-pressed="false">Scan QR</button>
             <button id="toscanstop" type="button" class="secondary" hidden>Stop camera</button>
           </div>
-          <p class="muted" id="toscanhint" aria-live="polite"></p>
-          <video id="tovideo" class="wc-video" hidden muted playsinline></video>
+          <p class="muted" id="toscanhint" role="status"></p>
+          <!-- A camera preview has nothing to say to a screen reader and cannot
+               be operated from a keyboard; what matters about it — that the
+               camera is on, and what it found — is in the live hint above. It
+               stays out of the tree and out of the tab order rather than
+               becoming a stop nobody can use. -->
+          <video id="tovideo" class="wc-video" hidden muted playsinline
+                 aria-hidden="true" tabindex="-1"></video>
           <!-- Which unit the number below is in. Present for tokens because
                the scaled unit is built on decimals this app cannot verify, so
                typing raw units has to stay available rather than be the
@@ -248,11 +290,18 @@
           <!-- Advisory preview (T48). Deliberately styled as a note rather
                than a verdict: nothing in here has been checked by anything the
                user can trust. See PROTOCOL.md 6c. -->
-          <section class="preview" id="preview" hidden aria-live="polite">
-            <div class="preview__tag">Preview — drawn by this app, not by the device</div>
+          <!-- Not a live region as a whole. It redraws on every keystroke, and
+               a screen reader re-reading the entire interpretation of a
+               half-typed transaction is noise that gets the real content muted.
+               The warnings are the part that changes rarely and matters most,
+               so that list is what announces. -->
+          <section class="preview" id="preview" hidden
+                   aria-labelledby="previewtag">
+            <div class="preview__tag" id="previewtag">Preview — drawn by this app, not by the device</div>
             <p class="preview__summary" id="psummary"></p>
             <dl class="kv" id="pfields"></dl>
-            <ul class="preview__warnings" id="pwarnings"></ul>
+            <ul class="preview__warnings" id="pwarnings" aria-live="polite"
+                aria-label="Warnings about this transaction"></ul>
             <p class="preview__authority" id="pauthority"></p>
           </section>
 
@@ -260,8 +309,8 @@
             <button class="primary" id="sign">Sign &amp; send</button>
             <button id="usenext">Use address 1</button>
           </div>
-          <p id="txresult" class="muted"></p>
-        </div>
+          <p id="txresult" class="muted" role="status"></p>
+        </section>
 
         <!--
           Dapp connectivity (T32/T49). Deliberately not a browser: there is no
@@ -270,9 +319,9 @@
           see docs/PROTOCOL.md section 6b for why rendering untrusted web
           content next to a signing device is the thing we are not doing.
         -->
-        <div class="panel" id="wcpanel">
-          <h2>Dapps (WalletConnect)</h2>
-          <p id="wcstatus" class="muted"></p>
+        <section class="panel" id="wcpanel" aria-labelledby="wchead">
+          <h2 id="wchead">Dapps (WalletConnect)</h2>
+          <p id="wcstatus" class="muted" role="status"></p>
 
           <!-- This field is the OVERRIDE, never the value in use. It reads
                empty on a normal install because the bundled ID is doing the
@@ -304,29 +353,36 @@
           </label>
           <div class="row">
             <button class="primary" id="wcpair">Pair</button>
-            <button id="wcscan">Scan QR</button>
+            <button id="wcscan" aria-pressed="false">Scan QR</button>
           </div>
-          <p class="muted" id="wcscanhint"></p>
+          <p class="muted" id="wcscanhint" role="status"></p>
           <!-- Camera frames are read by the platform barcode detector and
                discarded; nothing is stored or uploaded. -->
-          <video id="wcvideo" class="wc-video" hidden muted playsinline></video>
+          <video id="wcvideo" class="wc-video" hidden muted playsinline
+                 aria-hidden="true" tabindex="-1"></video>
 
-          <section class="wc-card" id="wcproposal" hidden>
-            <h3>A dapp wants to connect</h3>
+          <section class="wc-card" id="wcproposal" aria-labelledby="wcprophead" hidden>
+            <h3 id="wcprophead">A dapp wants to connect</h3>
             <dl class="kv">
               <dt>Calls itself</dt><dd id="wcpropname"></dd>
               <dt>At</dt><dd id="wcpropurl"></dd>
             </dl>
             <p id="wcpropdetail"></p>
-            <ul class="preview__warnings" id="wcpropwarn"></ul>
+            <ul class="preview__warnings" id="wcpropwarn"
+                aria-label="Warnings about this dapp"></ul>
             <div class="row">
               <button class="primary" id="wcpropapprove">Connect</button>
               <button id="wcpropreject">Decline</button>
             </div>
           </section>
 
-          <section class="wc-card" id="wcrequest" hidden aria-live="polite">
-            <h3>Pending request</h3>
+          <!-- The arrival is announced by the live region at the top of the
+               page, in one sentence naming the dapp and the method. The card
+               itself is not live: it is several paragraphs plus a preview, and
+               reading all of it aloud on arrival buries the sentence that says
+               what just happened. -->
+          <section class="wc-card" id="wcrequest" aria-labelledby="wcreqhead" hidden>
+            <h3 id="wcreqhead">Pending request</h3>
             <dl class="kv">
               <dt>From</dt><dd id="wcreqname"></dd>
               <dt>Method</dt><dd id="wcreqmethod"></dd>
@@ -335,11 +391,12 @@
 
             <!-- The same advisory preview the send form draws, from the same
                  interpretTransaction. A dapp cannot put a word inside it. -->
-            <section class="preview" id="wcpreview" hidden>
-              <div class="preview__tag">Preview — drawn by this app, not by the device</div>
+            <section class="preview" id="wcpreview" aria-labelledby="wcpreviewtag" hidden>
+              <div class="preview__tag" id="wcpreviewtag">Preview — drawn by this app, not by the device</div>
               <p class="preview__summary" id="wcpsummary"></p>
               <dl class="kv" id="wcpfields"></dl>
-              <ul class="preview__warnings" id="wcpwarnings"></ul>
+              <ul class="preview__warnings" id="wcpwarnings"
+                  aria-label="Warnings about this request"></ul>
               <p class="preview__authority" id="wcpauthority"></p>
             </section>
 
@@ -347,15 +404,19 @@
               <button class="primary" id="wcapprove">Approve on device</button>
               <button id="wcreject">Reject</button>
             </div>
-            <p class="muted" id="wcqueue"></p>
+            <p class="muted" id="wcqueue" role="status"></p>
           </section>
 
-          <h3>Connected dapps</h3>
-          <div id="wcsessions" class="wc-sessions"></div>
-        </div>
+          <h3 id="wcsessionshead">Connected dapps</h3>
+          <!-- A group rather than a list: when nothing is connected the
+               container holds one sentence saying so, and a bare string is not
+               a list item. -->
+          <div id="wcsessions" class="wc-sessions" role="group"
+               aria-labelledby="wcsessionshead"></div>
+        </section>
 
-        <div class="panel" id="logpanel">
-          <h2>Device log</h2>
+        <section class="panel" id="logpanel" aria-labelledby="loghead">
+          <h2 id="loghead">Device log</h2>
           <!-- Selecting text on a phone is painful and this log is what every
                bug report in this project has been. The button assembles it
                with the surrounding state; what it deliberately leaves out is
@@ -363,14 +424,20 @@
           <div class="row">
             <button id="copydiag">Copy diagnostics</button>
           </div>
-          <p class="muted" id="copystatus" aria-live="polite"></p>
+          <p class="muted" id="copystatus" role="status"></p>
           <!-- Shown only when no clipboard route worked, so the button never
                just does nothing: the text arrives here, selected, to copy by
                hand. -->
           <textarea id="copyout" class="copyout" readonly hidden
                     aria-label="Diagnostics text, select and copy"></textarea>
-          <div class="log" id="log">Nothing yet.</div>
-        </div>
+          <!-- A log, not a live region. Every line is prepended into one text
+               node, so announcing changes here would re-read the whole history
+               on every entry. What has to reach a screen reader immediately is
+               announced from #announce instead; this stays a place to go and
+               read, reachable from the keyboard because it scrolls. -->
+          <div class="log" id="log" role="log" tabindex="0"
+               aria-label="Device log, newest first">Nothing yet.</div>
+        </section>
       </main>
     </div>
     <script type="module" src="/src/main.ts"></script>

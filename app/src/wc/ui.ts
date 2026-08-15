@@ -50,6 +50,17 @@ export interface WalletBridge {
   chainId(): number;
   /** Switch the app's chain, exactly as the selector does. */
   setChainId(chainId: number): void;
+  /**
+   * Say something to a screen reader now, interrupting whatever is being read.
+   *
+   * A dapp request arrives without anybody having pressed anything, so nothing
+   * in the page draws a screen reader's attention to the card that appeared —
+   * and the next thing that happens is a device asking to be confirmed. That
+   * is the one arrival a wallet cannot afford to deliver silently.
+   */
+  announce(text: string): void;
+  /** Log a line and announce it: the device is waiting for the user. */
+  deviceAttention(line: string): void;
   /** Sign, and broadcast when asked. Returns a tx hash, or the raw tx. */
   signTransaction(tx: PlannedTx, broadcast: boolean): Promise<string>;
   /** EIP-191 personal_sign. Returns a 65-byte 0x signature. */
@@ -208,11 +219,18 @@ export function initWalletConnect(bridge: WalletBridge): {
     void pair(($("wcuri") as HTMLInputElement).value);
   });
 
+  /* Both halves of the toggle in one place, because the button's label never
+   * changes: pressed state is all a screen-reader user has to tell a running
+   * camera from a stopped one. */
+  const setScanPressed = (on: boolean): void =>
+    $("wcscan").setAttribute("aria-pressed", String(on));
+
   $("wcscan").addEventListener("click", () => {
-    if (scan) { scan.stop(); scan = null; $("wcvideo").hidden = true; return; }
+    if (scan) { scan.stop(); scan = null; $("wcvideo").hidden = true; setScanPressed(false); return; }
     if (!qrScanningAvailable()) { const m = qrUnavailable(WC_PASTE_INSTEAD); bridge.log(m); setStatus(m); return; }
     const video = $("wcvideo") as HTMLVideoElement;
     video.hidden = false;
+    setScanPressed(true);
     /* The `wc:` test that used to live inside the scanner. It stays exactly as
      * strict as it was: a QR code in shot that happens to be a URL is ignored
      * rather than handed to the pairing code, so a poster on the wall behind
@@ -223,6 +241,7 @@ export function initWalletConnect(bridge: WalletBridge): {
       (uri) => {
         scan = null;
         video.hidden = true;
+        setScanPressed(false);
         /* Say that the CAMERA produced this. Without it, a scanned pairing and
          * a pasted one are the same two log lines, and telling them apart was
          * guesswork at exactly the moment it mattered. */
@@ -235,7 +254,7 @@ export function initWalletConnect(bridge: WalletBridge): {
         ($("wcuri") as HTMLInputElement).value = uri;
         void pair(uri);
       },
-      (message) => { scan = null; video.hidden = true; bridge.log(`camera: ${message}`); },
+      (message) => { scan = null; video.hidden = true; setScanPressed(false); bridge.log(`camera: ${message}`); },
       undefined,
       (status) => bridge.log(`scan: ${status}`),
     )
@@ -245,6 +264,7 @@ export function initWalletConnect(bridge: WalletBridge): {
       })
       .catch((e: unknown) => {
         video.hidden = true;
+        setScanPressed(false);
         bridge.log(`camera: ${(e as Error).message}`);
       });
   });
@@ -281,6 +301,13 @@ export function initWalletConnect(bridge: WalletBridge): {
       add(`This dapp requires chain ${id}, which is not in this wallet's list.`);
     }
     card.hidden = false;
+    /* Named, not counted: "a dapp wants to connect" with no name is an alert a
+     * user can only answer by going to look. The name is dapp-authored and is
+     * announced as such, exactly as the card labels it. */
+    bridge.announce(
+      `A dapp calling itself ${proposal.name} wants to connect. ` +
+      `Its request is on screen under Dapps.`,
+    );
   }
 
   $("wcpropapprove").addEventListener("click", () => {
@@ -385,6 +412,14 @@ export function initWalletConnect(bridge: WalletBridge): {
     }
 
     card.hidden = false;
+    /* One sentence, not the card. Which dapp and which method is enough to
+     * decide whether to go and read the rest; announcing the whole
+     * interpretation would bury that in the fee fields. */
+    bridge.announce(
+      `${head.request.name} is asking for ${head.request.method}. ` +
+      `The request is on screen under Dapps` +
+      (queue.length > 1 ? `, with ${queue.length - 1} more waiting behind it.` : "."),
+    );
   }
 
   async function settle(approve: boolean): Promise<void> {
@@ -412,12 +447,12 @@ export function initWalletConnect(bridge: WalletBridge): {
     }
     try {
       if (plan.kind === "transaction") {
-        bridge.log(`${request.name}: check every page on the device, then approve`);
+        bridge.deviceAttention(`${request.name}: check every page on the device, then approve`);
         const result = await bridge.signTransaction(plan.tx, plan.broadcast);
         await connection.respond(request.topic, request.id, result);
         bridge.log(`${request.name}: ${plan.broadcast ? `sent ${result}` : "signed"}`);
       } else if (plan.kind === "message") {
-        bridge.log(`${request.name}: confirm the message on the device`);
+        bridge.deviceAttention(`${request.name}: confirm the message on the device`);
         const signature = await bridge.signMessage(plan.address, plan.message);
         await connection.respond(request.topic, request.id, signature);
         bridge.log(`${request.name}: message signed`);
@@ -469,6 +504,7 @@ export function initWalletConnect(bridge: WalletBridge): {
 
       const end = document.createElement("button");
       end.textContent = "End session";
+      end.setAttribute("aria-label", `End the session with ${session.name}`);
       end.addEventListener("click", () => {
         end.disabled = true;
         connection.disconnect(session.topic).then(

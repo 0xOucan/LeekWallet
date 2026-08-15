@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="LeekWallet">
+  <title>LeekWallet</title>
+  <!--
+    The mark is the Lek itself: a jícara gourd with its lid on, which is what
+    the README's story is about and what the firmware does — a small closed
+    container that keeps one precious thing warm and out of sight.
+
+    Drawn from primitives and committed as source, so the PNG beside it can be
+    regenerated rather than being an opaque binary nobody can edit:
+
+        convert -background none docs/leekwallet-logo.svg \
+                -resize 512x512 docs/leekwallet-logo.png
+
+    Colours are the app's own accent greens (app/src/tokens.css), and nothing
+    here is filled in near-black or near-white: the README is read on both a
+    light and a dark background, and a mark that is invisible on one of them is
+    half a mark. The mid greens hold against either.
+
+    Two things were drawn and then removed, which is worth writing down because
+    both look like improvements on paper. A lit crescent on the body reads as a
+    stray leaf at README width, and a single arc plus a dot low on the body
+    reads as a face. The banding below is neither.
+  -->
+
+  <!-- Body of the gourd. Wider than tall, as a jícara sits. -->
+  <ellipse cx="128" cy="152" rx="86" ry="72" fill="#3F6E31"/>
+
+  <!-- Engraving: a Lek is decorated, and a plain one would be the wrong Lek.
+       Two bands and nothing else — at favicon size anything busier is mud. -->
+  <path d="M53 172q75 30 150 0" stroke="#E8DFC8" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.7"/>
+  <path d="M62 196q66 24 132 0" stroke="#E8DFC8" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.45"/>
+
+  <!-- The servilleta: the cloth inside, showing as a seam at the rim. Warm,
+       because the whole point of the Lek is that what is inside stays warm. -->
+  <rect x="56" y="116" width="144" height="9" rx="4" fill="#E8DFC8"/>
+
+  <!-- Lid, and the knob to lift it by. -->
+  <path d="M40 116a88 46 0 0 1 176 0z" fill="#5A8F45"/>
+  <path d="M38 116h180a9 9 0 0 1-9 9H47a9 9 0 0 1-9-9z" fill="#7ABF6A"/>
+  <rect x="118" y="56" width="20" height="22" rx="6" fill="#5A8F45"/>
+
+  <!-- Two leaves off the knob. The leek in LeekWallet, and the gourd plant the
+       jícara grows on — one drawing that answers to both names. -->
+  <path d="M128 60c-6-18-22-26-40-26 2 18 16 30 40 30z" fill="#7ABF6A"/>
+  <path d="M128 60c6-16 20-23 36-23-2 16-14 27-36 27z" fill="#5A8F45"/>
+</svg>
