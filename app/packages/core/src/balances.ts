@@ -500,3 +500,142 @@ export function balanceProvenance(snapshot: BalanceSnapshot, now: number): strin
   const who = snapshot.endpointHost ? `from ${snapshot.endpointHost}` : "from an RPC endpoint";
   return `${fresh.stale ? "STALE — read " : "Read "}${fresh.text} ${who}. ${BALANCE_SOURCE_NOTICE}`;
 }
+
+/* --------------------------------------------------- maximum sendable amount
+ *
+ * The arithmetic behind a "Max" button. It is three lines of subtraction and
+ * every one of the interesting decisions is about what *not* to return.
+ *
+ * The reserve is `gasLimit * maxFeePerGas` — the EIP-1559 **cap**, not the
+ * expected fee at the current base fee. Sending everything is precisely the
+ * case where the two differ dangerously: the amount is fixed at signing time,
+ * the fee is not. If the reserve were the expected fee and the base fee rose
+ * between signing and inclusion, the account would no longer hold value +
+ * actual fee, and the transaction becomes unpayable — it does not get included,
+ * or worse, the user is left unable to move anything at all. Reserving at the
+ * cap errs in the only safe direction: the wallet keeps a little dust that
+ * could in principle have been sent, rather than producing a transaction that
+ * cannot be. Dust is a rounding annoyance; an unpayable "send everything" is
+ * the user stranded.
+ *
+ * The result is a discriminated union rather than a bigint for the same reason
+ * `TokenAmountView` is a shape rather than a string: the UI must not be able to
+ * get this wrong. There is no path here that returns 0 as if it were a sendable
+ * amount, and no path that returns a negative bigint for a caller to clamp.
+ */
+
+/** Said next to any Max figure. A constant so it cannot drift between screens. */
+export const MAX_SENDABLE_NOTICE =
+  "Max is computed against a fee estimate that can change before this " +
+  "transaction is included. The amount reserved for gas is the worst case at " +
+  "the fee cap, not the fee you will actually pay — expect a little to be left " +
+  "over rather than exactly nothing.";
+
+/** The fee ceiling of a 1559 transaction. Both fields are raw integers. */
+export interface FeeReserve {
+  gasLimit: bigint;
+  /** The EIP-1559 cap. See the section header for why it is not the base fee. */
+  maxFeePerGas: bigint;
+}
+
+/**
+ * What a Max button may render. The discriminant is a string-literal union, not
+ * a TS enum: this codebase is type-stripped rather than transpiled, so an enum
+ * would be a runtime object that does not exist.
+ */
+export type MaxSendable =
+  | {
+      kind: "sendable";
+      /** The figure to put in the amount field. Never negative, may be zero. */
+      amount: bigint;
+      /** What was held back for gas — shown so the subtraction is visible. */
+      reserved: bigint;
+      /**
+       * True only for the native case where the balance is exactly the fee, so
+       * the "max" is a zero-value transaction. Still `sendable`: a zero send is
+       * a real, includable transaction and the arithmetic did not fail — but no
+       * screen should present zero as a useful default, so it is flagged rather
+       * than hidden inside an amount the UI would have to compare against 0n.
+       */
+      zero: boolean;
+      /** Set when the token can be sent but the gas for it cannot be paid. */
+      cannotAffordGas?: true;
+      notice: string;
+    }
+  | {
+      kind: "insufficient-for-gas";
+      /** The balance that fell short, and what it needed to cover. */
+      balance: bigint;
+      required: bigint;
+      /** `required - balance`, so the UI states the gap without arithmetic. */
+      shortfall: bigint;
+      reason: string;
+      notice: string;
+    };
+
+/** `gasLimit * maxFeePerGas`, refusing nonsense rather than producing it. */
+function reserveFor(fee: FeeReserve): bigint {
+  if (fee.gasLimit < 0n || fee.maxFeePerGas < 0n) {
+    throw new AbiError("a fee reserve cannot be negative");
+  }
+  return fee.gasLimit * fee.maxFeePerGas;
+}
+
+/**
+ * The most of the gas token that can be sent: balance minus the fee cap.
+ *
+ * The balance-equals-fee case returns `sendable` with `amount: 0n` and
+ * `zero: true`, not `insufficient-for-gas`. The distinction is real — at
+ * exactly the fee the account *can* pay for and include a transaction, it just
+ * has nothing left to put in it, whereas one wei under it cannot pay at all.
+ * Collapsing the two would tell a user who can still (say) make a contract call
+ * that they cannot afford gas, which is false.
+ */
+export function maxSendableNative(balance: bigint, fee: FeeReserve): MaxSendable {
+  if (balance < 0n) throw new AbiError("a balance cannot be negative");
+  const reserved = reserveFor(fee);
+  if (balance < reserved) {
+    return {
+      kind: "insufficient-for-gas",
+      balance,
+      required: reserved,
+      shortfall: reserved - balance,
+      reason:
+        "This balance will not cover the gas for a transaction at the current " +
+        "fee cap, so there is nothing that can be sent.",
+      notice: MAX_SENDABLE_NOTICE,
+    };
+  }
+  const amount = balance - reserved;
+  return { kind: "sendable", amount, reserved, zero: amount === 0n, notice: MAX_SENDABLE_NOTICE };
+}
+
+/**
+ * The most of an ERC-20 that can be sent: all of it.
+ *
+ * Gas is paid in the gas token, so a token transfer is never reduced by the
+ * fee — subtracting one here would be subtracting wei from a token balance,
+ * which is a category error and would send the wrong amount. But the transfer
+ * still costs native currency to broadcast, so a separate flag says so. It is a
+ * flag on a `sendable` result rather than a failure because the balance really
+ * is sendable; what is missing is the gas, and the honest screen is "you hold
+ * this token but cannot afford the gas to move it" — not a greyed-out zero.
+ */
+export function maxSendableToken(
+  tokenBalance: bigint,
+  nativeBalance: bigint,
+  fee: FeeReserve,
+): MaxSendable {
+  if (tokenBalance < 0n || nativeBalance < 0n) throw new AbiError("a balance cannot be negative");
+  const reserved = reserveFor(fee);
+  return {
+    kind: "sendable",
+    amount: tokenBalance,
+    // Nothing was taken out of the token amount; this is what the *native*
+    // balance must cover, reported so the UI can show the requirement it failed.
+    reserved,
+    zero: tokenBalance === 0n,
+    ...(nativeBalance < reserved ? { cannotAffordGas: true as const } : {}),
+    notice: MAX_SENDABLE_NOTICE,
+  };
+}

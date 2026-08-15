@@ -297,6 +297,41 @@ export interface FailoverOptions {
  * so the whole of the app's chain access gets failover without any call site
  * learning that endpoints are plural.
  */
+/**
+ * The grace a hung transport gets beyond its own deadline before this layer
+ * gives up on it.
+ *
+ * A transport that honours `timeoutMs` finishes well inside this and never
+ * reaches it; the margin exists so a healthy-but-slow endpoint is not cut off
+ * by the safety net a moment before it would have answered.
+ */
+export const SEND_DEADLINE_GRACE_MS = 5_000;
+
+/**
+ * `send`, but it cannot hang for ever.
+ *
+ * `timeoutMs` is passed down and every transport is expected to honour it —
+ * `fetchRpcSend` does, with `AbortSignal.timeout`. That expectation is not
+ * something this layer can check, and when it is wrong the failure is invisible:
+ * the promise never settles, so there is no rejection to catch, no failover to
+ * the next endpoint, and no log line. The UI simply stops, mid-signing, with
+ * "fetching nonce and fees…" as the last thing it ever says.
+ *
+ * That happened. The deadline now lives here as well, so a transport that
+ * forgets it costs one slow request instead of the session.
+ */
+function withDeadline(promise: Promise<RpcHttpResult>, timeoutMs: number): Promise<RpcHttpResult> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`the transport did not answer or time out within ${timeoutMs + SEND_DEADLINE_GRACE_MS}ms`));
+    }, timeoutMs + SEND_DEADLINE_GRACE_MS);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error: unknown) => { clearTimeout(timer); reject(error as Error); },
+    );
+  });
+}
+
 export class FailoverRpc {
   readonly chainId: number;
   readonly rpcUrls: readonly string[];
@@ -339,7 +374,7 @@ export class FailoverRpc {
 
       let http: RpcHttpResult;
       try {
-        http = await this.send({ url, body, timeoutMs: this.timeoutMs });
+        http = await withDeadline(this.send({ url, body, timeoutMs: this.timeoutMs }), this.timeoutMs);
       } catch (e) {
         const message = String((e as Error)?.message ?? e);
         // A caller-side abort and a dead socket are indistinguishable at this

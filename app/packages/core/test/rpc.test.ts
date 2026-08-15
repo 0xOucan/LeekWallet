@@ -16,6 +16,7 @@ import type { ChainStore } from "../src/chains.ts";
 import {
   DEFAULT_RPC_TIMEOUT_MS, endpointOrder, FailoverRpc, judgeResponse, preferredRpc,
   PREFERRED_RPC_KEY, rememberRpc, RpcResponseError, RpcUnavailableError,
+  SEND_DEADLINE_GRACE_MS,
 } from "../src/rpc.ts";
 import type { RpcAttempt, RpcHttpRequest, RpcHttpResult, RpcSend } from "../src/rpc.ts";
 
@@ -256,6 +257,47 @@ group("judgeResponse is exhaustive about what it accepts");
   check(!noBody.ok && noBody.failover && noBody.reason === "malformed", "204 mishandled");
   const errNoCode = judgeResponse(env({ error: { message: "nope" } }), 7);
   check(!errNoCode.ok && errNoCode.failover === false, "an error without a code failed over");
+}
+
+
+group("a transport that never settles does not hang the client");
+{
+  /* The failure this guards against is silent by construction: a `send` that
+   * neither resolves nor rejects produces no error to catch, no failover, and
+   * no log line -- the signing flow simply stopped after "fetching nonce and
+   * fees". Every transport is asked to honour timeoutMs and `fetchRpcSend`
+   * does, but this layer cannot verify that, so it enforces its own deadline.
+   *
+   * The hung endpoint must also not poison the run: the next one still answers.
+   */
+  let hungCalls = 0;
+  const rpc = new FailoverRpc({
+    chainId: 1,
+    rpcUrls: ["https://hangs.example", "https://answers.example"],
+    timeoutMs: 30,
+    store: memStore(),
+    send: async ({ url, body }) => {
+      if (url.includes("hangs")) {
+        hungCalls++;
+        return await new Promise<never>(() => { /* never settles, on purpose */ });
+      }
+      // Echo the request id: the client rejects a reply whose id does not match,
+      // which is a property worth not accidentally disabling in a fake.
+      const id = (JSON.parse(body) as { id: number }).id;
+      return { status: 200, body: JSON.stringify({ jsonrpc: "2.0", id, result: "0x2a" }) };
+    },
+  });
+
+  const started = Date.now();
+  const result = await rpc.request({ method: "eth_chainId" });
+  const elapsed = Date.now() - started;
+
+  check(result === "0x2a", `the second endpoint did not answer (got ${JSON.stringify(result)})`);
+  check(hungCalls === 1, `the hung endpoint was called ${hungCalls} times, expected once`);
+  // 30ms timeout + grace, with room for a slow machine; the point is that it
+  // returns at all rather than the exact number.
+  check(elapsed < SEND_DEADLINE_GRACE_MS + 3000,
+    `gave up after ${elapsed}ms, which is not bounded by the deadline`);
 }
 
 if (failures) {

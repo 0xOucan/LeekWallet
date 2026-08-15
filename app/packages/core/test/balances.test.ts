@@ -22,7 +22,8 @@ import {
   decodeQuantity, decodeSymbolReturn, decodeUint256Return, describeTokenAmount, encodeBalanceOf,
   encodeDecimals, encodeErc20Transfer, encodeSymbol, fetchNativeBalance, fetchTokenBalance,
   fetchTokenMeta, freshnessOf, hintMeta, MAX_PLAUSIBLE_DECIMALS, parseUnits, sanitiseSymbol,
-  SELECTOR_TRANSFER, TOKEN_SCALE_NOTICE, type EthRequest, type TokenMeta,
+  SELECTOR_TRANSFER, TOKEN_SCALE_NOTICE, maxSendableNative, maxSendableToken,
+  MAX_SENDABLE_NOTICE, type EthRequest, type TokenMeta,
 } from "../src/balances.ts";
 import { CallKind, decodeCall } from "../src/eth-decode.ts";
 import { interpretTransaction } from "../src/tx-interpret.ts";
@@ -318,6 +319,122 @@ group("staleness is stated, not hidden");
   check(!freshLine.includes("STALE"), "a fresh balance was marked stale");
   check(freshLine.includes(BALANCE_SOURCE_NOTICE), "a fresh balance skipped the provenance notice");
   check(/not.*confirm|can answer with anything/i.test(BALANCE_SOURCE_NOTICE), "the notice asserts nothing");
+}
+
+group("the maximum sendable native amount reserves the fee cap, never a negative");
+{
+  // 21000 gas at 100 gwei — an ordinary transfer at a busy moment.
+  const fee = { gasLimit: 21000n, maxFeePerGas: 100_000_000_000n };
+  const reserve = 2_100_000_000_000_000n;
+
+  const rich = maxSendableNative(1_000_000_000_000_000_000n, fee);
+  check(rich.kind === "sendable", `a one-ether balance was not sendable: ${rich.kind}`);
+  check(
+    rich.kind === "sendable" && rich.amount === 1_000_000_000_000_000_000n - reserve,
+    "the fee cap was not held back",
+  );
+  check(rich.kind === "sendable" && rich.reserved === reserve, "the reserve was not reported");
+  check(rich.kind === "sendable" && rich.zero === false, "a large send was flagged zero");
+
+  // The reserve is the CAP, not the expected fee: a max computed at a lower
+  // base fee would leave the transaction unpayable after a spike.
+  const atBaseFee = maxSendableNative(1_000_000_000_000_000_000n, {
+    gasLimit: 21000n, maxFeePerGas: 30_000_000_000n,
+  });
+  check(
+    atBaseFee.kind === "sendable" && rich.kind === "sendable" && atBaseFee.amount > rich.amount,
+    "reserving at a lower cap did not leave more sendable — the cap is not being used",
+  );
+
+  // Exactly the fee: a real, includable transaction with nothing in it. Not a
+  // failure, but flagged so no screen offers zero as a useful default.
+  const exact = maxSendableNative(reserve, fee);
+  check(exact.kind === "sendable", `balance equal to the fee was called insufficient: ${exact.kind}`);
+  check(exact.kind === "sendable" && exact.amount === 0n, "balance equal to the fee did not yield zero");
+  check(exact.kind === "sendable" && exact.zero === true, "a zero max was not flagged");
+
+  // One wei under, and the answer changes kind entirely — this account cannot
+  // pay for a transaction at all.
+  const short = maxSendableNative(reserve - 1n, fee);
+  check(short.kind === "insufficient-for-gas", `one wei under the fee: ${short.kind}`);
+  check(short.kind === "insufficient-for-gas" && short.shortfall === 1n, "the shortfall is not one wei");
+  check(short.kind === "insufficient-for-gas" && short.required === reserve, "the requirement was lost");
+  check(
+    short.kind === "insufficient-for-gas" && /cover the gas/i.test(short.reason),
+    "the failure does not explain itself",
+  );
+
+  const empty = maxSendableNative(0n, fee);
+  check(empty.kind === "insufficient-for-gas", "an empty account was offered a max");
+  check(empty.kind === "insufficient-for-gas" && empty.shortfall === reserve, "empty-account shortfall");
+
+  // A free chain, or a fee-less estimate: everything is sendable and zero
+  // balance is then a legitimate (if useless) zero max rather than a failure.
+  const free = { gasLimit: 0n, maxFeePerGas: 0n };
+  check(
+    maxSendableNative(0n, free).kind === "sendable",
+    "a zero fee still reported insufficient gas",
+  );
+
+  // Enormous balances: no float goes anywhere near this.
+  const huge = (1n << 255n) - 1n;
+  const big = maxSendableNative(huge, fee);
+  check(big.kind === "sendable" && big.amount === huge - reserve, "a 2^255 balance lost precision");
+
+  // The structural claim: no result anywhere carries a negative bigint.
+  for (const bal of [0n, 1n, reserve - 1n, reserve, reserve + 1n, huge]) {
+    const r = maxSendableNative(bal, fee);
+    if (r.kind === "sendable") {
+      check(r.amount >= 0n, `negative sendable amount at balance ${bal}`);
+      check(r.reserved >= 0n, `negative reserve at balance ${bal}`);
+    } else {
+      check(r.shortfall > 0n, `a non-positive shortfall at balance ${bal}`);
+    }
+    check(r.notice === MAX_SENDABLE_NOTICE, `a max figure escaped without its notice at ${bal}`);
+  }
+  check(/change|upper bound|worst case|not the fee you will actually pay/i.test(MAX_SENDABLE_NOTICE),
+    "the max notice does not disclaim the estimate");
+
+  check(threw(() => maxSendableNative(-1n, fee)), "a negative balance was accepted");
+  check(
+    threw(() => maxSendableNative(1n, { gasLimit: -1n, maxFeePerGas: 1n })),
+    "a negative gas limit was accepted",
+  );
+}
+
+group("a token max is the whole balance, but says when the gas cannot be paid");
+{
+  const fee = { gasLimit: 65000n, maxFeePerGas: 100_000_000_000n };
+  const reserve = 6_500_000_000_000_000n;
+
+  // Gas comes out of the native balance, never out of the token amount.
+  const ok = maxSendableToken(2_500_000n, 1_000_000_000_000_000_000n, fee);
+  check(ok.kind === "sendable" && ok.amount === 2_500_000n, "a token max was reduced by the fee");
+  check(ok.kind === "sendable" && ok.cannotAffordGas === undefined, "a funded account was flagged");
+  check(ok.kind === "sendable" && ok.reserved === reserve, "the native requirement was not reported");
+
+  // Holds the token, cannot move it. Still `sendable` — the flag is the message.
+  const stuck = maxSendableToken(2_500_000n, reserve - 1n, fee);
+  check(stuck.kind === "sendable", "an unaffordable-gas token balance was hidden as a failure");
+  check(stuck.kind === "sendable" && stuck.amount === 2_500_000n, "the token balance was clipped");
+  check(stuck.kind === "sendable" && stuck.cannotAffordGas === true, "no warning that gas is unaffordable");
+
+  // Exactly enough native for gas is enough.
+  const exact = maxSendableToken(1n, reserve, fee);
+  check(exact.kind === "sendable" && exact.cannotAffordGas === undefined, "exact gas money flagged as short");
+
+  const none = maxSendableToken(0n, 0n, fee);
+  check(none.kind === "sendable" && none.amount === 0n && none.zero === true, "an empty token max");
+  check(none.kind === "sendable" && none.cannotAffordGas === true, "no gas warning on an empty account");
+
+  const huge = (1n << 256n) - 1n;
+  const whale = maxSendableToken(huge, 1_000_000_000_000_000_000n, fee);
+  check(whale.kind === "sendable" && whale.amount === huge, "a uint256-max token balance lost precision");
+  // And the max is an amount the calldata encoder will actually take.
+  check(!threw(() => encodeErc20Transfer(VITALIK, huge)), "the token max cannot be encoded");
+
+  check(threw(() => maxSendableToken(-1n, 1n, fee)), "a negative token balance was accepted");
+  check(threw(() => maxSendableToken(1n, -1n, fee)), "a negative native balance was accepted");
 }
 
 if (failures) {
