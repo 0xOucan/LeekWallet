@@ -51,7 +51,41 @@
             Pick the address to sign with. The device signs whichever path is
             requested — what it shows on its own screen is the authority.
           </p>
-          <div class="addr-list" id="addrs"></div>
+          <!-- A selector rather than ten rows: only one address is in use at a
+               time, and a list of ten near-identical hex strings is a place to
+               mis-read one. The chosen one is then shown on its own, in full,
+               with room to check it. -->
+          <label class="field">
+            <span>Address</span>
+            <select id="addrselect" class="addr"></select>
+          </label>
+
+          <div class="addr-detail" id="addrdetail" hidden>
+            <div class="addr" id="addrfull"></div>
+            <!-- Copy is always here because it always works. The QR is behind a
+                 button: it is only wanted when somebody is pointing a camera at
+                 this screen, and drawing it unasked pushes the address itself
+                 down the page. Share only appears where a share sheet exists,
+                 rather than being a button that quietly does something else. -->
+            <div class="row">
+              <button id="addrqrtoggle" type="button" class="secondary">Show QR code</button>
+              <button id="addrcopy" type="button" class="secondary">Copy address</button>
+              <button id="addrshare" type="button" class="secondary" hidden>Share</button>
+            </div>
+            <div class="addr-qr" id="addrqr" hidden></div>
+            <!-- The device draws this same address as a QR on its own screen.
+                 That one is evidence; this one is convenience. If this app were
+                 tampered with it could show anyone's address here, which is
+                 exactly why the sentence below is not decoration. -->
+            <p class="muted" id="addrqrnote" hidden>
+              This QR is drawn by this app, from what the device reported. Before
+              receiving anything that matters, check the address on the device's
+              own screen — it can show its own QR under the address browser.
+            </p>
+            <p class="muted" id="addrshint" aria-live="polite"></p>
+          </div>
+
+          <div class="addr-list" id="addrs" hidden></div>
 
           <!--
             Balances (T63). Everything in here was fetched by this app from a

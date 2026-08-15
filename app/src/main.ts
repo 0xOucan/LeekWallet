@@ -32,6 +32,7 @@ import {
   TOKEN_SCALE_NOTICE, type BalanceSnapshot, type EthRequest, type TokenAmountView,
   type TokenMeta,
 } from "../packages/core/src/balances.ts";
+import qrcodegen from "qrcode-generator";
 import { parsePaymentUri } from "../packages/core/src/payment-uri.ts";
 import { fetchTokenBalancesBatched } from "../packages/core/src/multicall.ts";
 import {
@@ -725,27 +726,21 @@ async function loadAddresses(): Promise<void> {
   addresses.push(...derived);
 
   list.textContent = "";
+
+  const select = $("addrselect") as HTMLSelectElement;
+  select.textContent = "";
   addresses.forEach((addr, i) => {
-    const btn = document.createElement("button");
-    btn.className = "addr-item";
-    btn.setAttribute("aria-selected", String(i === selectedIndex));
-    btn.innerHTML =
-      `<span class="addr-item__index">${i}</span><span class="addr">${chunk(addr)}</span>`;
-    btn.addEventListener("click", () => {
-      selectedIndex = i;
-      for (const el of Array.from(list.children)) el.setAttribute("aria-selected", "false");
-      btn.setAttribute("aria-selected", "true");
-      $("sfrom").textContent = `m/44'/60'/0'/0/${i}`;
-      log(`selected address ${i}`);
-      /* A different address has different balances, so the ones on screen are
-       * now about somebody else. Clear first, fetch second: showing the
-       * previous address's figures under the new address, even for a second,
-       * is the kind of thing people act on. */
-      clearBalances();
-      void refreshBalances("address changed");
-    });
-    list.appendChild(btn);
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    /* Index, path tail and a truncated address. The full value is shown under
+     * the selector rather than squeezed into an option, where a middle-elided
+     * string is exactly the shape an attacker hides a swap in. */
+    opt.textContent = `${i} — ${addr.slice(0, 10)}…${addr.slice(-6)}`;
+    select.appendChild(opt);
   });
+  if (selectedIndex >= addresses.length) selectedIndex = 0;
+  select.value = String(selectedIndex);
+  drawSelectedAddress();
 
   $("sfrom").textContent = `m/44'/60'/0'/0/${selectedIndex}`;
   log(`derived ${addresses.length} addresses`);
@@ -1352,6 +1347,153 @@ function initBalances(): void {
   }, 15000);
 
   renderBalances();
+}
+
+/* ------------------------------------------------- the selected address
+ *
+ * One address at a time, shown in full, with a QR and the two ways people
+ * actually move an address to somewhere else: the clipboard and a share sheet.
+ *
+ * The QR is drawn here from what the device reported, which makes it a
+ * convenience and not evidence — a tampered app could draw anyone's address.
+ * The device draws the same address on its own screen, and that is the copy
+ * worth checking before receiving anything. The note beside it says so.
+ */
+
+/** Renders a QR as an SVG path. No canvas, no raster, scales to any size. */
+function qrSvg(text: string): SVGSVGElement {
+  /* Error correction M: a receive address on a screen is not a label on a
+   * warehouse crate, so the extra redundancy of Q/H buys little, while a
+   * smaller matrix stays readable on a phone held at arm's length. Type 0 lets
+   * the library pick the smallest version that fits. */
+  const qr = qrcodegen(0, "M");
+  qr.addData(text);
+  qr.make();
+
+  const n = qr.getModuleCount();
+  const quiet = 4;               // the spec's mandatory quiet zone
+  const size = n + quiet * 2;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+  svg.setAttribute("width", "220");
+  svg.setAttribute("height", "220");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `QR code for ${text}`);
+
+  const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  bg.setAttribute("width", String(size));
+  bg.setAttribute("height", String(size));
+  /* White, always, whatever the page theme is doing. A scanner needs the
+   * contrast in the right direction and a dark-mode QR is a support ticket. */
+  bg.setAttribute("fill", "#ffffff");
+  svg.appendChild(bg);
+
+  let d = "";
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      if (qr.isDark(y, x)) d += `M${x + quiet} ${y + quiet}h1v1h-1z`;
+    }
+  }
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", d);
+  path.setAttribute("fill", "#000000");
+  svg.appendChild(path);
+  return svg;
+}
+
+/** Draw the selected address: full text, QR, and the buttons beside it. */
+function drawSelectedAddress(): void {
+  const detail = $("addrdetail");
+  const address = addresses[selectedIndex];
+  if (!address) { detail.hidden = true; return; }
+
+  detail.hidden = false;
+  $("addrfull").textContent = chunk(checksumAddress(address.slice(2)));
+
+  const holder = $("addrqr");
+  if (!holder.hidden) {
+    holder.textContent = "";
+    /* The checksummed form is encoded, not the lower-case one: mixed case
+     * carries an EIP-55 checksum, so a scanner that validates it can catch a
+     * corrupted read. Our own parsePaymentUri does exactly that. */
+    holder.appendChild(qrSvg(checksumAddress(address.slice(2))));
+  }
+
+  $("sfrom").textContent = `m/44'/60'/0'/0/${selectedIndex}`;
+}
+
+function initAddressActions(): void {
+  const hint = $("addrshint");
+
+  /* Share is offered only where a share sheet exists. The Android webview has
+   * `navigator.share`; WebKitGTK does not, and a Share button that silently
+   * copies instead is a button that lied about what it does. Desktop keeps
+   * Copy, which is the thing that always works. */
+  const canShare = typeof (navigator as { share?: unknown }).share === "function";
+  ($("addrshare") as HTMLButtonElement).hidden = !canShare;
+
+  $("addrqrtoggle").addEventListener("click", () => {
+    const holder = $("addrqr");
+    const note = $("addrqrnote");
+    const showing = !holder.hidden;
+    holder.hidden = showing;
+    note.hidden = showing;
+    ($("addrqrtoggle") as HTMLButtonElement).textContent = showing ? "Show QR code" : "Hide QR code";
+    if (!showing) drawSelectedAddress();   // renders now that it is visible
+  });
+
+  ($("addrselect") as HTMLSelectElement).addEventListener("change", (e) => {
+    const i = Number((e.target as HTMLSelectElement).value);
+    if (!Number.isInteger(i) || i < 0 || i >= addresses.length) return;
+    selectedIndex = i;
+    drawSelectedAddress();
+    hint.textContent = "";
+    log(`selected address ${i}`);
+    /* A different address has different balances, so the ones on screen are
+     * now about somebody else. Clear first, fetch second: showing the previous
+     * address's figures under the new address, even for a second, is the kind
+     * of thing people act on. */
+    clearBalances();
+    void refreshBalances("address changed");
+    walletConnect.accountsChanged();
+  });
+
+  $("addrcopy").addEventListener("click", () => {
+    const address = addresses[selectedIndex];
+    if (!address) return;
+    const text = checksumAddress(address.slice(2));
+    void navigator.clipboard?.writeText(text).then(
+      () => { hint.textContent = `Copied ${text}. Check it against the device before using it.`; },
+      () => { hint.textContent = "This window would not let the app write to the clipboard. Select the address above and copy it by hand."; },
+    );
+  });
+
+  /* `navigator.share` is present in the Android webview and absent in
+   * WebKitGTK, so desktop falls back to the clipboard rather than offering a
+   * button that does nothing. Checked at click time, not at startup: the
+   * capability does not change, but the fallback message should name what
+   * actually happened. */
+  $("addrshare").addEventListener("click", () => {
+    const address = addresses[selectedIndex];
+    if (!address) return;
+    const text = checksumAddress(address.slice(2));
+    const share = (navigator as { share?: (d: { title?: string; text: string }) => Promise<void> }).share;
+    if (typeof share !== "function") {
+      void navigator.clipboard?.writeText(text).then(
+        () => { hint.textContent = "This window has no share sheet, so the address was copied to the clipboard instead."; },
+        () => { hint.textContent = "This window has neither a share sheet nor clipboard access. Copy the address above by hand."; },
+      );
+      return;
+    }
+    void share.call(navigator, { title: "My Ethereum address", text })
+      .then(() => { hint.textContent = "Shared."; })
+      .catch((e: unknown) => {
+        // A dismissed share sheet rejects; that is not an error worth shouting.
+        const name = (e as { name?: string })?.name;
+        hint.textContent = name === "AbortError" ? "" : `Share failed: ${String((e as Error).message ?? e)}`;
+      });
+  });
 }
 
 /* ------------------------------------------------------- token discovery
@@ -2461,6 +2603,7 @@ async function initRpcTransport(): Promise<void> {
 void initEnvironment();
 initChainSelector();
 initBalances();
+initAddressActions();
 initTokenDiscovery();
 initToScanner();
 initMaxAmount();
