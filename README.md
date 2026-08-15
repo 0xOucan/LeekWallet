@@ -577,6 +577,7 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
 - [x] Android APK runs on a tablet: camera scan, BLE signing, broadcast
 - [x] Send flow with camera QR recipient scanning, Max amount, and token discovery
 - [x] Address panel: selector, QR, copy, and share where a share sheet exists
+- [x] Dapp pairing under the shipping CSP on both platforms, signing verified on-chain
 - [ ] Flash encryption + secure boot — **the gate before real funds**
 - [ ] Account selector reachable from the app (the device has one; the app
       hardcodes `m/44'/60'/0'/0/i`, so the two can disagree — ROADMAP T45a)
@@ -606,8 +607,16 @@ device's decision, not the app's.
 Chain interaction uses [viem](https://viem.sh), with the wallet exposed as a custom `toAccount()`
 signer so any wagmi/RainbowKit dapp can use it unmodified.
 [WalletConnect v2](https://walletconnect.network) pairs it with dapps in your own browser — there
-is deliberately no in-app dapp browser. You supply your own WalletConnect project ID; none is
-bundled, because a committed one would be either fake or somebody else's quota.
+is deliberately no in-app dapp browser. A project ID is bundled so pairing works out of the box, and
+Settings takes your own if you would rather not share the quota; a fork should replace the bundled
+value, since quota is per ID. Pairing is proven on both platforms by signing from a live Aave
+session: desktop `0x299ac220…` and Android `0xe3b53e2f…`, each `from` the device's own address.
+
+Developers: the Vite dev server serves the shipping Content-Security-Policy, read from
+`tauri.conf.json`. Tauri injects that header only when it serves the built app over its own
+protocol, so a `tauri dev` webview would otherwise run with no policy at all — and for a while it
+did, which is how a WalletConnect failure hid on Android that the Linux release build shared. What
+you install is a bundled binary, never a dev server, so **verify a release against the bundle**.
 
 The app shows a Rabby-style preview of what a transaction does, including ERC-7730 descriptor
 labels for a few pinned contracts (WETH, Lido, Aave). **This is advisory and the device never
