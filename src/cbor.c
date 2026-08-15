@@ -234,6 +234,14 @@ static bool skip_item(CborReader *r, int depth)
     return true;
 }
 
+bool cbor_skip(CborReader *r)
+{
+    /* Depth counts from here, not from wherever the caller is in the document.
+     * The bound exists to cap this function's own recursion; a caller that has
+     * already descended keeps its own count, and eip712.c does. */
+    return skip_item(r, 0);
+}
+
 bool cbor_map_find(const uint8_t *buf, size_t len, const char *key, CborItem *out)
 {
     CborReader r;

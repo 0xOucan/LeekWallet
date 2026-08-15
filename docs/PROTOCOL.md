@@ -91,8 +91,11 @@ tabulated rather than described.
 | Host → device | `6c65656b-7761-6c6c-6574-000000000002` | Write, Write Without Response |
 | Device → host | `6c65656b-7761-6c6c-6574-000000000003` | Notify |
 
-**Limits.** Max frame 4 KB by specification; the device's own buffer is 512 bytes and it refuses
-anything larger. Either way the rejection happens on the declared length, before the bytes are
+**Limits.** Max frame 4 KB by specification; the device's own buffer is 1024 bytes and it refuses
+anything larger. It was 512 until `signTypedData` landed: EIP-712 requests carry their own type
+definitions, because the device recomputes the digest from them rather than trusting the host's,
+and a Permit2 `PermitSingle` spelled out in full does not fit in half a kilobyte.
+Either way the rejection happens on the declared length, before the bytes are
 buffered — a signing device must never let the peer dictate an allocation size. On BLE that check
 runs on the first chunk, and a chunk that is out of sequence, empty, overshoots the declared
 length or falls short of it resets reassembly rather than being patched around.
@@ -511,6 +514,53 @@ revocation and reads as one.
 despite the identical argument shape: on ERC-721 the third word is a token id
 rather than an amount and the device cannot tell which standard it is talking
 to, so any wording it chose would be wrong half the time.
+
+#### EIP-712 typed data, and the two refusals it has (T12b)
+
+`signTypedData` takes the *structure* — `types`, `primaryType`, `domain`,
+`message` — and never a digest, a domain separator or a struct hash. The device
+recomputes `keccak256(0x19 0x01 ‖ domainSeparator ‖ hashStruct(message))` from
+those fields itself and renders the same values it hashed, in one traversal
+(`src/eip712.c`), so there is no path where what is shown and what is signed can
+differ. A pre-hashed typed-data request would be `signHash` with a schema
+attached, which is why the command has no way to express one.
+
+Each ABI type has exactly one spelling on the wire, driven by the *declared*
+type of the field and never guessed from the value: `address` and `bytesN` as
+byte strings of the exact length, `uintN`/`intN` as a small unsigned integer or
+a big-endian byte string, `bool` as 0 or 1, `string` as text, a struct as a map.
+Two spellings would mean two byte strings that hash alike and render
+differently.
+
+Confirmation pages: the domain first — `primaryType`, `verifyingContract`,
+chain — then one page per leaf of the struct, nested structs flattened to
+`details.amount` rather than summarised, then the signing address. A `Permit`'s
+spender, amount and deadline each get a page; an amount at or above half its
+declared type's range reads as **UNLIMITED**, the same wording an unlimited
+ERC-20 approve gets, and a field named like a deadline is labelled as one and
+never as an amount.
+
+The two refusals are different, and only one of them is a policy:
+
+| | example | code | blind signing reopens it? |
+|---|---|---|---|
+| **Cannot hash** | an array of any kind, a type referenced but never defined, a value contradicting its declared type, nesting past three | `0x0202` | **no** — like contract creation. The device has no digest, and the only way past would be to accept one from the host |
+| **Cannot show** | more than six leaves, a string the screen has no glyphs for, a label too long for a row | `0x0202` | yes — the digest is real; the screen leads with a warning and shows it, with no field list pretending to be complete |
+
+A request missing `types`, `primaryType`, `domain` or `message` is `0x0001`: the
+host built it wrong, which is not the same answer as the device declining.
+
+The app refuses both cases before the user walks to the device
+(`app/src/wc/requests.ts`), and reopens the second one exactly when
+`getFeatures` says the device has blind signing on — never on its own judgement.
+`eth_signTypedData_v4` is advertised over WalletConnect; v1 carries no domain at
+all, so there is nothing true to put on the domain page, and v3 is v4 without
+nested structs and spoken by nobody who does not also speak v4. Both are refused
+by name so a dapp can fall back rather than hang.
+
+Typed-data requests carry their own type definitions and are the largest thing
+this protocol moves — a Permit2 `PermitSingle` is near 800 bytes — which is why
+the device's frame buffer is 1024 rather than 512 (section 2).
 
 Three details that are load-bearing:
 

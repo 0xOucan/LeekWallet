@@ -34,6 +34,42 @@ const transferData = (to: string, amount: bigint) =>
 const hexMessage = (text: string) =>
   "0x" + [...new TextEncoder().encode(text)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
+/**
+ * An ERC-2612 Permit for an infinite allowance, as a dapp sends one: JSON, with
+ * the uint256 as a decimal string because it has no JavaScript number.
+ *
+ * This is the document behind most permit-drain incidents — no gas, no entry in
+ * the victim's transaction history, and an allowance an attacker redeems later.
+ * The same values are hashed against viem in packages/core/test/eip712.test.ts
+ * and against the firmware in sim/test_eip712.c.
+ */
+const PERMIT_JSON = {
+  types: {
+    EIP712Domain: [
+      { name: "name", type: "string" },
+      { name: "version", type: "string" },
+      { name: "chainId", type: "uint256" },
+      { name: "verifyingContract", type: "address" },
+    ],
+    Permit: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+    ],
+  },
+  primaryType: "Permit",
+  domain: { name: "USD Coin", version: "2", chainId: 1, verifyingContract: TOKEN },
+  message: {
+    owner: A,
+    spender: "0x1111111254EEB25477B68fb85Ed929f73A960582",
+    value: (2n ** 256n - 1n).toString(),
+    nonce: "0",
+    deadline: "1893456000",
+  },
+};
+
 group("read-only methods are answered from app state");
 {
   const accounts = planRequest("eth_accounts", [], ctx);
@@ -112,22 +148,90 @@ group("calls the device cannot decode are refused here, not at the device");
   check(creation.kind === "error", "contract creation was planned for signing");
 }
 
-group("methods the firmware cannot serve are refused by name");
+group("typed data: v4 is planned, the older spellings are refused by name");
 {
-  for (const method of ["eth_signTypedData", "eth_signTypedData_v3", "eth_signTypedData_v4"]) {
+  /* v4 is advertised because the device can now serve it: it recomputes the
+   * digest from the structure and refuses what it could not display (T12b). A
+   * dapp picks typed data over personal_sign on the strength of this list, and
+   * until the device could sign one that choice led nowhere. */
+  check(SUPPORTED_METHODS.includes("eth_signTypedData_v4"), "v4 is served but not advertised");
+  check(!SUPPORTED_METHODS.includes("eth_signTypedData_v3"), "v3 is advertised but refused");
+
+  const permit = planRequest("eth_signTypedData_v4", [A, JSON.stringify(PERMIT_JSON)], ctx);
+  check(permit.kind === "typed-data", `a Permit was not planned: ${JSON.stringify(permit)}`);
+  if (permit.kind === "typed-data") {
+    check(/UNLIMITED value/.test(permit.summary),
+          `the preview does not name the infinite allowance: ${permit.summary}`);
+    check(/0xA0b86991/.test(permit.summary), "the preview does not name the contract");
+    /* Transcribed once, here, and carried to the device untouched: the document
+     * previewed and the one hashed have to be the same object, or the preview
+     * is describing something else. */
+    const message = permit.request["message"] as Record<string, unknown>;
+    check(message["value"] instanceof Uint8Array, "the allowance was not transcribed to bytes");
+  }
+
+  /* Dapps do not reliably send [address, document] in that order. */
+  const swapped = planRequest("eth_signTypedData_v4", [JSON.stringify(PERMIT_JSON), A], ctx);
+  check(swapped.kind === "typed-data", "the arguments were only accepted one way round");
+
+  const stranger = planRequest("eth_signTypedData_v4", [B, JSON.stringify(PERMIT_JSON)], ctx);
+  check(stranger.kind === "error", "an unauthorised address was planned for signing");
+
+  /* An array: the device cannot compute the digest at all, so this refusal is
+   * permanent and is not the same refusal as the one below. */
+  const arrayDoc = {
+    types: {
+      EIP712Domain: [{ name: "name", type: "string" }],
+      Batch: [{ name: "amounts", type: "uint256[]" }],
+    },
+    primaryType: "Batch",
+    domain: { name: "Batch" },
+    message: { amounts: ["1", "2"] },
+  };
+  const array = planRequest("eth_signTypedData_v4", [A, JSON.stringify(arrayDoc)], ctx);
+  check(array.kind === "error", "an array document was planned for signing");
+
+  /* Hashable but unshowable: refused by default, planned once the DEVICE
+   * reports blind signing on. The app must never overrule its owner — they
+   * would opt in and see the identical refusal with no way to tell which layer
+   * said no. */
+  const wideDoc = {
+    types: {
+      EIP712Domain: [{ name: "name", type: "string" }],
+      Wide: Array.from({ length: 7 }, (_, i) => ({ name: `f${i}`, type: "uint256" })),
+    },
+    primaryType: "Wide",
+    domain: { name: "Wide" },
+    message: Object.fromEntries(Array.from({ length: 7 }, (_, i) => [`f${i}`, String(i)])),
+  };
+  const wide = planRequest("eth_signTypedData_v4", [A, JSON.stringify(wideDoc)], ctx);
+  check(wide.kind === "error", "an unshowable structure was planned without blind signing");
+  const wideBlind = planRequest("eth_signTypedData_v4", [A, JSON.stringify(wideDoc)],
+                                { ...ctx, blindSigning: true });
+  check(wideBlind.kind === "typed-data", "blind signing did not reopen an unshowable structure");
+  const arrayBlind = planRequest("eth_signTypedData_v4", [A, JSON.stringify(arrayDoc)],
+                                 { ...ctx, blindSigning: true });
+  check(arrayBlind.kind === "error",
+        "blind signing reopened a document with no computable digest");
+
+  const junk = planRequest("eth_signTypedData_v4", [A, "not json"], ctx);
+  check(junk.kind === "error", "unparseable typed data was planned for signing");
+
+  for (const method of ["eth_signTypedData", "eth_signTypedData_v3"]) {
     const plan = planRequest(method, [A, "{}"], ctx);
     check(plan.kind === "error", `${method} was not refused`);
     if (plan.kind === "error") {
       // 4200 is EIP-1193 "unsupported method" — what a dapp branches on to
-      // fall back to personal_sign.
+      // fall back to something this wallet does serve.
       check(plan.error.code === 4200, `${method}: wrong code ${plan.error.code}`);
-      check(/personal_sign/.test(plan.error.message), `${method}: no fallback suggested`);
+      check(/eth_signTypedData_v4/.test(plan.error.message),
+            `${method}: no fallback suggested`);
     }
   }
+}
 
-  // Never advertised, so a dapp does not choose it over something that works.
-  check(!SUPPORTED_METHODS.includes("eth_signTypedData_v4"), "typed data is advertised but unsupported");
-
+group("methods the firmware cannot serve are refused by name");
+{
   const eth_sign = planRequest("eth_sign", [A, "0x" + "11".repeat(32)], ctx);
   check(eth_sign.kind === "error" && eth_sign.error.code === 4200, "eth_sign was not refused");
 

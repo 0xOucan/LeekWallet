@@ -54,6 +54,13 @@ export interface WalletBridge {
   signTransaction(tx: PlannedTx, broadcast: boolean): Promise<string>;
   /** EIP-191 personal_sign. Returns a 65-byte 0x signature. */
   signMessage(address: string, message: string): Promise<string>;
+  /**
+   * EIP-712 typed data. `request` is the document already transcribed into the
+   * device's wire encoding by planRequest — the app does not get a second go at
+   * interpreting the dapp's JSON, because two transcriptions are two chances to
+   * send the device something other than what was previewed.
+   */
+  signTypedData(address: string, request: Record<string, unknown>): Promise<string>;
   log(line: string): void;
 }
 
@@ -376,6 +383,19 @@ export function initWalletConnect(bridge: WalletBridge): {
       pre.className = "wc-message";
       pre.textContent = head.plan.message;
       body.append("You would be signing this message with " + head.plan.address + ":", pre);
+    } else if (head.plan.kind === "typed-data") {
+      /* The device's own summary, then the dapp's document verbatim in a
+       * <pre>. No interpretation of either: this app has no more standing to
+       * explain a Permit than it has to explain a message, and the screen that
+       * matters is the one on the device. */
+      const pre = document.createElement("pre");
+      pre.className = "wc-message";
+      pre.textContent = JSON.stringify(head.plan.document, null, 2);
+      body.append(
+        `You would be signing this typed data with ${head.plan.address}. ` +
+        `The device will show: ${head.plan.summary}`,
+        pre,
+      );
     } else if (head.plan.kind === "switch-chain") {
       const chain = resolveChainForDapp(head.plan.chainId);
       body.textContent =
@@ -421,6 +441,11 @@ export function initWalletConnect(bridge: WalletBridge): {
         const signature = await bridge.signMessage(plan.address, plan.message);
         await connection.respond(request.topic, request.id, signature);
         bridge.log(`${request.name}: message signed`);
+      } else if (plan.kind === "typed-data") {
+        bridge.log(`${request.name}: check every page on the device, then approve`);
+        const signature = await bridge.signTypedData(plan.address, plan.request);
+        await connection.respond(request.topic, request.id, signature);
+        bridge.log(`${request.name}: typed data signed`);
       } else if (plan.kind === "switch-chain") {
         bridge.setChainId(plan.chainId);
         // null is the EIP-3326 success value; a dapp checks for its absence.

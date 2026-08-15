@@ -2499,6 +2499,29 @@ async function signPlannedMessage(address: string, message: string): Promise<str
   return signatureFrom(reply);
 }
 
+/**
+ * EIP-712 typed data. The device rebuilds the digest from these fields.
+ *
+ * `request` is what planRequest already transcribed from the dapp's JSON, and
+ * it is passed through untouched: re-deriving it here would be a second
+ * transcription, and the one the user was shown a preview of is the one that
+ * has to reach the device.
+ */
+async function signPlannedTypedData(
+  address: string,
+  request: Record<string, unknown>,
+): Promise<string> {
+  if (!client) throw new Error("no device connected");
+  const index = addressIndex(address);
+  if (index < 0) throw new Error("that address is not one this device has derived");
+  const reply = await client.call(
+    "signTypedData",
+    { index, ...(request as Record<string, CborValue>) },
+    150000,
+  );
+  return signatureFrom(reply);
+}
+
 const walletBridge: WalletBridge = {
   // Locked means no accounts, which is what stops a dapp asking for a
   // signature the device could not produce anyway.
@@ -2519,6 +2542,7 @@ const walletBridge: WalletBridge = {
   },
   signTransaction: signPlannedTransaction,
   signMessage: signPlannedMessage,
+  signTypedData: signPlannedTypedData,
   log,
 };
 

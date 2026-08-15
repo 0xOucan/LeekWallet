@@ -86,6 +86,17 @@ bool cbor_reader_done(const CborReader *r);
  */
 bool cbor_map_find(const uint8_t *buf, size_t len, const char *key, CborItem *out);
 
+/**
+ * Skip one complete item at the reader's position, children included.
+ *
+ * Exposed for parsers that have to walk a nested document rather than pluck a
+ * key out of a flat one — EIP-712 typed data is the whole reason it exists, and
+ * it arrives as a map of maps of arrays of maps. Bounded by the same depth
+ * limit as every other traversal here, so a document nested past MAX_DEPTH is
+ * refused rather than recursed.
+ */
+bool cbor_skip(CborReader *r);
+
 /** Copy a TEXT item into a NUL-terminated buffer. False if it does not fit. */
 bool cbor_text_copy(const CborItem *item, char *out, size_t out_size);
 
