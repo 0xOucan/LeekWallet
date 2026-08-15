@@ -193,6 +193,8 @@ export function initWalletConnect(bridge: WalletBridge): {
       (raw) => (raw.toLowerCase().startsWith("wc:") ? raw : undefined),
       (uri) => { scan = null; video.hidden = true; void pair(uri); },
       (message) => { scan = null; video.hidden = true; bridge.log(`camera: ${message}`); },
+      undefined,
+      (status) => bridge.log(`scan: ${status}`),
     )
       .then((handle) => {
         scan = handle;

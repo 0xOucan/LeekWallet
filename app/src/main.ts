@@ -1785,6 +1785,7 @@ function initToScanner(): void {
         hint.textContent = `Camera: ${message}`;
       },
       controller.signal,
+      (status) => log(`scan: ${status}`),
     )
       .then((handle) => {
         toScan = handle;

@@ -125,6 +125,16 @@ export async function scanQr<T>(
   onResult: (value: T) => void,
   onError: (message: string) => void,
   signal?: AbortSignal,
+  /**
+   * Occasional progress, so a scan that is working and a scan that is stuck
+   * are distinguishable from outside.
+   *
+   * Every failure in this module so far has looked identical from the UI --
+   * camera on, nothing happening -- whether the loop had died, the decoder was
+   * throwing, or the image was unreadable. A heartbeat costs one log line and
+   * turns "nothing happened" into a number.
+   */
+  onStatus?: (message: string) => void,
 ): Promise<QrScan> {
   if (!qrScanningAvailable()) throw new Error(QR_UNAVAILABLE);
   if (signal?.aborted) throw new Error("Scan cancelled before the camera started.");
@@ -291,6 +301,8 @@ export async function scanQr<T>(
    * reason to end a scan, so they are counted and tolerated; a decoder failing
    * every single frame is a real fault and still gets reported. */
   let decodeFailures = 0;
+  let framesTried = 0;
+  let decoderReady = false;
 
   const tick = (): void => {
     if (stopped) return;
@@ -305,6 +317,17 @@ export async function scanQr<T>(
       },
     ).then((outcome) => {
       if (stopped) return;
+      framesTried += 1;
+      /* The first completed pass proves the WebAssembly module loaded at all.
+       * If it never arrives, the module is stuck fetching and the scan is
+       * silently stalled -- which is indistinguishable from a bad image
+       * without this line. */
+      if (!decoderReady) {
+        decoderReady = true;
+        onStatus?.("decoder ready");
+      } else if (framesTried % 25 === 0) {
+        onStatus?.(`scanning: ${framesTried} frames, no code yet`);
+      }
       /* A tolerated decoder failure came back as "done" without stopping, so
        * carry on: only a real hit or a real give-up ends the scan. */
       const tolerated = outcome === "done" && decodeFailures > 0 && decodeFailures < MAX_DECODE_FAILURES;
