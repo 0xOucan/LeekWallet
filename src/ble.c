@@ -428,7 +428,9 @@ bool ble_transport_start(void)
         }
     }
     if (!work_task &&
-        xTaskCreate(ble_work_task, "bleproto", 4096, NULL, 4, &work_task) != pdPASS) {
+        /* 8 KB: see the note on the USB task in protocol.c. This is the one
+         * that actually overflowed -- unlock, over BLE, on a 4 KB stack. */
+        xTaskCreate(ble_work_task, "bleproto", 8192, NULL, 4, &work_task) != pdPASS) {
         ESP_LOGE(TAG, "Could not start the BLE request task");
         return false;
     }

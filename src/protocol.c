@@ -1165,12 +1165,47 @@ static void dispatch(const uint8_t *payload, size_t len)
  *
  * `frame` must be writable, because an encrypted body is decrypted in place.
  */
+/**
+ * Warn while there is still stack left to warn with.
+ *
+ * A FreeRTOS stack overflow reboots the device, and a reboot mid-session is
+ * indistinguishable from a dozen other faults: the host sees its session
+ * vanish and reports whatever it was doing at the time. That is exactly how
+ * this was found -- a 744-byte EIP-712 render struct declared as a local in
+ * dispatch() enlarged the frame for *every* method, and the symptom that
+ * reached a user was "unlock failed: derivation failed", pointing at wallet
+ * code that was working perfectly.
+ *
+ * So the margin is checked where every request passes, and a thin one is said
+ * out loud before it becomes a reboot. Logged once per low reading rather than
+ * per frame, because a warning printed hundreds of times is a warning nobody
+ * reads.
+ */
+static void warn_on_thin_stack(void)
+{
+    /* Words, not bytes, on ESP-IDF's FreeRTOS. A quarter of the smaller task's
+     * 8 KB is the line: comfortably above the deepest path measured, and low
+     * enough that hitting it means something changed. */
+    const UBaseType_t low_water_words = 2048 / sizeof(StackType_t);
+    static UBaseType_t worst = (UBaseType_t)-1;
+
+    UBaseType_t left = uxTaskGetStackHighWaterMark(NULL);
+    if (left < worst) {
+        worst = left;
+        if (left < low_water_words) {
+            ESP_LOGW(TAG, "stack headroom on %s is down to %u words",
+                     pcTaskGetName(NULL), (unsigned)left);
+        }
+    }
+}
+
 void protocol_handle_frame(uint8_t *frame, size_t len)
 {
     /* Cleared for every frame, so a reply can never inherit the encryption of
      * the previous one. Set only between a successful decrypt and the end of
      * that frame's dispatch. */
     reply_encrypted = false;
+    warn_on_thin_stack();
 
     if (len < 4) {
         send_error(ERR_MALFORMED, "short frame");
@@ -1337,5 +1372,11 @@ void protocol_start(void)
         return;
     }
 
-    xTaskCreate(protocol_task, "protocol", 4096, NULL, 4, NULL);
+    /* 8 KB, not 4. Both request tasks run the same dispatch(), whose frame is
+     * sized by its largest local -- the EIP-712 render struct is 744 bytes on
+     * its own -- and then call into PBKDF2 and BIP32 derivation on top of that.
+     * At 4 KB the BLE task overflowed and rebooted the device during unlock.
+     * Raised together with bleproto in ble.c: they must not drift, since either
+     * one can serve any request. */
+    xTaskCreate(protocol_task, "protocol", 8192, NULL, 4, NULL);
 }
