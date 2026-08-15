@@ -1,0 +1,23 @@
+# The Rust toolchain this app is built with, pinned. (T37)
+#
+# platformio.ini pins the firmware's compiler for a reason that applies just as
+# hard here: "rebuild the tag and compare hashes" needs one answer to the
+# question of which compiler, or the answer is "it depends on what rustup last
+# updated to on your machine", which is not an answer a verifier can act on. A
+# different rustc emits different code for reasons that have nothing to do with
+# this source, and a mismatch that turns out to mean "you have 1.98" is a
+# mismatch that teaches people to ignore mismatches.
+#
+# Moving this pin is a deliberate act. It produces a release with new hashes,
+# and every previously published hash stays valid only against the version it
+# was built with - which is why docs/RELEASE.md records the toolchain next to
+# the artefacts rather than leaving it implied.
+#
+# This file only takes effect under rustup; a distribution-packaged cargo
+# ignores it silently. That is a real hole in the guarantee and it is why the
+# release procedure builds through rustup rather than through whatever `cargo`
+# happens to be first on PATH.
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
