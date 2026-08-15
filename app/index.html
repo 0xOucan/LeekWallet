@@ -132,6 +132,37 @@
           </section>
         </div>
 
+        <!-- Firmware flashing (T65). Present but inert in shipped builds: the
+             backend is compiled without the `flasher` feature, so
+             flash_capability() reports false and the button stays disabled with
+             the reason on screen. That is deliberate rather than unfinished --
+             until secure boot is burned, a device runs whatever it is given, so
+             a one-click flasher in a wallet is a way to install firmware that
+             reads the PIN. See app/src/flasher.ts and src-tauri/src/flash.rs. -->
+        <div class="panel" id="flashpanel" hidden>
+          <h2>Flash firmware</h2>
+          <p class="notice notice--danger" id="flashwarning" data-secure="false"></p>
+          <label class="field">
+            <span>Device</span>
+            <select id="flashport" class="addr"></select>
+          </label>
+          <label class="field">
+            <span>Firmware image (.bin)</span>
+            <input id="flashfile" type="file" accept=".bin,application/octet-stream" />
+          </label>
+          <label class="row">
+            <input id="flashack" type="checkbox" />
+            <span class="muted">
+              I understand this device will run whatever firmware I install, and
+              that firmware can read my PIN and my seed.
+            </span>
+          </label>
+          <div class="row">
+            <button id="flashgo" type="button" class="secondary" disabled>Flash</button>
+          </div>
+          <p class="muted" id="flashstatus" aria-live="polite"></p>
+        </div>
+
         <div class="panel" id="signpanel" hidden>
           <h2>Sign a transaction</h2>
           <p>

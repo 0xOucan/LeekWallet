@@ -21,6 +21,12 @@ tauri-build = { version = "2", features = [] }
 default = ["rpc-proxy"]
 rpc-proxy = ["dep:reqwest", "dep:rustls", "dep:webpki-roots"]
 
+# The USB firmware flasher (T65). Behind a feature because espflash pulls in a
+# sizeable dependency tree for something most builds do not need, and because a
+# build that CANNOT flash is a meaningful thing to ship: until secure boot is
+# burned, a flasher is a one-click way to install firmware that reads the PIN.
+flasher = ["dep:espflash", "dep:serialport"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
@@ -76,6 +82,12 @@ tokio = { version = "1", features = ["macros", "rt"] }
 # on a phone — so the platform difference is a feature flag here rather than a
 # transport that is simply missing there.
 [target.'cfg(not(target_os = "android"))'.dependencies]
+# espflash as a library, not the CLI: `default-features = false` drops clap,
+# indicatif and the rest of the terminal front end, leaving the esptool
+# protocol. Desktop only for now -- Android needs the USB Host API and the
+# second serial backend transport-serial already models.
+espflash = { version = "4.5", default-features = false, features = ["serialport"], optional = true }
+serialport = { version = "4", optional = true }
 leek-transport-serial = { path = "../transport-serial" }
 leek-transport-ble = { path = "../transport-ble" }
 tokio = { version = "1", features = ["sync", "rt"] }

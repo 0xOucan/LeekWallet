@@ -33,6 +33,7 @@ import {
   type TokenMeta,
 } from "../packages/core/src/balances.ts";
 import qrcodegen from "qrcode-generator";
+import { initFlasher, tauriFlashBridge } from "./flasher.ts";
 import { parsePaymentUri } from "../packages/core/src/payment-uri.ts";
 import { fetchTokenBalancesBatched } from "../packages/core/src/multicall.ts";
 import {
@@ -2605,6 +2606,7 @@ initChainSelector();
 initBalances();
 initAddressActions();
 initTokenDiscovery();
+initFlasher(tauriFlashBridge(log));
 initToScanner();
 initMaxAmount();
 populateAssets();
