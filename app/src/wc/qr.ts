@@ -105,7 +105,7 @@ export function firstAccepted<T>(
 }
 
 /**
- * Longest edge the decoder is given, in pixels.
+ * Longest edge of the square the decoder is given, in pixels.
  *
  * jsQR's cost is proportional to pixel count, so this is a trade between CPU
  * and how small a code may appear in frame. It was 640, which threw away most
@@ -121,6 +121,9 @@ const DECODE_MAX_EDGE = 1080;
 
 /** Shortest gap between decode attempts. See the loop below for why. */
 const SCAN_INTERVAL_MS = 100;
+
+/** Consecutive decoder exceptions tolerated before the scan gives up. */
+const MAX_DECODE_FAILURES = 20;
 
 /**
  * One pass of the scan loop: what should happen next.
@@ -272,20 +275,36 @@ export async function scanQr<T>(
     // Frames arrive before the intrinsic size does; not an error, just not yet.
     if (w === 0 || h === 0) return undefined;
 
-    const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(w, h));
-    const dw = Math.max(1, Math.round(w * scale));
-    const dh = Math.max(1, Math.round(h * scale));
-    if (canvas.width !== dw || canvas.height !== dh) {
-      canvas.width = dw;
-      canvas.height = dh;
+    /* A centre square at native resolution, not the whole frame scaled down.
+     *
+     * Scaling the LONGEST edge to the cap is wrong for a portrait frame, which
+     * is what a tablet held upright gives: 1080x1920 became 607x1080, throwing
+     * away 44% of the width -- and the width is what decides how many pixels a
+     * centred code gets. Measured on a real pairing QR filling about half the
+     * preview, that was the difference between roughly four pixels per module
+     * and roughly eight.
+     *
+     * The square keeps the full short edge, which in portrait is the whole
+     * width, so nothing a user would aim at is lost: the crop only removes
+     * top and bottom, where a code being aimed at the centre is not. */
+    const side = Math.min(w, h);
+    const target = Math.min(side, DECODE_MAX_EDGE);
+    const sx = Math.floor((w - side) / 2);
+    const sy = Math.floor((h - side) / 2);
+    if (canvas.width !== target || canvas.height !== target) {
+      canvas.width = target;
+      canvas.height = target;
     }
-    ctx.drawImage(video, 0, 0, dw, dh);
-    const frame = ctx.getImageData(0, 0, dw, dh);
+    ctx.drawImage(video, sx, sy, side, side, 0, 0, target, target);
+    const frame = ctx.getImageData(0, 0, target, target);
+    const dw = target;
+    const dh = target;
 
     /* Both inversion attempts: a QR printed light-on-dark is still a QR, and
      * this is the difference between "it just works" and a user holding a
      * phone at a screen wondering why. */
     const code = jsQR(frame.data, dw, dh, { inversionAttempts: "attemptBoth" });
+    decodeFailures = 0;                 // this frame got through the decoder
     if (!code) return undefined;
     return firstAccepted([{ rawValue: code.data }], accept);
   };
@@ -294,9 +313,29 @@ export async function scanQr<T>(
    * cheap at this resolution, so a timer firing regardless would queue passes
    * behind each other on a slow device and stall the UI. Exactly one place
    * reschedules, and it is reached unless the scan is over. */
+  /* jsQR can throw on a frame it cannot make sense of -- it was seen crashing
+   * inside its own locator on a real camera image. One bad frame is not a
+   * reason to end a scan, so they are counted and tolerated; a decoder failing
+   * every single frame is a real fault and still gets reported. */
+  let decodeFailures = 0;
+
   const tick = (): void => {
     if (stopped) return;
-    const outcome = scanStep(attempt, onResult, (m) => { stop(); onError(m); });
+    const outcome = scanStep(
+      attempt,
+      onResult,
+      (m) => {
+        decodeFailures += 1;
+        if (decodeFailures < MAX_DECODE_FAILURES) return;   // skip this frame
+        stop();
+        onError(`${m} (the decoder failed on ${decodeFailures} frames in a row)`);
+      },
+    );
+    // A tolerated decode failure is not a reason to stop scanning.
+    if (outcome === "done" && decodeFailures > 0 && decodeFailures < MAX_DECODE_FAILURES && !stopped) {
+      timer = setTimeout(tick, SCAN_INTERVAL_MS);
+      return;
+    }
     if (outcome === "done" || stopped) {
       // A hit resolves through onResult; stop() is the caller's job there so
       // the camera is released before the handler runs.
