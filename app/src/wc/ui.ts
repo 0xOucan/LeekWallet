@@ -191,7 +191,15 @@ export function initWalletConnect(bridge: WalletBridge): {
     void scanQr(
       video,
       (raw) => (raw.toLowerCase().startsWith("wc:") ? raw : undefined),
-      (uri) => { scan = null; video.hidden = true; void pair(uri); },
+      (uri) => {
+        scan = null;
+        video.hidden = true;
+        /* Say that the CAMERA produced this. Without it, a scanned pairing and
+         * a pasted one are the same two log lines, and telling them apart was
+         * guesswork at exactly the moment it mattered. */
+        bridge.log(`scanned a pairing link from the camera (${uri.slice(0, 12)}…)`);
+        void pair(uri);
+      },
       (message) => { scan = null; video.hidden = true; bridge.log(`camera: ${message}`); },
       undefined,
       (status) => bridge.log(`scan: ${status}`),
