@@ -5,13 +5,17 @@
  * value that decides whether dapp connectivity works at all. Two sources, in
  * order: whatever the user typed in settings, then the bundled default.
  *
- * **There is no bundled default in this tree, on purpose.** A project ID is
- * issued to a person or an organisation at cloud.reown.com and is rate-limited
- * per ID; committing one invented here would either be a fake string that fails
- * at the relay with an unhelpful error, or somebody else's real ID being spent
- * by every user of this app. So `BUNDLED_PROJECT_ID` is empty, the app says so
- * plainly instead of failing at connect time, and whoever ships a build fills
- * it in — see app/README.md.
+ * This tree now ships a real bundled default, so dapp connectivity works out of
+ * the box. It was empty for a long time on purpose, and that reasoning still
+ * holds for anyone forking this: an invented ID fails at the relay with an
+ * unhelpful error, and borrowing somebody else's means their quota is spent by
+ * every user of your build. The ID below is this project's own, issued for it
+ * at cloud.reown.com.
+ *
+ * A fork should replace it. The user override below exists for the same reason:
+ * relay quota is per ID, so anyone running their own build at scale, or who
+ * simply does not want their traffic pooled with everyone else's, sets their
+ * own and it wins over this one.
  *
  * The ID is not a secret. It is a public client identifier that appears in the
  * relay URL of every WalletConnect wallet, and it grants nothing beyond relay
@@ -20,12 +24,16 @@
  */
 
 /**
- * Filled in by whoever builds a release. Empty here.
+ * This project's own relay identifier, used unless the user sets their own.
  *
  * Kept as a constant rather than an environment variable so that what a build
  * contains is visible in the source rather than in someone's shell history.
+ *
+ * Not a secret, and not treated as one: a project ID travels in the relay URL
+ * of every WalletConnect wallet, and it grants nothing but relay quota. The
+ * only thing it can do is run out.
  */
-export const BUNDLED_PROJECT_ID = "";
+export const BUNDLED_PROJECT_ID = "770c5799f9be7c042c87985be4b4a2f9";
 
 /** Shown when nothing is configured. Also what a reviewer greps for. */
 export const PROJECT_ID_PLACEHOLDER = "REPLACE_WITH_YOUR_WALLETCONNECT_PROJECT_ID";

@@ -221,8 +221,14 @@ of every WalletConnect wallet and grants nothing except relay quota. Whoever
 ships a build for other people can instead set `BUNDLED_PROJECT_ID` in
 `src/wc/project-id.ts`; the settings field then overrides it per user.
 
-Until an ID is configured the pairing controls are disabled and the panel says
-so, rather than failing at connect time with a relay error.
+This build ships with a bundled project ID, so pairing works without any setup;
+the settings field above overrides it. Set your own if you are running a fork,
+shipping to other people, or would simply rather not share relay quota with
+every other user of this build.
+
+A build with no ID configured at all — a fork that cleared the constant — leaves
+the pairing controls disabled with the panel saying why, rather than failing at
+connect time with a relay error.
 
 ### Pairing
 
