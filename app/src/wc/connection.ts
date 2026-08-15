@@ -189,6 +189,22 @@ export class WalletConnectConnection {
       relayer.on("relayer_error", (e: unknown) =>
         this.handlers.log(`relay: error — ${(e as Error)?.message ?? String(e)}`),
       );
+
+      /* Splits the last ambiguity: a pairing on a live socket that never
+       * produces a proposal has either received nothing, or received something
+       * that died before becoming an event. Those need opposite fixes and look
+       * identical from the outside.
+       *
+       * The topic prefix and the payload's length only. The payload is the
+       * encrypted proposal and the symKey to read it is in memory, so logging
+       * the body would put a decryptable session in a file the user is invited
+       * to paste into a bug report. The length is enough to tell an empty
+       * keepalive from a real proposal. */
+      relayer.on("relayer_message", (event: unknown) => {
+        const m = event as { topic?: string; message?: string };
+        const topic = (m?.topic ?? "?").slice(0, 8);
+        this.handlers.log(`relay: message on ${topic}… (${m?.message?.length ?? 0} chars)`);
+      });
     } else {
       this.handlers.log("relay: this SDK exposes no relayer events to watch");
     }
@@ -333,6 +349,10 @@ export class WalletConnectConnection {
     this.handlers.log(
       `relay socket at pairing: ${relayer?.connected === true ? "connected" : "NOT connected"}`,
     );
+    /* The topic the proposal must arrive on, so the message lines above can be
+     * matched against it rather than guessed at. It is not secret -- the symKey
+     * is, and that is never logged. */
+    this.handlers.log(`waiting on topic ${parsed.uri.topic.slice(0, 8)}…`);
 
     /* Only one wait is ever outstanding: pairing again replaces the previous
      * one, so a second attempt cannot fire a stale warning about the first. */

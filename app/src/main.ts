@@ -2706,6 +2706,18 @@ function diagnosticsReport(): string {
   L.push("LeekWallet companion — diagnostics");
   L.push(new Date().toISOString());
   L.push(`User agent: ${navigator.userAgent}`);
+  /* The webview capabilities WalletConnect leans on, because the frontend
+   * bundle is byte-identical on both platforms: when a pairing works on the
+   * desktop and not on the phone, the difference is here and not in our code.
+   * `isSecureContext` gates `crypto.subtle`, and IndexedDB is where the SDK
+   * persists pairings -- either one missing is invisible until a session
+   * silently fails to arrive. Presence only; nothing is read out. */
+  L.push(
+    `Webview: origin ${location.origin}, secureContext ${String(window.isSecureContext)}, ` +
+      `crypto.subtle ${crypto?.subtle ? "yes" : "NO"}, ` +
+      `indexedDB ${typeof indexedDB !== "undefined" && indexedDB !== null ? "yes" : "NO"}, ` +
+      `WebSocket ${typeof WebSocket !== "undefined" ? "yes" : "NO"}`,
+  );
   L.push("");
 
   L.push("== Connection");
