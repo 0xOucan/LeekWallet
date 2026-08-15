@@ -75,12 +75,85 @@
           </div>
         </section>
 
+        <!--
+          Passphrase (T40). Two entry paths, and they are not equivalent.
+
+          On-device entry is first, is described in plain words, and needs no
+          control here because the device is where it happens. Host entry is
+          behind a closed <details>, because a passphrase typed into this
+          window is read by anything that has this computer — before any
+          encryption applies — and a path with that property should cost a
+          deliberate action rather than being the field that happens to be
+          under the cursor. The warning sits inside the disclosure, at the
+          point of use: a caveat the user has already scrolled past is a
+          caveat that was not read.
+        -->
+        <section class="panel" id="passpanel" aria-labelledby="passhead" hidden>
+          <h2 id="passhead">Passphrase</h2>
+          <p>
+            A passphrase opens a separate wallet from the same seed. The device
+            forgets it on lock, on a wallet switch and on disconnect.
+          </p>
+          <p>
+            <strong>Enter it on the device.</strong> Its own keyboard is slower
+            — a long passphrase is a few hundred button presses — and it is the
+            only way the passphrase never leaves the device at all.
+          </p>
+          <details id="passdisclose">
+            <summary>Type it here instead (less safe)</summary>
+            <div class="notice notice--danger" role="note">
+              <p>
+                Typing a passphrase here is weaker than typing it on the device,
+                and the encrypted link does not change that. This app sees every
+                character before anything is encrypted, so anything that has
+                this computer — malware, a screen recorder, a keyboard app that
+                syncs what you type — sees it too. On a phone, your keyboard is
+                part of that risk.
+              </p>
+              <p>
+                A wrong passphrase does not fail. It opens a different, empty
+                wallet. The device shows the first address of whichever wallet
+                it derived: check that address before you use it, and confirm on
+                the device.
+              </p>
+            </div>
+            <label class="field">
+              <span>Passphrase</span>
+              <!-- Never persisted, never logged, never in diagnostics, and
+                   cleared out of the field the moment the call returns
+                   (PROTOCOL.md 5). autocomplete off keeps it out of the
+                   browser's own password store, which is host storage by
+                   another name. -->
+              <input id="passinput" type="password" autocomplete="off"
+                     autocapitalize="off" autocorrect="off" spellcheck="false"
+                     placeholder="printable ASCII, up to 63 characters" />
+            </label>
+            <div class="row">
+              <button id="passapply" class="secondary">Send to the device</button>
+            </div>
+            <p class="muted" id="passhint" aria-live="polite"></p>
+          </details>
+        </section>
+
         <section class="panel" id="addrpanel" aria-labelledby="addrhead" hidden>
           <h2 id="addrhead">Addresses</h2>
           <p>
             Pick the address to sign with. The device signs whichever path is
             requested — what it shows on its own screen is the authority.
           </p>
+          <!-- Account (T45a). The device browses one BIP-44 account on its own
+               screens and reports which; the app can ask for a different one.
+               "Follow the device" is the default because two screens showing
+               different accounts of the same seed look identical and are not.
+               Changing this throws away every derived address, exactly as a
+               wallet or passphrase change does. -->
+          <label class="field">
+            <span>Account</span>
+            <select id="accountsel" class="addr">
+              <option value="follow">Follow the device</option>
+            </select>
+          </label>
+          <p class="muted" id="accounthint" role="status"></p>
           <!-- A selector rather than ten rows: only one address is in use at a
                time, and a list of ten near-identical hex strings is a place to
                mis-read one. The chosen one is then shown on its own, in full,
