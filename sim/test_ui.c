@@ -1334,6 +1334,101 @@ static void test_a_decoded_call_is_not_marked_blind(void)
     ui_sign_clear();
 }
 
+/* A call from the signature table (T12c): every declared argument gets a page,
+ * and the screen says what a verified signature does and does not prove.
+ *
+ * Aave's supply() is the case that prompted the work - the device refused it
+ * while signing the two approvals that made it dangerous - so it is the case
+ * the screen is tested against. */
+static void test_a_generic_call_shows_every_argument(void)
+{
+    printf("== a table call names its function and pages every argument\n");
+    boot_unlocked_with_seed();
+
+    EthTx tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.chain_id = 1;
+    tx.has_to = true;
+    memset(tx.to, 0x5A, sizeof(tx.to));
+
+    /* Hashed here rather than typed: a hand-copied selector would encode
+     * cleanly and this test would then be asserting against the wrong call. */
+    const char *sig = "supply(address,uint256,address,uint16)";
+    uint8_t selector[32];
+    keccak_256((const uint8_t *)sig, strlen(sig), selector);
+
+    uint8_t asset[20], behalf[20];
+    memset(asset, 0x11, sizeof(asset));
+    memset(behalf, 0x22, sizeof(behalf));
+
+    memset(tx.data, 0, 132);
+    memcpy(tx.data, selector, 4);
+    memcpy(tx.data + 4 + 12, asset, 20);
+    tx.data[4 + 63] = 0x2A;                    /* amount = 42 */
+    memcpy(tx.data + 4 + 64 + 12, behalf, 20);
+    tx.data_length = 132;
+
+    char to_hex[43], asset_hex[43], behalf_hex[43];
+    CHECK(eth_format_address(tx.to, to_hex, sizeof(to_hex)), "format contract");
+    char to_head[17];
+    snprintf(to_head, sizeof(to_head), "%.16s", to_hex);
+    CHECK(eth_format_address(asset, asset_hex, sizeof(asset_hex)), "format asset");
+    CHECK(eth_format_address(behalf, behalf_hex, sizeof(behalf_hex)), "format behalf");
+    char asset_head[17], behalf_head[17];
+    snprintf(asset_head, sizeof(asset_head), "%.16s", asset_hex);
+    snprintf(behalf_head, sizeof(behalf_head), "%.16s", behalf_hex);
+
+    HDPath sign_at = HDPATH_ETH_DEFAULT;
+    ui_request_sign(&tx, &sign_at, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_SIGN_CONFIRM);
+
+    /* Decoded, so not dressed as blind - and named, on the first page. */
+    CHECK_SCREEN(!fake_oled_row_contains(0, "BLIND"),
+                 "a table call is marked blind (\"%s\")", fake_oled_row(0));
+    CHECK_SCREEN(fake_oled_contains("supply"), "the function is not named");
+    /* The limit, in the same breath as the name: this proves what the call is
+     * CALLED, never what it does. */
+    CHECK_SCREEN(fake_oled_contains("Not what it does"),
+                 "the screen does not state what a verified name proves");
+
+    bool saw_asset = false, saw_amount = false, saw_behalf = false;
+    bool saw_referral = false, saw_contract = false, saw_from = false;
+    for (int page = 0; page < 8; page++) {
+        if (fake_oled_contains("asset") && fake_oled_contains(asset_head)) {
+            saw_asset = true;
+        }
+        if (fake_oled_contains("amount") && fake_oled_contains("42") &&
+            fake_oled_contains("raw units")) {
+            saw_amount = true;
+        }
+        if (fake_oled_contains("onBehalfOf") && fake_oled_contains(behalf_head)) {
+            saw_behalf = true;
+        }
+        if (fake_oled_contains("referral") && fake_oled_contains("0")) {
+            saw_referral = true;
+        }
+        /* The contract stays visible: a name proves nothing about who runs
+         * the code, and this address is the only thing that identifies it. */
+        if (fake_oled_contains("Contract") && fake_oled_contains(to_head)) {
+            saw_contract = true;
+        }
+        if (fake_oled_contains("0x0100aaaaaaaabb")) saw_from = true;
+        press(BUTTON_DOWN);
+    }
+
+    CHECK_SCREEN(saw_asset, "the asset argument never appeared");
+    CHECK_SCREEN(saw_amount, "the amount never appeared in raw units");
+    CHECK_SCREEN(saw_behalf, "onBehalfOf never appeared");
+    CHECK_SCREEN(saw_referral, "the referral code never appeared");
+    CHECK_SCREEN(saw_contract, "the contract address never appeared");
+    CHECK_SCREEN(saw_from, "the signing address never appeared (T47)");
+
+    press(BUTTON_ACCEPT);
+    CHECK(ui_sign_outcome() == SIGN_APPROVED,
+          "a fully paged table call could not be approved");
+    ui_sign_clear();
+}
+
 /* The host-entry passphrase path (PROTOCOL.md 5): the address is the whole
  * defence, and saying no has to be a real answer rather than a delay. */
 static void test_host_passphrase_confirmation(void)
@@ -1863,6 +1958,7 @@ int main(void)
     test_blind_signing_takes_a_deliberate_act();
     test_blind_confirmation_is_marked_and_shows_the_digest();
     test_a_decoded_call_is_not_marked_blind();
+    test_a_generic_call_shows_every_argument();
     test_message_confirmation_shows_all_of_it();
     test_typed_data_confirmation_names_the_contract_and_the_amount();
     test_blind_typed_data_leads_with_the_warning();

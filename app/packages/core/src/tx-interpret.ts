@@ -190,7 +190,13 @@ export function interpretTransaction(
     call.kind === CallKind.Erc20Transfer || call.kind === CallKind.Erc20Approve;
 
   const recipient = isToken ? decoded : toAddress;
-  const unlimited = call.unlimited === true;
+  /* A generic call has no single "the" amount, so the flag is raised by any
+   * argument the decoder judged unlimited against its own declared width -
+   * Permit2's uint160 allowance being the case that matters. The device
+   * reaches the same conclusion by the same rule; this is the preview saying
+   * it earlier. */
+  const unlimited =
+    call.unlimited === true || (call.args?.some((a) => a.unlimited === true) ?? false);
 
   const fee = tx.maxFeePerGas ?? tx.gasPrice;
   const maxFeeWei = tx.gas !== undefined && fee !== undefined ? tx.gas * fee : undefined;
@@ -284,7 +290,11 @@ export function interpretTransaction(
       : `Send ${call.amount ?? 0n} raw token units to ${recipient ?? "an unknown recipient"} on ${where}`
     : call.kind === CallKind.Empty
       ? `Send ${formatEther(valueWei)} ETH to ${recipient ?? "an unknown address"} on ${where}`
-      : `Call ${toAddress ?? "new contract"} on ${where} with calldata this app cannot read`;
+      : call.kind === CallKind.Generic
+        ? /* The name and the contract, and nothing about what it does - the
+           * device's own screen makes the same distinction in more words. */
+          `Call ${call.functionName ?? "a function"}() on ${toAddress ?? "a contract"} on ${where}`
+        : `Call ${toAddress ?? "new contract"} on ${where} with calldata this app cannot read`;
 
   const result: TxInterpretation = {
     advisory: true,

@@ -3680,13 +3680,20 @@ typedef enum {
     SIGN_PAGE_TYPED_DOMAIN, /* EIP-712: which contract, which chain, what name */
     SIGN_PAGE_TYPED_FIELD,  /* EIP-712: one leaf of the struct, one page */
     SIGN_PAGE_TYPED_BLIND,  /* EIP-712: hashed, but not showable in full */
+    SIGN_PAGE_CALL_NAME,    /* generic call: the function's name, and the limit
+                             * of what a name proves */
+    SIGN_PAGE_CALL_ARG,     /* generic call: one declared argument, one page */
     SIGN_PAGE_FROM          /* the address that will sign (T47) */
 } SignPageKind;
 
-/* The longest plan is typed data: the domain, one page for each of the six
- * struct leaves the screen will carry, and the source. A transaction, blind or
- * not, needs at most five. */
-#define SIGN_MAX_PAGES (EIP712_MAX_RENDER_FIELDS + 2)
+/* The longest plan is a generic call: its name, one page for each of its six
+ * possible arguments, the contract and the source. Typed data wants the domain,
+ * one page per struct leaf and the source; a transaction, blind or not, needs
+ * at most five. */
+#define SIGN_TYPED_PAGES   (EIP712_MAX_RENDER_FIELDS + 2)
+#define SIGN_GENERIC_PAGES (ETH_MAX_ARGS + 3)
+#define SIGN_MAX_PAGES \
+    (SIGN_TYPED_PAGES > SIGN_GENERIC_PAGES ? SIGN_TYPED_PAGES : SIGN_GENERIC_PAGES)
 
 static EthTx        sign_tx;
 static EthCall      sign_call;
@@ -3893,6 +3900,18 @@ void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
         case ETH_CALL_WETH_WITHDRAW:
         case ETH_CALL_MINT:
             sign_page_kind[n++] = SIGN_PAGE_ACTION;
+            sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
+            break;
+        case ETH_CALL_GENERIC:
+            /* Name first, then every declared argument in the order the
+             * contract will read them, then the contract itself. One argument
+             * per page and none skipped: a page that quietly dropped the
+             * fourth of five would be a screen the signature does not match. */
+            sign_page_kind[n++] = SIGN_PAGE_CALL_NAME;
+            for (int a = 0; a < sign_call.arg_count && n < SIGN_MAX_PAGES - 2; a++) {
+                sign_page_field[n] = a;
+                sign_page_kind[n++] = SIGN_PAGE_CALL_ARG;
+            }
             sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
             break;
         case ETH_CALL_UNKNOWN:
@@ -4384,12 +4403,94 @@ static void screen_sign_confirm_render(void)
             }
             break;
         }
+        case SIGN_PAGE_CALL_NAME: {
+            /* The function name, taken from the same string whose keccak
+             * matched the selector being signed — so the name and the four
+             * bytes cannot disagree.
+             *
+             * The three rows under it are not hedging, they are the honest
+             * limit of what this page can claim. Hashing a signature proves
+             * what the function is CALLED and what its arguments ARE. It
+             * proves nothing about what the code does: any contract may name a
+             * drain `supply`, and nothing on chain forbids it. So the wording
+             * stays descriptive ("Contract calls this") rather than reassuring
+             * ("Supplying to Aave"), and the contract address keeps a page of
+             * its own — the address is the only thing here that identifies who
+             * will run the code. */
+            char name[21];
+            eth_call_function_name(&sign_call, name, sizeof(name));
+            oled_draw_string(1, 0, "Call");
+            oled_draw_string(2, 0, name[0] ? name : "(unnamed)");
+            oled_draw_string(4, 0, "Name and args are");
+            oled_draw_string(5, 0, "read from the ABI.");
+            oled_draw_string(6, 0, "Not what it does!");
+            break;
+        }
+        case SIGN_PAGE_CALL_ARG: {
+            /* One declared argument: its name, its value, nothing inferred.
+             *
+             * Values are rendered by the same rules as everywhere else on this
+             * device - an address across three rows and never truncated, an
+             * integer in raw units because decimals() is not callable from
+             * here, and an allowance past its own type's halfway mark named
+             * UNLIMITED in the words the ERC-20 approve screen uses. A user
+             * should not have to learn a second vocabulary for the same risk
+             * just because the call arrived through a different decoder. */
+            int a = sign_page_field[sign_page];
+            char label[21];
+            eth_call_arg_name(&sign_call, a, label, sizeof(label));
+            oled_draw_string(1, 0, label[0] ? label : "argument");
+
+            uint8_t addr_bytes[20];
+            EthQuantity q;
+            char addr[43];
+            if (eth_arg_address(&sign_call, sign_tx.data, sign_tx.data_length,
+                                a, addr_bytes)) {
+                if (eth_format_address(addr_bytes, addr, sizeof(addr))) {
+                    sign_draw_address(3, addr);
+                }
+            } else if (eth_arg_unlimited(&sign_call, sign_tx.data,
+                                         sign_tx.data_length, a)) {
+                oled_draw_string(3, 0, "UNLIMITED amount");
+                oled_draw_string(4, 0, "Spender can take");
+                oled_draw_string(5, 0, "all of this token");
+            } else if (eth_arg_quantity(&sign_call, sign_tx.data,
+                                        sign_tx.data_length, a, &q)) {
+                char amount[80];
+                if (!eth_format_integer(&q, amount, sizeof(amount))) {
+                    snprintf(amount, sizeof(amount), "?");
+                }
+                /* The unit note goes ABOVE the number, because the number owns
+                 * the four rows below it: a uint256 in decimal is 78 digits,
+                 * and row 7 is the button bar. Wrapped, never cut - a
+                 * shortened number is a different number. */
+                oled_draw_string(2, 0, "raw units");
+                size_t alen = strlen(amount);
+                for (int row = 0; row < 4; row++) {
+                    size_t off = (size_t)row * 21;
+                    if (off >= alen) break;
+                    char part[22];
+                    snprintf(part, sizeof(part), "%.21s", amount + off);
+                    oled_draw_string(3 + row, 0, part);
+                }
+            } else {
+                const uint8_t *word = eth_arg_word(&sign_call, sign_tx.data,
+                                                   sign_tx.data_length, a);
+                /* All that is left is a bool. Printed flat, with no adjective:
+                 * what a true means here belongs to the contract, and
+                 * setApprovalForAll - the one bool whose meaning IS known - has
+                 * its own loud screen rather than this one. */
+                oled_draw_string(3, 0, (word && word[31]) ? "true" : "false");
+            }
+            break;
+        }
         case SIGN_PAGE_CONTRACT: {
             /* Which token. An amount and a spender mean nothing without it:
              * the same approval against a different contract is a different
              * thing to lose. */
             char addr[43];
-            oled_draw_string(1, 0, "Token contract");
+            oled_draw_string(1, 0,
+                sign_call.kind == ETH_CALL_GENERIC ? "Contract" : "Token contract");
             if (eth_format_address(sign_tx.to, addr, sizeof(addr))) {
                 sign_draw_address(2, addr);
             }

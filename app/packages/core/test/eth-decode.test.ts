@@ -7,6 +7,8 @@
  * exact failure mode the "mock must never be more permissive" rule exists for.
  */
 
+import { keccak_256 } from "@noble/hashes/sha3";
+
 import { CallKind, decodeCall, describeCall, isDecodable } from "../src/eth-decode.ts";
 
 let failures = 0;
@@ -109,19 +111,123 @@ group("the wider decodable set mirrors the firmware");
   check(mintTo.kind === CallKind.MintTo && mintTo.address === "0x" + A, "mint(address,uint256)");
   check(decodeCall("0xa0712d68" + w(9n)).kind === CallKind.Mint, "mint(uint256)");
 
-  /* safeTransferFrom is deliberately NOT in the set: identical argument shape
-   * to transferFrom, but the third word is a token id on ERC-721 and an amount
-   * on ERC-20, and neither side can tell which standard it is talking to. Any
-   * wording would be wrong half the time. It also proves both decoders match on
-   * the selector rather than on the length. */
-  check(decodeCall("0x42842e0e" + pad(A) + pad(B) + w(1n)).kind === CallKind.Unknown,
-    "safeTransferFrom was accepted; it is ambiguous by design");
+  /* safeTransferFrom is in the table now, and it is still not transferFrom:
+   * identical argument shape, different selector, and its third argument is
+   * named tokenId rather than described as an amount. The device says the same
+   * — the generic screen prints declared names and refuses to editorialise —
+   * and the case still proves both decoders match on the selector rather than
+   * on the length. */
+  const safe = decodeCall("0x42842e0e" + pad(A) + pad(B) + w(1n));
+  check(safe.kind === CallKind.Generic, "safeTransferFrom was refused");
+  check(safe.args?.[2]?.name === "tokenId", "the third argument is not a token id");
+  check(decodeCall("0x42842e0e" + pad(A) + pad(B)).kind === CallKind.Unknown,
+    "a short safeTransferFrom was accepted");
 
   check(decodeCall("0x40c10f19" + pad(A) + "f".repeat(64)).unlimited !== true,
     "a mint was flagged unlimited; only an approval can be");
 }
 
+/* ------------------------------------------- the self-verifying table (T12c) */
+
+const B = "112233445566778899aabbccddeeff0102030405";
+
+/* Selectors are HASHED here, never typed, for the same reason the firmware
+ * hashes them: a hand-copied selector encodes cleanly and fails silently. */
+const sel = (sig: string) =>
+  [...keccak_256(new TextEncoder().encode(sig)).subarray(0, 4)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+const sigCall = (sig: string, words: string[]) => "0x" + sel(sig) + words.join("");
+const wAddr = (a: string) => "0".repeat(24) + a;
+const wNum = (v: bigint) => v.toString(16).padStart(64, "0");
+
+group("Aave supply decodes into four named arguments");
+{
+  const SUPPLY = "supply(address,uint256,address,uint16)";
+  /* The selector the session that prompted this work refused. */
+  check(sel(SUPPLY) === "617ba037", `supply's selector is ${sel(SUPPLY)}`);
+
+  const d = decodeCall(sigCall(SUPPLY, [wAddr(ADDR), wNum(1000000n), wAddr(B), wNum(0n)]));
+  check(d.kind === CallKind.Generic, "supply refused");
+  check(d.functionName === "supply", `function name ${d.functionName}`);
+  check(d.args?.length === 4, `argument count ${d.args?.length}`);
+  check(d.args?.[0]?.value === "0x" + ADDR, "asset wrong");
+  check(d.args?.[1]?.value === 1000000n, "amount wrong");
+  check(d.args?.[2]?.name === "onBehalfOf", "third argument misnamed");
+  check(describeCall(d) === "supply", `label is ${describeCall(d)}`);
+}
+
+group("a signature altered by one character matches nothing");
+for (const sig of [
+  "supply(address,uint256,address,uint16)",
+  "borrow(address,uint256,uint256,uint16,address)",
+  "repay(address,uint256,uint256,address)",
+  "approve(address,address,uint160,uint48)",
+]) {
+  const arity = sig.slice(sig.indexOf("(") + 1, -1).split(",").length;
+  const words = Array.from({ length: arity }, () => wNum(0n));
+  check(decodeCall(sigCall(sig, words)).kind === CallKind.Generic,
+    `${sig}: the row does not match its own hash`);
+
+  /* The calldata a host would send for a signature altered by one character.
+   * It hashes elsewhere, so it matches nothing and is refused — which is the
+   * whole reason the table needs no trusted descriptor behind it. */
+  const altered = sig.slice(0, -2) + (sig.at(-2) === "x" ? "y" : "x") + ")";
+  check(decodeCall(sigCall(altered, words)).kind === CallKind.Unknown,
+    `${sig}: altered to ${altered} and still decoded`);
+}
+
+group("a generic argument that is not its declared type is refused");
+{
+  const SUPPLY = "supply(address,uint256,address,uint16)";
+  check(
+    decodeCall(sigCall(SUPPLY, [wAddr(ADDR), wNum(1n), "1" + "0".repeat(23) + B, wNum(0n)]))
+      .kind === CallKind.Unknown,
+    "dirty padding on onBehalfOf accepted",
+  );
+  check(
+    decodeCall(sigCall(SUPPLY, [wAddr(ADDR), wNum(1n), wAddr(B), wNum(0x10000n)]))
+      .kind === CallKind.Unknown,
+    "a uint16 wider than sixteen bits accepted",
+  );
+  check(
+    decodeCall(sigCall(SUPPLY, [wAddr(ADDR), wNum(1n), wAddr(B), wNum(0n), wNum(0n)]))
+      .kind === CallKind.Unknown,
+    "trailing bytes after supply accepted",
+  );
+}
+
+group("an unlimited allowance is judged against its own type's width");
+{
+  const P2 = "approve(address,address,uint160,uint48)";
+  const d = decodeCall(sigCall(P2, [
+    wAddr(ADDR), wAddr(B), wNum((1n << 160n) - 1n), wNum((1n << 48n) - 1n),
+  ]));
+  check(d.kind === CallKind.Generic, "Permit2 approve refused");
+  check(d.args?.[2]?.unlimited === true, "a uint160 max allowance not flagged");
+  /* A uint48 with every bit set is a far-future date, not an infinity. */
+  check(d.args?.[3]?.unlimited !== true, "a uint48 expiration flagged unlimited");
+  const below = decodeCall(sigCall(P2, [
+    wAddr(ADDR), wAddr(B), wNum((1n << 152n) - 1n), wNum(0n),
+  ]));
+  check(below.args?.[2]?.unlimited === false, "2^152-1 flagged unlimited");
+}
+
+group("a call carrying a dynamic argument is still refused");
+check(
+  decodeCall(sigCall("safeTransferFrom(address,address,uint256,bytes)", [
+    wAddr(ADDR), wAddr(B), wNum(7n), wNum(0x80n),
+  ])).kind === CallKind.Unknown,
+  "a call with a bytes argument was decoded",
+);
+
 group("transaction-level gate");
+check(isDecodable({
+  to: "0x" + ADDR,
+  data: sigCall("supply(address,uint256,address,uint16)",
+    [wAddr(ADDR), wNum(1n), wAddr(B), wNum(0n)]),
+}).ok, "supply refused at the transaction gate");
 check(isDecodable({ to: "0x" + ADDR }).ok, "plain transfer refused");
 check(!isDecodable({ to: undefined, data: "0x60806040" }).ok, "contract creation accepted");
 check(isDecodable({ to: "0x" + ADDR, data: call(SEL_APPROVE, ADDR, 7n) }).ok, "approval refused");

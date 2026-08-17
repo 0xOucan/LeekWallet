@@ -180,17 +180,19 @@ static void test_refusals(void)
     CHECK(eth_decode_call(data, 68, &call) == ETH_CALL_UNKNOWN,
           "an unknown selector was accepted");
 
-    /* safeTransferFrom(address,address,uint256), deliberately out of the set:
-     * on ERC-721 the third argument is a token id rather than an amount, and
-     * the device cannot tell which contract standard it is talking to. Same
-     * argument shape as transferFrom, so this also proves the decoder matches
-     * on the selector rather than on the length. */
+    /* safeTransferFrom(address,address,uint256) is in the set now, and it is
+     * still not transferFrom: same argument shape, different selector, and the
+     * generic decoder names the third argument tokenId rather than an amount.
+     * Kept here because it is the case that proves the decoder matches on the
+     * selector and never on the length. */
     const uint8_t sel_safe[4] = {0x42, 0x84, 0x2e, 0x0e};
     uint8_t safe[100];
     build_transfer_from(safe, SPENDER, OTHER, amount);
     memcpy(safe, sel_safe, 4);
-    CHECK(eth_decode_call(safe, sizeof(safe), &call) == ETH_CALL_UNKNOWN,
-          "safeTransferFrom accepted");
+    CHECK(eth_decode_call(safe, sizeof(safe), &call) == ETH_CALL_GENERIC,
+          "safeTransferFrom refused");
+    CHECK(eth_decode_call(safe, 99, &call) == ETH_CALL_UNKNOWN,
+          "a short safeTransferFrom was accepted");
 
     /* transferFrom's own selector at the wrong length is still refused. */
     build_transfer_from(safe, SPENDER, OTHER, amount);
@@ -451,6 +453,280 @@ static void test_tx_level(void)
     CHECK(call.kind == ETH_CALL_MINT, "mint kind wrong at tx level");
 }
 
+/* ------------------------------------------- the self-verifying table (T12c) */
+
+/* Build a call to `sig` from `nwords` already-encoded 32-byte words.
+ *
+ * The selector is HASHED here, in the test, and never typed: a hand-copied
+ * selector encodes perfectly and fails silently, which is precisely the class
+ * of mistake the firmware table was restructured to make impossible. */
+static size_t build_sig_call(uint8_t *out, size_t cap, const char *sig,
+                             const uint8_t words[][32], size_t nwords)
+{
+    size_t len = 4 + nwords * 32;
+    if (len > cap) return 0;
+    uint8_t hash[32];
+    keccak_256((const uint8_t *)sig, strlen(sig), hash);
+    memcpy(out, hash, 4);
+    for (size_t i = 0; i < nwords; i++) {
+        memcpy(out + 4 + i * 32, words[i], 32);
+    }
+    return len;
+}
+
+static void word_address(uint8_t w[32], const uint8_t addr[20])
+{
+    memset(w, 0, 32);
+    memcpy(w + 12, addr, 20);
+}
+
+static void word_u64(uint8_t w[32], uint64_t v) { amount_u64(w, v); }
+
+/* Arity of a canonical signature: the number of types between the parens. */
+static size_t sig_arity(const char *sig)
+{
+    const char *p = strchr(sig, '(');
+    if (!p || p[1] == ')') return 0;
+    size_t n = 1;
+    for (p++; *p && *p != ')'; p++) {
+        if (*p == ',') n++;
+    }
+    return n;
+}
+
+static size_t names_count(const char *names)
+{
+    if (!names || *names == '\0') return 0;
+    size_t n = 1;
+    for (const char *p = names; *p; p++) {
+        if (*p == ',') n++;
+    }
+    return n;
+}
+
+static void test_signature_table_is_well_formed(void)
+{
+    printf("every table row names as many arguments as it declares\n");
+
+    const char *sig, *names;
+    uint8_t sels[64][4];
+    size_t count = 0;
+
+    for (size_t i = 0; eth_decode_table_entry(i, &sig, &names); i++) {
+        CHECK(names_count(names) == sig_arity(sig),
+              "%s: %zu names for %zu arguments", sig, names_count(names),
+              sig_arity(sig));
+        CHECK(strchr(sig, ' ') == NULL, "%s: a space in a canonical signature",
+              sig);
+
+        /* Two rows with one selector is a silent overload collision: the
+         * second is unreachable and nothing else would ever say so. */
+        uint8_t hash[32];
+        keccak_256((const uint8_t *)sig, strlen(sig), hash);
+        for (size_t j = 0; j < count; j++) {
+            CHECK(memcmp(sels[j], hash, 4) != 0, "%s: duplicate selector", sig);
+        }
+        memcpy(sels[count++], hash, 4);
+    }
+    CHECK(count > 9, "the table lost its generic rows");
+}
+
+/*
+ * The property the whole table rests on: the signature string IS the mapping.
+ *
+ * For every row, a call whose selector is keccak256(signature)[0:4] decodes,
+ * and the same call with a selector taken from a signature altered by one
+ * character does not. That is what makes the table self-certifying — a
+ * tampered or mistyped string cannot produce the selector being signed, so it
+ * matches nothing and the device refuses rather than mislabelling the call.
+ */
+static void test_a_tampered_signature_stops_matching(void)
+{
+    printf("a signature altered by one character matches nothing\n");
+
+    const char *sig;
+    for (size_t i = 0; eth_decode_table_entry(i, &sig, NULL); i++) {
+        size_t arity = sig_arity(sig);
+        uint8_t words[ETH_MAX_ARGS][32];
+        memset(words, 0, sizeof(words));
+
+        uint8_t data[4 + ETH_MAX_ARGS * 32];
+        size_t len = build_sig_call(data, sizeof(data), sig, words, arity);
+        CHECK(len > 0, "%s: could not build a call", sig);
+        /* An all-zero argument block is valid for every type in the table, so
+         * anything but a decode here is the row failing to match itself. */
+        CHECK(eth_decode_call(data, len, NULL) != ETH_CALL_UNKNOWN,
+              "%s: the row does not match its own hash", sig);
+
+        /* Now the tamper: one character of the type list, changed. The device
+         * is being handed exactly the calldata a host would send for the
+         * altered signature. */
+        char altered[96];
+        snprintf(altered, sizeof(altered), "%s", sig);
+        size_t n = strlen(altered);
+        CHECK(n > 2, "%s: too short to alter", sig);
+        altered[n - 2] = (altered[n - 2] == 'x') ? 'y' : 'x';
+
+        len = build_sig_call(data, sizeof(data), altered, words, arity);
+        CHECK(eth_decode_call(data, len, NULL) == ETH_CALL_UNKNOWN,
+              "%s: altered to %s and still decoded", sig, altered);
+    }
+}
+
+static void test_supply_decodes(void)
+{
+    printf("Aave supply decodes into four named arguments\n");
+
+    uint8_t words[4][32];
+    word_address(words[0], SPENDER);      /* asset      */
+    word_u64(words[1], 1000000);          /* amount     */
+    word_address(words[2], OTHER);        /* onBehalfOf */
+    word_u64(words[3], 0);                /* referral   */
+
+    uint8_t data[132];
+    size_t len = build_sig_call(data, sizeof(data),
+                                "supply(address,uint256,address,uint16)",
+                                words, 4);
+    EthCall call;
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_GENERIC,
+          "supply refused");
+    CHECK(call.arg_count == 4, "supply has %u arguments", call.arg_count);
+
+    char name[24];
+    eth_call_function_name(&call, name, sizeof(name));
+    CHECK(strcmp(name, "supply") == 0, "function name is %s", name);
+
+    eth_call_arg_name(&call, 2, name, sizeof(name));
+    CHECK(strcmp(name, "onBehalfOf") == 0, "third argument named %s", name);
+
+    uint8_t addr[20];
+    CHECK(eth_arg_address(&call, data, len, 0, addr) &&
+          memcmp(addr, SPENDER, 20) == 0, "asset address wrong");
+    CHECK(eth_arg_address(&call, data, len, 2, addr) &&
+          memcmp(addr, OTHER, 20) == 0, "onBehalfOf address wrong");
+    CHECK(!eth_arg_address(&call, data, len, 1, addr),
+          "an amount read back as an address");
+
+    EthQuantity q;
+    char text[80];
+    CHECK(eth_arg_quantity(&call, data, len, 1, &q), "amount not readable");
+    CHECK(eth_format_integer(&q, text, sizeof(text)) &&
+          strcmp(text, "1000000") == 0, "amount rendered as %s", text);
+
+    /* The selector is 0x617ba037, the one the session that prompted this work
+     * refused. Pinned by hash, not typed. */
+    uint8_t hash[32];
+    const char *supply_sig = "supply(address,uint256,address,uint16)";
+    keccak_256((const uint8_t *)supply_sig, strlen(supply_sig), hash);
+    CHECK(hash[0] == 0x61 && hash[1] == 0x7b && hash[2] == 0xa0 && hash[3] == 0x37,
+          "supply's selector moved");
+}
+
+static void test_generic_arguments_are_validated(void)
+{
+    printf("a generic argument that is not its declared type is refused\n");
+
+    uint8_t words[4][32];
+    uint8_t data[160];   /* room to append trailing bytes below */
+    EthCall call;
+
+    /* Dirty padding on an address, where the screen never looks. */
+    word_address(words[0], SPENDER);
+    word_u64(words[1], 1);
+    word_address(words[2], OTHER);
+    word_u64(words[3], 0);
+    size_t len = build_sig_call(data, sizeof(data),
+                                "supply(address,uint256,address,uint16)", words, 4);
+    data[4 + 64] = 0x01;
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_UNKNOWN,
+          "dirty padding on onBehalfOf accepted");
+
+    /* A uint16 carrying more than sixteen bits. The contract will read the low
+     * word; a device that showed the whole 256 bits would be showing a
+     * different number than the one that executes, and one that masked it
+     * would hide bytes the host chose to send. Refuse instead. */
+    word_u64(words[3], 0x10000);
+    len = build_sig_call(data, sizeof(data),
+                         "supply(address,uint256,address,uint16)", words, 4);
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_UNKNOWN,
+          "a uint16 wider than sixteen bits accepted");
+
+    /* Trailing bytes behind a full argument block, as for every other kind. */
+    word_u64(words[3], 0);
+    len = build_sig_call(data, sizeof(data),
+                         "supply(address,uint256,address,uint16)", words, 4);
+    CHECK(eth_decode_call(data, len - 1, &call) == ETH_CALL_UNKNOWN,
+          "a short supply accepted");
+    memset(data + len, 0xAB, 4);
+    CHECK(eth_decode_call(data, len + 4, &call) == ETH_CALL_UNKNOWN,
+          "trailing bytes after supply accepted");
+}
+
+static void test_unlimited_follows_the_declared_width(void)
+{
+    printf("an unlimited allowance is judged against its own type's width\n");
+
+    /* Permit2: approve(token, spender, uint160 amount, uint48 expiration). */
+    uint8_t words[4][32];
+    memset(words, 0, sizeof(words));
+    word_address(words[0], SPENDER);
+    word_address(words[1], OTHER);
+    memset(words[2] + 12, 0xFF, 20);          /* amount = 2^160 - 1 */
+    memset(words[3] + 26, 0xFF, 6);           /* expiration = 2^48 - 1 */
+
+    uint8_t data[132];
+    EthCall call;
+    size_t len = build_sig_call(data, sizeof(data),
+                                "approve(address,address,uint160,uint48)", words, 4);
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_GENERIC,
+          "Permit2 approve refused");
+    CHECK(eth_arg_unlimited(&call, data, len, 2),
+          "a uint160 max allowance not flagged unlimited");
+    /* A uint48 with every bit set is a far-future date, not an infinity, and
+     * calling it one would name the wrong risk on the screen. */
+    CHECK(!eth_arg_unlimited(&call, data, len, 3),
+          "a uint48 expiration flagged unlimited");
+    /* Below the halfway mark of its own width: a number, not an infinity. */
+    memset(words[2], 0, 32);
+    memset(words[2] + 13, 0xFF, 19);
+    len = build_sig_call(data, sizeof(data),
+                         "approve(address,address,uint160,uint48)", words, 4);
+    eth_decode_call(data, len, &call);
+    CHECK(!eth_arg_unlimited(&call, data, len, 2),
+          "2^152-1 flagged unlimited");
+}
+
+static void test_dynamic_types_stay_refused(void)
+{
+    printf("a call carrying a dynamic argument is still refused\n");
+
+    /* safeTransferFrom(address,address,uint256,bytes) — the four-argument
+     * overload, a real function with a real selector that is deliberately NOT
+     * in the table. Its head decodes to three words and an offset, so a
+     * decoder that matched on shape would happily show the first three
+     * arguments of a call whose fourth is arbitrary data. */
+    uint8_t words[4][32];
+    memset(words, 0, sizeof(words));
+    word_address(words[0], SPENDER);
+    word_address(words[1], OTHER);
+    word_u64(words[2], 7);
+    word_u64(words[3], 0x80);
+
+    uint8_t data[132];
+    size_t len = build_sig_call(data, sizeof(data),
+                                "safeTransferFrom(address,address,uint256,bytes)",
+                                words, 4);
+    CHECK(eth_decode_call(data, len, NULL) == ETH_CALL_UNKNOWN,
+          "a call with a bytes argument was decoded");
+
+    /* Nor does the three-argument row it shadows accept the longer call: the
+     * length check is exact, so an extra word cannot ride in behind a match. */
+    len = build_sig_call(data, sizeof(data),
+                         "safeTransferFrom(address,address,uint256)", words, 4);
+    CHECK(eth_decode_call(data, len, NULL) == ETH_CALL_UNKNOWN,
+          "a fourth word rode in behind safeTransferFrom");
+}
+
 int main(void)
 {
     test_empty_is_native();
@@ -463,6 +739,12 @@ int main(void)
     test_weth();
     test_mint();
     test_refusals();
+    test_signature_table_is_well_formed();
+    test_a_tampered_signature_stops_matching();
+    test_supply_decodes();
+    test_generic_arguments_are_validated();
+    test_unlimited_follows_the_declared_width();
+    test_dynamic_types_stay_refused();
     test_tx_level();
 
     if (failures) {
