@@ -398,6 +398,76 @@ function selectedKind(): LinkKind {
 let selectedIndex = 0;
 const addresses: string[] = [];
 
+/* ---------------------------------------------------------------- accounts */
+
+/*
+ * BIP-44 account selection, host side (T45a).
+ *
+ * The device browses one account on its own screens and reports it in
+ * getStatus; until now the app only *followed* that number and hardcoded
+ * `m/44'/60'/0'/0/i` into every request it made. Those two facts were
+ * compatible only for as long as the device stayed on account 0.
+ *
+ * "Follow the device" stays the default, and it is the honest default: two
+ * accounts off one seed produce address lists that look exactly alike, so a
+ * user reading an address here while the device browses elsewhere has nothing
+ * on either screen telling them the two disagree. Choosing a number instead is
+ * a deliberate act, and the hint under the selector then says the two ends are
+ * looking at different identities.
+ *
+ * Ten, not 2^31, for the same reason the address browser stops at ten: it is
+ * what the device's own menus reach and what this app enumerates. The protocol
+ * is wider and the firmware bounds it at 2^31; nothing here needs to be.
+ */
+const ACCOUNT_COUNT = 10;
+
+/** null means "whatever the device is on". */
+let chosenAccount: number | null = null;
+
+/** The account the app is actually deriving under, right now. */
+function effectiveAccount(): number {
+  return chosenAccount ?? lastStatus.account;
+}
+
+/**
+ * The account `addresses` was derived under, or -1 for "nothing derived".
+ *
+ * Derived state is valid only for one (unlocked, wallet, passphrase, account)
+ * tuple. The first three arrive from the device and `derivationsInvalidated()`
+ * watches them; the fourth can now also be moved from this side, and a change
+ * the app made itself would otherwise never show up in a status comparison.
+ * Recording it here is what lets every signing path refuse rather than sign
+ * from an address it derived under a different account.
+ */
+let derivedAccount = -1;
+
+/** The path a request names, spelled out once so no caller writes it by hand. */
+function addressPath(account: number, index: number): string {
+  return `m/44'/60'/${account}'/0/${index}`;
+}
+
+/**
+ * The account to put on a signing request, or a refusal.
+ *
+ * Every signing call sends `account` explicitly rather than leaning on the
+ * device's current selection to happen to match — a default that agrees today
+ * and disagrees the moment somebody turns the wheel is not a default, it is a
+ * coincidence. And the addresses this app is about to name an index into were
+ * derived under one account: if that is no longer the account being asked for,
+ * the index means a different key and there is nothing on either screen that
+ * would look wrong. Refusing is the only answer; re-deriving silently would
+ * sign from an address the user never saw.
+ */
+function signingAccount(): number {
+  const account = effectiveAccount();
+  if (derivedAccount !== account) {
+    throw new Error(
+      "the addresses on screen were derived under a different account — reconnect or reselect before signing",
+    );
+  }
+  return account;
+}
+
 /* Last known device state, and a poll to notice changes the app did not cause
  * - an auto-lock on the device's own timer, or a wallet switched by hand. */
 let lastStatus: DeviceStatus = UNKNOWN_STATUS;
@@ -450,7 +520,11 @@ function invalidateDerived(reason: string): void {
   // Retire any in-flight derivation as well as the current list.
   loadGeneration++;
   addresses.length = 0;
+  /* Back to "nothing derived". Left at its old value it would claim the next
+   * signing attempt was checked against an account that no longer applies. */
+  derivedAccount = -1;
   $("addrs").textContent = "";
+  $("addrdetail").hidden = true;
   $("addrpanel").hidden = true;
   $("signpanel").hidden = true;
   $("sfrom").textContent = "—";
@@ -470,7 +544,24 @@ function invalidationReason(before: DeviceStatus, after: DeviceStatus): string {
   if (before.passphrase !== after.passphrase) {
     return after.passphrase ? "passphrase applied on device" : "passphrase cleared on device";
   }
+  if (before.account !== after.account) return `account changed on device to ${after.account}`;
   return "device state changed";
+}
+
+/**
+ * The one-line wallet state in the header.
+ *
+ * Account is in here because it is half of which wallet you are in and was
+ * previously invisible from this side: two accounts of one seed are different
+ * identities that the rest of this bar describes identically.
+ */
+function walletLabel(s: DeviceStatus): string {
+  if (!s.unlocked) return "locked";
+  const account = chosenAccount === null || chosenAccount === s.account
+    ? `account ${s.account}`
+    : `account ${chosenAccount} (device on ${s.account})`;
+  return `wallet ${s.activeWallet}/${s.walletCount}` +
+    (s.passphrase ? " + passphrase" : "") + ` · ${account}`;
 }
 
 async function poll(): Promise<void> {
@@ -493,11 +584,17 @@ async function poll(): Promise<void> {
     const reason = changed ? invalidationReason(lastStatus, now) : "";
     lastStatus = now;
 
-    $("wallet").textContent = now.unlocked
-      ? `wallet ${now.activeWallet}/${now.walletCount}${now.passphrase ? " + passphrase" : ""}`
-      : "locked";
+    $("wallet").textContent = walletLabel(now);
+    /* The follow option names the device's number, so it has to be redrawn
+     * whenever that number moves - including the move the app did not make. */
+    renderAccountSelector();
+    $("passpanel").hidden = !now.unlocked;
 
     if (changed) {
+      /* Note that a device-side account change invalidates even when the app
+       * has pinned an account of its own and the derivation would come back
+       * identical. That is the conservative direction device-state.ts asks for,
+       * and the cost is one re-derivation of a list nobody was looking at. */
       invalidateDerived(reason);
       if (now.unlocked) {
         await loadAddresses();
@@ -763,16 +860,19 @@ async function unlock(): Promise<void> {
       }
     }
     log("device unlocked");
+    /* Status before derivation, not after: in follow mode the account to
+     * derive under is the device's, and reading it afterwards meant the first
+     * ten addresses came off account 0 on a device parked anywhere else. */
+    lastStatus = await readStatus();
+    renderAccountSelector();
     await loadAddresses();
     $("addrpanel").hidden = false;
     $("signpanel").hidden = false;
-    lastStatus = await readStatus();
+    $("passpanel").hidden = !lastStatus.unlocked;
     if (!lastStatus.unlocked) {
       log("device is locked — press Unlock, then enter your PIN on the device");
     }
-    $("wallet").textContent =
-      `wallet ${lastStatus.activeWallet}/${lastStatus.walletCount}` +
-      (lastStatus.passphrase ? " + passphrase" : "");
+    $("wallet").textContent = walletLabel(lastStatus);
 
     /* Two seconds is frequent enough that a lock is noticed before the user
      * acts on a stale address, and rare enough not to keep a BLE link busy. */
@@ -802,15 +902,23 @@ async function loadAddresses(): Promise<void> {
   const list = $("addrs");
   list.textContent = "Deriving…";
 
+  /* Pinned for the whole run. Reading effectiveAccount() per iteration would
+   * let a selector change land halfway down and produce a list stitched from
+   * two accounts, which is the one shape of wrong that no address on screen
+   * would betray. The generation check already discards a superseded run; this
+   * makes sure the run itself is coherent. */
+  const account = effectiveAccount();
+
   const derived: string[] = [];
   for (let i = 0; i < 10; i++) {
-    const r = await client.call("getAddress", { path: `m/44'/60'/0'/0/${i}` });
+    const r = await client.call("getAddress", { path: addressPath(account, i) });
     if (generation !== loadGeneration) return;   // superseded
     derived.push(String(r["address"]));
   }
 
   addresses.length = 0;
   addresses.push(...derived);
+  derivedAccount = account;
 
   list.textContent = "";
 
@@ -829,8 +937,8 @@ async function loadAddresses(): Promise<void> {
   select.value = String(selectedIndex);
   drawSelectedAddress();
 
-  $("sfrom").textContent = `m/44'/60'/0'/0/${selectedIndex}`;
-  log(`derived ${addresses.length} addresses`);
+  $("sfrom").textContent = addressPath(account, selectedIndex);
+  log(`derived ${addresses.length} addresses under account ${account}`);
   walletConnect.accountsChanged();
   /* One of the two moments a fetch happens without being asked for: the app
    * has just learned which address the user is looking at, which is exactly
@@ -838,6 +946,119 @@ async function loadAddresses(): Promise<void> {
   clearBalances();
   populateAssets();
   void refreshBalances("addresses derived");
+}
+
+/* -------------------------------------------------------------- passphrase */
+
+/*
+ * Host-side passphrase entry (T40) — the weaker of the two paths, and labelled
+ * as such everywhere it is reachable.
+ *
+ * The device already accepts `setPassphrase` and already refuses to apply one
+ * without a confirmation on its own screen. What was missing was any way to
+ * send one, which meant the choice between the two paths was not being offered
+ * — and an unoffered choice is not a security decision anyone made.
+ *
+ * So it is offered, and the accounting is spelled out at the point of use
+ * rather than in a document: this app reads every character before encryption
+ * touches it, so a compromised host learns the passphrase, and no amount of
+ * ChaCha20 on the wire changes that. On-device entry stays the default and the
+ * one described first; this lives behind a closed disclosure with the warning
+ * inside it.
+ *
+ * Nothing here keeps the passphrase: it is read out of the field, handed to
+ * the transport, and the field is cleared in a finally. It is never logged,
+ * never announced, never persisted, and diagnosticsReport() has no path to it.
+ */
+
+/** Matches protocol.c: printable ASCII, 1..63 bytes, no empty (that is not "clear"). */
+function passphraseComplaint(value: string): string | null {
+  if (value.length === 0) return "Nothing to send. An empty passphrase is the base wallet, not a passphrase.";
+  /* Byte length, because the device's bound is a 64-byte buffer. Non-ASCII is
+   * refused a line below anyway, so this only ever matters for long input. */
+  if (new TextEncoder().encode(value).length > 63) return "Too long: the device accepts up to 63 characters.";
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code > 0x7e) {
+      /* Named, not shown: echoing the offending character back into the page
+       * would put a piece of the passphrase on screen and into a screenshot. */
+      return "Only printable ASCII, the same set the device's own keyboard can type.";
+    }
+  }
+  return null;
+}
+
+function initPassphrase(): void {
+  const input = $("passinput") as HTMLInputElement;
+  const button = $("passapply") as HTMLButtonElement;
+  const hint = $("passhint");
+
+  const apply = async (): Promise<void> => {
+    if (!client) { hint.textContent = "No device connected."; return; }
+
+    const complaint = passphraseComplaint(input.value);
+    if (complaint) { hint.textContent = complaint; return; }
+
+    button.disabled = true;
+    hint.textContent = "Waiting for the device…";
+    deviceAttention(
+      "check the address the device shows, then confirm the passphrase on the device",
+    );
+    try {
+      /* The value goes straight from the field into the call. No local, no
+       * closure holding it after this line, and the field is emptied in the
+       * finally below whichever way this ends. */
+      const reply = await client.call("setPassphrase", { passphrase: input.value }, 150000);
+
+      /* The device answers with the first address of the wallet it derived —
+       * the same string it drew on its screen — because that is what the user
+       * compares. Older shapes answered with a fingerprint; either is a
+       * reference to check, and neither is a secret. */
+      const shown = typeof reply["address"] === "string"
+        ? String(reply["address"])
+        : typeof reply["fingerprint"] === "string" ? String(reply["fingerprint"]) : "";
+      hint.textContent = shown
+        ? `Applied. The device derived ${shown} — if that is not the wallet you expected, the passphrase was mistyped: lock the device to drop it.`
+        : "Applied. Check the first address against the one the device showed.";
+      log("passphrase applied from the host and confirmed on the device");
+
+      /* Invalidate by hand rather than waiting for the poll. Replacing one
+       * passphrase with another leaves the status flag reading `true` both
+       * before and after, so `derivationsInvalidated()` sees no change and the
+       * previous wallet's addresses would stay on screen under a wallet the
+       * device can no longer produce. That is exactly the case this rule
+       * exists for, and it is the one a boolean cannot see. */
+      invalidateDerived("passphrase changed from the host");
+      lastStatus = await readStatus();
+      $("wallet").textContent = walletLabel(lastStatus);
+      renderAccountSelector();
+      if (lastStatus.unlocked) {
+        await loadAddresses();
+        $("addrpanel").hidden = false;
+        $("signpanel").hidden = false;
+      }
+    } catch (e) {
+      const msg = e instanceof DeviceError ? e.message
+        : e instanceof Error && e.message ? e.message
+        : String(e);
+      /* The device drops an unconfirmed passphrase itself, so a refusal here
+       * leaves the base wallet rather than a half-applied one. Say so: "it
+       * failed" without "and you are still where you were" is what makes
+       * someone try again blind. */
+      hint.textContent = `Not applied: ${msg}. The device kept the wallet it was already in.`;
+      log(`passphrase not applied: ${msg}`);
+    } finally {
+      input.value = "";
+      button.disabled = false;
+    }
+  };
+
+  button.addEventListener("click", () => void apply());
+  /* Enter in a single-field form is what everyone types, and a field that
+   * ignores it gets its contents submitted twice by a user hunting the button. */
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); void apply(); }
+  });
 }
 
 /* ------------------------------------------------------------------ chains */
@@ -1514,7 +1735,68 @@ function drawSelectedAddress(): void {
     holder.appendChild(qrSvg(checksumAddress(address.slice(2))));
   }
 
-  $("sfrom").textContent = `m/44'/60'/0'/0/${selectedIndex}`;
+  /* derivedAccount, not effectiveAccount(): this line names the path the
+   * address above it actually came from. Labelling a rendered address with the
+   * account the selector has moved on to is the mislabelling this whole row
+   * exists to prevent. */
+  $("sfrom").textContent = addressPath(derivedAccount, selectedIndex);
+}
+
+/**
+ * Say whether the app and the device are looking at the same identity.
+ *
+ * Silent while they agree — an extra sentence under every selector is a
+ * sentence nobody reads by the time it matters. It speaks up only when the app
+ * has been pointed somewhere the device is not, because that is the state in
+ * which the address on this screen and the address on the device's screen are
+ * both correct and different.
+ */
+function renderAccountHint(): void {
+  const hint = $("accounthint");
+  if (!lastStatus.unlocked) { hint.textContent = ""; return; }
+  const account = effectiveAccount();
+  hint.textContent =
+    chosenAccount === null || chosenAccount === lastStatus.account
+      ? `Account ${account}, the one the device is browsing.`
+      : `Account ${account}. The device's own screens are on account ` +
+        `${lastStatus.account}, so its address browser will not match this list. ` +
+        `Signing still shows the full path on the device — read it.`;
+}
+
+/** Reflect the device's account in the follow option, and the choice in the value. */
+function renderAccountSelector(): void {
+  const select = $("accountsel") as HTMLSelectElement;
+  const follow = select.options[0] as HTMLOptionElement;
+  follow.textContent = lastStatus.unlocked
+    ? `Follow the device (account ${lastStatus.account})`
+    : "Follow the device";
+  select.value = chosenAccount === null ? "follow" : String(chosenAccount);
+  renderAccountHint();
+}
+
+function initAccountSelector(): void {
+  const select = $("accountsel") as HTMLSelectElement;
+  for (let a = 0; a < ACCOUNT_COUNT; a++) {
+    const opt = document.createElement("option");
+    opt.value = String(a);
+    opt.textContent = `Account ${a} — m/44'/60'/${a}'/0/…`;
+    select.appendChild(opt);
+  }
+
+  select.addEventListener("change", () => {
+    const before = effectiveAccount();
+    chosenAccount = select.value === "follow" ? null : Number(select.value);
+    renderAccountSelector();
+    /* Nothing to redo when the number did not move — picking account 3
+     * explicitly while the device is on 3 is the same derivation, and throwing
+     * ten addresses away to derive the same ten costs seconds on hardware. */
+    if (effectiveAccount() === before && derivedAccount === before) return;
+    if (!client || !lastStatus.unlocked) return;
+    invalidateDerived(`account changed in the app to ${effectiveAccount()}`);
+    void loadAddresses();
+  });
+
+  renderAccountSelector();
 }
 
 function initAddressActions(): void {
@@ -2472,6 +2754,11 @@ async function sign(): Promise<void> {
       ...(data !== undefined ? { data } : {}),
     });
 
+    /* Before the user is told to walk to the device, not after: a refusal that
+     * arrives while someone is already reading the confirmation screen is a
+     * refusal they will read as a glitch. */
+    const account = signingAccount();
+
     deviceAttention("check every page on the device, then approve");
 
     const SIGN_TIMEOUT_MS = 150000;   // the device gives the user 120 s
@@ -2489,6 +2776,7 @@ async function sign(): Promise<void> {
 
     const reply = await client.call("signTransaction", {
       index: selectedIndex,
+      account,
       chainId: chain.id,
       nonce,
       to: hexBytes(toValue),
@@ -2629,6 +2917,7 @@ async function signPlannedTransaction(tx: PlannedTx, broadcast: boolean): Promis
   if (!client) throw new Error("no device connected");
   const index = addressIndex(tx.from);
   if (index < 0) throw new Error("that address is not one this device has derived");
+  const account = signingAccount();
 
   const info = getChain(tx.chainId);
   if (!info) throw new Error(`this wallet has no RPC for chain ${tx.chainId}`);
@@ -2662,6 +2951,7 @@ async function signPlannedTransaction(tx: PlannedTx, broadcast: boolean): Promis
   log("check every page on the device, then approve");
   const reply = await client.call("signTransaction", {
     index,
+    account,
     chainId: tx.chainId,
     nonce,
     to: hexBytes(tx.to),
@@ -2710,7 +3000,11 @@ async function signPlannedMessage(address: string, message: string): Promise<str
   if (!client) throw new Error("no device connected");
   const index = addressIndex(address);
   if (index < 0) throw new Error("that address is not one this device has derived");
-  const reply = await client.call("signMessage", { index, message }, 150000);
+  const reply = await client.call(
+    "signMessage",
+    { index, account: signingAccount(), message },
+    150000,
+  );
   return signatureFrom(reply);
 }
 
@@ -2731,7 +3025,11 @@ async function signPlannedTypedData(
   if (index < 0) throw new Error("that address is not one this device has derived");
   const reply = await client.call(
     "signTypedData",
-    { index, ...(request as Record<string, CborValue>) },
+    /* Which key signs is decided after the spread, never inside it. `request`
+     * is transcribed from a dapp's JSON, so an `account` or `index` key
+     * arriving in there would otherwise choose the signing path — the one
+     * decision on this call that the dapp does not get to make. */
+    { ...(request as Record<string, CborValue>), index, account: signingAccount() },
     150000,
   );
   return signatureFrom(reply);
@@ -2785,7 +3083,14 @@ async function disconnect(): Promise<void> {
     ($("transport") as HTMLSelectElement).options.length < 2;
   $("addrpanel").hidden = true;
   $("signpanel").hidden = true;
+  $("passpanel").hidden = true;
   $("pairing").hidden = true;
+  /* The field holds nothing between calls, but a disconnect is exactly when a
+   * half-typed one would otherwise be left sitting in the DOM. */
+  ($("passinput") as HTMLInputElement).value = "";
+  $("passhint").textContent = "";
+  derivedAccount = -1;
+  renderAccountSelector();
   $("wallet").textContent = "";
   ($("connect") as HTMLButtonElement).disabled = false;
   ($("unlock") as HTMLButtonElement).disabled = true;
@@ -2902,6 +3207,8 @@ void initEnvironment();
 initChainSelector();
 initBalances();
 initAddressActions();
+initAccountSelector();
+initPassphrase();
 initTokenDiscovery();
 initToScanner();
 initMaxAmount();
@@ -3022,7 +3329,13 @@ function diagnosticsReport(): string {
   L.push(
     `Device:     ${lastStatus.unlocked ? "unlocked" : "locked"}, ` +
       `wallet ${lastStatus.activeWallet}, ` +
+      /* Whether one is applied, never a character of it — the passphrase has
+       * no path into this report and must not grow one. The account is here
+       * because a report describing the wrong identity's addresses reads as a
+       * derivation bug. */
       `passphrase ${lastStatus.passphrase ? "on" : "off"}, ` +
+      `account ${lastStatus.account} on device / ` +
+      `${chosenAccount === null ? "following" : String(chosenAccount)} in the app, ` +
       `blind signing ${deviceBlindSigning ? "ON" : "off"}`,
   );
   L.push("");
@@ -3048,7 +3361,7 @@ function diagnosticsReport(): string {
     // form is for comparing against the device screen, which is a different
     // job done by a different surface.
     addresses.forEach((a, i) => L.push(`${i === selectedIndex ? ">" : " "} [${i}] ${a}`));
-    L.push(`Derivation: m/44'/60'/0'/0/i`);
+    L.push(`Derivation: ${addressPath(derivedAccount, 0).slice(0, -1)}i`);
   }
   L.push("");
 
@@ -3158,7 +3471,7 @@ $("copydiag").addEventListener("click", () => {
       status.textContent =
         route === "manual"
           ? "This build could not reach the clipboard. The text is below and selected — copy it by hand."
-          : `Copied ${lines} lines (${route}). No passkey, project ID or form input is included.`;
+          : `Copied ${lines} lines (${route}). No passkey, passphrase, project ID or form input is included.`;
       log(`diagnostics copied via ${route}`);
     },
     (e: unknown) => {

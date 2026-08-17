@@ -40,6 +40,7 @@ answered:
 | Unlock | `enter your PIN on the device…` (verbatim, as logged) |
 | Signing, both the send form and a dapp request | `check every page on the device, then approve` (verbatim) |
 | Dapp message signing | `…: confirm the message on the device` (verbatim) |
+| Host-side passphrase sent | `check the address the device shows, then confirm the passphrase on the device` (verbatim) — the device is holding an address up for comparison and will drop the passphrase if nobody answers |
 | Device rejected / timed out | `rejected on the device` / `timed out waiting for an answer on the device` (verbatim) |
 | A dapp proposal or request arrives unprompted | One sentence naming the dapp and the method |
 
