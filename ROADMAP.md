@@ -316,47 +316,40 @@ device- and OEM-specific, and none of it can be validated against the mock. But 
 
 ---
 
-## Other coins: possible, not planned
+## Other coins: not planned, and deliberately not scheduled
 
-**EVM only for now.** The items below are recorded so the door stays open, not
-because they are scheduled. None of them should start before flash encryption
-(T11) and on-device transaction decode (T12) are done — a second coin on an
-insecure vault is two insecure wallets.
+**EVM only.** Solana, Bitcoin and Monero were once listed here as tasks. They
+are removed rather than deferred, because a roadmap row is a promise about
+direction and this project is not making that one. The research that produced
+them is in git history if it is ever wanted again — what was vendored, what was
+missing, and that Bitcoin's real cost is the UTXO model rather than the curve,
+since change-output verification is a class of bug that does not exist in EVM
+and getting it wrong sends your change to an attacker.
 
-### Do not copy Ledger's app model
+If coins are ever added, the shape is **one seed, one firmware at a time**: the
+same BIP-39 phrase, with the device carrying only the coin you asked for. That
+is the user-facing arrangement Ledger has, and it is worth being precise about
+which half of it is being adopted, because the two halves cost very different
+things.
 
-Ledger loads a separate app per coin onto the device. That architecture exists
-because the Nano S had 320 KB of flash and could not hold everything at once. It
-is an answer to a constraint we do not share: our app partition is 4 MB and the
-current firmware uses 1.09 MB, about 26%.
+Ledger loads a separate signed **app per coin onto the device at runtime**. That
+architecture is an answer to the Nano S having 320 KB of flash. Our app
+partition is 4 MB and the firmware uses about 1.1 MB, so the constraint that
+produced it is not ours — and copying it means building an app loader with
+memory isolation and per-app signature verification, a security-critical
+component and a large new attack surface bought to solve a problem we do not
+have.
 
-Copying it would mean building an app loader with memory isolation and per-app
-signature verification — a security-critical component, and a large new attack
-surface, bought to solve a problem we do not have. **One firmware with per-coin
-modules compiled in is simpler and safer here.**
+**Build-time variants give the same result without the loader.** `leek-evm.bin`
+and a hypothetical `leek-btc.bin` are the same seed and the same device, and the
+user flashes the one they need; code for coins they do not use is not merely
+unreachable but absent, which is a stronger property than isolation. The cost
+moves to the flashing step, which T65 already has to solve — and which is gated
+on secure boot (T11) regardless, since a wallet that will install firmware on
+request must first be able to prove what it installed.
 
-If separation is ever wanted, build-time variants (`leek-evm.bin`,
-`leek-btc.bin`) give most of the benefit for none of the risk: the user flashes
-what they need and unused code is not merely unreachable but absent.
+Nothing here should begin before T11.
 
-### Rough order, easiest first
-
-| Coin | Difficulty | What is already vendored | What is missing |
-|---|---|---|---|
-| **Solana** | Moderate | `ed25519` in trezor-crypto | Base58 addresses (have `base58.c`), transaction format, no UTXO model to handle |
-| **Bitcoin** | Harder | `secp256k1`, `segwit_addr.c`, `script.c`, `base58.c` | PSBT parsing, multi-input signing, and change-output verification — the device must prove a change address is its own or a host can steal the change |
-| **Monero** | **Much harder** | `ed25519` only | Ring signatures, Bulletproofs, view/spend key split, subaddresses, and a multi-round protocol with the host. Ledger's and Trezor's Monero apps are among their largest. Not a weekend. |
-
-Bitcoin's real cost is not the curve, it is the UTXO model: change-output
-verification is a class of bug that does not exist in EVM, and getting it wrong
-sends your change to an attacker. Solana is the natural second coin.
-
-| ID | Task | Depends | Done when |
-|----|------|---------|-----------|
-| T52 | Coin abstraction layer: derivation, address format and signing behind one interface, EVM as the first implementation | T12 | adding a coin touches no shared code |
-| T53 | Solana support | T52 | signs a testnet transfer |
-| T54 | Bitcoin support, including change-output verification | T52 | signs a testnet PSBT; a foreign change address is refused |
-| T55 | Monero — research spike first, scope before committing | T54 | a written assessment, not code |
 | T58 | **Airgapped QR signing.** Needs a camera; the display half already exists (`src/qrcode.c`). Unlocks two things at once: a genuine airgap — the device never electrically touches the host — and MetaMask's QR keyring, which [BROWSER-INTEGRATION.md](docs/BROWSER-INTEGRATION.md) found is the one route into MetaMask open to any vendor without their cooperation, and which was ranked out *solely* for lack of a camera. Needs animated QR (UR / BC-UR, as Keystone uses): a 128x64 screen caps a single frame near version 10-14, far short of a signed EIP-1559 transaction | T12 | a transaction is signed with no cable and no radio, and MetaMask drives it |
 | T58a | Research spike before committing: verify ERC-4527's current shape and the UR encoding, and **measure** whether decode fits in RAM at a usable frame rate. A camera that cannot decode fast enough to be pleasant is worse than none. A scanner module that decodes onboard and speaks UART/I2C sidesteps the framebuffer and the decoder entirely and should be costed first | — | measured, not assumed |
 | T58c | PSRAM is present and deliberately off. `esptool` reports 8 MB embedded on the attached board; the config had disabled it under a comment describing a Mini that has none. External memory is a separate die, and a seed the allocator spills there is reachable in ways internal SRAM is not — with the S3's external-memory encryption riding on T11. Enable only when something needs the space, with secrets pinned `MALLOC_CAP_INTERNAL`. Octal PSRAM also takes GPIO35/36/37 | T11 | enabled with a test that no secret allocation lands off-die |
@@ -445,14 +438,11 @@ What is left, in the order it matters:
    records its own answers and the TypeScript suite diffs the mock against
    them, which turned up seven divergences on the first run, every one of them
    the mock.
-4. Then the smaller open rows: **T39b** (XFP on screen),
-   **T52** (the coin abstraction, worth doing before a second chain rather
-   than after), and **T36** (the assembly guide, which needs photographs of
-   real hardware). T40 and T45a landed host-side and both need a board to
-   confirm: the passphrase path against the device's confirmation screen, and
-   the account selector against addresses that actually differ, which the mock
-   does not produce. T12b, T31, T35 and T37 landed this cycle; T12b is complete
-   on the host and is waiting only for a board to look at.
+4. Then the smaller open rows: **T39b** (XFP on screen) and **T36** (the
+   assembly guide, which needs photographs of real hardware). T12b, T12c, T12d,
+   T26, T31, T35, T37, T40 and T45a all landed this cycle and are confirmed on
+   hardware against a live dapp session, so what remains outside T11 is
+   physical: an enclosure, photographs, and the camera work in T58.
 
 A standing rule learned the hard way this cycle: **a chain that has stopped
 producing blocks comes out of the registry**, whether it was formally shut down

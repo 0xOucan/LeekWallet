@@ -588,10 +588,12 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
 - [ ] Flash encryption + secure boot — **the gate before real funds**
 - [ ] Firmware flasher in the companion app (ROADMAP T65, gated on secure boot)
 - [ ] Airgapped QR signing (needs a camera)
-- [ ] Coin abstraction, then Solana and Bitcoin (ROADMAP T52-T54)
 - [ ] Secure element integration
 
-**Chains.** EVM only, and chain-agnostic within it — chains differ by a chain ID
+**Chains.** EVM only — deliberately, not pending. Solana, Bitcoin and Monero are not on the
+roadmap; if coins are ever added the shape is one seed and one firmware at a time
+(`leek-evm.bin`, `leek-btc.bin`), not an app loader and not every chain compiled into one image.
+The reasoning is in [ROADMAP.md](ROADMAP.md). Within EVM it is chain-agnostic — chains differ by a chain ID
 that is already signed, so Base, Arbitrum, Optimism and the rest are an app-side
 concern. Bitcoin, Solana and Monero are recorded in
 [ROADMAP.md](ROADMAP.md#other-coins-possible-not-planned) as possible but
