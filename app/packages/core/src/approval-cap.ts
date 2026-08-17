@@ -190,6 +190,28 @@ export const APPROVAL_EDIT_NOTICE =
   "amount. What makes it real is the device: check the amount on its screen " +
   "before you approve there.";
 
+/**
+ * What "the dapp is not told" costs in practice, learned from a real session.
+ *
+ * A user capped a USDC approval to exactly 150 and Aave then refused to submit
+ * a 150 supply at all -- the request never reached this wallet. Nothing had
+ * failed: the allowance was 150 on chain and the balance was ten thousand
+ * times the amount. The dapp was working from its own reading of an allowance
+ * it had asked to be larger, and an allowance exactly equal to the spend
+ * leaves no room for a frontend that checks with any margin at all.
+ *
+ * So the advice is concrete rather than a shrug: approve a little above what
+ * you mean to spend, and reload the dapp if it still believes the old figure.
+ * Both are cheap; discovering them by watching a transaction not happen is
+ * not.
+ */
+export const DAPP_UNAWARE_NOTICE =
+  "The dapp will keep using whatever allowance it last read, so it may still " +
+  "show the old figure or refuse to continue until its page is reloaded. " +
+  "Approving a little more than you mean to spend avoids the other half of " +
+  "this: some dapps will not submit against an allowance exactly equal to the " +
+  "amount.";
+
 /** Said whenever the zero-first sequence is planned. Names the token class. */
 export const ZERO_FIRST_NOTICE =
   "This token already has a non-zero allowance for this spender, and tokens of " +
@@ -274,7 +296,7 @@ export function planCap(
       ? encodePermit2Approve(call.token, call.spender, amount, call.expiration ?? 0n)
       : encodeErc20Approve(call.spender, amount);
 
-  const notices = [APPROVAL_EDIT_NOTICE];
+  const notices = [APPROVAL_EDIT_NOTICE, DAPP_UNAWARE_NOTICE];
 
   /* Zero is its own answer: setting an allowance to zero is a revoke, and a
    * revoke never needs the zero-first step because it *is* the zero step. */

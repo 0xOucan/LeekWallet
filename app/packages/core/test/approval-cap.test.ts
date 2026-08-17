@@ -25,6 +25,7 @@ import { PERMIT2_ADDRESS } from "../src/rules.ts";
 import {
   ALLOWANCE_UNREADABLE_NOTICE, APPROVAL_EDIT_NOTICE, inspectApproval, parseCapAmount,
   planCap, ZERO_FIRST_NOTICE, type ApprovalCall,
+  DAPP_UNAWARE_NOTICE,
 } from "../src/approval-cap.ts";
 
 let failures = 0;
@@ -208,6 +209,23 @@ group("labels use the token's own units when anything knows them");
   check(two.steps.length === 2, "a non-zero current allowance still plans two steps");
   check(two.steps[0]!.label.includes("zero"), "step 1 should still be the zero step");
   check(two.steps[1]!.label.includes("150 USDC"), "step 2 should use the token's units");
+}
+
+group("the reader is warned that the dapp keeps its own reading");
+{
+  const call = inspectApproval({
+    to: "0xba50cd2a20f6da35d788639e581bca8d0b5d4d5f",
+    data: "0x095ea7b3" + "0".repeat(24) + "8bab6d1b75f19e9ed9fce8b9bd338844ff79ae27" + "f".repeat(64),
+  });
+  if (!call) throw new Error("the approval was not recognised");
+  /* A real session lost time to exactly this: capped to 150, and the dapp then
+   * refused to submit 150 while the allowance on chain was 150. */
+  for (const plan of [planCap(call, 150n, 0n), planCap(call, 150n, 1n)]) {
+    check(
+      plan.notices.includes(DAPP_UNAWARE_NOTICE),
+      "every plan must say the dapp keeps using its own reading",
+    );
+  }
 }
 
 console.log(failures === 0 ? "\napproval-cap: all checks passed" : `\napproval-cap: ${failures} FAILED`);
