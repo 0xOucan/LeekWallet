@@ -499,6 +499,7 @@ so the mock refuses exactly what the device refuses:
 | `withdraw(uint256)` | "Unwrap tokens", raw amount, contract |
 | `mint(address,uint256)` | "Mint tokens to address below", raw amount, recipient, contract |
 | `mint(uint256)` | "Mint tokens to this account", raw amount, contract |
+| a signature from the table below | the function's name, then one page per declared argument, then the contract |
 | anything else | `0x0202`, refused before the confirmation screen — unless blind signing is on (T16 below) |
 
 Contract creation is refused too — there is no recipient to name and no code the
@@ -510,10 +511,67 @@ is broader than an unlimited ERC-20 allowance: it hands over every token in the
 collection, including ones bought after the approval was given. `false` is a
 revocation and reads as one.
 
-`safeTransferFrom(address,address,uint256)` is deliberately *not* in the set,
-despite the identical argument shape: on ERC-721 the third word is a token id
-rather than an amount and the device cannot tell which standard it is talking
-to, so any wording it chose would be wrong half the time.
+#### The signature table, and why it needs no trusted descriptor (T12c)
+
+The nine kinds above each have a bespoke decoder and a screen that says what the
+call *means*. That does not scale past a handful of functions, and the gap was
+not academic: a real session on Base Sepolia signed two Aave approvals and was
+then refused Aave's actual deposit (`supply`, selector `0x617ba037`), which is
+the main action of essentially every DeFi protocol. Understanding the dangerous
+half of a pair and refusing the useful half is the worst place to stand.
+
+So the firmware carries a table of human-readable ABI **signature strings**, and
+for a call whose selector is in it the device decodes the arguments from the
+types that signature declares. The table is self-certifying:
+
+**A row is selected only when `keccak256(signature)[0:4]` equals the selector
+being signed.** No selector is stored anywhere on either side. A signature
+string that has been mistyped, corrupted or tampered with hashes to different
+four bytes, matches nothing, and the call is refused — there is no way to make
+a wrong string describe a call, because the string *is* the mapping. Nothing is
+trusted for it: not the host, not a signed descriptor, not the person who typed
+the table. The check lives on the matching path in `src/eth-decode.c`
+(`signature_matches()`), not in an assertion, because an assertion can be
+compiled out.
+
+| signature | | |
+|---|---|---|
+| `supply(address,uint256,address,uint16)` | Aave V3 | the call that prompted this |
+| `withdraw(address,uint256,address)` | Aave V3 | |
+| `borrow(address,uint256,uint256,uint16,address)` | Aave V3 | |
+| `repay(address,uint256,uint256,address)` | Aave V3 | |
+| `safeTransferFrom(address,address,uint256)` | ERC-721 | the three-argument overload only |
+| `approve(address,address,uint160,uint48)` | Permit2 | not ERC-20's `approve`: different arity, different selector |
+
+**What this proves, and what it does not.** A verified signature proves what the
+function is *named* and what its arguments *are*. It proves nothing about what
+the code does — any contract may name a drain `supply`, and nothing on chain
+forbids it. The device says so on the screen, in those terms, and the contract
+address keeps a page of its own: the address is the only thing on the
+confirmation that identifies who runs the code. Wording that implied semantic
+safety would be worse than no decoding at all.
+
+Only the static, single-word ABI types are read: `address`, `uint<N>`,
+`int<N>`, `bool`, `bytes<N>`. A dynamic type — `bytes`, `string`, an array, a
+tuple — is an offset into a tail, and a decoder that showed the three arguments
+it understood while a fourth carried arbitrary data would be lying by omission.
+A signature containing one keeps the whole call refused, and that refusal is a
+different sentence from "unknown function": it is "known function this device
+cannot read in full". Every word is checked against its declared type — padding
+above a `uint16`, dirty bytes above an address, a `bool` that is neither 0 nor 1
+— and anything else is `0x0202`, not a best guess.
+
+An allowance is judged against its *own* declared width: Permit2's infinite
+amount is `2^160-1`, an unremarkable number in 256 bits, and it gets the same
+**UNLIMITED** wording an unlimited ERC-20 approve gets. Fields narrower than 64
+bits never do — a `uint48` expiry with every bit set is a far-future date, not
+an infinity.
+
+`safeTransferFrom(address,address,uint256)` is in the table and is still not
+`transferFrom`: identical argument shape, different selector, and its third
+argument is printed under the name the ABI gives it, `tokenId`, rather than
+described as an amount. That is the whole discipline — declared names and
+decoded values, no editorialising.
 
 #### EIP-712 typed data, and the two refusals it has (T12b)
 

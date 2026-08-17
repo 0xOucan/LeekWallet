@@ -9,6 +9,14 @@ the question is what the industry does instead, and whether any of it survives
 contact with [PROTOCOL.md 6bis and 6c](PROTOCOL.md), whose reasoning is binding
 here.
 
+**Update (T12c): option (a) landed, and it turned out not to need a signature
+at all.** The device now carries a table of ABI *signature strings* and selects
+a row only when `keccak256(signature)[0:4]` equals the selector being signed —
+so the mapping certifies itself and there is no descriptor to sign, no key to
+run, and no review process deciding which mappings are true. Keccak decides.
+The rest of this document is the research that led there and stands as written;
+see [PROTOCOL.md 6bis](PROTOCOL.md) for what shipped.
+
 Short version of the answer, before the detail:
 
 **The standard everyone points at (ERC-7730) deliberately does not solve
@@ -418,6 +426,10 @@ So: read the registry in the app, sign our own subset for the device.
 ### Next (worth doing, medium)
 
 4. **Build the bundled signed-at-build-time descriptor table — option (a).**
+   *Done, and cheaper than described: because a selector IS the hash of its
+   signature, bundling the signature string makes the table verify itself and
+   the "signed at build time" half is unnecessary. Firmware signing still
+   covers the table, but nothing rests on it.*
    Generate it from the ERC-7730 registry at build time, review the generated
    table as source, and compile it to a fixed-layout binary blob inside the
    firmware. Steal Ledger's structure: `(chainId, contract, selector) → intent

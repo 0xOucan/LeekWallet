@@ -108,6 +108,30 @@ Device-side, authoritative, must be on the device's own screen:
   that ends up holding the power, and it deserves the same prominence a transfer
   recipient gets.
 
+## What the signature table changes, and what it must not (T12c)
+
+The on-chain half of the same attack is a contract call rather than a typed
+message, and the device now names those too: a call whose selector is
+`keccak256(signature)[0:4]` for a signature bundled in the firmware is decoded
+from that signature's declared types and rendered argument by argument
+(PROTOCOL.md 6bis). Two consequences matter here.
+
+- **Permit2's `approve(address,address,uint160,uint48)` is now readable on the
+  device**, with the spender and the expiration on pages of their own and an
+  amount at `2^160-1` named UNLIMITED — judged against the argument's own
+  declared width, because in 256 bits that number looks unremarkable. This is
+  the on-chain sibling of the `PermitSingle` case above and it gets the same
+  vocabulary, deliberately: one risk, one set of words.
+- **A verified name is not a verified intent.** Hashing proves what a function
+  is *called* and what it was *passed*. A drainer may name its contract's entry
+  point `supply` and its arguments `asset, amount, onBehalfOf`, and every one of
+  those pages will render correctly. The device therefore says on screen that
+  the name comes from the ABI and is not a statement about behaviour, and keeps
+  the contract address visible — the address is the only field on the
+  confirmation that identifies who runs the code. Any wording that let a
+  decoded call read as an endorsement would hand a drainer the legitimacy this
+  whole document is about denying them.
+
 Host-side, advisory, and **must be labelled as advisory** — the same rule already
 applied to ERC-7730 descriptors, which are unsigned and tied to nothing:
 

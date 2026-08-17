@@ -3018,6 +3018,8 @@ typedef enum {
     MC_SIGN_TX_UNDECODABLE_BLIND_ON,
     MC_SIGN_TX_OVERSIZED_DATA,
     MC_SIGN_TX_OVERSIZED_DATA_BLIND_ON,
+    MC_SIGN_TX_SUPPLY,
+    MC_SIGN_TX_SUPPLY_BAD_ARG,
     MC_SIGN_TX_REJECTED,
     MC_SIGN_TX_HARDENED_INDEX,
     MC_SIGN_MESSAGE,
@@ -3215,6 +3217,31 @@ static size_t mock_request(MockCase c, uint8_t *buf, size_t cap)
         case MC_SIGN_TX_UNDECODABLE_BLIND_ON:
             return undecodable_request(buf, cap, TO, GARBAGE, sizeof(GARBAGE));
 
+        /* A call from the signature table (T12c). The selector is hashed here
+         * rather than typed, exactly as the firmware derives it: a corpus that
+         * pinned a hand-copied selector would agree with a mock that had
+         * copied the same mistake. */
+        case MC_SIGN_TX_SUPPLY:
+        case MC_SIGN_TX_SUPPLY_BAD_ARG: {
+            static const char SUPPLY[] = "supply(address,uint256,address,uint16)";
+            uint8_t data[132];
+            uint8_t digest[32];
+            memset(data, 0, sizeof(data));
+            keccak_256((const uint8_t *)SUPPLY, sizeof(SUPPLY) - 1, digest);
+            memcpy(data, digest, 4);
+            memset(data + 4 + 12, 0xA1, 20);      /* asset      */
+            data[4 + 63] = 0x2A;                  /* amount = 42 */
+            memset(data + 4 + 64 + 12, 0xB2, 20); /* onBehalfOf */
+            if (c == MC_SIGN_TX_SUPPLY_BAD_ARG) {
+                /* A uint16 carrying more than sixteen bits: refused on both
+                 * sides, and refused as UNDECODABLE rather than as a bad
+                 * argument, because a call the device cannot read in full is
+                 * outside the set however well-formed the rest of it is. */
+                data[4 + 96 + 28] = 0x01;
+            }
+            return undecodable_request(buf, cap, TO, data, sizeof(data));
+        }
+
         /* Over ETH_MAX_DATA. Emitted twice, once with the hatch open, because
          * the two refusals differ in code and only one of them is reopened. */
         case MC_SIGN_TX_OVERSIZED_DATA:
@@ -3358,6 +3385,8 @@ static const char *case_name_mock(int c)
         case MC_SIGN_TX_UNDECODABLE_BLIND_ON:  return "signTransaction, undecodable calldata, blind signing on";
         case MC_SIGN_TX_OVERSIZED_DATA:        return "signTransaction, oversized calldata";
         case MC_SIGN_TX_OVERSIZED_DATA_BLIND_ON: return "signTransaction, oversized calldata, blind signing on";
+        case MC_SIGN_TX_SUPPLY:                return "signTransaction, supply() from the signature table";
+        case MC_SIGN_TX_SUPPLY_BAD_ARG:        return "signTransaction, supply() with an over-wide uint16";
         case MC_SIGN_TX_REJECTED:              return "signTransaction rejected on device";
         case MC_SIGN_TX_HARDENED_INDEX:        return "signTransaction index above 0x7FFFFFFF";
         case MC_SIGN_MESSAGE:                  return "signMessage";

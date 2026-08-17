@@ -11,6 +11,8 @@
  * entitled to say so.
  */
 
+import { keccak_256 } from "@noble/hashes/sha3";
+
 import { CallKind } from "../src/eth-decode.ts";
 import {
   ADVISORY_NOTICE, checksumAddress, formatEther, interpretTransaction,
@@ -170,6 +172,34 @@ group("calls the device will refuse are announced before the walk to the device"
   check(i.deviceWillRefuse === true, "contract creation not marked as refused");
   const w = i.warnings.find((x) => x.code === WarningCode.DeviceWillRefuse);
   check(w?.message.includes("Contract creation") === true, `message: ${w?.message}`);
+}
+
+group("a table call is named, and not called unreadable");
+{
+  /* Hashed, not typed - see eth-decode.test.ts for why. */
+  const sel = (sig: string) =>
+    [...keccak_256(new TextEncoder().encode(sig)).subarray(0, 4)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  const w = (v: bigint) => v.toString(16).padStart(64, "0");
+  const pad = (a: string) => "0".repeat(24) + a;
+
+  const supply = "0x" + sel("supply(address,uint256,address,uint16)") +
+    pad(TOKEN) + w(42n) + pad(ADDR) + w(0n);
+  const i = interpretTransaction({ chainId: 1, to: "0x" + TOKEN, data: supply });
+  check(i.deviceWillRefuse === false, "a table call said to be refused");
+  check(i.kind === CallKind.Generic, `kind ${i.kind}`);
+  check(i.summary.includes("supply()"), `summary: ${i.summary}`);
+  check(i.unlimited === false, "a bounded supply flagged unlimited");
+
+  /* Permit2's uint160 max: unlimited against its own width, and the preview
+   * has to say so as loudly as it does for an ERC-20 approval. */
+  const p2 = "0x" + sel("approve(address,address,uint160,uint48)") +
+    pad(TOKEN) + pad(ADDR) + w((1n << 160n) - 1n) + w(0n);
+  const j = interpretTransaction({ chainId: 1, to: "0x" + TOKEN, data: p2 });
+  check(j.unlimited === true, "a uint160 max allowance not flagged");
+  check(j.warnings.some((x) => x.code === WarningCode.UnlimitedApproval),
+    "no unlimited warning for a Permit2 approval");
 }
 
 group("zero address");

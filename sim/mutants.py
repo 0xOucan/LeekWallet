@@ -48,6 +48,44 @@ MUTANTS = [
     ("src/transport.c", "        protocol_set_rx_enabled(false);     /* USB endpoint stops answering */",
      "        protocol_set_rx_enabled(true);", "cable stays live under BLE"),
 
+    # T12c: the self-verifying signature table. The first mutant is the whole
+    # security argument being switched off; the second is the tamper the design
+    # claims is impossible, applied directly to the table; the rest are the
+    # generic decoder losing one of its type checks. A table that matched
+    # loosely would be worse than no table, because every row of it reaches a
+    # confirmation screen that says the device understood the call.
+    ("src/eth-decode.c", "    bool ok = memcmp(digest, selector, 4) == 0;",
+     "    bool ok = true;", "any selector matches the first row"),
+    ("src/eth-decode.c", '{ "supply(address,uint256,address,uint16)", "asset,amount,onBehalfOf,referral",',
+     '{ "supply(address,uint256,address,uint32)", "asset,amount,onBehalfOf,referral",',
+     "a tampered signature string still decodes its call"),
+    ("src/eth-decode.c", '{ "approve(address,address,uint160,uint48)", "token,spender,amount,expiration",',
+     '{ "approve(address,address,uint256,uint48)", "token,spender,amount,expiration",',
+     "Permit2's amount read at the wrong width"),
+    ("src/eth-decode.c", "        if (len != 4 + (size_t)call.arg_count * 32) {",
+     "        if (len < 4 + (size_t)call.arg_count * 32) {",
+     "trailing bytes behind a table call"),
+    ("src/eth-decode.c",
+     "        case ETH_ARG_UINT:\n            for (size_t i = 0; i < 32 - used; i++) {",
+     "        case ETH_ARG_UINT:\n            for (size_t i = 0; i < 0; i++) {",
+     "a value wider than its declared type"),
+    ("src/eth-decode.c",
+     "            if (!word_matches_type(&call.args[i], data + call.args[i].offset)) {",
+     "            if (false) {", "arguments not checked against their types"),
+    ("src/eth-decode.c", "    unsigned bits = arg_bits(&call->args[i]);\n    if (bits < 64) {",
+     "    unsigned bits = arg_bits(&call->args[i]);\n    if (bits < 0) {",
+     "a narrow field flagged as an unlimited allowance"),
+    ("src/eth-decode.c", "    size_t top_byte = 32 - bits / 8;",
+     "    size_t top_byte = 0;",
+     "unlimited judged against 256 bits rather than the declared width"),
+    ("src/ui.c", '            oled_draw_string(6, 0, "Not what it does!");',
+     "            /* mutant: no limit stated */",
+     "the call screen implies a verified name proves behaviour"),
+    ("src/ui.c",
+     "            for (int a = 0; a < sign_call.arg_count && n < SIGN_MAX_PAGES - 2; a++) {",
+     "            for (int a = 0; a < 1 && n < SIGN_MAX_PAGES - 2; a++) {",
+     "only the first argument of a table call is shown"),
+
     # The widened decodable set (T50) and the blind-signing hatch (T16). Each
     # of these is the shape of a real mistake: a length check that stops being
     # exact, an argument shape copied from the row above, a warning screen that
@@ -56,10 +94,12 @@ MUTANTS = [
      "    if (len < 4 + words * 32) {", "trailing bytes after a known selector"),
     ("src/eth-decode.c", "    if (word[31] > 1) {", "    if (false) {",
      "a bool that is neither 0 nor 1"),
-    ("src/eth-decode.c", "    for (int i = 0; i < 31; i++) {", "    for (int i = 0; i < 0; i++) {",
+    ("src/eth-decode.c",
+     "static bool word_is_bool(const uint8_t word[32], bool *out)\n{\n    for (int i = 0; i < 31; i++) {",
+     "static bool word_is_bool(const uint8_t word[32], bool *out)\n{\n    for (int i = 0; i < 0; i++) {",
      "dirty high bytes in a bool word"),
-    ("src/eth-decode.c", "{ SEL_MINT,          ETH_CALL_MINT,                ARGS_UINT           },",
-     "{ SEL_MINT,          ETH_CALL_MINT,                ARGS_ADDR_UINT      },",
+    ("src/eth-decode.c", "      ETH_CALL_MINT,                ARGS_UINT           },",
+     "      ETH_CALL_MINT,                ARGS_ADDR_UINT      },",
      "mint(uint256) read at the wrong arity"),
     ("src/eth-decode.c", "call.unlimited = (known->kind == ETH_CALL_ERC20_APPROVE) &&",
      "call.unlimited = (known->kind != ETH_CALL_UNKNOWN) &&",
@@ -159,8 +199,8 @@ MUTANTS = [
     # reason: each is redundant with a guard that already forces plaintext, and
     # a mutant that cannot change behaviour measures nothing.
     ("src/protocol.c",
-     "    reply_encrypted = false;\n\n    if (len < 4) {",
-     "    reply_encrypted = true;\n\n    if (len < 4) {",
+     "    reply_encrypted = false;\n    warn_on_thin_stack();",
+     "    reply_encrypted = true;\n    warn_on_thin_stack();",
      "every reply is encrypted regardless of the request"),
 
 
