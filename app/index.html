@@ -473,6 +473,31 @@
               <p class="preview__authority" id="wcpauthority"></p>
             </section>
 
+            <!-- The approval cap (T-cap). Only ever shown for an
+                 approve() this app could decode, and it edits the CALLDATA:
+                 what the device then decodes and draws on its own screen is
+                 the capped call, so the figure is confirmed against hardware
+                 rather than against this box. Nothing here is a safety
+                 result, and the warning below says out loud that the dapp's
+                 request is being changed behind its back. -->
+            <section class="wc-cap" id="wccap" aria-labelledby="wccaphead" hidden>
+              <h4 id="wccaphead">Approve less than the dapp asked for</h4>
+              <p id="wccaprequested"></p>
+              <label class="field">
+                <span id="wccaplabel">New approval amount</span>
+                <input id="wccapamount" class="addr" spellcheck="false"
+                       autocomplete="off" inputmode="decimal" />
+              </label>
+              <p class="muted" id="wccapscale"></p>
+              <div class="row">
+                <button id="wccapapply">Apply this amount</button>
+                <button id="wccapreset">Restore the dapp's amount</button>
+              </div>
+              <p id="wccapstatus" role="status"></p>
+              <ul class="preview__warnings" id="wccapnotices"
+                  aria-label="What changing this amount means"></ul>
+            </section>
+
             <div class="row">
               <button class="primary" id="wcapprove">Approve on device</button>
               <button id="wcreject">Reject</button>

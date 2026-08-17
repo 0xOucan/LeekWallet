@@ -68,6 +68,16 @@ export const selectorOf = (signature: string): string =>
 export const SELECTOR_ERC20_ALLOWANCE = selectorOf("allowance(address,address)");
 /** `approve(address spender, uint256 amount)` — ERC-20, the revoke path. */
 export const SELECTOR_ERC20_APPROVE = selectorOf("approve(address,uint256)");
+/**
+ * `approve(address token, address spender, uint160 amount, uint48 expiration)`
+ * — Permit2's own allowance setter, the counterpart of the ERC-20 one.
+ *
+ * Named `approve` like the ERC-20 call and sharing none of its shape, which is
+ * exactly why the selector is derived here rather than assumed: a reader
+ * skimming for "approve" would otherwise have to trust that the four bytes
+ * belong to the four-argument form and not the two-argument one.
+ */
+export const SELECTOR_PERMIT2_APPROVE = selectorOf("approve(address,address,uint160,uint48)");
 /** `allowance(address owner, address token, address spender)` — Permit2. */
 export const SELECTOR_PERMIT2_ALLOWANCE = selectorOf("allowance(address,address,address)");
 /** `lockdown((address token, address spender)[])` — Permit2 batch revoke. */
@@ -96,6 +106,25 @@ export const encodeErc20Allowance = (owner: string, spender: string): string =>
 
 export const encodeErc20Approve = (spender: string, amount: bigint): string =>
   `0x${SELECTOR_ERC20_APPROVE}${addressWord(spender, "spender")}${word(amount)}`;
+
+/**
+ * Permit2's `approve`. Four static words, no dynamic tail.
+ *
+ * The widths are checked rather than masked: a uint160 amount arriving with
+ * bits above bit 159 set is not something the caller can have meant, and
+ * truncating it would encode a *different, smaller* allowance than the one that
+ * was asked for while looking like it worked.
+ */
+export function encodePermit2Approve(
+  token: string, spender: string, amount: bigint, expiration: bigint,
+): string {
+  if (amount < 0n || amount > UINT160_MAX) throw new AbiError("amount does not fit a uint160");
+  if (expiration < 0n || expiration > UINT48_MAX) {
+    throw new AbiError("expiration does not fit a uint48");
+  }
+  return `0x${SELECTOR_PERMIT2_APPROVE}${addressWord(token, "token")}` +
+    `${addressWord(spender, "spender")}${word(amount)}${word(expiration)}`;
+}
 
 export const encodePermit2Allowance = (owner: string, token: string, spender: string): string =>
   `0x${SELECTOR_PERMIT2_ALLOWANCE}${addressWord(owner, "owner")}` +
@@ -208,8 +237,17 @@ export type AllowanceResult =
     }
   | { query: AllowanceQuery; ok: false; reason: AllowanceFailure };
 
-/** The same "beyond any real supply" test eip712.ts applies, per field width. */
-const isUnlimited = (value: bigint, bits: number): boolean => value >= 1n << BigInt(bits - 1);
+/**
+ * The same "beyond any real supply" test eip712.ts applies, per field width.
+ *
+ * Exported so approval-cap.ts can ask it about a uint160 rather than write a
+ * third version of the threshold. For a uint256 the answer must agree with
+ * eth-decode.ts, which mirrors the firmware — that file is the authority for
+ * the calldata case and callers holding an ERC-20 `approve` use its verdict,
+ * not this one.
+ */
+export const isUnlimited = (value: bigint, bits: number): boolean =>
+  value >= 1n << BigInt(bits - 1);
 
 function encodeQuery(owner: string, query: AllowanceQuery): Call3 {
   return query.via === "permit2"

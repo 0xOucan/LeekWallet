@@ -572,6 +572,19 @@ main {
   margin: var(--space-2) 0;
 }
 
+/* The approval-cap editor. Solid border where the preview above it is dashed:
+ * the preview is this app describing what a dapp asked for, and this is the
+ * one place on the card where the user changes it. They should not read as the
+ * same kind of thing. */
+.wc-cap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  background: var(--bg);
+}
+.wc-cap h4 { margin: 0 0 var(--space-2); font-size: var(--text-sm); }
+
 .wc-sessions { display: grid; gap: var(--space-2); }
 .wc-session {
   display: grid;

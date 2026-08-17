@@ -40,6 +40,7 @@ import {
   type TokenIndex,
 } from "../packages/core/src/token-list.ts";
 import { BUNDLED_TOKENS } from "../packages/core/src/token-list-bundled.ts";
+import { fetchAllowances } from "../packages/core/src/allowances.ts";
 import { qrScanningAvailable, qrUnavailable, scanQr, type QrScan } from "./wc/qr.ts";
 import {
   endpointOrder, FailoverRpc, fetchRpcSend, preferredRpc, rememberRpc,
@@ -3035,6 +3036,100 @@ async function signPlannedTypedData(
   return signatureFrom(reply);
 }
 
+/**
+ * What the approval editor needs from the chain: the scale, and what is
+ * already outstanding.
+ *
+ * Both readings go out over the same failover client every other query uses,
+ * so capping an approval discloses the token and the address to the same
+ * operator a balance refresh already would, and to no additional one. Neither
+ * answer is trusted: `decimals` decides only how a number is rendered next to
+ * the raw units, and the allowance decides only whether a zero step is
+ * planned. A lying RPC costs a badly-shaped plan and a revert, never custody —
+ * the device still decodes and draws whatever calldata is finally sent.
+ */
+async function approvalFacts(query: {
+  standard: "erc20" | "permit2";
+  token: string;
+  spender: string;
+  chainId: number;
+}): Promise<{ decimals?: number; symbol?: string; current?: bigint }> {
+  const info = getChain(query.chainId);
+  const owner = addresses[selectedIndex];
+  if (!info || !owner) return {};
+  const { request } = balanceRequest(info);
+
+  const meta = await fetchTokenMeta(request, info.id, query.token).catch(() => undefined);
+
+  /* Read through the same batched path the approvals list uses rather than a
+   * bare eth_call, so there is one implementation of "what is the allowance"
+   * and one place for it to be wrong. A failed read comes back as absent, and
+   * approval-cap.ts is explicit that absent is not zero. */
+  const [result] = await fetchAllowances(request, info.id, owner, [
+    { token: query.token, spender: query.spender, via: query.standard },
+  ]).catch(() => []);
+
+  return {
+    ...(meta?.decimals !== undefined ? { decimals: meta.decimals } : {}),
+    ...(meta?.symbol !== undefined ? { symbol: meta.symbol } : {}),
+    ...(result?.ok ? { current: result.amount } : {}),
+  };
+}
+
+/**
+ * A gas limit for an approval this app re-encoded, chosen rather than
+ * estimated.
+ *
+ * The zero-then-set sequence cannot be estimated: while the old allowance is
+ * still standing, `eth_estimateGas` on the second transaction runs against a
+ * chain state where a USDT-style `approve` reverts, so the estimate fails and
+ * a failed estimate would cancel the very sequence that exists to avoid the
+ * revert. An `approve` is one storage write and one event on every ERC-20 in
+ * circulation; this is generous for that, and EIP-1559 refunds whatever is not
+ * burned, so an over-estimate costs nothing while an under-estimate costs the
+ * whole fee for a transaction that runs out.
+ */
+const APPROVE_GAS_LIMIT = 120000n;
+
+/**
+ * Sign a capped approval, one device confirmation per step.
+ *
+ * The nonces are consecutive and assigned here, which is the reason this is not
+ * two ordinary calls to `signPlannedTransaction`: that function reads the nonce
+ * from the chain each time, and the second read would land before the first
+ * transaction was mined and hand back the same number — the second approval
+ * would then *replace* the zero rather than follow it, leaving the allowance at
+ * zero and the user believing it was capped. Sent back to back with n and n+1,
+ * the ordering is the chain's own and the second executes with the first
+ * already applied.
+ */
+async function signApprovalCap(
+  tx: PlannedTx,
+  steps: readonly { data: string; label: string }[],
+  broadcast: boolean,
+): Promise<string> {
+  const info = getChain(tx.chainId);
+  if (!info) throw new Error(`this wallet has no RPC for chain ${tx.chainId}`);
+  const from = addresses[addressIndex(tx.from)];
+  if (!from) throw new Error("that address is not one this device has derived");
+
+  const base = tx.nonce ?? await (async () => {
+    const { chain: viemDef, transport } = rpcFor(info);
+    return createPublicClient({ chain: viemDef, transport })
+      .getTransactionCount({ address: from as Address });
+  })();
+
+  let last = "";
+  for (const [i, step] of steps.entries()) {
+    log(`approval cap: ${step.label}`);
+    last = await signPlannedTransaction(
+      { ...tx, data: step.data, nonce: base + i, gas: APPROVE_GAS_LIMIT },
+      broadcast,
+    );
+  }
+  return last;
+}
+
 const walletBridge: WalletBridge = {
   // Locked means no accounts, which is what stops a dapp asking for a
   // signature the device could not produce anyway.
@@ -3054,6 +3149,8 @@ const walletBridge: WalletBridge = {
     log(`chain: ${picked.name} (${picked.id})`);
   },
   signTransaction: signPlannedTransaction,
+  approvalFacts,
+  signApprovalCap,
   signMessage: signPlannedMessage,
   signTypedData: signPlannedTypedData,
   log,

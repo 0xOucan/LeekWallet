@@ -21,6 +21,12 @@
 
 import { DeviceError, ErrorCode } from "../../packages/core/src/transport.ts";
 import { getChain } from "../../packages/core/src/chains.ts";
+import { interpretTransaction } from "../../packages/core/src/tx-interpret.ts";
+import {
+  APPROVAL_EDIT_NOTICE, inspectApproval, parseCapAmount,
+  planCap, SEQUENCE_NEEDS_BROADCAST_NOTICE, type ApprovalCall, type CapStep,
+} from "../../packages/core/src/approval-cap.ts";
+import { TOKEN_SCALE_NOTICE } from "../../packages/core/src/balances.ts";
 import { chainText, resolveChainForDapp } from "./chain-view.ts";
 import { drawFindings, renderInterpretation } from "../interpretation-view.ts";
 import { evaluateRules, type Finding } from "../../packages/core/src/rules.ts";
@@ -87,6 +93,37 @@ export interface WalletBridge {
    * the bridge.
    */
   ruleFacts(): { knownAddresses: readonly string[]; knownTokens: readonly string[] };
+  /**
+   * What the approval editor needs and cannot know on its own: how to scale
+   * the amount, and whether an allowance is already outstanding.
+   *
+   * Both come from outside this file for the same reason `ruleFacts` does —
+   * the RPC failover and the token index live in main.ts, and a second route
+   * to either would mean this card and the app's own screens could disagree
+   * about the same token. `decimals` is self-declared or from an unchecked
+   * list and is never evidence (PROTOCOL.md 6d); `current` absent means
+   * nobody could read the allowance, which is emphatically not zero.
+   */
+  approvalFacts(query: {
+    standard: "erc20" | "permit2";
+    token: string;
+    spender: string;
+    chainId: number;
+  }): Promise<{ decimals?: number; symbol?: string; current?: bigint }>;
+  /**
+   * Sign a capped approval — one transaction, or the zero-then-set pair.
+   *
+   * A separate route from `signTransaction` because the pair needs consecutive
+   * nonces and a gas limit that does not come from an estimate (the second
+   * transaction reverts under estimation while the old allowance is still
+   * standing), and only main.ts has the RPC to arrange either. Each step is a
+   * full device confirmation; this never batches them into one approval.
+   */
+  signApprovalCap(
+    tx: PlannedTx,
+    steps: readonly { data: string; label: string }[],
+    broadcast: boolean,
+  ): Promise<string>;
 }
 
 /* The fallback named when this webview cannot scan. Specific to this panel:
@@ -104,6 +141,21 @@ const $ = <T extends HTMLElement>(id: string): T => {
 interface Queued {
   request: WcRequest;
   plan: RequestPlan;
+  /**
+   * The approval the user is allowed to cap, and the edit if they made one.
+   *
+   * `original` is the dapp's calldata, kept verbatim so "restore the dapp's
+   * amount" is a restoration rather than a re-encoding of what this app
+   * believes the dapp meant. `steps` is present only once an edit has been
+   * applied, and its existence is what routes the approval through
+   * `signApprovalCap` instead of the ordinary path.
+   */
+  cap?: {
+    call: ApprovalCall;
+    original: string;
+    facts?: { decimals?: number; symbol?: string; current?: bigint };
+    steps?: CapStep[];
+  };
 }
 
 /**
@@ -380,9 +432,201 @@ export function initWalletConnect(bridge: WalletBridge): {
       return;
     }
 
-    queue.push({ request, plan });
+    const queued: Queued = { request, plan };
+    /* An `approve` the app could decode is the one request shape where the
+     * user has a third answer available: not "sign this unlimited allowance"
+     * or "go without the dapp", but "approve this much". Attached before the
+     * card is drawn so the box appears with the request rather than popping in
+     * underneath a preview somebody is already reading. */
+    if (plan.kind === "transaction") {
+      const call = inspectApproval({ to: plan.tx.to, data: plan.tx.data });
+      if (call) queued.cap = { call, original: plan.tx.data };
+    }
+    queue.push(queued);
+    drawRequest();
+    /* The allowance reading and the decimals are a network round trip, so they
+     * arrive after the card. Deliberately not awaited before drawing: a dapp
+     * request that sat invisible while an RPC timed out would be a request the
+     * user never saw. The editor stays usable meanwhile and says what it does
+     * not yet know. */
+    if (queued.cap) void loadApprovalFacts(queued);
+  }
+
+  /* ------------------------------------------------------- approval capping */
+
+  async function loadApprovalFacts(queued: Queued): Promise<void> {
+    const cap = queued.cap;
+    if (!cap || queued.plan.kind !== "transaction") return;
+    try {
+      cap.facts = await bridge.approvalFacts({
+        standard: cap.call.standard,
+        token: cap.call.token,
+        spender: cap.call.spender,
+        chainId: queued.plan.tx.chainId,
+      });
+    } catch (e) {
+      /* An absent reading is left absent rather than defaulted. planCap treats
+       * undefined as "unknown" and says so on the card, which is the honest
+       * outcome; a caught error becoming 0n would plan a single transaction
+       * against a live allowance and revert on exactly the token this feature
+       * was asked for. */
+      bridge.log(`approval cap: could not read the current allowance — ${(e as Error).message}`);
+    }
+    // Only if this is still the request on screen; a queue that moved on while
+    // the RPC answered must not have another request's numbers drawn into it.
+    if (queue[0] === queued) drawCap();
+  }
+
+  /** The dapp's amount, in whatever units this app can honestly offer. */
+  function requestedText(queued: Queued): string {
+    const cap = queued.cap;
+    if (!cap) return "";
+    const { call, facts } = cap;
+    const raw = `${call.amount} raw units`;
+    const scaled = facts?.decimals !== undefined
+      ? ` (about ${formatScaled(call.amount, facts.decimals)} ${facts.symbol ?? "tokens"})`
+      : "";
+    /* "Unlimited" is eth-decode.ts's word, and it is the word the device's own
+     * approval screen uses. A second vocabulary here would leave the user
+     * matching "no maximum" on one screen against "UNLIMITED" on the other. */
+    return call.unlimited
+      ? `The dapp asked for an UNLIMITED approval (${raw}) to ${call.spender}.`
+      : `The dapp asked to approve ${raw}${scaled} to ${call.spender}.`;
+  }
+
+  /* Integer arithmetic, like everything else that scales an amount here: a
+   * float would render a figure the calldata does not contain. */
+  function formatScaled(raw: bigint, decimals: number): string {
+    const unit = 10n ** BigInt(decimals);
+    const whole = raw / unit;
+    const frac = (raw % unit).toString().padStart(decimals, "0").replace(/0+$/, "");
+    return frac === "" ? whole.toString() : `${whole}.${frac}`;
+  }
+
+  function drawCap(): void {
+    const section = $("wccap");
+    const head = queue[0];
+    const cap = head?.cap;
+    if (!head || !cap || head.plan.kind !== "transaction") { section.hidden = true; return; }
+
+    $("wccaprequested").textContent = requestedText(head);
+
+    const decimals = cap.facts?.decimals;
+    const symbol = cap.facts?.symbol;
+    /* The unit goes in the visible label, because it is the difference between
+     * approving 500 tokens and approving 500 of the smallest indivisible piece
+     * of one, and a hint underneath is not part of the accessible name. */
+    $("wccaplabel").textContent = decimals === undefined
+      ? "New approval amount (raw units)"
+      : `New approval amount (${symbol ?? "token"} units)`;
+    $("wccapscale").textContent = decimals === undefined
+      ? "Nothing this app can ask told it how many decimals this token uses, so " +
+        "the amount is in raw units — the integer the contract stores."
+      : `Your amount is multiplied by 10^${decimals} to get the raw units the ` +
+        `device will show. ${TOKEN_SCALE_NOTICE}`;
+
+    const notices = $("wccapnotices");
+    notices.textContent = "";
+    const say = (text: string): void => {
+      const li = document.createElement("li");
+      li.textContent = text;
+      notices.appendChild(li);
+    };
+    /* Drawn before anything has been edited, not after it is applied. The
+     * point of this sentence is to be read while the decision is still open. */
+    say(APPROVAL_EDIT_NOTICE);
+    if (cap.steps) for (const step of cap.steps) say(step.label);
+
+    ($("wccapreset") as HTMLButtonElement).disabled = cap.steps === undefined;
+    section.hidden = false;
+  }
+
+  /** Recompute the advisory preview after the calldata has been edited. */
+  function redrawEditedPreview(head: Queued): void {
+    if (head.plan.kind !== "transaction") return;
+    const chain = getChain(head.plan.tx.chainId);
+    head.plan.interpretation = interpretTransaction(
+      {
+        chainId: head.plan.tx.chainId,
+        to: head.plan.tx.to,
+        value: head.plan.tx.value,
+        data: head.plan.tx.data,
+        ...(head.plan.tx.gas !== undefined ? { gas: head.plan.tx.gas } : {}),
+        ...(head.plan.tx.maxFeePerGas !== undefined
+          ? { maxFeePerGas: head.plan.tx.maxFeePerGas }
+          : {}),
+      },
+      chain ? { nativeSymbol: chain.nativeCurrency.symbol } : {},
+    );
     drawRequest();
   }
+
+  function applyCap(): void {
+    const head = queue[0];
+    const cap = head?.cap;
+    const status = $("wccapstatus");
+    const input = $("wccapamount") as HTMLInputElement;
+    if (!head || !cap || head.plan.kind !== "transaction") return;
+
+    const decimals = cap.facts?.decimals ?? 0;
+    let amount: bigint;
+    try {
+      amount = parseCapAmount(input.value, decimals, cap.call.bits);
+    } catch (e) {
+      /* Refused, never rounded. `aria-invalid` because the message below the
+       * field is not announced on its own when focus is still in the field. */
+      input.setAttribute("aria-invalid", "true");
+      status.textContent = (e as Error).message;
+      bridge.announce(`That amount was not accepted: ${(e as Error).message}`);
+      return;
+    }
+    input.removeAttribute("aria-invalid");
+
+    const plan = planCap(cap.call, amount, cap.facts?.current);
+    if (plan.zeroFirst && !head.plan.broadcast) {
+      status.textContent = SEQUENCE_NEEDS_BROADCAST_NOTICE;
+      bridge.announce(SEQUENCE_NEEDS_BROADCAST_NOTICE);
+      bridge.log(`approval cap: not applied — ${SEQUENCE_NEEDS_BROADCAST_NOTICE}`);
+      return;
+    }
+
+    cap.steps = plan.steps;
+    /* The first step's calldata is what goes on the wire and into the preview.
+     * For the sequence that is the zero, which is what the device will draw
+     * first — showing the capped figure here while the device showed zero
+     * would be exactly the app-versus-device disagreement this whole path is
+     * built to avoid. */
+    head.plan.tx.data = plan.steps[0]?.data ?? head.plan.tx.data;
+    /* A gas limit measured for the dapp's own call does not necessarily fit a
+     * different one, and for the sequence the second transaction cannot be
+     * estimated at all. Dropping it hands the choice to main.ts, which knows
+     * which step it is signing. */
+    delete head.plan.tx.gas;
+
+    const summary = plan.zeroFirst
+      ? `Two transactions will be signed: ${plan.steps.map((s) => s.label).join("; ")}.`
+      : `The dapp's amount has been replaced with ${amount} raw units.`;
+    status.textContent = summary;
+    for (const notice of plan.notices) bridge.log(`approval cap: ${notice}`);
+    bridge.log(`approval cap: ${summary}`);
+    bridge.announce(`${summary} Check the amount on the device before approving there.`);
+    redrawEditedPreview(head);
+  }
+
+  function resetCap(): void {
+    const head = queue[0];
+    const cap = head?.cap;
+    if (!head || !cap || head.plan.kind !== "transaction") return;
+    delete cap.steps;
+    head.plan.tx.data = cap.original;
+    ($("wccapamount") as HTMLInputElement).value = "";
+    $("wccapstatus").textContent = "Back to the amount the dapp asked for.";
+    bridge.log("approval cap: restored the dapp's own amount");
+    redrawEditedPreview(head);
+  }
+
+  $("wccapapply").addEventListener("click", applyCap);
+  $("wccapreset").addEventListener("click", resetCap);
 
   /**
    * The rules' verdict on one pending request.
@@ -420,6 +664,9 @@ export function initWalletConnect(bridge: WalletBridge): {
     body.textContent = "";
     const preview = $("wcpreview");
     preview.hidden = true;
+    // Redrawn per request; the editor is hidden for everything that is not an
+    // approval so an amount box never sits under a transfer.
+    $("wccap").hidden = true;
 
     if (head.plan.kind === "transaction") {
       const symbol = getChain(head.plan.tx.chainId)?.nativeCurrency.symbol ?? "";
@@ -435,6 +682,7 @@ export function initWalletConnect(bridge: WalletBridge): {
         findingsFor({ tx: { to: head.plan.tx.to, value: head.plan.tx.value, data: head.plan.tx.data } }),
       );
       preview.hidden = false;
+      drawCap();
       body.textContent = head.plan.broadcast
         ? "If you approve, this app broadcasts the signed transaction."
         : "If you approve, the signed transaction is returned to the dapp, which broadcasts it.";
@@ -497,7 +745,17 @@ export function initWalletConnect(bridge: WalletBridge): {
     if (!head || settling) return;
     settling = true;
     const { request, plan } = head;
-    const done = (): void => { settling = false; queue.shift(); drawRequest(); };
+    const done = (): void => {
+      settling = false;
+      queue.shift();
+      /* The editor's own fields are cleared with the request, not carried on to
+       * the next one: a leftover "500" under a different dapp's approval is an
+       * amount somebody could apply without reading which token it is for. */
+      ($("wccapamount") as HTMLInputElement).value = "";
+      ($("wccapamount") as HTMLInputElement).removeAttribute("aria-invalid");
+      $("wccapstatus").textContent = "";
+      drawRequest();
+    };
 
     if (!approve) {
       done();
@@ -513,7 +771,26 @@ export function initWalletConnect(bridge: WalletBridge): {
       ($(button) as HTMLButtonElement).disabled = true;
     }
     try {
-      if (plan.kind === "transaction") {
+      if (plan.kind === "transaction" && head.cap?.steps) {
+        /* A capped approval. The device confirms every step on its own screen,
+         * one at a time, and the amount it draws is decoded from the calldata
+         * this app re-encoded — so the figure the user checks there is the
+         * figure that gets signed, whatever this card said. */
+        const steps = head.cap.steps;
+        bridge.deviceAttention(
+          steps.length > 1
+            ? `${request.name}: ${steps.length} transactions to approve on the device, one at a time`
+            : `${request.name}: check the capped amount on the device, then approve`,
+        );
+        const result = await bridge.signApprovalCap(plan.tx, steps, plan.broadcast);
+        /* The dapp gets the answer for the approval it asked for — the last
+         * step — and is not told the amount changed. It will find out the way
+         * any allowance is found out: by reading it. */
+        await connection.respond(request.topic, request.id, result);
+        bridge.log(
+          `${request.name}: approval capped and ${plan.broadcast ? `sent ${result}` : "signed"}`,
+        );
+      } else if (plan.kind === "transaction") {
         bridge.deviceAttention(`${request.name}: check every page on the device, then approve`);
         const result = await bridge.signTransaction(plan.tx, plan.broadcast);
         await connection.respond(request.topic, request.id, result);
