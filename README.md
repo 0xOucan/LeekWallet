@@ -578,12 +578,17 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
 - [x] Send flow with camera QR recipient scanning, Max amount, and token discovery
 - [x] Address panel: selector, QR, copy, and share where a share sheet exists
 - [x] Dapp pairing under the shipping CSP on both platforms, signing verified on-chain
+- [x] EIP-712 typed data, rendered field by field — a Snapshot vote signed on hardware
+- [x] Contract calls decoded from a self-verifying signature table (Aave `supply`
+      and friends), the table checked by hashing rather than trusted
+- [x] Editable approval cap: replace a dapp's amount before it reaches the device
+- [x] Account selector and host-side passphrase entry, both reachable from the app
+- [x] Screen-reader labels, keyboard traversal and a measured contrast audit
+- [x] Reproducible builds, firmware and companion, with a signed release manifest
 - [ ] Flash encryption + secure boot — **the gate before real funds**
-- [ ] Account selector reachable from the app (the device has one; the app
-      hardcodes `m/44'/60'/0'/0/i`, so the two can disagree — ROADMAP T45a)
 - [ ] Firmware flasher in the companion app (ROADMAP T65, gated on secure boot)
-- [ ] EIP-712 typed data (needs a `signTypedData` command first)
 - [ ] Airgapped QR signing (needs a camera)
+- [ ] Coin abstraction, then Solana and Bitcoin (ROADMAP T52-T54)
 - [ ] Secure element integration
 
 **Chains.** EVM only, and chain-agnostic within it — chains differ by a chain ID
@@ -624,6 +629,24 @@ sees it.** Descriptors are unsigned and nothing cryptographic ties them to the c
 called; the device's own refuse-by-default decoding is the thing that decides. Why the industry
 does it this way, and what it would take to make it trustworthy on-device, is in
 [docs/CLEAR-SIGNING.md](docs/CLEAR-SIGNING.md) — a research spike, not a plan of record.
+
+What the device *does* trust is a different mechanism, and it needs no descriptor and no key:
+function signatures are bundled in the firmware as strings, and a row is reachable only by
+recomputing `keccak256(signature)[0:4]` and matching the selector actually being signed. A
+tampered signature cannot produce the right selector, so the table certifies itself. That is how
+`supply(address,uint256,address,uint16)` renders argument by argument rather than as a hash. Its
+limit is stated on the device's own screen: this proves what a function is **named** and what it
+was **passed**, never what it does — a drainer may call its entry point `supply` and every page
+will render correctly.
+
+Approvals can be capped before they reach the device: a dapp asking for an unlimited allowance can
+be answered with 500, re-encoded and confirmed on the device's own screen. Unlimited approvals are
+the most exploited thing in this space (see [docs/ANTI-SCAM.md](docs/ANTI-SCAM.md)), and dapps
+rarely offer the choice — Aave never does. Two things learned by doing it: tokens of the USDT kind
+refuse to move from one non-zero allowance to another, so a standing allowance is zeroed first and
+signed as two transactions; and an allowance exactly equal to the spend is refused by dapps that
+check with a margin, so approve a little above what you mean to spend and reload the dapp, which
+will otherwise keep using the figure it last read.
 
 Visual language — minimal, mono-forward, no pixel art — is specified in
 [docs/DESIGN.md](docs/DESIGN.md). What the companion owes a user who cannot see
