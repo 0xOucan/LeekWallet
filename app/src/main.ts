@@ -726,7 +726,41 @@ async function findDevice(kind: LinkKind): Promise<Transport | null> {
   return new MockDevice({ latencyMs: 250, walletCount: 1, pinEntryMs: 2000 });
 }
 
+/**
+ * Whether a connection attempt is already in flight.
+ *
+ * A guard rather than a disabled button, because the button is only disabled
+ * once `busy(true)` runs — and that is after the scan has been awaited, which
+ * is precisely the several-second window a user is most likely to press it
+ * again in. Two attempts overlapping is not two chances at the same thing: each
+ * runs its own X25519 handshake, the device resets its session on every
+ * handshake and therefore keeps the LAST key, and the app goes on encrypting
+ * with the first. Every request after that fails to decrypt, and no amount of
+ * retrying helps because both ends are behaving correctly with different keys.
+ *
+ * That state cost a user a full restart of the companion AND the board to
+ * clear. The log said it plainly in hindsight: two "scanning" lines a second
+ * apart, then two handshakes offering different passkeys.
+ *
+ * Set synchronously before the first await, so two clicks in the same tick
+ * cannot both pass it.
+ */
+let connecting = false;
+
 async function connect(): Promise<void> {
+  if (connecting) {
+    log("already connecting — ignoring that");
+    return;
+  }
+  connecting = true;
+  try {
+    await connectOnce();
+  } finally {
+    connecting = false;
+  }
+}
+
+async function connectOnce(): Promise<void> {
   /* Real hardware over whichever link the user picked, the mock when there is
    * none. All three are interchangeable by construction — if they were not,
    * everything built against the mock would need revisiting the first time a
