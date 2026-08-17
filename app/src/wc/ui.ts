@@ -25,6 +25,7 @@ import { interpretTransaction } from "../../packages/core/src/tx-interpret.ts";
 import {
   APPROVAL_EDIT_NOTICE, inspectApproval, parseCapAmount,
   planCap, SEQUENCE_NEEDS_BROADCAST_NOTICE, type ApprovalCall, type CapStep,
+  capAmountText,
 } from "../../packages/core/src/approval-cap.ts";
 import { TOKEN_SCALE_NOTICE } from "../../packages/core/src/balances.ts";
 import { chainText, resolveChainForDapp } from "./chain-view.ts";
@@ -155,6 +156,9 @@ interface Queued {
     original: string;
     facts?: { decimals?: number; symbol?: string; current?: bigint };
     steps?: CapStep[];
+    /* Whether the standing warnings have already gone to the log for this
+     * request. They belong to the request, not to the button. */
+    noticesLogged?: boolean;
   };
 }
 
@@ -605,9 +609,19 @@ export function initWalletConnect(bridge: WalletBridge): {
 
     const summary = plan.zeroFirst
       ? `Two transactions will be signed: ${plan.steps.map((s) => s.label).join("; ")}.`
-      : `The dapp's amount has been replaced with ${amount} raw units.`;
+      : `The dapp's amount has been replaced with ${capAmountText(amount, cap.facts)}.`;
     status.textContent = summary;
-    for (const notice of plan.notices) bridge.log(`approval cap: ${notice}`);
+    /* Once per request, not once per press. The notices are four paragraphs
+     * about what capping does, and they do not change when the amount does --
+     * a user adjusting the figure three times logged twelve paragraphs and
+     * pushed everything else off the panel. They stay on the card, which is
+     * where they are read; the log gets them the first time so the record of
+     * "was this user warned" survives, and the summary every time because that
+     * one does change. */
+    if (!cap.noticesLogged) {
+      for (const notice of plan.notices) bridge.log(`approval cap: ${notice}`);
+      cap.noticesLogged = true;
+    }
     bridge.log(`approval cap: ${summary}`);
     bridge.announce(`${summary} Check the amount on the device before approving there.`);
     redrawEditedPreview(head);

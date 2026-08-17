@@ -330,6 +330,23 @@ export function planCap(
   };
 }
 
+/**
+ * An amount as the reader should see it: the token's own units when anything
+ * knows them, and visibly raw when nothing does.
+ *
+ * Exported because the step labels are not the only place that says a figure —
+ * the summary line does too, and the two saying it differently ("160 USDC" in
+ * one, "160000000 raw units" in the other, for the same approval) is how a
+ * reader ends up unsure which number is real.
+ */
+export const capAmountText = (
+  amount: bigint,
+  meta?: { decimals?: number; symbol?: string },
+): string => {
+  if (meta?.decimals === undefined) return `${amount} raw units`;
+  return `${formatUnits(amount, meta.decimals)}${meta.symbol ? ` ${meta.symbol}` : ""}`;
+};
+
 const capLabel = (
   amount: bigint,
   meta?: { decimals?: number; symbol?: string },
@@ -338,7 +355,5 @@ const capLabel = (
   /* Raw units stay the fallback rather than a guess at the scale: a figure
    * shown in the wrong units is worse than one shown in units the reader can
    * see are raw. */
-  if (meta?.decimals === undefined) return `set the allowance to ${amount} raw units`;
-  const shown = formatUnits(amount, meta.decimals);
-  return `set the allowance to ${shown}${meta.symbol ? ` ${meta.symbol}` : ""}`;
+  return `set the allowance to ${capAmountText(amount, meta)}`;
 };
