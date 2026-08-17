@@ -582,7 +582,7 @@ export function initWalletConnect(bridge: WalletBridge): {
     }
     input.removeAttribute("aria-invalid");
 
-    const plan = planCap(cap.call, amount, cap.facts?.current);
+    const plan = planCap(cap.call, amount, cap.facts?.current, cap.facts);
     if (plan.zeroFirst && !head.plan.broadcast) {
       status.textContent = SEQUENCE_NEEDS_BROADCAST_NOTICE;
       bridge.announce(SEQUENCE_NEEDS_BROADCAST_NOTICE);

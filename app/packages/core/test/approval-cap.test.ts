@@ -181,5 +181,34 @@ group("every plan says the dapp's request is being changed");
 
 /* ------------------------------------------------------------------------ */
 
+group("labels use the token's own units when anything knows them");
+{
+  const call = inspectApproval({
+    to: "0xba50cd2a20f6da35d788639e581bca8d0b5d4d5f",
+    data: "0x095ea7b3" + "0".repeat(24) + "8bab6d1b75f19e9ed9fce8b9bd338844ff79ae27" + "f".repeat(64),
+  });
+  if (!call) throw new Error("the approval was not recognised");
+
+  /* The case a real session produced: 150 USDC read back as "150000000 raw
+   * units", which asks the reader to do the decimal arithmetic this feature
+   * exists to spare them. */
+  const known = planCap(call, 150_000_000n, 0n, { decimals: 6, symbol: "USDC" });
+  check(
+    known.steps[0]!.label.includes("150 USDC"),
+    `a known token should be labelled in its own units, got: ${known.steps[0]!.label}`,
+  );
+  check(!known.steps[0]!.label.includes("raw units"), "raw units survived a known token");
+
+  // Unknown decimals must stay visibly raw rather than guess a scale.
+  const unknown = planCap(call, 150_000_000n, 0n);
+  check(unknown.steps[0]!.label.includes("raw units"), "an unknown token must say raw units");
+
+  // The zero step names no units, because zero is zero in any of them.
+  const two = planCap(call, 150_000_000n, 1n, { decimals: 6, symbol: "USDC" });
+  check(two.steps.length === 2, "a non-zero current allowance still plans two steps");
+  check(two.steps[0]!.label.includes("zero"), "step 1 should still be the zero step");
+  check(two.steps[1]!.label.includes("150 USDC"), "step 2 should use the token's units");
+}
+
 console.log(failures === 0 ? "\napproval-cap: all checks passed" : `\napproval-cap: ${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

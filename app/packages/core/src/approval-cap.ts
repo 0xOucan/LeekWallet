@@ -40,6 +40,7 @@
  * Pure: no network, no clock, no DOM. The allowance reading is passed in.
  */
 
+import { formatUnits } from "./chains.ts";
 import {
   encodeErc20Approve, encodePermit2Approve, isUnlimited, SELECTOR_PERMIT2_APPROVE,
 } from "./allowances.ts";
@@ -256,6 +257,13 @@ export function planCap(
   call: ApprovalCall,
   newAmount: bigint,
   current: bigint | undefined,
+  /* What the token calls its own units, when anything knows. Optional because
+   * the plan must be buildable before an RPC answers -- but when it IS known,
+   * every label should use it. A step that reads "150000000 raw units" makes
+   * the reader do the decimal arithmetic that caused the mistake this feature
+   * exists to prevent, and these labels are what the log and the device-waiting
+   * announcement repeat back. */
+  meta?: { decimals?: number; symbol?: string },
 ): CapPlan {
   if (newAmount < 0n) throw new AbiError("an allowance cannot be negative");
   const max = (1n << BigInt(call.bits)) - 1n;
@@ -279,7 +287,7 @@ export function planCap(
 
   if (!needsSequence) {
     return {
-      steps: [{ data: encode(newAmount), amount: newAmount, label: capLabel(newAmount) }],
+      steps: [{ data: encode(newAmount), amount: newAmount, label: capLabel(newAmount, meta) }],
       zeroFirst: false,
       notices,
     };
@@ -292,7 +300,7 @@ export function planCap(
       {
         data: encode(newAmount),
         amount: newAmount,
-        label: `Step 2 of 2: ${capLabel(newAmount)}`,
+        label: `Step 2 of 2: ${capLabel(newAmount, meta)}`,
       },
     ],
     zeroFirst: true,
@@ -300,7 +308,15 @@ export function planCap(
   };
 }
 
-const capLabel = (amount: bigint): string =>
-  amount === 0n
-    ? "set the allowance to zero"
-    : `set the allowance to ${amount} raw units`;
+const capLabel = (
+  amount: bigint,
+  meta?: { decimals?: number; symbol?: string },
+): string => {
+  if (amount === 0n) return "set the allowance to zero";
+  /* Raw units stay the fallback rather than a guess at the scale: a figure
+   * shown in the wrong units is worse than one shown in units the reader can
+   * see are raw. */
+  if (meta?.decimals === undefined) return `set the allowance to ${amount} raw units`;
+  const shown = formatUnits(amount, meta.decimals);
+  return `set the allowance to ${shown}${meta.symbol ? ` ${meta.symbol}` : ""}`;
+};
