@@ -152,11 +152,16 @@ async function main(): Promise<void> {
       ["newline", "line one\nline two"],
       ["control byte", "bell\u0007"],
       ["too long", "x".repeat(121)],
-      ["empty", ""],
     ] as const) {
       const at = dev.confirmations.length;
       const r = await call(dev, "signMessage", { index: 0, message });
-      check(r.error?.code === ErrorCode.Undecodable,
+      /* Two refusals with two codes, in the firmware's terms: text the screen
+       * cannot draw is UNDECODABLE, text that would not fit is MALFORMED. Both
+       * were 0x0202 here until the conformance corpus compared them against
+       * protocol.c. The empty message left this list entirely - the device
+       * signs it, personal_sign("") being a request dapps really make. */
+      const expected = message.length > 120 ? ErrorCode.MalformedFrame : ErrorCode.Undecodable;
+      check(r.error?.code === expected,
         `${label}: expected a refusal, got ${JSON.stringify(r)}`);
       check(dev.confirmations.length === at,
         `${label}: an unrenderable message reached the confirmation screen`);
@@ -165,6 +170,10 @@ async function main(): Promise<void> {
     /* Exactly at the limit is fine — the boundary is the interesting part. */
     const edge = await call(dev, "signMessage", { index: 0, message: "y".repeat(120) });
     check(edge.result?.["r"] !== undefined, "120 bytes should be signable");
+
+    const empty = await call(dev, "signMessage", { index: 0, message: "" });
+    check(empty.result?.["r"] !== undefined,
+      `the device signs an empty message, got ${JSON.stringify(empty)}`);
   }
 
   group("locked device refuses key operations");
