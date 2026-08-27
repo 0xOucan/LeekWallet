@@ -323,11 +323,8 @@ WalletError wallet_get_address_at_path(const HDPath *path, EthAddress *address_o
 
 WalletError wallet_change_password(const char *old_password, size_t old_length,
                                    const char *new_password, size_t new_length,
-                                   const uint8_t companion_hash[32],
                                    WalletProgressFn progress)
 {
-    (void)companion_hash;
-
     if (!w.password_set) {
         return WALLET_ERROR_WRONG_PASSWORD;
     }
@@ -355,10 +352,4 @@ bool wallet_verify_password(const char *password, size_t length)
     }
     return length == strlen(fake_password) &&
            memcmp(password, fake_password, length) == 0;
-}
-
-bool wallet_get_companion_hash(uint8_t hash_out[32])
-{
-    (void)hash_out;
-    return false;
 }

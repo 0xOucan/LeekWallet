@@ -90,6 +90,24 @@ bool fake_nvs_has(const char *ns, const char *key)
     return find(ns, key) != NULL;
 }
 
+bool fake_nvs_contains_bytes(const void *needle, size_t length)
+{
+    if (!needle || length == 0) {
+        return false;
+    }
+    for (int i = 0; i < MAX_ENTRIES; i++) {
+        if (!entries[i].used || entries[i].length < length) {
+            continue;
+        }
+        for (size_t off = 0; off + length <= entries[i].length; off++) {
+            if (memcmp(entries[i].value + off, needle, length) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static Entry *find_or_create(const char *ns, const char *key)
 {
     Entry *e = find(ns, key);

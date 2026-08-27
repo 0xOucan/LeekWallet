@@ -483,7 +483,7 @@ static void fresh_device(void)
 
 static void device_has_a_wallet(void)
 {
-    wallet_unlock("password", 8);
+    wallet_unlock("123456", 6);
     fake_wallet_preload(TEST_MNEMONIC);
 }
 

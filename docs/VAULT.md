@@ -173,8 +173,8 @@ for it.
 
 ### 1. A real KDF (replaces `SHA256²`)
 
-Today the AES key is `SHA256(SHA256(pin))` — two hash calls, no salt. With a 6-digit PIN that is
-10⁶ candidates at roughly nanoseconds each.
+Before this, the AES key was `SHA256(SHA256(pin))` — two hash calls, no salt. With a 6-digit PIN
+that is 10⁶ candidates at roughly nanoseconds each.
 
 ```
 salt          = 16 random bytes, per device, stored in NVS
@@ -183,13 +183,89 @@ verify_hash    = PBKDF2-HMAC-SHA512(pin, salt || "leek-ver-v2", iterations)
 ```
 
 Two independent domain separators, so the stored verification hash is not an oracle for the
-encryption key — today they are both unsalted functions of the same PIN, which means cracking
-one cracks the other.
+encryption key — in the scheme this replaced they were both unsalted functions of the same PIN,
+which means cracking one cracked the other.
 
-`iterations` tuned to ~500 ms on the S3 (measure on QEMU first, then hardware). That turns 10⁶
-candidates into roughly six days of continuous attack per device instead of a moment — and with
-flash encryption on, the attacker cannot get the ciphertext to attack in the first place. The KDF
-is defence in depth for the case where they do.
+`iterations` is 2250, tuned to ~500 ms on the S3 (`vault_kdf_benchmark_ms()` reports ~508 ms at
+boot).
+
+#### One verifier, and only one
+
+This construction is worth nothing if something cheaper in the same flash dump answers the same
+question. Until recently something did: `src/pin.c` kept its own PIN verifier in
+`leek_pin/pin_hash` — SHA-256 applied 101 times, unsalted — and a copy of it inside the vault
+record. The PIN and the vault password are the same secret, so an attacker never touched PBKDF2:
+they broke the cheap hash and then ran the KDF once. It was also unsalted, so one rainbow table
+covered every device ever built.
+
+That verifier is gone. `pin_verify()` now calls `wallet_verify_password()`, and the salted PBKDF2
+hash in the vault record is the only value in flash that recognises a PIN. `sim/test_pin.c`
+asserts this as a property of storage rather than of the code: after a set, an unlock, a PIN
+change and a reboot, the unsalted chained hash of every PIN the device has held appears **nowhere
+in simulated flash**, at any offset, in any namespace.
+
+Existing devices are migrated. A device with a vault password drops the retired blob at the first
+boot on this firmware — no PIN needed, since the strong verifier already answers to the same
+secret. A device that had a PIN but never created a wallet has no strong verifier to check
+against, so its retired one is honoured exactly once, at which point the vault password is written
+from the PIN just proved correct and the blob is erased. Both orderings are power-cut safe in the
+sense the rest of this document uses: at every instant, including the instant the power dies,
+exactly one PIN opens the device and never zero.
+
+#### What is left in the flash after the migration
+
+`nvs_erase_key()` is a logical erase, the same as `nvs_erase_all()`: it marks the entry deleted in
+the page's state bitmap and leaves the bytes where they are. So immediately after the migration a
+`esptool read_flash` **still contains the retired verifier**, and will until NVS garbage-collects
+that page — which happens when the page is needed, on no schedule anyone can predict, and never at
+all on a device that is then left in a drawer. The value stops being *read* at once; it stops
+being *present* at an unknown later time.
+
+This is the same caveat as the wipe (see F9 in `docs/AUDIT-SECRETS.md`), and it has the same
+answer: a logical erase is not a physical one, and the only construction that makes a flash dump
+useless is flash encryption. What the migration does guarantee is that no *newly provisioned*
+device, and no device whose NVS has since been collected, carries a cheap verifier — and that no
+firmware from here on writes one. A field device upgrading today should be assumed to still hold
+the old blob physically. Verifying that claim needs a board and a dump before and after; it has
+been read out of the NVS implementation, not observed.
+
+#### What it actually costs an attacker
+
+The number this document used to give — "roughly six days" — was wrong, and wrong in the
+dangerous direction. It priced the attacker at the *device's* speed: 10⁶ × 0.5 s ≈ 5.8 days. An
+attacker with a flash dump does not use the device. They use a GPU, and they get the whole PIN
+space, not the 6-digit slice.
+
+Measured here (one core, `-O2`, this repo's own code, `sim/` build) the two verifiers cost
+34.8 µs and 1534 µs per guess — a factor of 44 on a CPU where both are plain reference C. On a
+GPU the gap is wider, because SHA-256 is the most heavily optimised primitive in existence there
+and PBKDF2-HMAC-SHA512 is among the least friendly: 64-bit operations, and 2250 sequential
+iterations that cannot be parallelised within one candidate.
+
+| Verifier | Candidates/s, one consumer GPU | 6-digit (10⁶) | Whole 4–8 digit space (1.11×10⁸) |
+|---|---|---|---|
+| retired `pin_hash`, SHA-256×101 | ≈ 2×10⁸ (hashcat SHA-256 ≈ 2×10¹⁰ H/s ÷ 101) | ~5 ms | **~0.6 s** |
+| vault verifier, PBKDF2-SHA512×2250 | ≈ 6×10⁵ (extrapolated from published hashcat figures at 1000 iterations) | ~1.7 s | **~3 minutes** |
+
+Both GPU rows are extrapolations from published throughput, not measurements taken here; the CPU
+figures above them are measured. Treat the second row as the right order of magnitude, not a
+precise number.
+
+So the fix removes a factor of roughly 350 and, more importantly, removes the unsalted blob that
+made one precomputation work against the whole fleet. It does not make a numeric PIN a strong
+secret, and nothing at this length would. **Read the table honestly: a flash dump of a device
+using a 4–8 digit PIN is minutes of GPU time away from every seed on it.**
+
+The defence that actually holds is layer 3 below: with flash encryption on, the attacker cannot
+obtain the ciphertext to attack at all. The KDF is defence in depth for the case where they do.
+Two things would meaningfully improve the KDF's own contribution, in this order: allowing a
+longer or non-numeric PIN (nothing in `pin_is_valid_format()` requires digits), and raising the
+iteration count by routing PBKDF2 through the S3's SHA accelerator (T9e).
+
+The cost on the device is one extra derivation per unlock: the PIN screen now takes ~0.5 s to
+answer instead of being instant, and a full unlock goes from roughly 1.8 s to 2.3 s, most of which
+was always the BIP-39 seed derivation. That is the price of having no cheap verifier, and it is
+the right trade.
 
 ### 2. Authenticated encryption (replaces raw CBC)
 

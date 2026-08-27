@@ -31,7 +31,7 @@ been executed on hardware.
 | **Vault encryption key** | `vault_derive_key` (`components/leek-wallet/vault-kdf.c:74`) | `state.encryption_key[32]`, `.bss` (`:73`) | `wallet_lock` (`:1251`), wipe | No — derived from the PIN each unlock |
 | **PIN (plaintext)** | keypad (`src/ui.c:332`) | `current_pin[9]`, `.bss` (`src/pin.c:29`); UI transcript `pin_entry` | `pin_lock` (`src/pin.c:441`), `pin_wipe` (`:281`); UI copy by `forget_pin_entry`; the `ensure_wallet_unlocked` stack copy now zeroed (fixed, §4) | No |
 | **PIN verifier — vault** | `vault_derive_verifier`, PBKDF2-HMAC-SHA512, 2250 iterations, 16-byte per-device salt | NVS `colibri/vault_rec.password_hash`, or legacy `colibri/pwd_hash`; RAM `vault_stored_hash` | wipe only (RAM copy is not secret-bearing beyond the PIN) | **Yes — in flash** |
-| **PIN verifier — pin.c** | `hash_pin`, **SHA-256 × 101, unsalted** (`src/pin.c:38-53`) | NVS `leek_pin/pin_hash` | `pin_wipe` | **Yes — in flash. See F1.** |
+| ~~**PIN verifier — pin.c**~~ | **Removed (F1, fixed).** `pin_verify()` calls `wallet_verify_password()`; `src/pin.c` stores no verifier. The retired blob is erased at the first boot with a vault password, or at the first successful unlock without one | — | — | No — but see "logical erase" in `docs/VAULT.md` for what is still physically on an upgraded device's flash |
 | **Session keys / passkey** | X25519 + HKDF (`src/session.c:82`) | `sess` struct, `.bss` | `session_reset` (`:171`) on disconnect, transport switch, auth failure | No |
 | **Master fingerprint (XFP)** | `wallet_get_master_fingerprint` | `master_xfp[9]` in `src/ui.c:795` | `lock_device` (`src/ui.c:843`) | No — never persisted |
 
@@ -72,7 +72,7 @@ They obtain:
 | `colibri/m<gen>_N` | AES-256-GCM (v3), key = PBKDF2-HMAC-SHA512(PIN, salt‖"leek-enc-v2", **2250**) |
 | `colibri/kdf_salt` | plaintext, 16 bytes |
 | `colibri/vault_rec` | PBKDF2 verifier over "leek-ver-v2" — genuinely independent of the encryption key |
-| **`leek_pin/pin_hash`** | **SHA-256 applied 101 times, no salt** (`src/pin.c:38-53`) |
+| ~~`leek_pin/pin_hash`~~ | **Gone (F1, fixed).** No longer written; erased on upgrade |
 
 The last row decides the answer. Both verifiers are derived from the same PIN, so the attacker
 attacks the cheaper one. PIN space is 4–8 digits (`src/pin.h:16-17`) = 1.111 × 10⁸ candidates.
@@ -113,7 +113,7 @@ passphrase sits") is **true as written and confirmed by the code**.
 
 ## 3. Findings by severity
 
-### F1 — CRITICAL: `leek_pin/pin_hash` is an unsalted SHA-256×101 oracle for the PIN
+### F1 — CRITICAL, **FIXED**: `leek_pin/pin_hash` was an unsalted SHA-256×101 oracle for the PIN
 
 `src/pin.c:38-53` stores a second PIN verifier alongside the vault's, derived with 101 chained
 SHA-256 calls and no salt. It is written by `pin_set` (`src/pin.c:161`) into NVS and read back by
@@ -125,10 +125,32 @@ every stored seed, by roughly six orders of magnitude.
 This also makes the salt pointless against a fleet: `pin_hash` is unsalted, so one rainbow table
 covers every LeekWallet ever built.
 
-Not fixed here — replacing a PIN verifier is a crypto change with a migration, which this audit
-was explicitly told not to make on its own judgement. See §5.
+**Fixed.** `hash_pin()` is deleted and `src/pin.c` keeps no verifier: `pin_verify()` asks
+`wallet_verify_password()`, so the salted PBKDF2 hash in the vault record is the only value in
+flash that recognises a PIN. `pin_set()` establishes that hash rather than a second one, and
+refuses to repoint a vault that already has a password (which would orphan every stored mnemonic —
+that is `pin_change()`'s job, and it re-encrypts first). The `companion_hash` field inside
+`VaultRecord` is retired: it is no longer written, the struct keeps its size so field records stay
+readable, and `wallet_init()` rewrites any record still carrying one.
 
-### F2 — CRITICAL (documentation): `AUDIT.md` and `docs/VAULT.md` claim protection the code does not provide
+Migration, on devices that already hold wallets: no PIN is needed. The vault's verifier already
+answers to the same secret, so the retired blob is redundant the moment this firmware boots and
+`pin_init()` erases it. Devices with a PIN but no vault password — a PIN was set and no wallet ever
+created — have no strong verifier to check against, so theirs is honoured exactly once; the
+success path writes the vault password from the PIN just proved correct and then erases it. Every
+intermediate state of both paths is one where exactly the same single PIN opens the device, so a
+power cut can never leave zero working PINs. `sim/test_pin.c` sweeps a crash across every write of
+both migrations and asserts the owner's PIN still works after each.
+
+The property is tested against storage, not against the diff: `fake_nvs_contains_bytes()` scans
+every simulated NVS entry at every offset for the unsalted chained hash of every PIN the device
+has held, and `test_no_fast_verifier_in_nvs()` demands it appear nowhere after a set, an unlock, a
+change and a reboot.
+
+Caveat, and it is F9's: `nvs_erase_key` is a logical erase. See `docs/VAULT.md`, "What is left in
+the flash after the migration".
+
+### F2 — CRITICAL (documentation), **FIXED**: `AUDIT.md` and `docs/VAULT.md` claimed protection the code did not provide
 
 Two independent overstatements, both of which would leave a reader believing a flash dump is
 survivable:
@@ -145,6 +167,12 @@ survivable:
    device with funds.
 
 `docs/VAULT.md`'s threat table is otherwise honest, and its passphrase section is accurate.
+
+**Fixed.** Both passages are rewritten. `AUDIT.md`'s S1 summary now says the KDF buys a factor of
+a few hundred and that the whole 4–8 digit space falls in minutes to a GPU; `docs/VAULT.md`'s KDF
+section carries a table with both verifiers' measured CPU cost and extrapolated GPU cost, states
+plainly which figures are measured and which are estimates, and says that flash encryption — not
+the KDF — is the layer that survives a dump.
 
 ### F3 — MEDIUM: decrypted request plaintext is never wiped from the transport buffers
 
@@ -281,14 +309,10 @@ typecheck pass.
 
 ## 5. Recommended, not changed — needs a human decision
 
-1. **F1/F2, the one that matters.** Delete `hash_pin` and let `pin.c` verify through the vault's
-   PBKDF2 verifier, which already exists and is already the authority
-   (`pin_reconcile_with_vault`). This needs a migration for existing devices and changes the
-   PIN-entry latency, so it is a design decision, not an audit fix.
-2. **Then correct the numbers.** Whatever verifier ships, the honest statement is not "days". A
-   4–8-digit PIN is minutes at worst against a GPU, and the real defence is flash encryption
-   (T11) so the ciphertext is never obtained. `AUDIT.md:16-19` and `docs/VAULT.md`'s KDF section
-   need rewriting to say that.
+1. ~~**F1/F2, the one that matters.**~~ **Done.** `hash_pin` is deleted, `pin.c` verifies through
+   the vault's PBKDF2 verifier, and existing devices migrate on the first boot or first unlock.
+   PIN entry costs one extra derivation (~0.5 s on the S3).
+2. ~~**Then correct the numbers.**~~ **Done** — see F2 above.
 3. **Allow a non-numeric or longer PIN**, or accept that the KDF is defence-in-depth only and say
    so. Nothing in `pin_is_valid_format` (`src/pin.c:410`) has to stay digits-only.
 4. **Zero the decrypted payload after dispatch** in `protocol_handle_frame`, and `memzero` the

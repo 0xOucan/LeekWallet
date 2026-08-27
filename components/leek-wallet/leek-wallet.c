@@ -147,11 +147,20 @@ typedef struct {
     uint8_t generation;         // 0 or 1
     uint8_t reserved[2];
     uint8_t password_hash[HASH_SIZE];
-    /* An opaque verifier owned by src/pin.c. It rides along because the PIN
-     * and the vault password are the same secret, and two verifiers for one
-     * secret updated by two writes can disagree across a power cut. */
-    uint8_t companion_hash[HASH_SIZE];
-    uint8_t has_companion;
+    /* Retired. This used to carry a second PIN verifier owned by src/pin.c,
+     * an unsalted SHA-256 chain that was six orders of magnitude cheaper to
+     * brute-force than password_hash above - so a flash dump was attacked
+     * here, and the whole point of the KDF was lost. src/pin.c now verifies
+     * through password_hash and stores nothing of its own.
+     *
+     * The field stays because sizeof(VaultRecord) is load-bearing:
+     * load_vault_record() rejects a record of the wrong length, and shrinking
+     * the struct would make every field device's record unreadable and send it
+     * down the legacy pwd_hash path it may no longer have. It is written as
+     * zero and purged from existing records at boot - see
+     * purge_retired_companion(). */
+    uint8_t retired_companion[HASH_SIZE];
+    uint8_t retired_has_companion;
 } VaultRecord;
 
 /* Which slots the read/write helpers currently address. Swapped around
@@ -167,8 +176,6 @@ static bool    vault_rec_present = false;
 static bool    vault_rec_loaded  = false;
 static uint8_t vault_stored_hash[HASH_SIZE] = {0};
 static bool    vault_stored_hash_valid = false;
-static uint8_t vault_companion_hash[HASH_SIZE] = {0};
-static bool    vault_companion_valid = false;
 
 // Read the authoritative record, falling back to the pre-generation layout.
 //
@@ -186,7 +193,6 @@ static void load_vault_record(void) {
     active_layout.gen = 0;
     vault_rec_present = false;
     vault_stored_hash_valid = false;
-    vault_companion_valid = false;
 
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
@@ -203,10 +209,6 @@ static void load_vault_record(void) {
         active_layout.gen = rec.generation;
         memcpy(vault_stored_hash, rec.password_hash, HASH_SIZE);
         vault_stored_hash_valid = true;
-        if (rec.has_companion) {
-            memcpy(vault_companion_hash, rec.companion_hash, HASH_SIZE);
-            vault_companion_valid = true;
-        }
     } else {
         size_t hlen = HASH_SIZE;
         if (nvs_get_blob(nvs, KEY_PASSWORD_HASH, vault_stored_hash, &hlen) == ESP_OK &&
@@ -221,17 +223,12 @@ static void load_vault_record(void) {
 // The entire atomicity of a PIN change: one blob, one commit. Generation and
 // verifier flip together or neither does.
 static WalletError write_vault_record(uint8_t generation,
-                                      const uint8_t password_hash[HASH_SIZE],
-                                      const uint8_t companion_hash[HASH_SIZE]) {
+                                      const uint8_t password_hash[HASH_SIZE]) {
     VaultRecord rec;
     memzero(&rec, sizeof(rec));
     rec.version = VAULT_REC_VERSION;
     rec.generation = generation;
     memcpy(rec.password_hash, password_hash, HASH_SIZE);
-    if (companion_hash) {
-        memcpy(rec.companion_hash, companion_hash, HASH_SIZE);
-        rec.has_companion = 1;
-    }
 
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
@@ -255,14 +252,43 @@ static WalletError write_vault_record(uint8_t generation,
     active_layout.gen = generation;
     memcpy(vault_stored_hash, password_hash, HASH_SIZE);
     vault_stored_hash_valid = true;
-    if (companion_hash) {
-        memcpy(vault_companion_hash, companion_hash, HASH_SIZE);
-        vault_companion_valid = true;
-    } else {
-        vault_companion_valid = false;
-    }
     memzero(&rec, sizeof(rec));
     return WALLET_OK;
+}
+
+// Rewrite the record without the retired PIN verifier, if one is still there.
+//
+// Needs no password: it removes a value rather than replacing one, and the
+// record it rewrites is otherwise byte-identical. That is why it runs at boot
+// instead of waiting for an unlock - the sooner the cheap verifier leaves the
+// live NVS entry, the smaller the window in which a flash dump is worth
+// taking. Single blob, single commit, so a power cut lands either on the old
+// record or the new one and password_hash opens the vault in both.
+static void purge_retired_companion(void) {
+    load_vault_record();
+    if (!vault_rec_present) {
+        return;
+    }
+
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return;
+    }
+    VaultRecord rec;
+    size_t len = sizeof(rec);
+    esp_err_t err = nvs_get_blob(nvs, KEY_VAULT_REC, &rec, &len);
+    nvs_close(nvs);
+
+    bool stale = (err == ESP_OK && len == sizeof(rec) &&
+                  rec.retired_has_companion != 0);
+    memzero(&rec, sizeof(rec));
+    if (!stale) {
+        return;
+    }
+
+    if (write_vault_record(active_layout.gen, vault_stored_hash) == WALLET_OK) {
+        ESP_LOGW(TAG, "Dropped the retired PIN verifier from the vault record");
+    }
 }
 
 static void slot_key(const char *prefix, uint8_t index, char *key, size_t key_size) {
@@ -316,15 +342,6 @@ static void erase_stale_slots(void) {
 
     nvs_commit(nvs);
     nvs_close(nvs);
-}
-
-bool wallet_get_companion_hash(uint8_t hash_out[32]) {
-    load_vault_record();
-    if (!vault_companion_valid || !hash_out) {
-        return false;
-    }
-    memcpy(hash_out, vault_companion_hash, HASH_SIZE);
-    return true;
 }
 
 // ========== Helper Functions ========== //
@@ -935,8 +952,7 @@ static WalletError migrate_vault_to_current(const char *password, size_t length)
     load_vault_record();
     WalletError nerr;
     if (vault_rec_present) {
-        nerr = write_vault_record(active_layout.gen, state.password_hash,
-                                  vault_companion_valid ? vault_companion_hash : NULL);
+        nerr = write_vault_record(active_layout.gen, state.password_hash);
     } else {
         nvs_handle_t nvs;
         if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
@@ -1062,12 +1078,10 @@ void wallet__reset_static_state_for_test(void) {
     vault_rec_loaded = false;
     vault_rec_present = false;
     vault_stored_hash_valid = false;
-    vault_companion_valid = false;
     vault_params_loaded = false;
     active_layout.legacy = true;
     active_layout.gen = 0;
     memzero(vault_stored_hash, sizeof(vault_stored_hash));
-    memzero(vault_companion_hash, sizeof(vault_companion_hash));
 }
 #endif
 
@@ -1109,6 +1123,11 @@ WalletError wallet_init(void) {
     /* Sweep up whatever an interrupted PIN change left behind. Safe at any
      * boot because the record already decided which generation is real. */
     erase_stale_slots();
+
+    /* Devices upgraded from a firmware that kept a second, unsalted PIN
+     * verifier still carry it inside the record. Drop it here, before anything
+     * has been unlocked. */
+    purge_retired_companion();
 
     ESP_LOGI(TAG, "Wallet initialized, password_set=%d, wallets=%d, active=%d, vault=v%d",
              state.password_set, state.wallet_count, state.active_wallet_index,
@@ -1160,7 +1179,7 @@ WalletError wallet_set_password(const char *password, size_t length) {
 
     if (!keep_legacy) {
         WalletError rerr = write_vault_record(active_layout.legacy ? 0 : active_layout.gen,
-                                              state.password_hash, NULL);
+                                              state.password_hash);
         if (rerr != WALLET_OK) {
             return rerr;
         }
@@ -1357,7 +1376,6 @@ done:
 
 WalletError wallet_change_password(const char *old_password, size_t old_length,
                                    const char *new_password, size_t new_length,
-                                   const uint8_t companion_hash[32],
                                    WalletProgressFn progress) {
     if (!state.initialized) {
         return WALLET_ERROR_NOT_INITIALIZED;
@@ -1442,7 +1460,7 @@ WalletError wallet_change_password(const char *old_password, size_t old_length,
 
     // The flip. Everything before this was invisible; everything after is
     // cleanup.
-    result = write_vault_record(to_layout.gen, new_hash, companion_hash);
+    result = write_vault_record(to_layout.gen, new_hash);
     if (result != WALLET_OK) {
         ESP_LOGE(TAG, "Could not publish the new vault record; vault unchanged");
         goto done;
@@ -2022,12 +2040,10 @@ WalletError wallet_wipe(void) {
     vault_rec_loaded = false;
     vault_rec_present = false;
     vault_stored_hash_valid = false;
-    vault_companion_valid = false;
     vault_params_loaded = false;
     active_layout.legacy = true;
     active_layout.gen = 0;
     memzero(vault_stored_hash, sizeof(vault_stored_hash));
-    memzero(vault_companion_hash, sizeof(vault_companion_hash));
 
     ESP_LOGI(TAG, "Wallet wiped");
     return WALLET_OK;

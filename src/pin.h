@@ -31,15 +31,28 @@ bool pin_init(void);
 bool pin_is_set(void);
 
 /**
- * Set a new PIN
+ * Set the device's first PIN.
+ *
+ * The PIN is the vault password and this module keeps no verifier of its own,
+ * so this establishes the vault's: after it returns true, the salted PBKDF2
+ * hash in the vault record is the only thing in flash that can recognise the
+ * PIN. Refuses on a device whose vault already has a different password —
+ * repointing it would orphan every stored mnemonic. Use pin_change() there.
+ *
  * @param pin The PIN string (digits only)
  * @return true on success
  */
 bool pin_set(const char *pin);
 
 /**
- * Verify PIN attempt
- * Decrements remaining attempts on failure
+ * Verify PIN attempt.
+ *
+ * Runs the vault's own salted KDF — around half a second on an ESP32-S3 — and
+ * that is the point: there is deliberately no cheaper verifier in flash for an
+ * offline attacker to attack instead. Decrements remaining attempts on failure,
+ * and spends the attempt before comparing so a power cut cannot buy a free
+ * guess.
+ *
  * @param pin The PIN to verify
  * @return true if PIN is correct
  */
@@ -71,8 +84,10 @@ void pin_wipe(void);
  * Change the PIN, re-encrypting the vault under it.
  *
  * The PIN is the vault password, so this is not a hash swap: every stored
- * mnemonic is re-encrypted under the new key first, and only then does the
- * stored PIN hash move. See wallet_change_password() for the atomicity.
+ * mnemonic is re-encrypted under the new key, and the generation flip that
+ * makes the new ciphertext authoritative carries the new verifier in the same
+ * single blob. There is one verifier, so there is nothing left to keep in step
+ * with it. See wallet_change_password() for the atomicity.
  *
  * Costs one PIN attempt, refunded when the current PIN is correct. Returns
  * false with nothing changed if the current PIN is wrong, the new PIN is
@@ -89,15 +104,6 @@ bool pin_change(const char *current_pin, const char *new_pin);
  * Optional; NULL disables it. Called from the changing thread.
  */
 void pin_set_change_progress(WalletProgressFn fn);
-
-/**
- * Adopt the PIN verifier stored in the vault's atomic record, if it disagrees.
- *
- * Recovers a PIN change interrupted between the vault flip and the PIN hash
- * write. Called automatically from pin_init() and pin_verify(); exposed for
- * tests and for callers that init NVS late.
- */
-void pin_reconcile_with_vault(void);
 
 /**
  * Validate PIN format (correct length, digits only)
