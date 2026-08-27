@@ -34,7 +34,7 @@ refuses to sign.
 | **PIN** | 4-8 digits, 3-attempt wipe, counter hardened against power-cut attacks |
 | **Change PIN** | Re-encrypts every wallet atomically — a power cut leaves exactly one PIN that opens everything (`sim/test_pin_change.c`) |
 | **Vault** | Per-device salted PBKDF2-HMAC-SHA512, ~1 s on hardware, AES-256-GCM, domain-separated key and verifier |
-| **Entropy** | Hardware RNG behind a fails-closed SP 800-90B gate, plus an optional button-timing pool that is mixed in, never substituted |
+| **Entropy** | Hardware RNG behind a fails-closed SP 800-90B gate that health-checks a 512-byte sample, plus a mandatory button-timing pool that is mixed in, never substituted |
 | **Transaction signing** | EIP-1559, re-serialised and re-hashed on-device, displayed page by page, signed only as rendered |
 | **Decodable set** | Native transfer, ERC-20 `transfer`/`approve`/`transferFrom`, `setApprovalForAll`, WETH `deposit`/`withdraw`, three `mint` shapes. Anything else — including contract creation — is **refused** (`src/eth-decode.c`) |
 | **Blind signing** | Off by default, set on the device only, five presses past a warning screen. No command can turn it on |
@@ -268,7 +268,7 @@ while the wallet was unlocked (AUDIT S8g).
 
 | Component | Algorithm |
 |-----------|-----------|
-| Seed generation | BIP39 over `src/entropy.c` — hardware RNG plus optional button-timing pool, SP 800-90B health tests, fails closed |
+| Seed generation | BIP39 over `src/entropy.c` — hardware RNG plus a mandatory button-timing pool, SP 800-90B health tests on a 512-byte sample, fails closed |
 | Key derivation | BIP32/BIP44 |
 | Vault key | PBKDF2-HMAC-SHA512 over a per-device random salt, ~1 s on hardware; key and verifier domain-separated so the stored verifier is not an oracle for the key |
 | Storage encryption | AES-256-GCM, `nonce ‖ ciphertext ‖ tag`, format v3, with crash-safe migration from the older CBC vaults |
@@ -342,19 +342,25 @@ So LeekWallet's argument is not "our crypto is better." It is that the parts tha
 failed in the field are the parts you can inspect here:
 
 - **You add your own entropy, and it is not optional.** Before a seed is generated you press
-  buttons until the device has 32 timing samples, and they are hashed *together with* the
+  buttons until the device has 64 timing samples, and they are hashed *together with* the
   hardware RNG — never instead of it, so they can only help. This is the layer that survives a
   compromised silicon source, because no firmware bug can predict when a human presses a button,
-  and it is the layer that protected the Coldcard users who supplied their own entropy. See
-  `docs/AUDIT-ENTROPY.md` for how many bits a press is really worth.
+  and it is the layer that protected the Coldcard users who supplied their own entropy. Sixty-four
+  presses at a deliberately pessimistic **2 bits each** is where the 128-bit claim comes from; the
+  press is quantised by a 10 ms poll and a 100 ms debounce before it is ever timestamped, so it is
+  worth rather less than the microsecond resolution of the clock suggests. `docs/AUDIT-ENTROPY.md`
+  shows the derivation.
 - **Entropy is gated and fails closed.** Every byte of key material goes through
   `src/entropy.c`, which runs NIST SP 800-90B style health tests and **refuses to generate**
   rather than degrade. There is no second path — `random_buffer()` itself is routed through the
-  gate, so `mnemonic_generate()` cannot bypass it. What these tests catch is a *grossly* broken
-  source: stuck, dead, constant, heavily biased. They do not catch a source that looks uniform
-  but has little real entropy behind it, which is what Coldcard's fallback PRNG was — that one
-  is the user pool's job, and `docs/AUDIT-ENTROPY.md` measures both. Covered by
-  `sim/test_entropy.c`.
+  gate, so `mnemonic_generate()` cannot bypass it. The tests run on a 512-byte sample drawn purely
+  to be checked and then discarded, not on the caller's 32 bytes, because that is the first length
+  at which the windowed proportion test runs at all: measured detection of a source with ~1 bit of
+  min-entropy per byte is **0.21 on 32 bytes and 1.00 on 512**, for about 2.8 ms. What the tests
+  catch even then is a *grossly* broken source: stuck, dead, constant, biased. They do not catch a
+  source that looks uniform but has little real entropy behind it, which is what Coldcard's
+  fallback PRNG was — that one is the user pool's job, and `docs/AUDIT-ENTROPY.md` measures both.
+  Covered by `sim/test_entropy.c`.
 - **The host is never trusted.** Transactions are re-serialised and re-hashed on-device and
   signed only as rendered. Calldata the device cannot decode is **refused**, not shown as a hex
   blob with an OK button; contract creation is refused outright, and no command can change that

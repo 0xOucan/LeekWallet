@@ -1,5 +1,10 @@
 # Entropy audit — seed generation
 
+> **Status.** §1–§6 are the audit as first written, at `c27c082`. A later pass
+> implemented R2, R3, R5, R6 and R7; §8 records exactly what changed and what
+> the numbers are afterwards, and the findings in §5 are annotated **FIXED**
+> where they no longer describe the code. Read §8 before acting on §5 or §7.
+
 Scope: every path from silicon noise to a BIP-39 or SLIP-39 word list.
 Reviewed at `c27c082`, against the pinned toolchain (`platformio.ini:17`,
 `platform = espressif32@6.12.0`, which resolves to **ESP-IDF 5.5.0** —
@@ -49,7 +54,9 @@ Reaching seed generation from the UI is gated on the entropy screen: the two
 menu entries that create a wallet both route to `SCREEN_ENTROPY` first
 (`ui.c:1607`, `ui.c:2622`), and that screen refuses to advance until 32 press
 events have been collected (`ui.c:2884-2888`). There is no protocol command
-that creates a wallet, so there is no way around it.
+that creates a wallet, so there is no way around it. (The target is 64 after
+§8.5; the entropy screen also suspends both links now, which is why §8.3 says
+the seed path was already covered before the mutex.)
 
 ### What `esp_random()` actually guarantees — verified, not assumed
 
@@ -105,6 +112,8 @@ code's stated H = 7 bits/sample: `1 + ceil(30/7) = 1 + 5 = 6`. The code uses
 
 ### Adaptive Proportion Test — the cutoff is derived for the wrong H
 
+*Resolved in §8.7: one stated H, both constants derived from it.*
+
 SP 800-90B §4.4.2 sets the cutoff as the smallest `C` with
 `P[Binomial(W-1, 2^-H) ≥ C] ≤ α`, with W = 512 for non-binary sources. Computed
 exactly (rationals, no normal approximation):
@@ -152,8 +161,9 @@ generate seeds on healthy hardware is not borne out.
 
 ### Measured detection power — this is the important number
 
-The same harness, at `len=32`, which is the length **every real seed generation
-uses** (`bip39.c:59` always draws 32 bytes):
+The same harness, at `len=32`, which was the length **every real seed
+generation used** (`bip39.c:59` always draws 32 bytes) before §8.4 added the
+512-byte deep sample:
 
 Against a statistically clean stream with a small key behind it — SHA-256 in
 counter mode over an N-bit key, i.e. the Coldcard shape:
@@ -227,6 +237,8 @@ only caller is `entropy_fill()`, but it is a latent ambiguity in a function the
 header exposes for testing.
 
 ### The bits-per-press estimate does not hold up
+
+*Corrected in §8.5: 2 bits per press, 64 presses.*
 
 `BITS_PER_EVENT 4` (`entropy.c:145`) is documented as conservative, on the
 grounds that the interval between presses is measured at **microsecond
@@ -322,7 +334,7 @@ credited with catching it.
 broken RNG, not a subtly biased one"). The README is the document that
 overstates. **Changed** — see §8.
 
-### E-2 — MEDIUM · The bootloader-RNG window is not mutually excluded between tasks
+### E-2 — MEDIUM · **FIXED** · The bootloader-RNG window is not mutually excluded between tasks
 
 `entropy_fill()` calls `bootloader_random_enable()` / `..._disable()` around
 `esp_fill_random()` (`entropy.c:262-272`) with no lock, and
@@ -354,10 +366,11 @@ The worst-case victim is a session key, but nothing structurally prevents the
 wallet-creation call from being the loser — and SLIP-39 generation makes one
 such call per share.
 
-Not fixed here: adding a mutex to the entropy gate is a change to the
-crypto-critical path, and this audit's remit is to report it.
+Fixed in the R3 pass: one mutex now spans enable/deep-check/fill/disable, and
+`last_result` is written inside it. See §8.3 for what the mutex does *not*
+cover.
 
-### E-3 — MEDIUM · The health check is run on 32-byte samples, where it has almost no power
+### E-3 — MEDIUM · **FIXED** · The health check is run on 32-byte samples, where it has almost no power
 
 Detailed in §2. The tests themselves are sound and the windowed proportion test
 is genuinely strong — at 1024 bytes it catches every biased source tested,
@@ -367,7 +380,7 @@ bytes and `entropy_fill()` checks exactly what it was asked for.
 At `len=32` a source with roughly 1 bit of min-entropy per byte passes 79% of
 the time. Recommendation R2 in §7.
 
-### E-4 — MEDIUM · The generated mnemonic is never wiped from `bip39.c`'s static buffer
+### E-4 — MEDIUM · **FIXED** · The generated mnemonic is never wiped from `bip39.c`'s static buffer
 
 `mnemonic_clear()` (`bip39.c:100`) exists to zero the `static CONFIDENTIAL char
 mnemo[240]` that `mnemonic_from_data()` returns a pointer into, and nothing in
@@ -381,7 +394,7 @@ Called out rather than fixed only because the right call site is a judgement
 about the display flow — the buffer must stay live while
 `SCREEN_MNEMONIC_DISPLAY` and the verification screen are using it.
 
-### E-5 — LOW · The two SP 800-90B cutoffs assume different entropy rates
+### E-5 — LOW · **FIXED** · The two SP 800-90B cutoffs assume different entropy rates
 
 `REPETITION_CUTOFF 6` is derived at H = 7 (correctly). `PROPORTION_CUTOFF 16`
 is the spec's cutoff at H = 8; at H = 7 the spec gives 22. The direction is
@@ -499,6 +512,7 @@ stop someone from building the layer that actually would. Zero risk.
 *Done — see §8.*
 
 **R2 — Health-check a 512-byte sample, not the 32 bytes the caller asked for.**
+*Done — see §8.4.*
 Draw ≥ 512 bytes into a scratch buffer, run the check on that, then derive the
 requested output from it (or simply draw the caller's bytes afterwards, having
 established the source is alive). §2 measures the change: detection of a
@@ -508,7 +522,7 @@ free on every AES IV, so the sensible shape is a periodic or
 first-call-per-boot deep check plus the cheap check on every call — a design
 choice, hence §9.
 
-**R3 — Serialise the entropy gate with a mutex.** Closes E-2. One
+**R3 — Serialise the entropy gate with a mutex.** *Done — see §8.3.* Closes E-2. One
 `SemaphoreHandle_t` taken across the enable/fill/disable/check sequence, and
 `last_result` moves inside it. Small, well-understood, and it removes a path to
 a pseudo-random session key. Touches the crypto-critical path, so it wants a
@@ -523,6 +537,7 @@ the thing E-9-adjacent about the timing pool: dice entropy is *countable*,
 where keypress jitter is estimated.
 
 **R5 — Fix the bits-per-press estimate, or fix the resolution it assumes.**
+*Done, the cheap half — see §8.5.*
 Two options. Cheap: relabel `BITS_PER_EVENT` to 2 and raise
 `ENTROPY_TARGET_EVENTS` to 64, and correct `entropy.h:91-95` and `ui.c:2787` to
 say 10 ms rather than microseconds. Better: timestamp the raw GPIO edge in
@@ -531,10 +546,10 @@ say 10 ms rather than microseconds. Better: timestamp the raw GPIO edge in
 sub-tick jitter and makes the microsecond claim true. The first is minutes; the
 second is a change to shared input code owned elsewhere.
 
-**R6 — Call `mnemonic_clear()`.** Closes E-4. One line, at the point the
+**R6 — Call `mnemonic_clear()`.** *Done — see §8.6.* Closes E-4. One line, at the point the
 display and verification screens are done with the buffer.
 
-**R7 — Reconcile the two SP 800-90B cutoffs.** Pick one H, state it once, and
+**R7 — Reconcile the two SP 800-90B cutoffs.** *Done — see §8.7.* Pick one H, state it once, and
 derive both constants from it in a comment that shows the arithmetic (§2 has
 the table). Closes E-5. Documentation-shaped, but it is the difference between
 a cutoff that is right and a cutoff that happens to be right.
@@ -562,36 +577,221 @@ most important line in this subsystem and the reasoning above it is right.
 
 ---
 
-## 8. What was changed in this pass
+## 8. What was changed
 
-Documentation and a test comment only. No cryptographic code was modified.
+### First pass — documentation only
 
-1. `README.md:343-352` — the two entropy bullets now say what the code does:
-   the user-entropy screen is mandatory (not "optional"), and the health tests
-   are described as catching a grossly broken source rather than as the layer
-   that would have caught Coldcard. Closes E-1.
+No cryptographic code was modified.
+
+1. `README.md` — the two entropy bullets now say what the code does: the
+   user-entropy screen is mandatory (not "optional"), and the health tests are
+   described as catching a grossly broken source rather than as the layer that
+   would have caught Coldcard. Closes E-1.
 2. `AUDIT.md:254-255` — replaced the stale `entropy_set_rf_active()` with the
    two setters that exist, and corrected "`ui.c` reports RF transitions" to
    `transport.c`, which is where the already-fixed defect moved it.
-3. `sim/test_entropy.c:129-131` — corrected the comment claiming a
-   4-distinct-value buffer is "the shape of the Coldcard failure." Closes E-8.
+3. `sim/test_entropy.c` — corrected the comment claiming a 4-distinct-value
+   buffer is "the shape of the Coldcard failure." Closes E-8.
 
-`./scripts/check.sh sim` passes.
+### Second pass — R2, R3, R5, R6, R7 implemented
+
+Numbers below come from the same harness as §2 (xoshiro256\*\* reference
+stream, exact-rational cutoffs, 2 000 000 buffers for false positives and
+200 000 for detection), rebuilt against the current `src/entropy.c`. The §2
+baseline reproduced exactly before anything was changed — `P(0x00)=0.50` at
+`len=32` detected 0.2087, same as the audit's original run — so the before and
+after figures are comparable rather than two different experiments.
+
+#### 8.3 R3 — one mutex across the whole gate (closes E-2)
+
+`entropy_fill()` now takes a plain (non-recursive) `SemaphoreHandle_t` before
+`bootloader_random_enable()` and releases it on every exit path, so the
+enable / deep-check / fill / disable / health-check sequence is atomic against
+the other two tasks that reach `random_buffer()`. `last_result` is written
+inside the lock. `entropy_dump_for_analysis()` takes the same lock, because it
+opens and closes the same process-wide window. Failure to take the lock within
+5 s is treated as a health failure — fail closed, no draw. Host builds compile
+the lock out; they are single-threaded and return before the hardware path.
+
+**What this still leaves exposed.** The lock makes the *gate* atomic. It does
+not make *seed generation* atomic with respect to everything else, and those
+are different claims:
+
+- Seed generation itself is now covered twice over. `screen_entropy_enter()`
+  calls `transport_suspend()`, so from the first press of the entropy screen
+  through generation, display and verification there is no USB or BLE task
+  alive to contend at all. That closes E-2 for the seed path on its own, and
+  the mutex is what closes it for everything else.
+- What remains exposed is every draw made while the links are *up*, which is
+  most of them: `session_begin()`'s device key on each host connect, the vault
+  salt and record IV on a wallet store or PIN change, and the 12-byte GCM
+  nonce per encrypted record. Before the mutex these could and did race each
+  other, one task's `bootloader_random_disable()` landing inside another's
+  draw. They no longer can.
+- Not closed by either: IDF's own `last_ccount` in `hw_random.c` is a
+  non-atomic static shared across tasks and cores (§1). Two callers can each
+  shorten their own rate-limit wait. That is upstream's, and this lock only
+  narrows it — it serialises this firmware's callers, not the ones inside IDF.
+- Also not closed: the lock is per-boot state, so a task that aborts inside
+  the critical section takes the device down with it (`abort()` in
+  `rand_esp32.c`) rather than leaving the mutex held. That is the intended
+  behaviour, not a leak, but it is worth stating that there is no recovery
+  path by design.
+
+#### 8.4 R2 — the health check now runs on a 512-byte sample (closes E-3)
+
+`entropy_fill()` draws `ENTROPY_DEEP_SAMPLE` (512) bytes into a static buffer,
+health-checks that, `memzero`s it, and only then draws the caller's bytes —
+inside the same bootloader-RNG window, so the sample vouches for the same
+moment of the same source. The caller's own bytes are still checked afterwards
+as before; the deep sample is added coverage, not a replacement.
+
+Detection of a source with roughly 1 bit of min-entropy per byte
+(`P(0x00) = 0.50`), which is the case §2 identified as passing 79% of the time:
+
+| sample the gate checks | detection |
+|---|---|
+| before — the caller's 32 bytes | **0.2087** |
+| after — a 512-byte deep sample | **1.0000** |
+
+Across the whole biased-source sweep, at the deep sample: `p=0.05` 0.9942,
+`p=0.10` 1.0000, and 1.0000 at every larger `p`. The one case that does **not**
+improve is the important one to state plainly: a statistically clean stream
+behind a small key — the actual Coldcard shape — is still detected **0/200 000
+times at 512 bytes**, exactly as at 32. No sample size fixes that; only the
+user pool does. R2 closes the shallow-*and*-visibly-biased hole, not the
+shallow-and-clean one.
+
+False positives are unchanged at zero: 0/2 000 000 at every length tested.
+
+**When it runs, and why that shape.** §9 left this to a human. The decision
+implemented is *by draw size*, not by caller:
+
+- always on the first draw of a boot, whatever its size;
+- thereafter on every draw of ≥ 16 bytes.
+
+Sixteen is the smallest draw in this firmware that is key material: seed
+entropy (32), the session device key (32), SLIP-39 share values (16 or 32),
+the vault salt and wallet-record AES IV (16). Exactly one caller sits below it,
+`vault-crypt.c`'s 12-byte GCM nonce, which needs uniqueness rather than
+unpredictability and is the only draw frequent enough for 2.8 ms to be felt.
+
+The trade-off, stated: 512 bytes at IDF's ~45 kHz pacing is 128 words × 1778
+APB cycles ≈ **2.845 ms**, and the check arithmetic on top of that is a
+rounding error (0.4 µs on the host harness at this length; the draw dominates
+by three orders of magnitude). Per seed it is free. Per session key it
+disappears into the X25519 either side of it. Per vault write it happens when a
+wallet is stored or a PIN changed, not per packet. The rejected alternative was
+deep-checking only at seed generation: it is cheaper, but it makes the strength
+of the check depend on a caller remembering to ask for it, and every finding
+this module exists to prevent is a caller not remembering something. Cost:
++512 bytes of `.bss`, and firmware RAM use is 16.5% of 320 KB after the change.
+
+#### 8.5 R5 — the bits-per-press estimate is now a floor (closes the §3 finding)
+
+`BITS_PER_EVENT` 4 → **2**, and `ENTROPY_TARGET_EVENTS` (`ui.c`) 32 → **64**,
+so the collection screen still clears 128 bits but by a claim that holds. The
+honest figure is 2 bits per press: the press is quantised to a 10 ms polling
+grid behind a 100 ms debounce before anything timestamps it (§3), so the
+microsecond resolution of `esp_timer_get_time()` is not the resolution of the
+measurement, an irregular user offers 3-5 bits and a user who falls into a
+rhythm offers less, and consecutive intervals from one human are not
+independent. Two is a floor rather than a mean.
+
+`src/button.c` was **not** touched. R5's better option — timestamping the raw
+GPIO edge in an ISR — is what would make the microsecond claim true, and it is
+a change to shared input code with its own debounce correctness to re-argue;
+the accounting is corrected here and the resolution is left as it is. The
+comments in `entropy.h`, `entropy.c` and `ui.c` that claimed microsecond
+resolution now say 10 ms.
+
+The user-visible cost is real: roughly thirty seconds of pressing instead of
+fifteen. That is the price of the number meaning something.
+
+#### 8.6 R6 — `mnemonic_clear()` is called (closes E-4)
+
+Two call sites, both in `ui.c`:
+
+- `forget_mnemonic_unless_needed()`, the existing exit hook on
+  `SCREEN_MNEMONIC_DISPLAY` and `SCREEN_MNEMONIC_VERIFY`. §5 flagged the
+  location as a judgement call about the display flow; the flow answers it. The
+  hook already exists precisely to define "the screens that held the phrase are
+  done with it", it already zeroes `mnemonic_buffer` there, and it fires on
+  every transition out of that pair. Clearing bip39.c's static buffer in the
+  same place means the two plaintext copies now have the same lifetime instead
+  of one outliving the other by the rest of the boot.
+- The wipe confirmation path, which zeroes `mnemonic_buffer` inline and does
+  not exit through that hook. A wipe that leaves the seed readable in RAM is
+  not a wipe.
+
+Clearing immediately after generation was considered and rejected: it is a
+narrower window, but it puts the wipe in `wallet_create_mnemonic()`'s caller
+rather than at the point the *readers* are done, and a future screen that reads
+the phrase again would silently reintroduce the leak.
+
+#### 8.7 R7 — one H, stated once, both cutoffs derived from it (closes E-5)
+
+The file now states **H = 7 bits/sample at α = 2⁻³⁰** once, in a comment above
+both constants, with the reasoning: assuming full entropy to derive the cutoffs
+of the tests whose job is to notice a shortfall is circular.
+
+- `REPETITION_CUTOFF` stays **6** = `1 + ceil(30/7)`, the spec's number at that H.
+- `PROPORTION_CUTOFF` stays **16**. The spec's cutoff at H = 7 is 22; 16 is a
+  deliberate tightening, and it is now documented as one, with the arithmetic
+  and the measurement rather than the old "observed max runs 9-10".
+
+Both alternatives were measured before choosing:
+
+| variant | FP (clean stream) | detection `p=0.05`, len 512 | detection `p=0.50`, len 32 |
+|---|---|---|---|
+| **H=7, RCT 6, APT 16** (chosen) | 0 / 2 000 000 at every length | 0.9942 | 0.2087 |
+| H=7 by the book, RCT 6, APT 22 | 0 / 2 000 000 | 0.8820 | 0.2081 |
+| H=8, RCT 5, APT 16 | 6.0e-07 at len 1024, 0 at ≤512 | 0.9941 | 0.3961 |
+
+Claiming H = 8 would have been the other coherent answer and buys real power at
+32 bytes, but it is the wrong assumption for a test that exists for degraded
+sources, and it is the only variant with a non-zero false-positive rate — which
+in this firmware means an `abort()` on healthy hardware. Keeping 16 over the
+spec's 22 costs nothing measurable and gains 0.88 → 0.99 detection on the
+weakly-biased source at the length the gate now actually checks.
+
+#### 8.8 Tests
+
+`sim/test_entropy.c` gains `test_deep_sample_is_why()`, which asserts the R2
+measurement rather than describing it: a ~1 bit/byte source must be caught
+100% of the time at 512 bytes, and must *not* be caught more than half the time
+at 32 — the second half so that if the gap ever closes, the test says so
+instead of a stale comment. In-suite it reports `len=32 0.2010, len=512
+1.0000`. The bit-estimate assertion moved from ≥ 40 to ≥ 20 bits for 10 events,
+with the reason recorded at the assertion. `sim/test_ui.c`'s entropy-screen
+tests now format the target count from a single constant instead of a dozen
+`"32"` literals.
+
+`./scripts/check.sh` passes: host suites, conformance vectors, app tests,
+typecheck, android manifest, and the ESP-IDF firmware build.
 
 ---
 
 ## 9. Needs a human decision
 
-- **R2's shape.** Deep-checking 512 bytes on *every* `random_buffer()` call
-  costs 2.8 ms per AES IV and per session key. Deep-checking only at seed
-  generation leaves the other callers where they are today. Which one is a
-  product decision about latency, not an audit finding.
-- **R3 and R5's second option** touch code this audit does not own
-  (`src/button.c` input timing) or the crypto-critical path.
 - **R4: is dice entropy in scope for this device?** It is the single measure
-  with the best evidence behind it, and it is also a screen, a wordlist-free
-  text entry flow, and a UX conversation on a 128×64 OLED.
+  with the best evidence behind it — the one thing Coinkite says protected
+  users — and it is also a screen, a wordlist-free text entry flow, and a UX
+  conversation on a 128×64 OLED. It matters more after §8.4 than before: the
+  deep check demonstrably does *not* catch the clean-but-shallow source, so
+  countable user entropy remains the only cover for it.
+- **R5's second option: timestamp the GPIO edge.** §8.5 fixed the accounting;
+  the resolution is still 10 ms. An ISR timestamp in `button.c` would recover
+  real sub-tick jitter and let the target go back to 32 presses, halving the
+  time the user spends on the entropy screen. It is a change to shared input
+  code and wants its own review of the debounce.
+- **The 64-press target is now a UX cost.** Thirty seconds of pressing is the
+  honest price of 128 bits at 2 bits a press. Dice (R4) or an edge timestamp
+  (above) are the two ways to buy it back; lowering the target is not.
 - **R9: is verifiable generation a goal?** It is the difference between "trust
   this firmware" and "verify this firmware did not cheat," and it is the only
   item here that changes the protocol.
-- **E-4's fix location** depends on the mnemonic display/verification lifetime.
+- **R8 still stands.** Nothing in this pass converts "the health tests pass"
+  into evidence about quality; that needs `entropy_dump_for_analysis()` wired
+  to something a human can invoke, and a few hundred MB through dieharder in
+  both the RF-up and bootloader-RNG configurations.
