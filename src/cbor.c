@@ -279,7 +279,13 @@ bool cbor_text_copy(const CborItem *item, char *out, size_t out_size)
     if (item->type != CBOR_TEXT || out_size == 0) {
         return false;
     }
-    if (item->value + 1 > out_size) {
+    /* `value >= out_size` rather than `value + 1 > out_size`: the two agree on
+     * every input, but the addition is done in uint32_t and wraps to zero at
+     * 0xFFFFFFFF, which would turn the bound into a permission. Nothing can
+     * reach that today — cbor_read() refuses a length longer than the buffer —
+     * so this is the arithmetic being made incapable of the mistake rather
+     * than a bug being fixed. */
+    if (item->value >= out_size) {
         return false;
     }
     memcpy(out, item->data, item->value);

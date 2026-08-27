@@ -7,7 +7,7 @@
 
 import {
   encodeFrame, FrameDecoder, FrameType, MAX_FRAME_BYTES,
-  chunkForBle, ChunkReassembler,
+  chunkForBle, ChunkReassembler, CHUNK_HEADER_MORE, CHUNK_SEQ_MASK,
 } from "../src/framing.ts";
 
 let failures = 0;
@@ -160,6 +160,38 @@ group("a large frame at a negotiated MTU");
     result !== null && result.length === frame.length,
     "2 KB frame did not survive chunking at MTU 244",
   );
+}
+
+group("a hostile peer cannot grow the reassembler without end");
+{
+  /* The peer chooses the chunk count. With `more` held set forever and nothing
+   * bounding the total, the app buffers until the phone kills it — and a
+   * body-less chunk does it without sending any payload at all. The firmware
+   * refuses both; so must this side, which is the one talking to a device it
+   * has not authenticated. */
+  const reassembler = new ChunkReassembler();
+
+  let threw = false;
+  try {
+    reassembler.push(new Uint8Array([CHUNK_HEADER_MORE | 0]));
+  } catch {
+    threw = true;
+  }
+  check(threw, "a chunk carrying no payload was accepted");
+
+  const body = new Uint8Array(64).fill(0x41);
+  let sealed = false;
+  try {
+    for (let seq = 0; seq < 512; seq++) {
+      const chunk = new Uint8Array(body.length + 1);
+      chunk[0] = CHUNK_HEADER_MORE | (seq & CHUNK_SEQ_MASK);
+      chunk.set(body, 1);
+      reassembler.push(chunk);
+    }
+  } catch {
+    sealed = true;
+  }
+  check(sealed, `${512 * 64} bytes of "more" chunks were buffered without complaint`);
 }
 
 console.log(`\n${failures ? "FAILED" : "PASSED"} (${failures} failure${failures === 1 ? "" : "s"})`);

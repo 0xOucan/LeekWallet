@@ -105,6 +105,8 @@ export class Session {
   /** Host only: hold the send counter back until a reply confirms delivery. */
   private readonly deferSend: boolean;
   private txCounter = 0;
+  /** What was sealed at the held counter, so a retry can be told from a reuse. */
+  private heldPlaintext: Uint8Array | null = null;
   private rxCounter = 0;
   private active = false;
 
@@ -151,8 +153,33 @@ export class Session {
    */
   encrypt(plaintext: Uint8Array): Uint8Array {
     if (!this.active) throw new Error("session not confirmed");
+
+    /* Deferring the counter means the same nonce is used again on a retry, and
+     * that is only safe while the plaintext is the same too. Two DIFFERENT
+     * messages under one key and nonce is not a degradation of
+     * ChaCha20-Poly1305, it is the end of it: the keystreams XOR to the
+     * plaintexts and the Poly1305 key falls out, so an eavesdropper reads both
+     * messages and can forge a third.
+     *
+     * Nothing above this class enforces the rule — the client serialises calls
+     * and does not poll while it waits for the button, but that is a property
+     * of today's caller rather than of the session, and it is invisible to
+     * anyone else importing this package. So the rule lives where the nonce
+     * does. A retry of the identical request still returns identical bytes,
+     * which is what the retry loop relies on; anything else is refused rather
+     * than sealed. */
+    if (this.deferSend && this.heldPlaintext !== null &&
+        !sameBytes(this.heldPlaintext, plaintext)) {
+      throw new Error(
+        "refusing to seal a second message under one nonce: the previous " +
+        "request has not been answered, so the counter has not advanced",
+      );
+    }
+
     const out = chacha20poly1305(this.sendKey, nonceFor(this.txCounter)).encrypt(plaintext);
-    if (!this.deferSend) {
+    if (this.deferSend) {
+      this.heldPlaintext = plaintext.slice();
+    } else {
       this.txCounter++;
     }
     return out;
@@ -173,7 +200,23 @@ export class Session {
     this.rxCounter++;
     if (this.deferSend) {
       this.txCounter++;
+      /* The held message has been answered, so the nonce it used is spent and
+       * the next one is free for anything. */
+      this.heldPlaintext = null;
     }
     return out;
   }
+}
+
+/**
+ * Byte equality. Not constant-time, and it does not need to be: both operands
+ * are messages this side composed, so there is no secret here to leak a
+ * comparison against.
+ */
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
