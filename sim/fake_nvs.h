@@ -52,4 +52,16 @@ void fake_nvs_reboot(void);
 /** Test helper: does a key exist in the given namespace? */
 bool fake_nvs_has(const char *ns, const char *key);
 
+/**
+ * Does this byte sequence appear anywhere in simulated flash, in any entry of
+ * any namespace, at any offset?
+ *
+ * Written for one question: after the migration, is the retired PIN verifier
+ * really gone. Asking for the key by name only proves the key was erased;
+ * asking for the value proves nothing else quietly kept a copy of it — inside
+ * the vault record, under a renamed key, anywhere. A property, not a spot
+ * check.
+ */
+bool fake_nvs_contains_bytes(const void *needle, size_t length);
+
 #endif /* FAKE_NVS_H */

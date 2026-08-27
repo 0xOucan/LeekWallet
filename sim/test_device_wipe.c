@@ -130,8 +130,12 @@ static void test_wallet_dies_first(void)
     device_wipe();
 
     CHECK(!wallet_present(), "the seed outlived a crash mid-wipe");
-    CHECK(fake_nvs_has("leek_pin", "pin_hash"),
-          "setup: expected the PIN to still be there at this crash point");
+    /* The attempt counter, not a PIN hash: the PIN's only verifier now lives
+     * in the vault's own namespace, so the wallet erase takes it along - which
+     * is the right way round, and leaves this counter as the thing that proves
+     * pin_wipe() had not run yet. */
+    CHECK(fake_nvs_has("leek_pin", "attempts"),
+          "setup: expected the PIN state to still be there at this crash point");
 }
 
 static void test_crash_between_the_two_erases(void)

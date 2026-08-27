@@ -119,23 +119,18 @@ typedef void (*WalletProgressFn)(uint8_t done, uint8_t total);
  * readable before anything is written, so a corrupt slot aborts the change
  * with the vault untouched (WALLET_ERROR_STORAGE_FAILED).
  *
- * @param companion_hash Optional 32 bytes stored inside the same atomic record.
- *                       src/pin.c uses it to keep its own PIN verifier from
- *                       drifting out of step with the vault. May be NULL.
+ * There is one verifier for one secret, and it is the salted PBKDF2 hash
+ * inside this record. src/pin.c used to hand a second, cheaper one down to be
+ * stored alongside it; that verifier is gone, so nothing rides along here any
+ * more.
+ *
  * @param progress       Optional; called as slots are verified and rewritten.
  * @return WALLET_OK, or WALLET_ERROR_WRONG_PASSWORD if the old password is
  *         wrong or the new one is too short.
  */
 WalletError wallet_change_password(const char *old_password, size_t old_length,
                                    const char *new_password, size_t new_length,
-                                   const uint8_t companion_hash[32],
                                    WalletProgressFn progress);
-
-/**
- * Read the companion verifier from the authoritative vault record.
- * @return false if no record exists or it carries no companion.
- */
-bool wallet_get_companion_hash(uint8_t hash_out[32]);
 
 // ========== BIP39 Passphrase ========== //
 

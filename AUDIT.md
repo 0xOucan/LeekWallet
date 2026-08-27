@@ -15,8 +15,15 @@ than argued about.
 
 **S1 is the one that still matters.** Its key derivation and storage encryption are done — salted
 PBKDF2 and authenticated AES-GCM — but **flash encryption and secure boot are not enabled**, so
-an attacker with the device still reads the vault off the chip and attacks the PIN offline. The
-KDF turns that from instant into days. It does not stop the read.
+an attacker with the device still reads the vault off the chip and attacks the PIN offline.
+
+What the KDF buys is a factor of a few hundred, not days. A 4–8 digit PIN is a small secret and
+no iteration count makes it a large one: against a single consumer GPU the whole 4–8 digit space
+falls in **minutes**, and the 6-digit space in **seconds** — see `docs/VAULT.md`, "A real KDF",
+for the arithmetic. Until this revision the honest figure was worse still, because a second,
+unsalted verifier sat in the same flash dump and answered a PIN guess ~350× more cheaply than the
+vault's own; that verifier is gone (F1 below). **The KDF does not stop the read, and it does not
+make the PIN safe once the read has happened. Flash encryption is what does that.**
 
 Still open besides S1: **S8j**'s remaining half — the button queue is fixed and tested, but `dieharder` has never been
 run against the hardware RNG on real silicon. Everything else listed above is closed.
@@ -46,7 +53,10 @@ attack never goes through the firmware.
 **Partially fixed.** The key derivation layer is done: `components/leek-wallet/vault-kdf.c`
 derives both the storage key and the verifier from PBKDF2-HMAC-SHA512 over a per-device random
 salt under separate domain strings, so the stored verifier is no longer an oracle for the
-encryption key. `wallet_set_password()` creates v2 vaults; `wallet_unlock()` migrates legacy ones
+encryption key — and since `docs/AUDIT-SECRETS.md` F1, it is also the *only* verifier: `src/pin.c`
+kept a second one (`leek_pin/pin_hash`, SHA-256×101, unsalted) that reinstated step 4 of the chain
+above in a different namespace. It is deleted, and existing devices are migrated off it on the
+first boot or the first unlock — see `sim/test_pin.c`. `wallet_set_password()` creates v2 vaults; `wallet_unlock()` migrates legacy ones
 on the first successful unlock, one wallet at a time, with the version marker flipped last and
 an alternate-key fallback so an interrupted migration resumes instead of bricking the vault.
 

@@ -12,6 +12,34 @@ BUILD   := build
 CRYPTO_SRC := $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c $(CRYPTO)/sha2.c \
               $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c
 
+# The real vault, and the crypto it drags in. Two suites link it: the PIN
+# change (for its write ordering) and the PIN gate itself, which since the
+# second verifier was removed has nothing to verify against but this.
+VAULT_SRC := ../components/leek-wallet/leek-wallet.c \
+             ../components/leek-wallet/vault-kdf.c \
+             ../components/leek-wallet/vault-crypt.c
+VAULT_CRYPTO :=                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
+                $(CRYPTO)/bip32.c $(CRYPTO)/ecdsa.c $(CRYPTO)/bignum.c \
+                $(CRYPTO)/secp256k1.c $(CRYPTO)/nist256p1.c \
+                $(CRYPTO)/curves.c $(CRYPTO)/ripemd160.c \
+                $(CRYPTO)/base58.c $(CRYPTO)/blake256.c $(CRYPTO)/blake2b.c \
+                $(CRYPTO)/hasher.c $(CRYPTO)/address.c $(CRYPTO)/segwit_addr.c \
+                $(CRYPTO)/base32.c \
+                $(CRYPTO)/groestl.c $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c \
+                $(CRYPTO)/hmac.c $(CRYPTO)/pbkdf2.c $(CRYPTO)/rfc6979.c $(CRYPTO)/hmac_drbg.c \
+                $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
+                $(CRYPTO)/ed25519-donna/ed25519.c \
+                $(CRYPTO)/ed25519-donna/curve25519-donna-32bit.c \
+                $(CRYPTO)/ed25519-donna/curve25519-donna-helpers.c \
+                $(CRYPTO)/ed25519-donna/curve25519-donna-scalarmult-base.c \
+                $(CRYPTO)/ed25519-donna/ed25519-donna-32bit-tables.c \
+                $(CRYPTO)/ed25519-donna/ed25519-donna-impl-base.c \
+                $(CRYPTO)/ed25519-donna/modm-donna-32bit.c \
+                $(CRYPTO)/ed25519-donna/ed25519-sha3.c $(CRYPTO)/ed25519-donna/ed25519-keccak.c \
+                $(CRYPTO)/aes/aescrypt.c $(CRYPTO)/aes/aeskey.c \
+                $(CRYPTO)/aes/aestab.c $(CRYPTO)/aes/aes_modes.c \
+                $(CRYPTO)/aes/aesgcm.c $(CRYPTO)/aes/gf128mul.c
+
 TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39
 
 all: $(addprefix $(BUILD)/,$(TESTS))
@@ -122,16 +150,28 @@ $(BUILD)/test_entropy: test_entropy.c ../src/entropy.c \
 $(BUILD)/test_passphrase: test_passphrase.c host_stubs.c $(CRYPTO_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
-$(BUILD)/test_device_wipe: test_device_wipe.c esp_stubs.c wallet_stubs.c ../src/device-wipe.c ../src/pin.c \
-                          $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c | $(BUILD)
+# wallet_stubs.c rather than the real vault: this suite defines its own
+# wallet_wipe() to watch the ordering, and linking both would be a duplicate
+# symbol. The stub still keeps a real salted verifier in NVS, because pin.c has
+# nothing else to check a PIN against.
+$(BUILD)/test_device_wipe: test_device_wipe.c esp_stubs.c host_stubs.c wallet_stubs.c \
+                          ../components/leek-wallet/vault-kdf.c \
+                          ../src/device-wipe.c ../src/pin.c \
+                          $(CRYPTO)/sha2.c $(CRYPTO)/pbkdf2.c $(CRYPTO)/hmac.c \
+                          $(CRYPTO)/memzero.c $(CRYPTO)/rand.c | $(BUILD)
 	$(CC) $(CFLAGS) -DLEEK_HOST_TEST -o $@ $^
 
 $(BUILD)/test_button: test_button.c esp_stubs.c ../src/button.c | $(BUILD)
 	$(CC) $(CFLAGS) -DLEEK_HOST_TEST -o $@ $^
 
-$(BUILD)/test_pin: test_pin.c esp_stubs.c wallet_stubs.c ../src/pin.c \
-                   $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c | $(BUILD)
-	$(CC) $(CFLAGS) -DLEEK_HOST_TEST -o $@ $^
+# Against the real vault, not a stub. src/pin.c no longer stores a verifier of
+# its own, so "does this PIN open the device" is now a question only the real
+# leek-wallet.c can answer - and test_no_fast_verifier_in_nvs() inspects the
+# real NVS contents, which a stub's storage layout would say nothing about.
+$(BUILD)/test_pin: CFLAGS += -DAES_VAR
+$(BUILD)/test_pin: test_pin.c esp_stubs.c host_stubs.c \
+                   $(VAULT_SRC) ../src/pin.c $(VAULT_CRYPTO) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST -o $@ $^
 
 # The UI layer, against a framebuffer OLED and a fake wallet (see fake_wallet.c
 # for why the real one is not linked here). The Wi-Fi/BLE/USB blocks in ui.c are
@@ -162,31 +202,7 @@ $(BUILD)/test_ui: test_ui.c esp_stubs.c host_stubs.c fake_oled.c fake_wallet.c \
 # mbedtls and semphr shims exist.
 $(BUILD)/test_pin_change: CFLAGS += -DAES_VAR
 $(BUILD)/test_pin_change: test_pin_change.c esp_stubs.c host_stubs.c \
-                          ../components/leek-wallet/leek-wallet.c \
-                          ../components/leek-wallet/vault-kdf.c \
-                          ../components/leek-wallet/vault-crypt.c \
-                          ../src/pin.c \
-                          $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
-                          $(CRYPTO)/bip32.c $(CRYPTO)/ecdsa.c $(CRYPTO)/bignum.c \
-                          $(CRYPTO)/secp256k1.c $(CRYPTO)/nist256p1.c \
-                          $(CRYPTO)/curves.c $(CRYPTO)/ripemd160.c \
-                          $(CRYPTO)/base58.c $(CRYPTO)/blake256.c $(CRYPTO)/blake2b.c \
-                          $(CRYPTO)/hasher.c $(CRYPTO)/address.c $(CRYPTO)/segwit_addr.c \
-                          $(CRYPTO)/base32.c \
-                          $(CRYPTO)/groestl.c $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c \
-                          $(CRYPTO)/hmac.c $(CRYPTO)/pbkdf2.c $(CRYPTO)/rfc6979.c $(CRYPTO)/hmac_drbg.c \
-                          $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
-                          $(CRYPTO)/ed25519-donna/ed25519.c \
-                          $(CRYPTO)/ed25519-donna/curve25519-donna-32bit.c \
-                          $(CRYPTO)/ed25519-donna/curve25519-donna-helpers.c \
-                          $(CRYPTO)/ed25519-donna/curve25519-donna-scalarmult-base.c \
-                          $(CRYPTO)/ed25519-donna/ed25519-donna-32bit-tables.c \
-                          $(CRYPTO)/ed25519-donna/ed25519-donna-impl-base.c \
-                          $(CRYPTO)/ed25519-donna/modm-donna-32bit.c \
-                          $(CRYPTO)/ed25519-donna/ed25519-sha3.c $(CRYPTO)/ed25519-donna/ed25519-keccak.c \
-                          $(CRYPTO)/aes/aescrypt.c $(CRYPTO)/aes/aeskey.c \
-                          $(CRYPTO)/aes/aestab.c $(CRYPTO)/aes/aes_modes.c \
-                          $(CRYPTO)/aes/aesgcm.c $(CRYPTO)/aes/gf128mul.c | $(BUILD)
+                          $(VAULT_SRC) ../src/pin.c $(VAULT_CRYPTO) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST -o $@ $^
 
 # The real src/protocol.c, against an in-memory USB-Serial-JTAG pipe. This is
