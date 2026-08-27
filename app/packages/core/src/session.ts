@@ -2,14 +2,29 @@
  * Host side of the LeekWallet session — the counterpart to `src/session.c`.
  *
  * X25519, HKDF-SHA256 into two directional keys, ChaCha20-Poly1305 with counter
- * nonces, and a six-digit passkey derived from the shared secret. See
- * docs/PROTOCOL.md section 3.
+ * nonces, and a six-digit passkey. See docs/PROTOCOL.md section 3.
  *
- * The passkey is derived rather than chosen, and that is the entire mechanism.
- * An attacker relaying between the host and the device holds two different
- * shared secrets, so the code it can display cannot match the one on the OLED.
- * Encryption alone would protect a conversation with an impostor perfectly
- * well; a human comparing two screens is what notices one.
+ * The passkey is derived rather than chosen, but that alone was never the
+ * mechanism, and v1 of this file claimed it was. Deriving it from the shared
+ * secret and nothing else let a relay pick its own key material and search
+ * offline for a value reproducing the digits already on the OLED —
+ * `sim/passkey_grind.c` did it in 91 seconds on one core. What makes the
+ * comparison mean something is the pair of properties this file now
+ * implements, taken from BLE Secure Connections numeric comparison (Bluetooth
+ * Core Specification v5.4, Vol 3, Part H, §2.3.5.6.4) and ZRTP (RFC 6189
+ * §4.4.1.1 and §4.5.2):
+ *
+ *   - both ends contribute a fresh nonce, and the passkey is bound to the full
+ *     transcript — both public keys and both nonces — so substituting any one
+ *     of them changes what both screens show;
+ *   - the device commits to its nonce before this side reveals its own, so a
+ *     relay's every input is fixed before the value that randomises the answer
+ *     arrives. It cannot search. It can guess once, online, at 1 in 10^6, in
+ *     front of a user who is reading the screen.
+ *
+ * `verifyCommitment` below is not optional decoration: skipping it puts the
+ * offline search straight back, because an uncommitted device nonce is a value
+ * a relay may choose after seeing everything else.
  *
  * Uses @noble/*, which viem already depends on — no new supply-chain surface
  * for the one part of this codebase where that would matter most.
@@ -21,10 +36,30 @@ import { sha256 } from "@noble/hashes/sha256";
 import { chacha20poly1305 } from "@noble/ciphers/chacha";
 
 /* Must match src/session.c exactly. Distinct labels are what keep the two
- * directional keys and the passkey independent outputs of one secret. */
-const LABEL_H2D = "leek-session-h2d-v1";
-const LABEL_D2H = "leek-session-d2h-v1";
-const LABEL_PASSKEY = "leek-session-passkey-v1";
+ * directional keys and the passkey independent outputs of one secret; the v2
+ * suffix is what stops a v1 peer and a v2 peer deriving anything usable out of
+ * half a handshake if the version check were ever bypassed. */
+const LABEL_H2D = "leek-session-h2d-v2";
+const LABEL_D2H = "leek-session-d2h-v2";
+const LABEL_PASSKEY = "leek-session-passkey-v2";
+const LABEL_COMMIT = "leek-session-commit-v2";
+const LABEL_TRANSCRIPT = "leek-session-transcript-v2";
+
+/**
+ * The wire protocol this client speaks. Must equal PROTOCOL_VERSION in
+ * src/protocol.h.
+ *
+ * v1 had no nonces and no commitment; v2 has both, and the two cannot
+ * interoperate. Sent in `hello` and checked in the reply, on both ends, so a
+ * mismatched pair says so plainly instead of failing later with "decrypt
+ * failed" — which is what v1 did, since it put a version on the wire that
+ * nothing ever read.
+ */
+export const PROTOCOL_VERSION = 2;
+
+/** 128 bits each, as SESSION_NONCE_SIZE in session.h. */
+export const NONCE_BYTES = 16;
+export const COMMIT_BYTES = 32;
 
 export interface SessionKeys {
   /** Host to device. */
@@ -35,11 +70,79 @@ export interface SessionKeys {
   passkey: string;
 }
 
-/** Empty salt, matching the firmware's HKDF-Extract. */
-const EMPTY_SALT = new Uint8Array(32);
+/**
+ * Everything the derivation is bound to, in the order both ends hash it.
+ *
+ * By role, never by "mine and theirs": a transcript that depended on who was
+ * looking at it would bind nothing, because the two ends would hash different
+ * bytes and simply fail to agree.
+ */
+export interface SessionTranscript {
+  hostPublic: Uint8Array;
+  devicePublic: Uint8Array;
+  hostNonce: Uint8Array;
+  deviceNonce: Uint8Array;
+}
 
-function derive(shared: Uint8Array, label: string): Uint8Array {
-  return hkdf(sha256, shared, EMPTY_SALT, label, 32);
+const enc = new TextEncoder();
+
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.length; }
+  return out;
+}
+
+/**
+ * The device's commitment to its nonce: H(label ‖ PKb ‖ PKa ‖ Nb).
+ *
+ * Both public keys are inside the hash for the same reason LESC's f4 takes
+ * both: a commitment over the nonce alone could be replayed under a
+ * substituted public key.
+ */
+export function commitment(
+  devicePublic: Uint8Array,
+  hostPublic: Uint8Array,
+  deviceNonce: Uint8Array,
+): Uint8Array {
+  return sha256(concat(enc.encode(LABEL_COMMIT), devicePublic, hostPublic, deviceNonce));
+}
+
+/**
+ * Check what the device sent in `helloAck` against what it revealed afterwards.
+ *
+ * Not constant-time and it does not need to be: both operands are public, and
+ * the value being protected is the ORDER of the exchange rather than a secret.
+ * Returns false rather than throwing so the caller decides how loudly to fail.
+ */
+export function verifyCommitment(
+  claimed: Uint8Array,
+  devicePublic: Uint8Array,
+  hostPublic: Uint8Array,
+  deviceNonce: Uint8Array,
+): boolean {
+  const expected = commitment(devicePublic, hostPublic, deviceNonce);
+  if (claimed.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= claimed[i]! ^ expected[i]!;
+  return diff === 0;
+}
+
+/** The whole handshake hashed in a fixed order — the HKDF salt for everything. */
+function transcriptHash(t: SessionTranscript): Uint8Array {
+  return sha256(concat(
+    enc.encode(LABEL_TRANSCRIPT),
+    t.hostPublic, t.devicePublic, t.hostNonce, t.deviceNonce,
+  ));
+}
+
+function derive(shared: Uint8Array, salt: Uint8Array, label: string): Uint8Array {
+  return hkdf(sha256, shared, salt, label, 32);
+}
+
+/** 128 bits of freshness for this side of the comparison. */
+export function generateNonce(): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(NONCE_BYTES));
 }
 
 /**
@@ -47,16 +150,29 @@ function derive(shared: Uint8Array, label: string): Uint8Array {
  *
  * Throws on a degenerate shared secret: an all-zero result means a small-order
  * peer key, so the "agreement" is a value the attacker chose rather than
- * anything negotiated.
+ * anything negotiated. Throws too on a transcript of the wrong shape, which is
+ * a caller bug rather than a peer one — deriving over a short nonce would
+ * silently weaken the very binding this exists for.
  */
-export function deriveSession(privateKey: Uint8Array, peerPublic: Uint8Array): SessionKeys {
+export function deriveSession(
+  privateKey: Uint8Array,
+  peerPublic: Uint8Array,
+  transcript: SessionTranscript,
+): SessionKeys {
+  if (transcript.hostPublic.length !== 32 || transcript.devicePublic.length !== 32 ||
+      transcript.hostNonce.length !== NONCE_BYTES ||
+      transcript.deviceNonce.length !== NONCE_BYTES) {
+    throw new Error("transcript fields are the wrong length");
+  }
+
   const shared = x25519.getSharedSecret(privateKey, peerPublic);
 
   if (shared.every((b) => b === 0)) {
     throw new Error("degenerate shared secret: peer key is small-order");
   }
 
-  const passkeyBytes = derive(shared, LABEL_PASSKEY);
+  const salt = transcriptHash(transcript);
+  const passkeyBytes = derive(shared, salt, LABEL_PASSKEY);
   const n =
     ((passkeyBytes[0]! << 24) >>> 0) +
     (passkeyBytes[1]! << 16) +
@@ -64,8 +180,8 @@ export function deriveSession(privateKey: Uint8Array, peerPublic: Uint8Array): S
     passkeyBytes[3]!;
 
   return {
-    h2d: derive(shared, LABEL_H2D),
-    d2h: derive(shared, LABEL_D2H),
+    h2d: derive(shared, salt, LABEL_H2D),
+    d2h: derive(shared, salt, LABEL_D2H),
     passkey: String(n % 1000000).padStart(6, "0"),
   };
 }
