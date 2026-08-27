@@ -140,5 +140,42 @@ group("matches the firmware for a fixed exchange");
   check(hex(hostPriv).length === 64, "vector fixture is malformed");
 }
 
+group("a held nonce may not seal two different messages");
+{
+  /* The host defers its send counter until a reply arrives, so a retry reuses
+   * the nonce. That is safe for an identical retry and catastrophic for
+   * anything else: one key, one nonce, two plaintexts hands an eavesdropper
+   * both messages and the authentication key. */
+  const a = generateKeypair();
+  const b = generateKeypair();
+  const host = new Session(deriveSession(a.privateKey, b.publicKey), "host");
+  const device = new Session(deriveSession(b.privateKey, a.publicKey), "device");
+  host.confirm();
+  device.confirm();
+
+  const first = new TextEncoder().encode("getStatus");
+  const same = host.encrypt(first);
+  check(hex(host.encrypt(first)) === hex(same), "an identical retry changed bytes");
+
+  let threw = false;
+  try {
+    host.encrypt(new TextEncoder().encode("signTransaction"));
+  } catch {
+    threw = true;
+  }
+  check(threw, "a second, different message was sealed under the held nonce");
+
+  /* Once the reply lands the counter moves and the next message is free. */
+  device.decrypt(same);
+  host.decrypt(device.encrypt(new TextEncoder().encode("ok")));
+  let sealedAfter = true;
+  try {
+    host.encrypt(new TextEncoder().encode("signTransaction"));
+  } catch {
+    sealedAfter = false;
+  }
+  check(sealedAfter, "the session stayed stuck after the reply arrived");
+}
+
 console.log(`\n${failures ? "FAILED" : "PASSED"} (${failures} failure${failures === 1 ? "" : "s"})`);
 process.exit(failures ? 1 : 0);

@@ -129,10 +129,22 @@ export function chunkForBle(frame: Uint8Array, mtu: number): Uint8Array[] {
   return chunks;
 }
 
-/** Reassembles BLE chunks, verifying sequence continuity. */
+/**
+ * Reassembles BLE chunks, verifying sequence continuity.
+ *
+ * The peer decides how many chunks it sends and how big each one is, so the
+ * two bounds below are the ones that matter: a total that may not grow past a
+ * frame, and a refusal to accept a chunk that carries no payload. Without them
+ * a peripheral holding `more` set forever costs the app unbounded memory —
+ * with a body-less chunk it does not even have to send bytes to do it. The
+ * firmware refuses both (`ble_chunk_push` in src/ble-chunk.c) and this is the
+ * side that faces a device it has not authenticated yet, so it may not be the
+ * more permissive of the two.
+ */
 export class ChunkReassembler {
   private parts: Uint8Array[] = [];
   private expectedSeq = 0;
+  private total = 0;
 
   push(chunk: Uint8Array): Uint8Array | null {
     const header = chunk[0];
@@ -145,6 +157,17 @@ export class ChunkReassembler {
       this.reset();
       throw new Error(`out-of-order chunk: expected ${this.expectedSeq}, got ${seq}`);
     }
+
+    const body = chunk.length - 1;
+    if (body < 1) {
+      this.reset();
+      throw new Error("chunk carries no payload");
+    }
+    if (this.total + body > MAX_FRAME_BYTES) {
+      this.reset();
+      throw new Error(`reassembly would exceed ${MAX_FRAME_BYTES} bytes`);
+    }
+    this.total += body;
 
     this.parts.push(chunk.slice(1));
     this.expectedSeq = (this.expectedSeq + 1) & CHUNK_SEQ_MASK;
@@ -165,5 +188,6 @@ export class ChunkReassembler {
   reset(): void {
     this.parts = [];
     this.expectedSeq = 0;
+    this.total = 0;
   }
 }
