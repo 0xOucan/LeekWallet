@@ -1,7 +1,11 @@
 # ============================================================================
 # LeekWallet sdkconfig.defaults
 # ============================================================================
-# ESP32-S3 Mini: 4MB flash, no PSRAM, USB-Serial-JTAG console
+# ESP32-S3-N16R8: 16MB flash, 8MB PSRAM (deliberately off), USB-Serial-JTAG
+# console. The flash size below is 16MB and must stay in step with
+# partitions-secure.csv -- a config claiming 4MB against a 16MB partition
+# table is the kind of mismatch that only shows up as a boot loop after an
+# irreversible eFuse burn.
 # ============================================================================
 
 # ============================================================================
