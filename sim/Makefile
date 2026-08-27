@@ -194,7 +194,7 @@ $(BUILD)/test_pin_change: test_pin_change.c esp_stubs.c host_stubs.c \
 # the mock has to match; see test_protocol.c.
 PROTOCOL_SRC := test_protocol.c esp_stubs.c host_stubs.c fake_usb.c fake_wallet.c \
                 ../src/protocol.c ../src/cbor.c ../src/session.c ../src/pin.c \
-                ../src/ble-chunk.c ../src/ble.c ../src/ble-name.c ../src/transport.c \
+                ../src/ble-chunk.c ../src/ble.c ../src/ble-name.c ../src/transport.c ../src/entropy.c \
                 ../src/eth-tx.c ../src/eth-decode.c ../src/eip712.c ../src/blind-signing.c \
                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \

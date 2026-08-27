@@ -7,6 +7,7 @@
  */
 
 #include "transport.h"
+#include "entropy.h"
 
 #include "esp_log.h"
 #include "nvs.h"
@@ -77,6 +78,15 @@ static bool transport_apply(TransportKind kind)
         protocol_set_rx_enabled(true);
         current = TRANSPORT_USB;
     }
+
+    /* The entropy gate needs to know, and this is the only place that knows.
+     * Reporting it here rather than from the settings screen covers the case
+     * the settings screen cannot: transport_init() restores the stored link at
+     * boot, so a device that was left on BLE comes up with the radio running
+     * and nobody having said so. Generating a seed in that state took the
+     * "no radio" branch and enabled the bootloader RNG while BLE owned the
+     * ADC -- the exact condition the comment in entropy.c warns against. */
+    entropy_set_ble_active(current == TRANSPORT_BLE);
 
     ESP_LOGI(TAG, "Link is %s", transport_label(current));
     return true;

@@ -2461,14 +2461,14 @@ static void wifi_test_toggle(void)
         esp_wifi_start();
 
         wifi_enabled = true;
-        entropy_set_rf_active(true);
+        entropy_set_wifi_active(true);
         ESP_LOGI(TAG, "WiFi AP enabled: SSID='%s' PASS='%s'", WIFI_AP_SSID, WIFI_AP_PASS);
     } else {
         ESP_LOGI(TAG, "Disabling WiFi...");
         esp_wifi_stop();
         esp_wifi_deinit();
         wifi_enabled = false;
-        entropy_set_rf_active(transport_get() == TRANSPORT_BLE);
+        entropy_set_wifi_active(false);
         ESP_LOGI(TAG, "WiFi disabled");
     }
 }
@@ -2664,8 +2664,9 @@ static void screen_settings_on_button(button_id_t btn)
                 case SET_TRANSPORT:
                     /* Turning one on turns the other off and kills any
                      * session; transport.c is the only place that may. */
+                    /* transport_apply() reports the radio to the entropy gate
+                     * itself, at boot as well as here. */
                     transport_toggle();
-                    entropy_set_rf_active(transport_get() == TRANSPORT_BLE);
                     break;
                 case SET_BLE_NAME:
                     ui_set_screen(SCREEN_BLE_NAME);

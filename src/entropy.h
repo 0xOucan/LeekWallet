@@ -54,11 +54,25 @@ EntropyResult entropy_health_check(const uint8_t *buf, size_t len);
 const char *entropy_result_str(EntropyResult r);
 
 /**
- * Tell the entropy gate whether an RF subsystem is currently running.
- * The bootloader RNG path must not be enabled while Wi-Fi/BT owns the ADC,
- * so the UI reports RF transitions here.
+ * Tell the entropy gate which radios are running.
+ *
+ * The bootloader RNG draws from SAR ADC noise and must not be enabled while a
+ * radio owns the ADC; conversely, with a radio up `esp_random()` is already a
+ * true RNG and the bootloader path is not needed. So the gate has to know, and
+ * the answer is "either radio", not "the last one somebody mentioned".
+ *
+ * Two setters rather than one flag because the two radios are owned by
+ * different code and neither can speak for the other: transport.c knows about
+ * BLE and is the only place that starts or stops it, and the Wi-Fi test toggle
+ * knows about Wi-Fi. A single shared flag meant whichever spoke last erased
+ * the other's answer.
+ *
+ * Both default to off, which is the safe direction: the gate enables the
+ * bootloader RNG when it believes no radio is up, and believing that wrongly
+ * while a radio *is* up is the case worth avoiding.
  */
-void entropy_set_rf_active(bool active);
+void entropy_set_ble_active(bool active);
+void entropy_set_wifi_active(bool active);
 
 /* ------------------------------------------------------------- user pool */
 

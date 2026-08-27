@@ -220,12 +220,25 @@ void entropy_mix_pool(const uint8_t *hw, size_t hw_len, uint8_t out32[32])
 
 /* -------------------------------------------------------------- gathering */
 
-static bool rf_active = false;
+static bool ble_active = false;
+static bool wifi_active = false;
 static EntropyResult last_result = ENTROPY_FAIL_NO_SOURCE;
 
-void entropy_set_rf_active(bool active)
+/* Either radio counts. Kept as a function rather than a cached bool so there
+ * is no third piece of state to fall out of step with the two real ones. */
+static inline bool rf_is_active(void)
 {
-    rf_active = active;
+    return ble_active || wifi_active;
+}
+
+void entropy_set_ble_active(bool active)
+{
+    ble_active = active;
+}
+
+void entropy_set_wifi_active(bool active)
+{
+    wifi_active = active;
 }
 
 EntropyResult entropy_last_result(void)
@@ -247,7 +260,7 @@ bool entropy_fill(uint8_t *buf, size_t len)
      * while Wi-Fi/BT owns the ADC, hence the rf_active flag.
      */
     bool bootloader_rng = false;
-    if (!rf_active) {
+    if (!rf_is_active()) {
         bootloader_random_enable();
         bootloader_rng = true;
     }
@@ -321,7 +334,7 @@ void entropy_dump_for_analysis(size_t bytes)
 #ifndef LEEK_HOST_TEST
     ESP_LOGW(TAG, "=== RAW RNG DUMP (%zu bytes) - NOT KEY MATERIAL ===", bytes);
 
-    if (!rf_active) {
+    if (!rf_is_active()) {
         bootloader_random_enable();
     }
 
@@ -338,7 +351,7 @@ void entropy_dump_for_analysis(size_t bytes)
         printf("%s\n", hex);
     }
 
-    if (!rf_active) {
+    if (!rf_is_active()) {
         bootloader_random_disable();
     }
 
