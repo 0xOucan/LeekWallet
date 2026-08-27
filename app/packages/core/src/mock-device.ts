@@ -18,6 +18,7 @@
 import { encodeCbor, decodeCbor, type CborValue } from "./cbor.ts";
 import { encodeFrame, FrameDecoder, FrameType } from "./framing.ts";
 import { ErrorCode, type Transport } from "./transport.ts";
+import { PROTOCOL_VERSION } from "./session.ts";
 import { describeCall, isDecodable } from "./eth-decode.ts";
 import { describeTypedData, inspectTypedData } from "./eip712.ts";
 
@@ -46,7 +47,7 @@ export interface MockOptions {
   walletCount?: number;
 
   /**
-   * Whether `hello` completes the passkey comparison by itself.
+   * Whether `helloReveal` completes the passkey comparison by itself.
    *
    * Default true, because pairing is not what most tests are about. Set false
    * to leave the session PENDING and drive `confirmSession()` yourself - that
@@ -85,11 +86,13 @@ export class MockDevice implements Transport {
 
   private opened = false;
 
-  /* Three states, as session.c has them. The mock used to jump straight from
+  /* Four states, as session.c has them. The mock used to jump straight from
    * nothing to established on `hello`, which skipped the passkey comparison
    * entirely - the whole defence against a machine in the middle. Anything
-   * built against that mock would pass without ever exercising it. */
-  private sessionState: "none" | "pending" | "active" = "none";
+   * built against that mock would pass without ever exercising it.
+   * `awaitingReveal` is the v2 addition: the device has committed to its nonce
+   * and nothing is derived or displayed until the host reveals its own. */
+  private sessionState: "none" | "awaitingReveal" | "pending" | "active" = "none";
   private unlocked: boolean;
   /** The PIN pad is on screen and the device is waiting for the user. */
   private pinPrompted = false;
@@ -109,7 +112,7 @@ export class MockDevice implements Transport {
   }
 
   /** Session state, for tests that care about the pending step. */
-  get session(): "none" | "pending" | "active" {
+  get session(): "none" | "awaitingReveal" | "pending" | "active" {
     return this.sessionState;
   }
 
@@ -230,8 +233,8 @@ export class MockDevice implements Transport {
      * the app to poll it, and the firmware answers it in plaintext - and
      * `ping` exists on the device and was simply missing here. */
     const preSession =
-      method === "hello" || method === "getFeatures" ||
-      method === "getStatus" || method === "ping";
+      method === "hello" || method === "helloReveal" ||
+      method === "getFeatures" || method === "getStatus" || method === "ping";
 
     /* A method that does not exist is malformed BEFORE it is unauthorised, and
      * that order is the firmware's rather than the tidier-looking one: dispatch
@@ -271,7 +274,31 @@ export class MockDevice implements Transport {
   }
 
   private readonly handlers: Record<string, Handler> = {
-    hello: () => {
+    /* Two legs, as PROTOCOL.md §3 and src/protocol.c have them. The mock has
+     * no key agreement, so it cannot produce a real public key, commitment or
+     * nonce — but it can and must model the STATE MACHINE, because the ordering
+     * is the security property. A mock that established a session from `hello`
+     * alone would let host code skip the reveal and the commitment check and
+     * still pass every test here, which is precisely how the mock has twice
+     * certified behaviour the firmware refuses. */
+    hello: (params) => {
+      if (params["version"] !== PROTOCOL_VERSION) {
+        throw new MockRejection(
+          ErrorCode.UnsupportedVersion,
+          `this device speaks protocol v${PROTOCOL_VERSION}; the app offered ` +
+          `v${typeof params["version"] === "number" ? params["version"] : "none"}`,
+        );
+      }
+      this.sessionState = "awaitingReveal";
+      return { version: PROTOCOL_VERSION, deviceId: "mock-0001" };
+    },
+
+    helloReveal: () => {
+      if (this.sessionState !== "awaitingReveal") {
+        throw new MockRejection(
+          ErrorCode.SessionRequired, "no handshake is waiting for a nonce",
+        );
+      }
       /* PENDING, not established. The device shows a passkey and waits for the
        * user to confirm it matches; nothing encrypted is accepted until then. */
       this.sessionState = "pending";
@@ -279,7 +306,7 @@ export class MockDevice implements Transport {
       if (this.opts.autoConfirmSession) {
         this.sessionState = "active";
       }
-      return { version: 1, deviceId: "mock-0001", passkey: MOCK_PASSKEY };
+      return { passkey: MOCK_PASSKEY };
     },
 
     ping: () => ({ pong: 1 }),

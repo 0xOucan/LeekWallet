@@ -48,7 +48,8 @@ import {
 } from "../packages/core/src/rpc.ts";
 import { resolveRpcSend } from "./rpc-proxy.ts";
 import {
-  deriveSession, generateKeypair, Session,
+  deriveSession, generateKeypair, generateNonce, verifyCommitment,
+  NONCE_BYTES, COMMIT_BYTES, PROTOCOL_VERSION, Session,
 } from "../packages/core/src/session.ts";
 import {
   checksumAddress, interpretTransaction, type TxInterpretation,
@@ -302,23 +303,74 @@ class Client {
   }
 
   /**
-   * Run the X25519 handshake and return the passkey to compare.
+   * Run the commit-then-reveal handshake and return the passkey to compare.
    *
-   * The device shows the same six digits on its own screen. They match only if
-   * nobody is relaying between the two, which is the whole reason the user is
-   * asked to look — encryption alone would protect a conversation with an
-   * impostor perfectly well.
+   * Two round trips, and the order is the security property rather than a
+   * formality. The device commits to its nonce in `helloAck`; only then does
+   * this side reveal its own in `helloReveal`; only then does the device
+   * reveal the nonce it committed to. Neither end could have chosen its
+   * contribution after seeing the other's, so a relay between them cannot
+   * search for a value that makes both screens agree — it is down to one
+   * online guess at 1 in 10^6, which is a mismatch the user sees.
+   *
+   * Every failure below aborts rather than degrades. A handshake that "worked
+   * except for the commitment" is exactly the v1 handshake that a relay ground
+   * through in 91 seconds.
    */
   async handshake(): Promise<string> {
     const { privateKey, publicKey } = generateKeypair();
-    const reply = await this.call("hello", { hostPubkey: publicKey });
+    const ack = await this.call("hello", {
+      version: PROTOCOL_VERSION,
+      hostPubkey: publicKey,
+    });
 
-    const devicePubkey = reply["devicePubkey"];
+    /* Version before anything else: an old device answers v1 here, and saying
+     * so is far more use than the "decrypt failed" three frames later that a
+     * missing check used to produce. */
+    const theirVersion = ack["version"];
+    if (theirVersion !== PROTOCOL_VERSION) {
+      throw new Error(
+        `this app speaks protocol v${PROTOCOL_VERSION}; the device answered ` +
+        `v${typeof theirVersion === "number" ? theirVersion : "none"} — update the older one`,
+      );
+    }
+
+    const devicePubkey = ack["devicePubkey"];
     if (!(devicePubkey instanceof Uint8Array) || devicePubkey.length !== 32) {
       throw new Error("device did not return a public key");
     }
+    const deviceCommit = ack["deviceCommit"];
+    if (!(deviceCommit instanceof Uint8Array) || deviceCommit.length !== COMMIT_BYTES) {
+      throw new Error("device did not commit to a nonce");
+    }
 
-    this.session = new Session(deriveSession(privateKey, devicePubkey), "host");
+    const hostNonce = generateNonce();
+    const revealed = await this.call("helloReveal", { hostNonce });
+
+    const deviceNonce = revealed["deviceNonce"];
+    if (!(deviceNonce instanceof Uint8Array) || deviceNonce.length !== NONCE_BYTES) {
+      throw new Error("device did not reveal its nonce");
+    }
+
+    /* The check that makes the commitment worth having. Failing it means the
+     * nonce was chosen after the device saw ours, which is the whole attack —
+     * so this is a refusal, never a warning. */
+    if (!verifyCommitment(deviceCommit, devicePubkey, publicKey, deviceNonce)) {
+      throw new Error(
+        "the device's nonce does not match what it committed to — refusing to " +
+        "pair; something is relaying this connection",
+      );
+    }
+
+    this.session = new Session(
+      deriveSession(privateKey, devicePubkey, {
+        hostPublic: publicKey,
+        devicePublic: devicePubkey,
+        hostNonce,
+        deviceNonce,
+      }),
+      "host",
+    );
     return this.session.passkey;
   }
 
@@ -852,7 +904,13 @@ async function connectOnce(): Promise<void> {
     }
     log("approved on device; channel encrypted");
   } else {
-    const hello = await client.call("hello");
+    /* The mock has no key agreement, so this is not handshake() — but it is
+     * still both legs in the right order, because the mock models the state
+     * machine and refuses a reveal that no commitment is waiting on. Anything
+     * less here would be the demo path quietly proving the protocol works with
+     * one round trip. */
+    await client.call("hello", { version: PROTOCOL_VERSION });
+    const hello = await client.call("helloReveal");
     const passkey = hello["passkey"];
     $("passkey").textContent =
       typeof passkey === "string" ? passkey : "(mock: nothing to compare)";

@@ -9,6 +9,7 @@ import { encodeCbor, decodeCbor, type CborValue } from "../src/cbor.ts";
 import { encodeFrame, FrameDecoder, FrameType } from "../src/framing.ts";
 import { MockDevice } from "../src/mock-device.ts";
 import { ErrorCode } from "../src/transport.ts";
+import { PROTOCOL_VERSION } from "../src/session.ts";
 import { toDeviceTypedData } from "../src/eip712.ts";
 import { PERMIT } from "./eip712-vectors.ts";
 
@@ -24,12 +25,14 @@ let failures = 0;
 const check = (c: boolean, m: string) => { if (!c) { console.log(`  FAIL: ${m}`); failures++; } };
 const group = (n: string) => console.log(`== ${n}`);
 
+type Reply = { result?: Record<string, CborValue>; error?: { code: number; message: string } };
+
 /** Send one request, await one reply. */
 async function call(
   dev: MockDevice,
   method: string,
   params: Record<string, CborValue> = {},
-): Promise<{ result?: Record<string, CborValue>; error?: { code: number; message: string } }> {
+): Promise<Reply> {
   return new Promise((resolve, reject) => {
     const decoder = new FrameDecoder();
     dev.onFrame((frame) => {
@@ -62,10 +65,18 @@ async function rawFrame(dev: MockDevice, method: string): Promise<number> {
   });
 }
 
+/* Both handshake legs, in order. There is no shortcut on the mock any more
+ * than on the device: `hello` only commits, and nothing is established until
+ * `helloReveal`. */
+async function pair(dev: MockDevice): Promise<Reply> {
+  await call(dev, "hello", { version: PROTOCOL_VERSION });
+  return call(dev, "helloReveal");
+}
+
 async function connected(opts = {}): Promise<MockDevice> {
   const dev = new MockDevice(opts);
   await dev.open();
-  await call(dev, "hello");
+  await pair(dev);
   return dev;
 }
 
@@ -82,11 +93,41 @@ async function main(): Promise<void> {
     check(early.error?.code === ErrorCode.SessionRequired,
       `expected SessionRequired, got ${JSON.stringify(early)}`);
 
-    const hello = await call(dev, "hello");
-    check(hello.result?.["passkey"] === "314159", "hello should return a passkey to compare");
+    /* One leg is not a session. A reveal is what derives, and a mock that
+     * established on `hello` alone would let host code skip the commitment
+     * check that makes the passkey worth comparing. */
+    const half = await call(dev, "hello", { version: PROTOCOL_VERSION });
+    check(half.result?.["version"] === PROTOCOL_VERSION, "hello should name the version");
+    check(dev.session === "awaitingReveal",
+      `after hello the mock is ${dev.session}, not awaitingReveal`);
+    const stillEarly = await call(dev, "getAddress", { path: "m/44'/60'/0'/0/0" });
+    check(stillEarly.error?.code === ErrorCode.SessionRequired,
+      "a committed-but-unrevealed handshake served a key operation");
+
+    const hello = await call(dev, "helloReveal");
+    check(hello.result?.["passkey"] === "314159", "the reveal should return a passkey to compare");
 
     const ok = await call(dev, "getStatus");
-    check(ok.result !== undefined, "getStatus should work after hello");
+    check(ok.result !== undefined, "getStatus should work after the handshake");
+  }
+
+  group("a version the device does not speak is named as such");
+  {
+    const dev = new MockDevice();
+    await dev.open();
+
+    const old = await call(dev, "hello");
+    check(old.error?.code === ErrorCode.UnsupportedVersion,
+      `a v1 host (no version field) got ${JSON.stringify(old)}`);
+    const future = await call(dev, "hello", { version: 99 });
+    check(future.error?.code === ErrorCode.UnsupportedVersion,
+      `a host from the future got ${JSON.stringify(future)}`);
+    check(dev.session === "none", "a refused hello still moved the session");
+
+    /* And a reveal with nothing behind it is a session error, not a pairing. */
+    const stray = await call(dev, "helloReveal");
+    check(stray.error?.code === ErrorCode.SessionRequired,
+      `a stray helloReveal got ${JSON.stringify(stray)}`);
   }
 
   group("a session is pending until the passkey is compared");
@@ -99,8 +140,8 @@ async function main(): Promise<void> {
     const dev = new MockDevice({ autoConfirmSession: false, startUnlocked: true });
     await dev.open();
 
-    const hello = await call(dev, "hello");
-    check(hello.result?.["passkey"] === "314159", "hello should offer a passkey");
+    const hello = await pair(dev);
+    check(hello.result?.["passkey"] === "314159", "the reveal should offer a passkey");
     check(dev.session === "pending", `session went to ${dev.session}, not pending`);
     check(dev.confirmations.some((c) => c.includes("passkey")),
       "the passkey comparison was never shown");

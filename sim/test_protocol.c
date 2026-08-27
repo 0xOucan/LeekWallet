@@ -76,6 +76,7 @@ static int failures = 0;
 #define T_ERROR        0x7F
 
 #define E_MALFORMED    0x0001
+#define E_VERSION      0x0002
 #define E_NOT_UNLOCKED 0x0100
 #define E_REJECTED     0x0200
 #define E_TIMEOUT      0x0201
@@ -114,6 +115,12 @@ static uint32_t stub_hd_account;
 uint32_t ui_hd_account(void)          { return stub_hd_account; }
 
 void ui_request_session_confirm(void) { session_confirm_prompts++; }
+
+/* M-2. On hardware this is "is a screen up that the user has to answer"; here
+ * it is a switch the tests flip, because what protocol.c owes is a defined
+ * response to the answer rather than a particular way of reaching it. */
+static bool stub_user_is_answering = false;
+bool ui_user_is_answering(void)       { return stub_user_is_answering; }
 void ui_request_unlock(void)          { unlock_prompts++; }
 void ui_request_lock(void)            { lock_requests++; }
 
@@ -199,6 +206,8 @@ void curve25519_scalarmult_donna(uint8_t *mypublic, const uint8_t *n,
                                  const uint8_t *basepoint);
 
 static uint8_t host_priv[32], host_pub[32];
+static uint8_t device_pub[32];
+static uint8_t host_nonce[SESSION_NONCE_SIZE], device_nonce[SESSION_NONCE_SIZE];
 static uint8_t k_h2d[32], k_d2h[32];
 static uint32_t host_tx, host_rx;
 static bool session_up;
@@ -476,6 +485,7 @@ static void fresh_device(void)
     memset(shown_message, 0, sizeof(shown_message));
     shown_message_len = 0;
     memset(shown_passphrase_address, 0, sizeof(shown_passphrase_address));
+    stub_user_is_answering = false;
     scripted_outcome = SIGN_APPROVED;
 
     protocol_start();
@@ -494,38 +504,96 @@ static void device_unlocked(void)
     device_has_a_wallet();
 }
 
-/** Run the handshake and stop at PENDING: keys agreed, user has not confirmed. */
-static void handshake(uint8_t seed)
+/* Write `{method: <name>}` plus whatever `extra` adds, and send it plaintext. */
+static void send_hello_frame(const char *method,
+                             const char *field, const uint8_t *value, size_t value_len)
 {
-    host_keypair(seed);
-
     uint8_t payload[128];
     CborWriter w;
     cbor_writer_init(&w, payload, sizeof(payload));
-    cbor_write_map(&w, 2);
+    cbor_write_map(&w, field ? 3 : 2);
     cbor_write_text(&w, "method");
-    cbor_write_text(&w, "hello");
-    cbor_write_text(&w, "hostPubkey");
-    cbor_write_bytes(&w, host_pub, sizeof(host_pub));
+    cbor_write_text(&w, method);
+    cbor_write_text(&w, "version");
+    cbor_write_uint(&w, PROTOCOL_VERSION);
+    if (field) {
+        cbor_write_text(&w, field);
+        cbor_write_bytes(&w, value, value_len);
+    }
     send_plain(payload, w.length);
+}
+
+/**
+ * Run the v2 handshake and stop at PENDING: keys agreed, user has not confirmed.
+ *
+ * Written out the long way rather than calling into session.c's instance,
+ * because the point of this suite is to check the device against an
+ * independent implementation of the same rules — including the commitment
+ * check, which is the host's job and the reason the digits mean anything.
+ */
+static void handshake(uint8_t seed)
+{
+    host_keypair(seed);
+    fill(host_nonce, sizeof(host_nonce), (uint8_t)(seed ^ 0x5a));
+
+    send_hello_frame("hello", "hostPubkey", host_pub, sizeof(host_pub));
 
     Frame f = next_frame();
     CHECK(f.present && f.type == T_RESPONSE, "hello was not answered in plaintext");
-    if (!f.present) return;
+    if (!f.present || f.type != T_RESPONSE) return;
 
     const uint8_t *body;
     size_t body_len;
-    CborItem it;
+    CborItem it, commit_it, ver;
     if (!result_body(&f, &body, &body_len) ||
         !cbor_map_find(body, body_len, "devicePubkey", &it) ||
-        it.type != CBOR_BYTES || it.value != 32) {
-        printf("  FAIL: helloAck carried no device public key\n");
+        it.type != CBOR_BYTES || it.value != 32 ||
+        !cbor_map_find(body, body_len, "deviceCommit", &commit_it) ||
+        commit_it.type != CBOR_BYTES || commit_it.value != SESSION_COMMIT_SIZE) {
+        printf("  FAIL: helloAck carried no device public key and commitment\n");
         failures++;
         return;
     }
+    CHECK(cbor_map_find(body, body_len, "version", &ver) && ver.type == CBOR_UINT &&
+          ver.value == PROTOCOL_VERSION, "helloAck did not name the protocol version");
+
+    memcpy(device_pub, it.data, 32);
+    uint8_t committed[SESSION_COMMIT_SIZE];
+    memcpy(committed, commit_it.data, sizeof(committed));
+
+    /* Only now does the host reveal its nonce. Sending it before the device
+     * had committed would give the device's side of the comparison away. */
+    send_hello_frame("helloReveal", "hostNonce", host_nonce, sizeof(host_nonce));
+
+    f = next_frame();
+    CHECK(f.present && f.type == T_RESPONSE, "helloReveal was not answered in plaintext");
+    if (!f.present || f.type != T_RESPONSE) return;
+
+    if (!result_body(&f, &body, &body_len) ||
+        !cbor_map_find(body, body_len, "deviceNonce", &it) ||
+        it.type != CBOR_BYTES || it.value != SESSION_NONCE_SIZE) {
+        printf("  FAIL: the device revealed no nonce\n");
+        failures++;
+        return;
+    }
+    memcpy(device_nonce, it.data, SESSION_NONCE_SIZE);
+
+    /* The check the app must never skip: without it the device's nonce is a
+     * value the peer could have chosen after seeing ours, which is the whole
+     * of C-1. */
+    uint8_t expected[SESSION_COMMIT_SIZE];
+    session_commitment(device_pub, host_pub, device_nonce, expected);
+    CHECK(memcmp(expected, committed, sizeof(expected)) == 0,
+          "the device revealed a nonce it had not committed to");
+
+    SessionTranscript t;
+    memcpy(t.host_public, host_pub, 32);
+    memcpy(t.device_public, device_pub, 32);
+    memcpy(t.host_nonce, host_nonce, SESSION_NONCE_SIZE);
+    memcpy(t.device_nonce, device_nonce, SESSION_NONCE_SIZE);
 
     char passkey[7];
-    CHECK(session_derive(host_priv, it.data, k_h2d, k_d2h, passkey),
+    CHECK(session_derive(host_priv, device_pub, &t, k_h2d, k_d2h, passkey),
           "host could not derive the session");
 }
 
@@ -645,6 +713,135 @@ static void test_status_is_public_but_thin(void)
         CHECK(!cbor_map_find(body, body_len, "passphraseValue", &it),
               "getStatus reveals the passphrase itself");
     }
+}
+
+/* ---------------------------------------------------------- the handshake */
+
+/* Send a `hello` whose version field is whatever the caller says, including
+ * absent, which is what a v1 host sends. */
+static void send_hello_versioned(bool with_version, uint32_t version)
+{
+    uint8_t payload[128];
+    CborWriter w;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, with_version ? 3 : 2);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "hello");
+    if (with_version) {
+        cbor_write_text(&w, "version");
+        cbor_write_uint(&w, version);
+    }
+    cbor_write_text(&w, "hostPubkey");
+    cbor_write_bytes(&w, host_pub, sizeof(host_pub));
+    send_plain(payload, w.length);
+}
+
+/**
+ * PROTOCOL.md §7 promised a version check that was never built, and `hello`
+ * carried a version the client never read. Both ends now check, and the
+ * failure has to be its own error code: a v1 host that got as far as sealing a
+ * frame would fail with "decrypt failed", which is true and useless.
+ */
+static void test_version_mismatch_is_named(void)
+{
+    printf("== a host speaking another protocol version is told so\n");
+
+    fresh_device();
+    host_keypair(90);
+
+    send_hello_versioned(false, 0);
+    expect_error(T_ERROR, E_VERSION, "a v1 host, which sends no version at all");
+    CHECK(session_state() == SESSION_IDLE, "a rejected hello left session state behind");
+    CHECK(session_confirm_prompts == 0, "a rejected hello put a prompt on screen");
+
+    send_hello_versioned(true, 1);
+    expect_error(T_ERROR, E_VERSION, "a host offering v1");
+
+    send_hello_versioned(true, 99);
+    expect_error(T_ERROR, E_VERSION, "a host offering a version from the future");
+
+    /* And the current one is accepted, so the check is a check rather than a
+     * wall. */
+    handshake(91);
+    CHECK(session_state() == SESSION_PENDING,
+          "the current version did not complete a handshake");
+}
+
+/* The ordering C-1 turns on: nothing derives, and nothing goes on screen,
+ * until the host has revealed a nonce against a live commitment. */
+static void test_reveal_is_required_before_anything_is_shown(void)
+{
+    printf("== the passkey screen waits for the reveal, and a stray reveal is refused\n");
+
+    fresh_device();
+    host_keypair(92);
+
+    /* A reveal with no commitment outstanding. */
+    send_hello_frame("helloReveal", "hostNonce", host_pub, SESSION_NONCE_SIZE);
+    expect_error(T_ERROR, E_SESSION, "helloReveal with no handshake behind it");
+
+    send_hello_versioned(true, PROTOCOL_VERSION);
+    Frame f = next_frame();
+    CHECK(f.present && f.type == T_RESPONSE, "hello was not answered");
+    CHECK(session_state() == SESSION_AWAITING_REVEAL,
+          "hello did not leave the device awaiting a nonce (state %d)", session_state());
+    /* The whole point: the device has committed but has NOT asked the user to
+     * compare anything, because there is nothing to compare yet. */
+    CHECK(session_confirm_prompts == 0,
+          "the device showed a passkey before the host revealed its nonce");
+
+    uint8_t nonce[SESSION_NONCE_SIZE];
+    fill(nonce, sizeof(nonce), 93);
+    send_hello_frame("helloReveal", "hostNonce", nonce, sizeof(nonce));
+    f = next_frame();
+    CHECK(f.present && f.type == T_RESPONSE, "helloReveal was not answered");
+    CHECK(session_state() == SESSION_PENDING, "the reveal did not reach PENDING");
+    CHECK(session_confirm_prompts == 1, "the reveal did not put a passkey on screen");
+
+    /* One commitment, one reveal. A second would be a second derivation
+     * against a nonce the peer has already seen. */
+    send_hello_frame("helloReveal", "hostNonce", nonce, sizeof(nonce));
+    expect_error(T_ERROR, E_SESSION, "a commitment reused for a second reveal");
+
+    /* A short nonce is malformed rather than padded. */
+    fresh_device();
+    host_keypair(94);
+    send_hello_versioned(true, PROTOCOL_VERSION);
+    (void)next_frame();
+    send_hello_frame("helloReveal", "hostNonce", nonce, 8);
+    expect_error(T_ERROR, E_MALFORMED, "an 8-byte hostNonce");
+}
+
+/* M-2. A plaintext `hello` is unauthenticated, and honouring one mid-approval
+ * lets anybody with write access to the port schedule the moment a signing
+ * confirmation disappears from under the user. */
+static void test_hello_waits_for_a_user_who_is_answering(void)
+{
+    printf("== a handshake does not interrupt a confirmation on screen (M-2)\n");
+
+    fresh_device();
+    device_unlocked();
+    confirmed_session(95);
+
+    stub_user_is_answering = true;
+
+    host_keypair(96);
+    send_hello_versioned(true, PROTOCOL_VERSION);
+    expect_error(T_ERROR, E_BUSY, "a hello while the user is answering");
+    CHECK(session_state() == SESSION_ACTIVE,
+          "an unauthenticated hello tore down a live session while the user was "
+          "reading a confirmation (state %d)", session_state());
+    CHECK(session_confirm_prompts == 1,
+          "a refused hello still repainted the screen");
+
+    /* And once the user has answered, a handshake works again — this is a
+     * deferral, not a lockout. Refusing whenever a session merely EXISTS would
+     * strand an app that crashed and restarted, because USB has no disconnect
+     * for the device to notice. */
+    stub_user_is_answering = false;
+    handshake(97);
+    CHECK(session_state() == SESSION_PENDING,
+          "a handshake was still refused after the user answered");
 }
 
 static void test_keys_need_a_session_and_a_passkey(void)
@@ -2369,13 +2566,16 @@ static Frame via_reply(Via v)
 static void via_handshake(Via v, uint8_t seed)
 {
     host_keypair(seed);
+    fill(host_nonce, sizeof(host_nonce), (uint8_t)(seed ^ 0x5a));
 
     uint8_t payload[128];
     CborWriter w;
     cbor_writer_init(&w, payload, sizeof(payload));
-    cbor_write_map(&w, 2);
+    cbor_write_map(&w, 3);
     cbor_write_text(&w, "method");
     cbor_write_text(&w, "hello");
+    cbor_write_text(&w, "version");
+    cbor_write_uint(&w, PROTOCOL_VERSION);
     cbor_write_text(&w, "hostPubkey");
     cbor_write_bytes(&w, host_pub, sizeof(host_pub));
     via_send_plain(v, payload, w.length);
@@ -2383,12 +2583,56 @@ static void via_handshake(Via v, uint8_t seed)
     Frame f = via_reply(v);
     const uint8_t *body;
     size_t body_len;
-    CborItem it;
-    char passkey[SESSION_PASSKEY_LEN + 1];
+    CborItem it, commit_it;
+    uint8_t committed[SESSION_COMMIT_SIZE];
     if (!f.present || !result_body(&f, &body, &body_len) ||
         !cbor_map_find(body, body_len, "devicePubkey", &it) ||
         it.type != CBOR_BYTES || it.value != 32 ||
-        !session_derive(host_priv, it.data, k_h2d, k_d2h, passkey)) {
+        !cbor_map_find(body, body_len, "deviceCommit", &commit_it) ||
+        commit_it.type != CBOR_BYTES || commit_it.value != SESSION_COMMIT_SIZE) {
+        printf("  FAIL: handshake over %s did not produce a commitment\n", via_name(v));
+        failures++;
+        return;
+    }
+    memcpy(device_pub, it.data, 32);
+    memcpy(committed, commit_it.data, sizeof(committed));
+
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 3);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "helloReveal");
+    cbor_write_text(&w, "version");
+    cbor_write_uint(&w, PROTOCOL_VERSION);
+    cbor_write_text(&w, "hostNonce");
+    cbor_write_bytes(&w, host_nonce, sizeof(host_nonce));
+    via_send_plain(v, payload, w.length);
+
+    f = via_reply(v);
+    char passkey[SESSION_PASSKEY_LEN + 1];
+    SessionTranscript t;
+    uint8_t expected[SESSION_COMMIT_SIZE];
+    if (!f.present || !result_body(&f, &body, &body_len) ||
+        !cbor_map_find(body, body_len, "deviceNonce", &it) ||
+        it.type != CBOR_BYTES || it.value != SESSION_NONCE_SIZE) {
+        printf("  FAIL: handshake over %s revealed no nonce\n", via_name(v));
+        failures++;
+        return;
+    }
+    memcpy(device_nonce, it.data, SESSION_NONCE_SIZE);
+
+    session_commitment(device_pub, host_pub, device_nonce, expected);
+    if (memcmp(expected, committed, sizeof(expected)) != 0) {
+        printf("  FAIL: %s revealed a nonce it had not committed to\n", via_name(v));
+        failures++;
+        return;
+    }
+
+    memcpy(t.host_public, host_pub, 32);
+    memcpy(t.device_public, device_pub, 32);
+    memcpy(t.host_nonce, host_nonce, SESSION_NONCE_SIZE);
+    memcpy(t.device_nonce, device_nonce, SESSION_NONCE_SIZE);
+
+    if (!session_derive(host_priv, device_pub, &t, k_h2d, k_d2h, passkey)) {
         printf("  FAIL: handshake over %s did not produce a session\n", via_name(v));
         failures++;
     }
@@ -3520,6 +3764,9 @@ static int run_all_tests(void)
     test_nothing_is_answered_before_a_transport_is_chosen();
     test_plaintext_ping_and_features();
     test_status_is_public_but_thin();
+    test_version_mismatch_is_named();
+    test_reveal_is_required_before_anything_is_shown();
+    test_hello_waits_for_a_user_who_is_answering();
     test_keys_need_a_session_and_a_passkey();
     test_locked_device_refuses_keys();
     test_address_derivation_reads_the_path();

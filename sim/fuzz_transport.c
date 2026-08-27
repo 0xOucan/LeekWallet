@@ -52,6 +52,10 @@ void protocol__reset_for_test(void);
 
 uint32_t ui_hd_account(void) { return 0; }
 void ui_request_session_confirm(void) { }
+/* Never mid-answer: the fuzzer's business is the parsers, and a handshake
+ * refused halfway through a run would silence the one target that reaches
+ * dispatch() with attacker-chosen bytes. */
+bool ui_user_is_answering(void) { return false; }
 void ui_request_unlock(void) { }
 void ui_request_lock(void) { }
 void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
@@ -163,25 +167,23 @@ static void fresh_device(void)
     protocol_start();
 }
 
-/* Read the device public key out of a helloAck sitting in the output pipe. */
-static bool open_session(void)
+/* Send one plaintext `{method, version, <field>:<bytes>}` and read the reply's
+ * result map back out of the pipe. Returns the result body, or NULL. */
+static const uint8_t *hello_leg(const char *method, const char *field,
+                                const uint8_t *value, size_t value_len,
+                                uint8_t *out, size_t out_size, size_t *result_len)
 {
-    static const uint8_t base[32] = { 9 };
-    uint8_t clamped[32];
-    for (int i = 0; i < 32; i++) host_priv[i] = (uint8_t)rnd();
-    memcpy(clamped, host_priv, 32);
-    clamped[0] &= 248; clamped[31] &= 127; clamped[31] |= 64;
-    curve25519_scalarmult_donna(host_pub, clamped, base);
-
     uint8_t payload[128];
     CborWriter w;
     cbor_writer_init(&w, payload, sizeof(payload));
-    cbor_write_map(&w, 2);
+    cbor_write_map(&w, 3);
     cbor_write_text(&w, "method");
-    cbor_write_text(&w, "hello");
-    cbor_write_text(&w, "hostPubkey");
-    cbor_write_bytes(&w, host_pub, sizeof(host_pub));
-    if (!cbor_writer_ok(&w)) return false;
+    cbor_write_text(&w, method);
+    cbor_write_text(&w, "version");
+    cbor_write_uint(&w, PROTOCOL_VERSION);
+    cbor_write_text(&w, field);
+    cbor_write_bytes(&w, value, value_len);
+    if (!cbor_writer_ok(&w)) return NULL;
 
     size_t body = w.length + 1;
     uint8_t frame[256];
@@ -192,9 +194,8 @@ static bool open_session(void)
     fake_usb_host_write(frame, w.length + 5);
     protocol__pump_for_test();
 
-    uint8_t out[512];
-    size_t n = fake_usb_device_read(out, sizeof(out));
-    if (n < 7) return false;
+    size_t n = fake_usb_device_read(out, out_size);
+    if (n < 7) return NULL;
 
     /* out is 'L','K',len,len,type,<cbor> */
     const uint8_t *cbor = out + 5;
@@ -202,15 +203,48 @@ static bool open_session(void)
     CborItem it;
     CborReader r;
     cbor_reader_init(&r, cbor, cbor_len);
-    if (!cbor_read(&r, &it) || it.type != CBOR_MAP) return false;
-    if (!cbor_read(&r, &it) || it.type != CBOR_TEXT) return false;
-    const uint8_t *inner = cbor + r.pos;
-    size_t inner_len = cbor_len - r.pos;
+    if (!cbor_read(&r, &it) || it.type != CBOR_MAP) return NULL;
+    if (!cbor_read(&r, &it) || it.type != CBOR_TEXT) return NULL;
+    *result_len = cbor_len - r.pos;
+    return cbor + r.pos;
+}
+
+/* Drive both legs of the v2 handshake so the session target has a real
+ * channel to seal mutated CBOR under. */
+static bool open_session(void)
+{
+    static const uint8_t base[32] = { 9 };
+    uint8_t clamped[32];
+    for (int i = 0; i < 32; i++) host_priv[i] = (uint8_t)rnd();
+    memcpy(clamped, host_priv, 32);
+    clamped[0] &= 248; clamped[31] &= 127; clamped[31] |= 64;
+    curve25519_scalarmult_donna(host_pub, clamped, base);
+
+    uint8_t out[512];
+    size_t inner_len = 0;
+    CborItem it;
+
+    const uint8_t *inner = hello_leg("hello", "hostPubkey", host_pub, sizeof(host_pub),
+                                     out, sizeof(out), &inner_len);
+    if (!inner) return false;
     if (!cbor_map_find(inner, inner_len, "devicePubkey", &it) ||
         it.type != CBOR_BYTES || it.value != 32) return false;
 
+    SessionTranscript t;
+    memcpy(t.host_public, host_pub, 32);
+    memcpy(t.device_public, it.data, 32);
+    for (size_t i = 0; i < SESSION_NONCE_SIZE; i++) t.host_nonce[i] = (uint8_t)rnd();
+
+    uint8_t out2[512];
+    inner = hello_leg("helloReveal", "hostNonce", t.host_nonce, SESSION_NONCE_SIZE,
+                      out2, sizeof(out2), &inner_len);
+    if (!inner) return false;
+    if (!cbor_map_find(inner, inner_len, "deviceNonce", &it) ||
+        it.type != CBOR_BYTES || it.value != SESSION_NONCE_SIZE) return false;
+    memcpy(t.device_nonce, it.data, SESSION_NONCE_SIZE);
+
     char passkey[7];
-    if (!session_derive(host_priv, it.data, k_h2d, k_d2h, passkey)) return false;
+    if (!session_derive(host_priv, t.device_public, &t, k_h2d, k_d2h, passkey)) return false;
     session_confirm();
     host_tx = 0;
     session_up = true;

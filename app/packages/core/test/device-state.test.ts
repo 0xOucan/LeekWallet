@@ -7,6 +7,7 @@
  */
 
 import { MockDevice } from "../src/mock-device.ts";
+import { PROTOCOL_VERSION } from "../src/session.ts";
 import { derivationsInvalidated, PERSIST_DERIVED_ADDRESSES, type DeviceStatus } from "../src/device-state.ts";
 import { encodeCbor, decodeCbor, type CborValue } from "../src/cbor.ts";
 import { encodeFrame, FrameDecoder, FrameType } from "../src/framing.ts";
@@ -49,7 +50,8 @@ async function main() {
   {
     const dev = new MockDevice({ startUnlocked: true });
     await dev.open();
-    await call(dev, "hello");
+    await call(dev, "hello", { version: PROTOCOL_VERSION });
+    await call(dev, "helloReveal");
 
     await call(dev, "setPassphrase", { passphrase: "hunter2" });
     const withPass = await call(dev, "getAddress", { path: "m/44'/60'/0'/0/0" });
@@ -68,7 +70,8 @@ async function main() {
   {
     const dev = new MockDevice({ startUnlocked: true });
     await dev.open();
-    await call(dev, "hello");
+    await call(dev, "hello", { version: PROTOCOL_VERSION });
+    await call(dev, "helloReveal");
     await call(dev, "setPassphrase", { passphrase: "x" });
 
     // The device locked on its own timer; the app was not told.

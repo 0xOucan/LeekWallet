@@ -4684,6 +4684,40 @@ void ui_request_passphrase_confirm(const char *address)
     host_passphrase_pending = true;
 }
 
+/* M-2. Placed here rather than beside ui_request_session_confirm() only
+ * because it reads two flags that are defined this far down the file. */
+bool ui_user_is_answering(void)
+{
+    /* A request already handed to the UI task counts even before the screen
+     * has changed: these flags are set by the protocol task and acted on a
+     * tick later, and a `hello` landing in that gap would discard the pending
+     * approval just as thoroughly as one landing a tick after it.
+     *
+     * SCREEN_SESSION_CONFIRM is deliberately absent. A second handshake while
+     * the pairing screen is up already resets and repaints, so the user
+     * compares the new digits rather than the old — that behaviour is tested
+     * and it is the right one. Refusing here instead would strand a host that
+     * abandoned a handshake behind a screen only a button press can clear. */
+    if (sign_request_pending || host_passphrase_pending) {
+        return true;
+    }
+
+    switch (ui_get_screen()) {
+        case SCREEN_SIGN_CONFIRM:
+        case SCREEN_HOST_PASSPHRASE_CONFIRM:
+        case SCREEN_PASSPHRASE_CONFIRM:
+        case SCREEN_WIPE_CONFIRM:
+        /* Not questions, but a seed is on the glass and the user is working
+         * through it. Wiping that away for a stranger's pairing prompt loses
+         * their place in the one procedure that has no second chance. */
+        case SCREEN_MNEMONIC_DISPLAY:
+        case SCREEN_MNEMONIC_VERIFY:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static void screen_host_passphrase_enter(void)
 {
     ESP_LOGI(TAG, "Host passphrase confirmation screen");
