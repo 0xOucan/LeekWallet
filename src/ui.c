@@ -1541,6 +1541,11 @@ static void screen_pin_change_on_button(button_id_t btn)
 
 static void screen_main_menu_enter(void)
 {
+    /* A no-op unless seed creation suspended them. Every exit from that flow
+     * arrives here, which is why the resume lives at the destination rather
+     * than being repeated at each of the ways out. */
+    transport_resume();
+
     ESP_LOGI(TAG, "Main menu screen");
     menu_selection = 0;
     menu_rebuild();
@@ -2813,6 +2818,16 @@ static void screen_qr_code_on_button(button_id_t btn)
 static void screen_entropy_enter(void)
 {
     ESP_LOGI(TAG, "Entropy collection screen");
+    /* Nothing may be listening while a seed is made. This is the first screen
+     * of wallet creation, so suspending here covers the whole of it: the
+     * collection, the generation, the words on screen and their verification.
+     * screen_main_menu_enter() puts the link back, and every way out of this
+     * flow -- finishing, cancelling, failing -- goes through the main menu.
+     *
+     * The device cannot tell what it is plugged into, so this is the part it
+     * can enforce. The part it cannot is the cable: see docs/VAULT.md on
+     * generating a seed on power alone. */
+    transport_suspend();
     entropy_reset_user_pool();
 }
 

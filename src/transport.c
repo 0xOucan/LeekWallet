@@ -113,6 +113,38 @@ void transport_init(void)
     transport_apply(stored);
 }
 
+static bool         suspended = false;
+static TransportKind resume_to = TRANSPORT_USB;
+
+void transport_suspend(void)
+{
+    if (suspended) {
+        return;
+    }
+    resume_to = current;
+    suspended = true;
+
+    /* The same teardown transport_apply() does, without bringing anything up
+     * after it. Ordered so that at no instant is either endpoint answering. */
+    session_reset();
+    protocol_reset_rx();
+    protocol_set_writer(NULL);
+    ble_transport_stop();
+    protocol_set_rx_enabled(false);
+    entropy_set_ble_active(false);
+
+    ESP_LOGI(TAG, "Links suspended");
+}
+
+void transport_resume(void)
+{
+    if (!suspended) {
+        return;
+    }
+    suspended = false;
+    transport_apply(resume_to);
+}
+
 bool transport_set(TransportKind kind)
 {
     if (kind == current) {

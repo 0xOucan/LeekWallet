@@ -2015,6 +2015,40 @@ int main(void)
     test_the_autolock_timeout_locks();
     test_show_seed_relocks_the_vault_too();
 
+    /* ---------------------------------------------------------------------
+     * Seed creation talks to nothing.
+     *
+     * A host that cannot reach the device cannot observe or steer the seed,
+     * and -- less obviously -- nothing else is drawing from the entropy gate
+     * while the seed is drawn, which matters because bootloader_random_enable()
+     * is not reference-counted and the protocol task exists whether or not a
+     * link is selected.
+     *
+     * Asserted through the endpoint's own state rather than a flag of its own, so
+     * the test fails if the suspend stops actually silencing the endpoint,
+     * not merely if somebody renames something.
+     */
+    printf("== seed creation runs with both links down\n");
+    {
+        transport_set(TRANSPORT_USB);
+        CHECK(fake_protocol_rx_enabled(), "USB should answer before seed creation");
+
+        go(SCREEN_ENTROPY);
+        CHECK(!fake_protocol_rx_enabled(),
+              "the USB endpoint kept answering during seed creation");
+
+        /* Every way out of the flow goes through the main menu, which is where
+         * the link is restored -- including this one, cancelling. */
+        go(SCREEN_MAIN_MENU);
+        CHECK(fake_protocol_rx_enabled(), "the link was not restored after leaving");
+
+        /* Suspending twice, and resuming what was never suspended, are both
+         * no-ops: the resume sits on a screen reachable without ever having
+         * created a wallet. */
+        go(SCREEN_MAIN_MENU);
+        CHECK(fake_protocol_rx_enabled(), "a second resume disturbed the link");
+    }
+
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;

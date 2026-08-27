@@ -45,4 +45,33 @@ bool transport_set(TransportKind kind);
 /** Convenience for the settings screen's single button. */
 bool transport_toggle(void);
 
+/**
+ * Take both links down, and put back the one that was up.
+ *
+ * For the moments when the device should be talking to nothing: seed
+ * generation, above all. Three reasons, and only the first is obvious.
+ *
+ * A host cannot observe or influence a seed it cannot reach. That is the
+ * obvious one, and on its own it would be worth doing.
+ *
+ * The entropy gate is the second. `bootloader_random_enable()` is not
+ * reference-counted by ESP-IDF, and the protocol task exists whether or not a
+ * link is selected, so two tasks calling into the gate can have one's
+ * `disable()` land inside the other's read -- which yields documented
+ * pseudo-random bytes that pass the health check. With no link serving
+ * requests, nothing else is drawing while the seed is born.
+ *
+ * The third is that BLE up means the radio is up, so the gate uses the RF
+ * source; BLE down means it uses the SAR ADC. Espressif documents both as true
+ * sources, but a seed generated with the radio off is generated the same way
+ * every time, on every device, which is one less thing that varies between two
+ * wallets that ought to be equally strong.
+ *
+ * Suspending twice is a no-op, and so is resuming when nothing was suspended:
+ * the resume is called from the main menu, which is reached by every path out
+ * of seed creation including cancelling and failing.
+ */
+void transport_suspend(void);
+void transport_resume(void);
+
 #endif /* LEEK_TRANSPORT_H */
