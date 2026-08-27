@@ -1069,6 +1069,13 @@ static void dispatch(const uint8_t *payload, size_t len)
         memcpy(passphrase, item.data, pass_len);
         passphrase[pass_len] = '\0';
 
+        /* The frame was decrypted in place, so the plaintext passphrase is
+         * still sitting in the receive buffer - a static .bss array that
+         * nothing clears and that a later frame only partially overwrites.
+         * Zero the bytes here, where their length is known; item.data points
+         * into that buffer, which is writable for exactly this reason. */
+        memzero((uint8_t *)item.data, pass_len);
+
         WalletError perr = wallet_set_passphrase(passphrase, pass_len);
         /* Gone from this frame the moment the wallet has it. It lives in RAM
          * for the session inside the wallet layer and nowhere else, and it is
