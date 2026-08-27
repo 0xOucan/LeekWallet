@@ -93,8 +93,11 @@ static void cache_seed_from_mnemonic(void) {
         return;
     }
 
-    ESP_LOGI(TAG, "Caching seed (PBKDF2)%s...",
-             state.has_passphrase ? " with passphrase" : "");
+    /* Deliberately says nothing about whether a passphrase is applied. Whether
+     * a hidden wallet exists is the secret a passphrase keeps (docs/VAULT.md,
+     * "Do not record which seeds have a passphrase"), and the serial console
+     * is readable by anyone holding the device while it is unlocked. */
+    ESP_LOGI(TAG, "Caching seed (PBKDF2)...");
 
     // Use passphrase if set, otherwise empty string
     const char *pass = state.has_passphrase ? state.passphrase : "";
@@ -1199,7 +1202,10 @@ WalletError wallet_unlock(const char *password, size_t length) {
     compute_password_hash(password, length, hash);
 
     load_vault_record();
-    if (!vault_stored_hash_valid || memcmp(hash, vault_stored_hash, HASH_SIZE) != 0) {
+    /* vault_hash_equals, not memcmp: vault-kdf.h requires it, and a compare
+     * that exits on the first differing byte leaks how much of a guessed
+     * verifier was right. */
+    if (!vault_stored_hash_valid || !vault_hash_equals(hash, vault_stored_hash)) {
         memzero(hash, sizeof(hash));
         return WALLET_ERROR_WRONG_PASSWORD;
     }
@@ -1250,6 +1256,11 @@ void wallet_lock(void) {
     memzero(state.passphrase, sizeof(state.passphrase));
     memzero(state.encryption_key, sizeof(state.encryption_key));
     memzero(&state.node, sizeof(state.node));
+    /* The verifier too: it is a KDF output over the PIN, so a copy left in RAM
+     * is an offline oracle for the PIN behind a device that is supposed to be
+     * locked. Every path that needs it recomputes it from a PIN it was just
+     * given. */
+    memzero(state.password_hash, sizeof(state.password_hash));
 
     state.unlocked = false;
     state.has_mnemonic = false;
@@ -1268,7 +1279,7 @@ bool wallet_verify_password(const char *password, size_t length) {
 
     load_vault_record();
     bool match = vault_stored_hash_valid &&
-                 memcmp(hash, vault_stored_hash, HASH_SIZE) == 0;
+                 vault_hash_equals(hash, vault_stored_hash);
 
     memzero(hash, sizeof(hash));
 

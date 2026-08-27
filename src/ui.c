@@ -151,6 +151,7 @@ static void screen_sign_confirm_on_button(button_id_t btn);
 static void forget_mnemonic_unless_needed(screen_id_t next);
 static void forget_mnemonic_entry(screen_id_t next);
 static void forget_pin_entry(screen_id_t next);
+static void forget_passphrase_entry(screen_id_t next);
 
 static void screen_qr_code_enter(void);
 static void screen_qr_code_render(void);
@@ -285,7 +286,7 @@ static const screen_t screen_passphrase = {
     .enter = screen_passphrase_enter,
     .render = screen_passphrase_render,
     .on_button = screen_passphrase_on_button,
-    .exit = NULL
+    .exit = forget_passphrase_entry
 };
 
 static const screen_t screen_ble_name = {
@@ -973,16 +974,21 @@ static bool ensure_wallet_unlocked(void)
             return false;
         }
 
-        /* First time: set password, subsequent: unlock */
+        /* First time: set password, subsequent: unlock. The stack copy is
+         * zeroed on every path out: pin.c keeps the one authoritative copy and
+         * clears it on lock, and a second one left in this frame would outlive
+         * that lock in whatever called us next. */
         if (!status.password_set) {
             WalletError err = wallet_set_password(pin, strlen(pin));
             if (err != WALLET_OK) {
                 ESP_LOGE(TAG, "Failed to set wallet password: %d", err);
+                memzero(pin, sizeof(pin));
                 return false;
             }
         }
 
         WalletError err = wallet_unlock(pin, strlen(pin));
+        memzero(pin, sizeof(pin));
         if (err != WALLET_OK) {
             ESP_LOGE(TAG, "Failed to unlock wallet: %d", err);
             button_drain();
@@ -3344,6 +3350,18 @@ static void screen_passphrase_enter(void)
 {
     ESP_LOGI(TAG, "Passphrase entry screen");
     text_entry_reset(&passphrase_entry);
+}
+
+/* Every button path off this screen already clears the buffer. This is for the
+ * paths that are not button paths: the auto-lock timer, and a host request
+ * that moves the screen out from under a half-typed passphrase. Without it a
+ * passphrase the user never finished typing outlives the lock in .bss, which
+ * is the S5 residue in the one buffer S5 did not cover. Unconditional - unlike
+ * the seed buffer there is no hand-off that needs it kept. */
+static void forget_passphrase_entry(screen_id_t next)
+{
+    (void)next;
+    text_entry_clear(&passphrase_entry);
 }
 
 static void screen_passphrase_render(void)
