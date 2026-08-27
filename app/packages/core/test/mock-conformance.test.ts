@@ -198,21 +198,36 @@ async function deviceFor(v: Vector): Promise<MockDevice> {
   });
   await dev.open();
   if (v.setup.session) {
+    /* Both legs, in order. The mock refuses a reveal with no commitment
+     * behind it, exactly as the firmware does, so getting this wrong would
+     * fail here rather than quietly establish a session the device would
+     * never have granted. */
     await exchange(dev, encodeFrame(0x01 as FrameType, encodeHello()));
+    await exchange(dev, encodeFrame(0x01 as FrameType, encodeHelloReveal()));
   }
   return dev;
 }
 
-/* `hello` is the one exchange that cannot be replayed from the corpus: the
- * firmware answers with an X25519 public key and the mock has no key agreement
- * at all, so their replies differ by design and comparing them would say
- * nothing. What the corpus needs from it is only its side effect — a session
- * the following request can travel inside. */
+/* The handshake is the one exchange that cannot be replayed from the corpus:
+ * the firmware answers with an X25519 public key, a commitment and a nonce,
+ * and the mock has no key agreement at all, so their replies differ by design
+ * and comparing them would say nothing. What the corpus needs from it is only
+ * its side effect — a session the following request can travel inside.
+ *
+ * Hand-encoded to keep this file's only CBOR writer out of the comparison
+ * path. `{ "method": "hello", "version": 2 }` and `{ "method": "helloReveal" }`. */
 const encodeHello = (): Uint8Array =>
-  // { "method": "hello" }, hand-encoded to keep this file's only CBOR writer
-  // out of the comparison path.
-  new Uint8Array([0xa1, 0x66, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64, 0x65,
-                  0x68, 0x65, 0x6c, 0x6c, 0x6f]);
+  new Uint8Array([0xa2,
+                  0x66, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64,       // "method"
+                  0x65, 0x68, 0x65, 0x6c, 0x6c, 0x6f,             // "hello"
+                  0x67, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, // "version"
+                  0x02]);
+
+const encodeHelloReveal = (): Uint8Array =>
+  new Uint8Array([0xa1,
+                  0x66, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64,       // "method"
+                  0x6b, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x52, 0x65,
+                  0x76, 0x65, 0x61, 0x6c]);                       // "helloReveal"
 
 const FRAME_NAMES: Record<number, string> = {
   0x01: "REQUEST", 0x02: "RESPONSE", 0x11: "ENC_REQUEST",
