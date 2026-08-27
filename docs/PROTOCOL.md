@@ -13,7 +13,7 @@ Three distinct attackers, and the protocol only defends against two of them.
 | Attacker | Defended by | Effective? |
 |---|---|---|
 | Passive radio eavesdropper | Session encryption (§3) | Yes |
-| Active MITM between host and device | Passkey comparison (§3) — **does not hold, see §3** | **No** |
+| Active MITM between host and device | Commit-then-reveal passkey comparison (§3) | Yes — one online guess at 1-in-10⁶, and only if the user is looking |
 | **Compromised host application** | **Nothing in this protocol** | **No** |
 
 The third one is the important one. If the phone or PC is compromised, the attacker is *inside*
@@ -107,46 +107,91 @@ length or falls short of it resets reassembly rather than being patched around.
 Runs once per connection, before any encrypted command.
 
 ```
-host                                            device
- ──── 0x01 Hello {version, hostPubkey} ───────────▶
- ◀─── 0x02 HelloAck {version, devicePubkey, deviceId}
-      both sides: X25519 ECDH → HKDF-SHA256 → k_h2d, k_d2h
- ◀─── device displays a 6-digit passkey on its OLED
- ──── user reads it off the screen, types it into the app
- ──── 0x11 Confirm {passkey}  (encrypted) ─────────▶
- ◀─── 0x12 ConfirmAck {sessionId}
+host                                                device
+ ── 0x01 hello { version: 2, hostPubkey: PKa } ───────▶
+                            device picks Nb, keeps it, publishes only its hash
+ ◀── 0x02 { version: 2, devicePubkey: PKb,
+            deviceCommit: Cb = H("…commit-v2" ‖ PKb ‖ PKa ‖ Nb) }
+ ── 0x01 helloReveal { hostNonce: Na } ───────────────▶
+ ◀── 0x02 { deviceNonce: Nb }
+      host checks Cb, and aborts the connection if it does not open
+      both: T  = H("…transcript-v2" ‖ PKa ‖ PKb ‖ Na ‖ Nb)
+            ss = X25519(a, PKb) = X25519(b, PKa)
+            k_h2d, k_d2h, passkey = HKDF(salt = T, ikm = ss, info = label)
+ ◀── device displays passkey = be32(HKDF(…"passkey-v2")[0..3]) mod 10^6
+ ── user compares the two screens and presses ALLOW on the device
+ ── 0x11 encrypted traffic ───────────────────────────▶
 ```
 
-The passkey is derived from the ECDH shared secret, not randomly generated:
-`HKDF(X25519(a,B), "leek-session-passkey-v1")[0..3] mod 10^6`.
+**Two round trips, and the ordering is the security property.** Version 1 of this protocol had
+one, no nonces and no commitment: the passkey was `HKDF(X25519(a,B), "…passkey-v1")[0..3] mod
+10^6`, a deterministic function of the shared secret alone. A relay knows the host's public key,
+so it could compute what the host *would* display for any private key it chose and search
+offline until that matched the six digits the device was already showing. Nothing crossed the
+wire while it searched and no attempt failed. `sim/passkey_grind.c --v1 --search` still does it,
+against trezor-crypto's deliberately slow reference X25519 — **38 seconds on one core** of an
+ordinary laptop, and single-digit seconds for an optimised multicore implementation.
 
-**This does not stop an active MITM, and this document previously claimed it did.** The
-reasoning that failed was that a relay negotiating two sessions gets two different shared
-secrets and therefore two different passkeys. That is true, and it does not matter, because the
-relay is free to choose its own key material and the passkey is a deterministic function of the
-result with no nonce and no commitment. It knows the host's public key, so it can compute what
-the host *would* display for any private key it likes, and search offline until that matches the
-six digits the device is already showing. Nothing goes on the wire while it searches, there is
-no failed attempt for anyone to notice, and `hello` is neither rate-limited nor recorded.
+What closes it is the mechanism BLE Secure Connections and ZRTP use, adopted rather than
+approximated:
 
-`sim/passkey_grind.c` does it: **86 seconds on one core** of an ordinary laptop, against
-trezor-crypto's deliberately slow reference X25519. An optimised multicore implementation is
-single-digit seconds. Both screens then show the same number and the user sees nothing wrong.
+- Bluetooth Core Specification v5.4, Vol 3, Part H, §2.3.5.6.4 (Numeric Comparison): the
+  non-initiator sends `Cb = f4(PKbx, PKax, Nb, 0)` before the initiator reveals `Na`, and the six
+  digits are `g2(PKax, PKbx, Na, Nb) mod 10^6` — over both public keys and both nonces.
+- RFC 6189 (ZRTP) §4.4.1.1: "A hash commitment precludes this attack by forcing the MiTM to
+  choose his own two DH public values before learning the public values of either of the two
+  parties." Its SAS is derived from the total hash of the transcript (§4.5.2).
 
-This is *not* the standard numeric-comparison pattern. BLE LESC and ZRTP mix in fresh nonces from
-both parties and require the party who could otherwise search to **commit** to theirs first, which
-is precisely what turns an offline search into one online guess at 1-in-10^6. This protocol has
-neither. Fixing it means a commitment round, transcript binding, or both — a protocol change,
-recorded here rather than quietly patched. Until then, treat the passkey as protection against a
-*passive* eavesdropper and a mis-paired device, not against a relay.
+The device is the non-initiator here, so the device commits. Work through what that leaves a
+relay running two handshakes at once. On the **device-facing** leg it must send its public key
+and then its nonce before the real device reveals `Nb` — and the digits the OLED will show
+depend on `Nb`. On the **host-facing** leg it must send its commitment before the real host
+reveals `Na` — and the digits the app will show depend on `Na`. Every input it controls is fixed
+before the input that decides the answer arrives. There is no offline phase left: it can only
+pick and hope, once, at 1-in-10⁶, and a wrong guess is two screens that disagree in front of a
+user who was asked to compare them.
+
+Two consequences that are not optional:
+
+- **The host must verify `deviceCommit` against the revealed `deviceNonce` and refuse to pair if
+  it does not open.** Skipping that check restores the v1 attack exactly, because an
+  unverified nonce is one the peer may choose after seeing everything else.
+- **The device must answer at most one `helloReveal` per `hello`.** A second reveal is a second
+  derivation over a nonce the peer has already seen.
+
+Both keys are bound to the transcript too — it is the HKDF-Extract salt — so substituting a
+public key or a nonce anywhere changes every derived value, not only the digits.
+`sim/passkey_grind.c` (default mode) re-runs the relay against this construction; the search
+that took 38 seconds against v1 finds nothing it can use, and 500 000 committed attempts land
+where 1-in-10⁶ says they should.
+
+**What is still true:** none of this authenticates *which* device you are talking to. There is
+no long-term key and no attestation. It proves that the two ends of this connection are talking
+directly to each other and to nobody in between, and it proves it only if the user actually
+compares the digits.
 
 Payload encryption is **ChaCha20-Poly1305** with a per-direction 96-bit nonce that is a
 monotonic counter. Counters never reset within a session; a reused nonce is a session abort. The
 ESP32-S3's AES accelerator would make AES-GCM tempting, but ChaCha20 is constant-time in
 software everywhere, which matters more on the host side than raw throughput does at our sizes.
 
-**What this buys and what it does not:** an eavesdropper learns nothing. A MITM is **not**
-detected — see the passkey note above. A compromised host is entirely unaffected — see §1.
+**What this buys and what it does not:** an eavesdropper learns nothing. A MITM is detected, with
+the odds and the caveat above. A compromised host is entirely unaffected — see §1.
+
+### A handshake does not interrupt a question the device is asking
+
+`hello` is plaintext and unauthenticated by construction — it runs before there is anything to
+authenticate with — and it tears the current session down. Left ungated, that let anyone able to
+write to the port or the characteristic choose the moment a signing approval vanished from the
+screen, taking the request with it. So the device **defers a handshake while a confirmation is
+on screen**: a signing approval, a host-proposed passphrase, a wipe, or a seed on display. The
+host gets `0x0401` ("the device is waiting for the user; retry") and retries.
+
+Deliberately a deferral and not a lockout, and deliberately *not* "refuse whenever a session is
+active": USB has no disconnect for the device to notice, so an app that crashed and restarted
+would otherwise be shut out until someone power-cycled the wallet. The pairing screen itself is
+also not gated — a second handshake there resets and repaints, so the user compares the new
+digits rather than being stranded behind a screen only a button can clear.
 
 ---
 
@@ -903,8 +948,28 @@ it only for its side effect, a session for the next request to travel inside.
 
 ## 7. Versioning
 
-`Hello` carries a major version. Mismatch is a hard failure with an upgrade prompt, not a
-best-effort downgrade. Silent negotiation to a weaker protocol is a downgrade attack.
+**The current version is 2.** `hello` carries it in both directions, and **both ends check**:
+
+| Situation | What happens |
+|---|---|
+| Host offers a version the device does not speak (including v1, which sent no `version` field at all) | Device answers `0x0002` in plaintext, naming both versions, and derives nothing |
+| Device answers a version the host does not speak | Host aborts before deriving, naming both versions |
+| Versions agree | The handshake continues |
+
+Mismatch is a hard failure with an upgrade prompt, not a best-effort downgrade: silent
+negotiation to a weaker protocol is a downgrade attack, and v1 is a protocol whose passkey
+comparison an attacker can defeat offline (§3).
+
+This was aspirational until v2 shipped, and the gap was the interesting part. v1's `hello`
+already carried a version — and nothing ever read it. A mismatched pair therefore got as far as
+deriving keys from labels the other end had never used, and failed on the first encrypted frame
+with "decrypt failed", which is true and tells the user nothing they can act on. The check is
+worth no more than the error message it produces, so both ends name both versions.
+
+The domain-separation labels carry the version too (`leek-session-h2d-v2` and its siblings), so
+even if the explicit check were somehow bypassed the two ends could not accidentally agree on a
+key. That is belt and braces, not the mechanism: the mechanism is the check, because only the
+check can produce a sentence a user can act on.
 
 ---
 

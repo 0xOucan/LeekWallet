@@ -13,6 +13,10 @@ be checked without hardware it says so rather than guessing.
 
 ## 1. The handshake as it really is
 
+> Written against protocol v1, which is what was audited. The handshake has
+> since been replaced — see §8 — but §§1-7 are left as they were: an audit that
+> is edited to match the fix stops being evidence that the fix was needed.
+
 Not as `docs/PROTOCOL.md` §3 describes it. The document's sequence diagram shows
 a `Confirm {passkey}` message travelling from host to device and a `sessionId`
 coming back; neither exists in the firmware or the client. What actually runs:
@@ -101,7 +105,7 @@ which is worth a line of code someday (§7).
   outright, and the UI repaints so the user compares the *new* digits
   (`src/ui.c:4850-4856`). Two hosts cannot end up on different keys because
   the device only ever holds one.
-- **Version negotiation does not exist.** `PROTOCOL.md` §7 says "Hello carries a
+- **Version negotiation does not exist.** *(Built — §8.)* `PROTOCOL.md` §7 says "Hello carries a
   major version. Mismatch is a hard failure." The `hello` request carries only
   `hostPubkey` (`app/src/main.ts:314`); the `version:1` in the reply
   (`src/protocol.c:317`) is never read by the client. Nothing to downgrade
@@ -278,10 +282,15 @@ Reassembly (`src/ble-chunk.c`) stood up to everything thrown at it: see §5.
 
 ---
 
-## 4. C-1 — the passkey does not stop a machine-in-the-middle
+## 4. C-1 — the passkey did not stop a machine-in-the-middle
 
-**Severity: critical (defeats the only defence the protocol claims against an
+**Severity: critical (defeated the only defence the protocol claims against an
 active MITM). Confirmed by execution, not by argument.**
+
+> **FIXED in protocol v2.** The finding below stands as written against v1 and
+> is left intact, because the fix is only checkable against a clear statement
+> of what was broken. What replaced it, and the same attack re-run against the
+> replacement, is in §8.
 
 `PROTOCOL.md` §1 states:
 
@@ -465,6 +474,7 @@ is deliberately outside `make test` because it measures rather than asserts.
 ### Critical
 
 **C-1 — the six-digit passkey is chosen by the attacker, not guessed.**
+*(Fixed in protocol v2 — see §8. The analysis below is what was decided from.)*
 §4. `PROTOCOL.md` §1 claims an active MITM is defended against and §3 claims
 this is the standard numeric-comparison pattern; both are false as written, and
 a 91-second single-core search is the evidence. **Human decision required** —
@@ -492,7 +502,7 @@ it is listed here rather than applied.
 
 ### Medium
 
-**M-2 — an unauthenticated `hello` destroys a live session.** Anyone who can
+**M-2 — an unauthenticated `hello` destroys a live session.** *(Fixed — §8.)* Anyone who can
 write to the selected transport — any local process on USB, the connected
 central on BLE — resets an established session at any moment
 (`src/session.c:138` via `src/protocol.c:1237`) and interrupts whatever is on
@@ -549,7 +559,8 @@ Authenticating the three header bytes as AAD costs one `rfc7539_auth()` call
 per frame on each side and would have to land on both at once.
 
 **L-2 — `PROTOCOL.md` §3's handshake diagram describes a protocol that does not
-exist**: a `Confirm {passkey}` message, a `sessionId`, a `deviceId`, and a
+exist** *(§3 and §7 rewritten to match v2; the frame-type table is untouched
+and still lists `0x13 Event` and omits `0x7E`.)*: a `Confirm {passkey}` message, a `sessionId`, a `deviceId`, and a
 `version` in `hello`. None are implemented. §7's version-mismatch protection is
 likewise aspirational. The frame-type table omits `0x7E`, which the firmware
 sends, and lists `0x13 Event`, which it does not. Documentation, so it is the
@@ -584,3 +595,141 @@ refuses these; the Rust side could match it in one line.
 - The nine authentication gates on `dispatch()`, and that they test *this
   frame* rather than the session's existence.
 - Frame and CBOR parsing against 1.2M fuzz iterations under ASan and UBSan.
+
+---
+
+## 8. What was done about C-1 and M-2 — protocol v2
+
+The handshake was replaced rather than patched, on both sides at once, and the
+attack that produced the finding was re-run against the replacement.
+
+### The handshake
+
+```
+host                                                device
+ ── hello { version: 2, hostPubkey: PKa } ────────────▶
+                          device picks Nb and publishes only H(…‖Nb)
+ ◀── { version: 2, devicePubkey: PKb, deviceCommit: Cb }
+ ── helloReveal { hostNonce: Na } ────────────────────▶
+ ◀── { deviceNonce: Nb }
+      host checks Cb, and refuses to pair if it does not open
+      T  = SHA256("leek-session-transcript-v2" ‖ PKa ‖ PKb ‖ Na ‖ Nb)
+      k_h2d, k_d2h, passkey = HKDF(salt = T, ikm = X25519, info = label-v2)
+```
+
+`Cb = SHA256("leek-session-commit-v2" ‖ PKb ‖ PKa ‖ Nb)`. The transcript is the
+HKDF-Extract salt, so both directional keys are bound to it as well as the six
+digits — substituting either public key or either nonce changes everything
+derived.
+
+This is BLE LESC's numeric comparison and ZRTP's SAS, taken as a mechanism
+rather than as a shape. The device is the non-initiator and so is the party
+that commits, exactly as in LESC:
+
+- Bluetooth Core Specification v5.4, Vol 3, Part H, §2.3.5.6.4: the
+  non-initiator sends `Cb = f4(PKbx, PKax, Nb, 0)` before the initiator reveals
+  `Na`; both screens show `g2(PKax, PKbx, Na, Nb) mod 10^6`.
+- RFC 6189 (ZRTP) §4.4.1.1: "A hash commitment precludes this attack by forcing
+  the MiTM to choose his own two DH public values before learning the public
+  values of either of the two parties." SAS over the total hash, §4.5.2.
+
+Why it closes the search, leg by leg. On the **device-facing** leg the relay
+sends its public key and its nonce before the device reveals `Nb`, and the
+digits the OLED will show depend on `Nb`. On the **host-facing** leg it must
+send `Cb'` before the host reveals `Na`, and the digits the app will show
+depend on `Na`. Every input the relay controls is pinned before the input that
+decides the answer exists. It cannot search; it can guess once, online, and a
+wrong guess is a visible mismatch.
+
+### The attack, re-run
+
+`sim/passkey_grind.c` now runs both protocols. v1 is reproduced from a local
+copy of the old derivation, deliberately: a finding that stops being executable
+once the code is replaced stops being a finding.
+
+```
+$ make -C sim build/passkey_grind
+$ ./sim/build/passkey_grind --v1 --search
+== v1: no nonce, no commitment, passkey = f(shared secret)
+the device will display 579252
+425364 derivations in 37.63 s — 11305/s
+FOUND after 425364 tries: the host would display 579252 too
+both screens agree; the user sees nothing wrong
+
+$ ./sim/build/passkey_grind --search
+== v2: fresh nonces from both parties, device commits first, passkey bound to the transcript
+the device will display 389734
+  (fixed only once the device revealed its nonce — by which point
+   the relay's own key and nonce were already on the wire)
+  a matching (key, nonce) pair exists — found after 458470 tries.
+  458469 derivations in 70.09 s — 6541/s, 1 match(es)
+under the protocol's actual ordering the relay must pick first.
+  500000 committed attempts, 1 undetected — 0.000200% (1 in 10^6 is 0.000100%)
+```
+
+Read the v2 run carefully, because the first half of it *succeeds*. A matching
+(key, nonce) pair still exists and is still findable in about 10^6 tries — but
+only when the host's nonce is handed to the attacker in advance, which the
+message ordering never does. The second half is the honest measurement: under
+the ordering the protocol actually imposes, the relay commits first and 500 000
+attempts produced one undetected pairing. That is 1 in 500 000 against an
+expectation of 1 in 10^6 — the right order of magnitude for a sample this size,
+and the number the design predicts rather than the zero a rigged simulation
+would print.
+
+### M-2
+
+`handle_hello` now defers while `ui_user_is_answering()` — a signing approval,
+a host-proposed passphrase, a wipe confirmation, or a seed on display — and
+answers `0x0401` "the device is waiting for the user; retry". A plaintext
+`hello` can no longer be timed to pull an approval out from under the user.
+
+Scoped as a deferral rather than "refuse whenever a session is ACTIVE" on
+purpose: USB has no disconnect event, so the stricter rule would lock out an
+app that crashed and restarted until the wallet was power-cycled. The pairing
+screen itself is not gated either — a second handshake there resets and
+repaints, which is the tested and correct behaviour, and gating it would strand
+a host behind a screen only a button press can clear.
+
+### Version negotiation (L-2's other half)
+
+`PROTOCOL_VERSION` is 2, sent in `hello` and in its reply, and **checked on both
+ends**, each naming both versions in the error. A v1 host sends no `version` at
+all and is refused with `0x0002`; v1 firmware answers `version: 1` and the host
+stops before deriving. The KDF labels carry `-v2` as well, so the two could not
+accidentally agree on a key even if the check were bypassed — but the check is
+what produces a sentence a user can act on, and "decrypt failed" three frames
+later is what v1 produced instead.
+
+### Cost
+
+Host `gcc -O1 -fstack-usage`, deepest handshake chain:
+
+| | v1 | v2 |
+|---|---|---|
+| `protocol_handle_frame` | 304 | 400 |
+| `session_begin` / `session_reveal` | 80 | 48 / 32 |
+| `session_derive` | 128 | 272 |
+| `hkdf_sha256` | 320 | 288 |
+| **handshake path total** | **832** | **992** |
+| `dispatch` (unchanged, and still the deepest path) | 1648 | 1648 |
+
+160 bytes more on the handshake path, against 8 KB tasks whose warning floor is
+2048 bytes — and the handshake path was never the deep one. Static RAM grows by
+128 bytes: the session instance now holds the pending transcript and the
+device's private key across the extra round trip, both wiped by
+`session_reset()`, and the private key wiped at the reveal the moment it has
+been used.
+
+### Tests
+
+`sim/test_session.c` asserts that each of the four transcript fields moves the
+digits with the shared secret held constant, that the commitment opens only to
+what was committed, that nothing derives or displays before the reveal, that
+one commitment reveals once, and that consecutive handshakes commit to
+different nonces. `sim/test_protocol.c` adds the version refusals, the reveal
+ordering over the wire, and M-2. `app/packages/core/test/session.test.ts`
+mirrors all of it and pins a known-answer vector — keys, passkey and commitment
+— against the same vector in `sim/test_session.c`, because the two
+implementations agree only where something compares them and every way they
+could disagree here fails silently.

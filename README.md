@@ -40,7 +40,7 @@ refuses to sign.
 | **Blind signing** | Off by default, set on the device only, five presses past a warning screen. No command can turn it on |
 | **Link** | USB CDC-ACM **or** BLE GATT, one at a time, chosen on the device (Settings → Link) |
 | **BLE name** | User-set, 1-29 printable ASCII, refused rather than truncated — an over-long name would silently stop advertising |
-| **Session** | X25519 handshake with a passkey compared on the device's own screen; ChaCha20-Poly1305 frames |
+| **Session** | X25519 with a commit-then-reveal nonce exchange, passkey bound to the whole transcript and compared on the device's own screen; ChaCha20-Poly1305 frames |
 | **QR codes** | Display addresses as scannable QR codes |
 | **Companion app** | Tauri v2 on Linux/macOS/Windows and an Android APK, with WalletConnect v2 for real dapps |
 
@@ -272,7 +272,7 @@ while the wallet was unlocked (AUDIT S8g).
 | Key derivation | BIP32/BIP44 |
 | Vault key | PBKDF2-HMAC-SHA512 over a per-device random salt, ~1 s on hardware; key and verifier domain-separated so the stored verifier is not an oracle for the key |
 | Storage encryption | AES-256-GCM, `nonce ‖ ciphertext ‖ tag`, format v3, with crash-safe migration from the older CBC vaults |
-| Transport session | X25519 → HKDF → ChaCha20-Poly1305, passkey compared on the device screen |
+| Transport session | X25519 → HKDF (salted with the handshake transcript) → ChaCha20-Poly1305, passkey compared on the device screen |
 | Signing | ECDSA secp256k1 (RFC6979) |
 
 ### Security Features
