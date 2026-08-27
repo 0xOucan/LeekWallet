@@ -251,8 +251,11 @@ one function, silently degrading, nothing watching the output.
 
 `src/entropy.c` now gates all key material:
 
-- `bootloader_random_enable()` wraps generation whenever RF is inactive; `ui.c` reports RF
-  transitions via `entropy_set_rf_active()` so the ADC is never contended.
+- `bootloader_random_enable()` wraps generation whenever RF is inactive. `transport.c` reports
+  BLE via `entropy_set_ble_active()` at boot and on every change, the Wi-Fi toggle reports
+  separately via `entropy_set_wifi_active()`, and the gate ORs them — so the ADC is never
+  contended. Two setters because a single shared flag meant whichever radio spoke last erased
+  the other's answer.
 - NIST SP 800-90B style health tests (repetition count, proportion, distinct-value floor for
   seed-sized buffers) run on every output.
 - **Fails closed.** `random_buffer()` — the function `mnemonic_generate()` calls — aborts rather

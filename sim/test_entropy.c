@@ -131,8 +131,14 @@ static void test_low_variety_seed(void)
     printf("== a low-variety seed-sized buffer is rejected\n");
 
     /* 32 bytes drawn from only 4 distinct values: ~8 bits of real entropy in
-     * something the caller believes is 256. This is the shape of the Coldcard
-     * failure at seed scale. */
+     * something the caller believes is 256.
+     *
+     * Not the shape of the Coldcard failure, despite the temptation to say so.
+     * That fallback PRNG emitted a *uniform-looking* stream from a small key,
+     * and the distinct-value floor cannot see it — measured at 0 detections in
+     * 200,000 trials at this length (docs/AUDIT-ENTROPY.md S2). What this test
+     * pins down is the narrower claim: a source whose output is visibly
+     * low-variety is rejected at seed scale. */
     uint8_t seed[32];
     static const uint8_t pool[4] = {0x01, 0x02, 0x03, 0x04};
     for (size_t i = 0; i < sizeof(seed); i++) {

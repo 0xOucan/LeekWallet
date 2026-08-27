@@ -341,15 +341,20 @@ someone being able to look.
 So LeekWallet's argument is not "our crypto is better." It is that the parts that have actually
 failed in the field are the parts you can inspect here:
 
-- **You can add your own entropy.** Before generating a seed, an optional screen harvests the
-  microsecond timing between your button presses and hashes it *together with* the hardware RNG
-  — never instead of it, so it can only help. This is the layer that survives a compromised
-  silicon source, because no firmware bug can predict when a human presses a button.
+- **You add your own entropy, and it is not optional.** Before a seed is generated you press
+  buttons until the device has 32 timing samples, and they are hashed *together with* the
+  hardware RNG — never instead of it, so they can only help. This is the layer that survives a
+  compromised silicon source, because no firmware bug can predict when a human presses a button,
+  and it is the layer that protected the Coldcard users who supplied their own entropy. See
+  `docs/AUDIT-ENTROPY.md` for how many bits a press is really worth.
 - **Entropy is gated and fails closed.** Every byte of key material goes through
   `src/entropy.c`, which runs NIST SP 800-90B style health tests and **refuses to generate**
   rather than degrade. There is no second path — `random_buffer()` itself is routed through the
-  gate, so `mnemonic_generate()` cannot bypass it. The failure that hit Coldcard would abort
-  this device instead of silently producing a weak seed. Covered by `sim/test_entropy.c`.
+  gate, so `mnemonic_generate()` cannot bypass it. What these tests catch is a *grossly* broken
+  source: stuck, dead, constant, heavily biased. They do not catch a source that looks uniform
+  but has little real entropy behind it, which is what Coldcard's fallback PRNG was — that one
+  is the user pool's job, and `docs/AUDIT-ENTROPY.md` measures both. Covered by
+  `sim/test_entropy.c`.
 - **The host is never trusted.** Transactions are re-serialised and re-hashed on-device and
   signed only as rendered. Calldata the device cannot decode is **refused**, not shown as a hex
   blob with an OK button; contract creation is refused outright, and no command can change that
