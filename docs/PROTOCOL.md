@@ -13,7 +13,7 @@ Three distinct attackers, and the protocol only defends against two of them.
 | Attacker | Defended by | Effective? |
 |---|---|---|
 | Passive radio eavesdropper | Session encryption (§3) | Yes |
-| Active MITM between host and device | Passkey-confirmed key exchange (§3) | Yes |
+| Active MITM between host and device | Passkey comparison (§3) — **does not hold, see §3** | **No** |
 | **Compromised host application** | **Nothing in this protocol** | **No** |
 
 The third one is the important one. If the phone or PC is compromised, the attacker is *inside*
@@ -117,19 +117,36 @@ host                                            device
  ◀─── 0x12 ConfirmAck {sessionId}
 ```
 
-The passkey is derived from the ECDH shared secret, not randomly generated. A MITM negotiating
-two separate sessions produces two *different* shared secrets, so the passkey it can show will
-not match the one the device displays — the user comparing screen to app is what actually
-detects the attack. This is the standard numeric-comparison pattern and it is the only reason
-the channel means anything.
+The passkey is derived from the ECDH shared secret, not randomly generated:
+`HKDF(X25519(a,B), "leek-session-passkey-v1")[0..3] mod 10^6`.
+
+**This does not stop an active MITM, and this document previously claimed it did.** The
+reasoning that failed was that a relay negotiating two sessions gets two different shared
+secrets and therefore two different passkeys. That is true, and it does not matter, because the
+relay is free to choose its own key material and the passkey is a deterministic function of the
+result with no nonce and no commitment. It knows the host's public key, so it can compute what
+the host *would* display for any private key it likes, and search offline until that matches the
+six digits the device is already showing. Nothing goes on the wire while it searches, there is
+no failed attempt for anyone to notice, and `hello` is neither rate-limited nor recorded.
+
+`sim/passkey_grind.c` does it: **86 seconds on one core** of an ordinary laptop, against
+trezor-crypto's deliberately slow reference X25519. An optimised multicore implementation is
+single-digit seconds. Both screens then show the same number and the user sees nothing wrong.
+
+This is *not* the standard numeric-comparison pattern. BLE LESC and ZRTP mix in fresh nonces from
+both parties and require the party who could otherwise search to **commit** to theirs first, which
+is precisely what turns an offline search into one online guess at 1-in-10^6. This protocol has
+neither. Fixing it means a commitment round, transcript binding, or both — a protocol change,
+recorded here rather than quietly patched. Until then, treat the passkey as protection against a
+*passive* eavesdropper and a mis-paired device, not against a relay.
 
 Payload encryption is **ChaCha20-Poly1305** with a per-direction 96-bit nonce that is a
 monotonic counter. Counters never reset within a session; a reused nonce is a session abort. The
 ESP32-S3's AES accelerator would make AES-GCM tempting, but ChaCha20 is constant-time in
 software everywhere, which matters more on the host side than raw throughput does at our sizes.
 
-**What this buys and what it does not:** an eavesdropper learns nothing and a MITM is detected.
-A compromised host is entirely unaffected — see §1.
+**What this buys and what it does not:** an eavesdropper learns nothing. A MITM is **not**
+detected — see the passkey note above. A compromised host is entirely unaffected — see §1.
 
 ---
 

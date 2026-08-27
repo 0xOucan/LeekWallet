@@ -102,8 +102,22 @@ bool session_derive(const uint8_t device_private[SESSION_KEY_SIZE],
     hkdf_sha256(shared, sizeof(shared), LABEL_H2D, k_h2d_out);
     hkdf_sha256(shared, sizeof(shared), LABEL_D2H, k_d2h_out);
 
-    /* Six digits from an independent derivation of the same secret. Both sides
-     * compute it; a relay in the middle cannot make them agree. */
+    /* Six digits from an independent derivation of the same secret.
+     *
+     * This comment used to end "a relay in the middle cannot make them agree".
+     * It can. The passkey is a deterministic function of the shared secret with
+     * no nonce and no commitment, and a relay knows the host's public key, so
+     * it can compute what the host would display for any private key it
+     * chooses and search offline for one that matches the digits already on the
+     * device's screen. sim/passkey_grind.c finds one in 86 seconds on a single
+     * core. Nothing crosses the wire while it searches and no attempt fails.
+     *
+     * What makes BLE LESC and ZRTP work is a fresh nonce from each side plus a
+     * commitment forcing the searching party to fix its choice first, which
+     * turns the offline search into one online guess. Adding that is a protocol
+     * change; see docs/PROTOCOL.md §3 and docs/AUDIT-TRANSPORT.md C-1. Until it
+     * exists, this defends against a passive eavesdropper and a mis-paired
+     * device, not against a relay. */
     uint8_t pk[32];
     hkdf_sha256(shared, sizeof(shared), LABEL_PASSKEY, pk);
 
