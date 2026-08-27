@@ -1,8 +1,8 @@
 /**
- * LeekWallet - ESP32-S3 Mini Firmware
+ * LeekWallet - ESP32-S3 firmware
  *
  * Hardware (from physical inspection):
- *   - ESP32-S3 Mini: No PSRAM, 4MB flash, USB-C
+ *   - ESP32-S3-N16R8: 16MB flash, 8MB PSRAM (off; see ROADMAP T58c), USB-C
  *   - SSD1306 OLED: 128x64, I2C address 0x3C
  *   - 4 buttons: K1-K4, active-low, directly wired to GPIOs
  *   - Header pin order: GND, VCC, SCL, SDA, K4, K3, K2, K1
@@ -46,7 +46,7 @@ static const char *TAG = "leekwallet";
 void app_main(void)
 {
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "LeekWallet - ESP32-S3 Mini");
+    ESP_LOGI(TAG, "LeekWallet - ESP32-S3");
     ESP_LOGI(TAG, "Hardware wallet with HD support");
     ESP_LOGI(TAG, "========================================");
 
