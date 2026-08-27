@@ -1,47 +1,33 @@
 # LeekWallet
 
-> *"Lek"* - The Maya word for jícara, a sacred gourd container
+> *lek* — a container made from a dried jícara gourd
 
 <p align="center">
   <img src="docs/leekwallet-logo.png" alt="LeekWallet" width="200"/>
 </p>
 
-## The Story of Lek
+## The name
 
-In the kitchens of the **Yucatán Peninsula**, where the ancient Maya civilization still lives through its descendants, there exists a humble yet sacred object: the **Lek** (also written *leek*).
+A **lek** is a gourd container, used in the Yucatán Peninsula to hold something
+worth keeping. The word is Yucatec Maya. It was chosen for one property and
+nothing more: a lek is a plain container, and its entire purpose is to protect
+what is put inside it.
 
-The Lek is a traditional **tortillero** - a container crafted from *jícara*, the dried fruit of the gourd plant (*Lagenaria siceraria*, known as *guaje* in Spanish). For generations, Maya families have used the Lek to store and keep warm their freshly made corn tortillas.
-
-### The Wisdom of the Lek
-
-```
-    ╭───────────────────╮
-    │    ┌─────────┐    │
-    │    │ ~~~~~~~ │    │  The Lek protects what matters most:
-    │    │ tortilla│    │  warmth, nourishment, tradition
-    │    │ ~~~~~~~ │    │
-    │    └─────────┘    │
-    ╰───────────────────╯
-         The Lek
-```
-
-Inside every Lek, a **servilleta de manta** (cotton cloth napkin) cradles the tortillas, preserving their warmth and softness. The Lek is not merely functional - it is often adorned with engravings and paintings that reflect the rich artistic heritage of the Maya people.
-
-**The Lek embodies three principles:**
-
-- **Protection** - Shields the precious tortillas from the outside world
-- **Preservation** - Maintains warmth and freshness over time
-- **Beauty** - Carries the artistic spirit of Maya culture
-
-Just as the Lek **guards the sacred corn tortilla** - the heart of Maya sustenance - **LeekWallet guards your digital seeds** - the foundation of your financial sovereignty.
-
----
+That is the whole of the reference, and it is meant as a plain naming, not a
+theme. This project is open source, is not sold, and does not trade on anyone's
+culture.
 
 ## What is LeekWallet?
 
-LeekWallet is an **open-source hardware wallet** built on the ESP32-S3 microcontroller. Like its namesake, it is a minimalist container designed with one purpose: to **protect what is precious**.
+An **open-source hardware wallet** built on the ESP32-S3. It holds private keys —
+which for the person who owns them are usually irreplaceable, and whose value is
+out of all proportion to the size of the thing holding them — and it makes every
+use of them visible on a screen that the computer it is plugged into cannot
+change.
 
-Your cryptocurrency keys are like the warm tortillas of the digital age - they must be kept safe, secure, and close at hand.
+That is the entire design goal. Everything below follows from it: the device
+decides, the host asks, and anything the device cannot display in full it
+refuses to sign.
 
 ### Features
 
@@ -667,20 +653,17 @@ state, priorities, parallelisable tracks and the traps worth knowing.
 
 - **Trezor** - For the open-source [trezor-crypto](https://github.com/trezor/trezor-crypto) library
 - **Colibri** - For the design inspiration behind the RPC surface (no code used; see [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md))
-- **The Maya People** - For the inspiration of the *Lek* and their enduring wisdom
+- **Yucatec Maya** - the source of the name; see [The name](#the-name)
 - **ricmoo** - For the [QRCode](https://github.com/ricmoo/QRCode) library
 
 ---
 
 ## Etymology
 
-> **Lek** /lek/ - From Yucatec Maya
+> **lek** /lek/ — Yucatec Maya
 >
-> A traditional Maya tortillero (tortilla container) crafted from *jícara*, the dried gourd of the *Lagenaria siceraria* plant. Used for generations in the Yucatán Peninsula to store and keep warm freshly made corn tortillas.
->
-> Inside the Lek, a *servilleta de manta* (cotton cloth) cradles the tortillas, preserving their warmth. The Lek is often decorated with engravings and paintings reflecting Maya artistic traditions.
->
-> Just as the Lek protects the sacred tortilla, **LeekWallet** protects your digital seeds.
+> A container made from the dried gourd of *Lagenaria siceraria* (*jícara*), used
+> in the Yucatán Peninsula. Commonly a *tortillero*, for holding tortillas.
 
 ---
 
@@ -701,16 +684,18 @@ the whole project AGPL. See THIRD-PARTY-LICENSES.md.
 
 ---
 
-## Final Words
+## If you use this
 
-*"In Lak'ech Ala K'in"* - Maya greeting meaning "I am you, and you are me"
+It is an open-source hardware wallet built by one person, audited by nobody
+independent, and it has no secure boot yet. Read [AUDIT.md](AUDIT.md) before
+trusting it with anything you cannot afford to lose, and treat the roadmap's
+open items as the honest list of what is missing rather than a formality.
 
-The Maya understood that what we protect, we become part of. The Lek is not separate from the tortilla it holds - together they sustain life. LeekWallet is not separate from the seeds it guards - together they build your future.
-
-**Guard your seeds. Preserve your warmth. Build your future.**
+Bug reports, review of the cryptographic paths, and someone finding a hole in
+this are worth more to the project than stars.
 
 ---
 
 <p align="center">
-  Made with care in the Yucatán Peninsula
+  Open source. Not for sale.
 </p>
