@@ -142,6 +142,58 @@ K1 lives on GPIO10.
 
 ---
 
+## Verifying what you downloaded
+
+Every release publishes a `SHA256SUMS` file listing the hash of each binary, and
+`SHA256SUMS.asc`, a signature over that list. Checking the hash takes one command
+and catches a download that arrived corrupted, truncated, or altered by whatever
+sat between you and GitHub.
+
+Open a terminal in the folder where you saved the files:
+
+| | |
+|---|---|
+| **Linux** | `sha256sum -c SHA256SUMS` |
+| **macOS** | `shasum -a 256 -c SHA256SUMS` |
+| **Windows** (PowerShell) | `Get-FileHash .\leekwallet.bin -Algorithm SHA256` then compare the line to `SHA256SUMS` by eye |
+
+You want to see `OK` beside the file you downloaded. If you see `FAILED`, or the
+Windows hash does not match, **delete the file and download it again** — and if
+it fails a second time, open an issue rather than running it.
+
+**Be clear about what this proves.** It proves the bytes you have are the bytes
+that were published. It does *not* prove those bytes are trustworthy: the hash
+list sits on the same page as the download, so anyone who could replace one could
+replace the other. The signature raises that bar — it takes a key, not just write
+access to a page — and `docs/RELEASE.md` explains how to check it.
+
+What actually closes the gap is not trusting the release at all.
+
+### If you can build it, please audit it
+
+The builds are reproducible: two machines building the same tag produce
+byte-identical firmware, so you can check that a published binary really is the
+published source rather than taking anyone's word for it.
+
+```bash
+./scripts/repro-verify.sh      # build twice, compare hashes
+./scripts/check.sh             # the full suite: host sim, app, firmware
+make -C sim test               # the firmware's own logic, on your machine, no hardware
+```
+
+The host suite compiles the **real firmware C** natively, so most of this
+project's logic can be read, run and broken on a laptop with nothing plugged in.
+`sim/mutants.py` does mutation testing, and `sim/fuzz_transport.c` fuzzes the
+parsers that see attacker-controlled bytes before authentication.
+
+The audits in [`docs/AUDIT-ENTROPY.md`](docs/AUDIT-ENTROPY.md),
+[`docs/AUDIT-SECRETS.md`](docs/AUDIT-SECRETS.md) and
+[`docs/AUDIT-TRANSPORT.md`](docs/AUDIT-TRANSPORT.md) are written to be argued
+with — they include the measurements and the harnesses, so a finding can be
+reproduced or refuted rather than believed. Several of them contradict claims
+this project's own documentation used to make. Finding the next one is the most
+useful thing anyone can do here.
+
 ## Getting Started
 
 ### Prerequisites

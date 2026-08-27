@@ -283,6 +283,11 @@ picture:
 
 ## Verifying a release, as someone who is not the maintainer
 
+Three levels, and they are not interchangeable. Level 1 is the one to put in front of somebody
+who just downloaded a file — the README carries it with per-platform commands, because
+`sha256sum -c` is Linux-only and a reader on Windows who meets it simply stops. Levels 2 and 3
+are the ones that actually establish provenance, and they need a toolchain.
+
 ### Level 1 — the download is intact (proves the least)
 
 ```bash
