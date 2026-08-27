@@ -249,6 +249,41 @@ asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan $(BUILD)/test_sli
 	./$(BUILD)/test_ble_chunk_asan
 	./$(BUILD)/test_slip39_asan
 
+# What the six-digit passkey costs a relay. Measurement, not assertion, so it
+# is built on request and never by `make test`. See passkey_grind.c.
+$(BUILD)/passkey_grind: passkey_grind.c host_stubs.c ../src/session.c \
+                        $(CRYPTO)/ed25519-donna/curve25519-donna-scalarmult-base.c \
+                        $(CRYPTO)/ed25519-donna/curve25519-donna-32bit.c \
+                        $(CRYPTO)/ed25519-donna/curve25519-donna-helpers.c \
+                        $(CRYPTO)/ed25519-donna/ed25519-donna-32bit-tables.c \
+                        $(CRYPTO)/chacha20poly1305/chacha20poly1305.c \
+                        $(CRYPTO)/chacha20poly1305/chacha_merged.c \
+                        $(CRYPTO)/chacha20poly1305/poly1305-donna.c \
+                        $(CRYPTO)/chacha20poly1305/rfc7539.c \
+                        $(CRYPTO)/hmac.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c \
+                        $(CRYPTO)/rand.c | $(BUILD)
+	$(CC) $(CFLAGS) -O2 -I$(CRYPTO)/ed25519-donna -o $@ $^
+
+# The fuzzer, over the same sources the protocol suite builds.
+#
+# Sanitised, always: without ASan this catches hangs and broken invariants and
+# nothing else, and the whole reason to feed a parser random bytes is to find
+# the read that goes one past the end. FUZZ_SEED and FUZZ_ITERS are the two
+# knobs; the seed is printed on every run so a hit reproduces exactly.
+#
+#   make -C sim fuzz
+#   make -C sim fuzz FUZZ_SEED=12345 FUZZ_ITERS=200000
+FUZZ_SRC  := fuzz_transport.c $(filter-out test_protocol.c,$(PROTOCOL_SRC))
+FUZZ_SEED ?= 1
+FUZZ_ITERS ?= 20000
+
+$(BUILD)/fuzz_transport: $(FUZZ_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST \
+	      -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $^
+
+fuzz: $(BUILD)/fuzz_transport
+	./$(BUILD)/fuzz_transport $(FUZZ_SEED) $(FUZZ_ITERS)
+
 $(BUILD):
 	mkdir -p $(BUILD)
 
@@ -273,4 +308,4 @@ conformance: $(BUILD)/test_protocol
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test asan conformance clean
+.PHONY: all test asan fuzz conformance clean
