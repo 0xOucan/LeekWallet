@@ -8,14 +8,9 @@
 
 ## The name
 
-A **lek** is a gourd container, used in the Yucatán Peninsula to hold something
-worth keeping. The word is Yucatec Maya. It was chosen for one property and
-nothing more: a lek is a plain container, and its entire purpose is to protect
-what is put inside it.
-
-That is the whole of the reference, and it is meant as a plain naming, not a
-theme. This project is open source, is not sold, and does not trade on anyone's
-culture.
+A **lek** is a gourd container from the Yucatán Peninsula, used to hold
+something worth keeping. The word is Yucatec Maya. It was chosen because a
+container's whole purpose is to protect what is put inside it.
 
 ## What is LeekWallet?
 
