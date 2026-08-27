@@ -190,6 +190,27 @@ uint32_t ui_hd_account(void);
 void ui_request_session_confirm(void);
 
 /**
+ * Whether the device is presently asking the user a question (M-2).
+ *
+ * True while a screen is up that the user has to answer and that an incoming
+ * frame must not be allowed to replace: a signing approval, a passphrase the
+ * host proposed, a wipe, a pairing comparison, a seed on display. The protocol
+ * endpoint consults this before honouring a plaintext `hello`, because that
+ * message is unauthenticated and resets the session — so without the check,
+ * anyone able to write to the port could yank an approval out from under the
+ * user's eyes at a moment of their choosing, and the request the user was
+ * reading would vanish with it.
+ *
+ * Read from the protocol task while the UI task owns the screen graph. That is
+ * safe in the direction it is used: the answer can go stale between the read
+ * and the reply, and the worst outcome is a handshake refused a moment late,
+ * which the host retries. The reverse mistake — letting a handshake through
+ * because the flag had not been set yet — is not reachable, because the screen
+ * is switched before the request that raised it is answered.
+ */
+bool ui_user_is_answering(void);
+
+/**
  * Ask the user to unlock, on behalf of a host request.
  *
  * The PIN is entered on the device and never travels. The host polls

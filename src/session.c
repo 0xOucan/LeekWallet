@@ -42,25 +42,74 @@ static void x25519(uint8_t out[32], const uint8_t scalar[32], const uint8_t poin
 
 /* Domain separators. Distinct labels mean the two directional keys and the
  * passkey are independent outputs of the same shared secret; reusing one label
- * would make them derivable from each other. */
-static const char LABEL_H2D[]     = "leek-session-h2d-v1";
-static const char LABEL_D2H[]     = "leek-session-d2h-v1";
-static const char LABEL_PASSKEY[] = "leek-session-passkey-v1";
+ * would make them derivable from each other.
+ *
+ * Bumped to v2 with the commitment handshake. The labels are part of what the
+ * two ends agree on, so an old host and new firmware could not accidentally
+ * derive a working channel out of half a protocol even if the version check in
+ * protocol.c were somehow bypassed — they would simply fail to decrypt. */
+static const char LABEL_H2D[]        = "leek-session-h2d-v2";
+static const char LABEL_D2H[]        = "leek-session-d2h-v2";
+static const char LABEL_PASSKEY[]    = "leek-session-passkey-v2";
+static const char LABEL_COMMIT[]     = "leek-session-commit-v2";
+static const char LABEL_TRANSCRIPT[] = "leek-session-transcript-v2";
+
+/* ---------------------------------------------------- commitment, transcript */
+
+void session_commitment(const uint8_t device_public[SESSION_PUBKEY_SIZE],
+                        const uint8_t host_public[SESSION_PUBKEY_SIZE],
+                        const uint8_t device_nonce[SESSION_NONCE_SIZE],
+                        uint8_t out[SESSION_COMMIT_SIZE])
+{
+    /* Plain SHA-256 rather than an HMAC: this is a commitment, not a MAC, and
+     * there is no key here for a MAC to take. Binding hygiene comes from the
+     * label and from the fixed-width fields, which cannot be re-parsed into a
+     * different (key, key, nonce) triple the way a delimiter-free variable
+     * layout could. */
+    SHA256_CTX ctx;
+    sha256_Init(&ctx);
+    sha256_Update(&ctx, (const uint8_t *)LABEL_COMMIT, sizeof(LABEL_COMMIT) - 1);
+    sha256_Update(&ctx, device_public, SESSION_PUBKEY_SIZE);
+    sha256_Update(&ctx, host_public, SESSION_PUBKEY_SIZE);
+    sha256_Update(&ctx, device_nonce, SESSION_NONCE_SIZE);
+    sha256_Final(&ctx, out);
+}
+
+/* The whole handshake, hashed in a fixed order.
+ *
+ * This is what the keys and the passkey are salted with, and it is why a relay
+ * cannot substitute a public key or a nonce on one leg and keep the digits
+ * from the other: every one of the four fields is inside the hash, so changing
+ * any of them changes what both screens show. Ordered by ROLE — host first,
+ * then device — not by who is computing it, or the two ends would hash
+ * different bytes and never agree. */
+static void session_transcript_hash(const SessionTranscript *t, uint8_t out[32])
+{
+    SHA256_CTX ctx;
+    sha256_Init(&ctx);
+    sha256_Update(&ctx, (const uint8_t *)LABEL_TRANSCRIPT, sizeof(LABEL_TRANSCRIPT) - 1);
+    sha256_Update(&ctx, t->host_public, SESSION_PUBKEY_SIZE);
+    sha256_Update(&ctx, t->device_public, SESSION_PUBKEY_SIZE);
+    sha256_Update(&ctx, t->host_nonce, SESSION_NONCE_SIZE);
+    sha256_Update(&ctx, t->device_nonce, SESSION_NONCE_SIZE);
+    sha256_Final(&ctx, out);
+}
 
 /* ------------------------------------------------------------------ HKDF */
 
-/* HKDF-SHA256 (RFC 5869) with an empty salt. The shared secret is already
- * uniform-ish, but extract-then-expand is the construction with the proof, and
- * the cost is two HMACs. */
+/* HKDF-SHA256 (RFC 5869). The salt is the transcript hash rather than a
+ * constant: HKDF-Extract's salt is exactly the place for public context that
+ * must not be substitutable, and using it means transcript binding costs one
+ * SHA-256 rather than a second construction bolted on beside the KDF. */
 static void hkdf_sha256(const uint8_t *ikm, size_t ikm_len,
+                        const uint8_t salt[32],
                         const char *info, uint8_t out[32])
 {
     uint8_t prk[32];
-    const uint8_t zero_salt[32] = {0};
     HMAC_SHA256_CTX ctx;
 
     /* Extract: PRK = HMAC(salt, IKM) */
-    hmac_sha256_Init(&ctx, zero_salt, sizeof(zero_salt));
+    hmac_sha256_Init(&ctx, salt, 32);
     hmac_sha256_Update(&ctx, ikm, (uint32_t)ikm_len);
     hmac_sha256_Final(&ctx, prk);
 
@@ -79,14 +128,15 @@ static void hkdf_sha256(const uint8_t *ikm, size_t ikm_len,
 
 /* --------------------------------------------------------------- derivation */
 
-bool session_derive(const uint8_t device_private[SESSION_KEY_SIZE],
-                    const uint8_t host_public[SESSION_PUBKEY_SIZE],
+bool session_derive(const uint8_t local_private[SESSION_KEY_SIZE],
+                    const uint8_t peer_public[SESSION_PUBKEY_SIZE],
+                    const SessionTranscript *transcript,
                     uint8_t k_h2d_out[SESSION_KEY_SIZE],
                     uint8_t k_d2h_out[SESSION_KEY_SIZE],
                     char    passkey_out[SESSION_PASSKEY_LEN + 1])
 {
     uint8_t shared[32];
-    x25519(shared, device_private, host_public);
+    x25519(shared, local_private, peer_public);
 
     /* An all-zero shared secret means a small-order peer key: the "agreement"
      * would be a value the attacker chose. Refuse rather than proceed. */
@@ -99,27 +149,28 @@ bool session_derive(const uint8_t device_private[SESSION_KEY_SIZE],
         return false;
     }
 
-    hkdf_sha256(shared, sizeof(shared), LABEL_H2D, k_h2d_out);
-    hkdf_sha256(shared, sizeof(shared), LABEL_D2H, k_d2h_out);
+    uint8_t salt[32];
+    session_transcript_hash(transcript, salt);
 
-    /* Six digits from an independent derivation of the same secret.
+    hkdf_sha256(shared, sizeof(shared), salt, LABEL_H2D, k_h2d_out);
+    hkdf_sha256(shared, sizeof(shared), salt, LABEL_D2H, k_d2h_out);
+
+    /* Six digits over the shared secret AND the whole transcript.
      *
-     * This comment used to end "a relay in the middle cannot make them agree".
-     * It can. The passkey is a deterministic function of the shared secret with
-     * no nonce and no commitment, and a relay knows the host's public key, so
-     * it can compute what the host would display for any private key it
-     * chooses and search offline for one that matches the digits already on the
-     * device's screen. sim/passkey_grind.c finds one in 86 seconds on a single
-     * core. Nothing crosses the wire while it searches and no attempt fails.
-     *
-     * What makes BLE LESC and ZRTP work is a fresh nonce from each side plus a
-     * commitment forcing the searching party to fix its choice first, which
-     * turns the offline search into one online guess. Adding that is a protocol
-     * change; see docs/PROTOCOL.md §3 and docs/AUDIT-TRANSPORT.md C-1. Until it
-     * exists, this defends against a passive eavesdropper and a mis-paired
-     * device, not against a relay. */
+     * The v1 comment here used to end "a relay in the middle cannot make them
+     * agree", and it was wrong: the value was a pure function of the shared
+     * secret, so a relay could pick its own key and search offline for one
+     * that reproduced the digits already on the device's screen. That search
+     * is dead twice over now. The transcript salt means the relay would have
+     * to hit a value depending on nonces it does not yet have, and the
+     * commitment in session_begin()/session_reveal() means the inputs it does
+     * control are fixed before those nonces arrive. What is left is one online
+     * guess at 1 in 10^6, in front of a user reading the screen — which is the
+     * property BLE LESC's numeric comparison and ZRTP's SAS actually have.
+     * See session.h for the citations, and sim/passkey_grind.c for the attack
+     * re-run against this construction. */
     uint8_t pk[32];
-    hkdf_sha256(shared, sizeof(shared), LABEL_PASSKEY, pk);
+    hkdf_sha256(shared, sizeof(shared), salt, LABEL_PASSKEY, pk);
 
     uint32_t n = ((uint32_t)pk[0] << 24) | ((uint32_t)pk[1] << 16) |
                  ((uint32_t)pk[2] << 8) | pk[3];
@@ -144,29 +195,72 @@ static struct {
     char         passkey[SESSION_PASSKEY_LEN + 1];
     uint32_t     rx_counter;
     uint32_t     tx_counter;
+    /* Live only between session_begin() and session_reveal(). The private key
+     * has to survive the round trip because the shared secret is not computed
+     * until the transcript is complete, which is the one cost of the extra
+     * leg: a handshake abandoned half-way leaves a private key in RAM until
+     * the next session_reset(). Every path that ends a session calls that, and
+     * a new hello calls it first thing. */
+    SessionTranscript pending_transcript;
+    uint8_t      device_private[SESSION_KEY_SIZE];
 } sess;
 
 bool session_begin(const uint8_t host_public[SESSION_PUBKEY_SIZE],
-                   uint8_t device_public_out[SESSION_PUBKEY_SIZE])
+                   uint8_t device_public_out[SESSION_PUBKEY_SIZE],
+                   uint8_t device_commit_out[SESSION_COMMIT_SIZE])
 {
     session_reset();
 
     /* Ephemeral per connection: a leaked long-term key would otherwise expose
      * every past session. */
-    uint8_t device_private[SESSION_KEY_SIZE];
-    random_buffer(device_private, sizeof(device_private));
+    random_buffer(sess.device_private, sizeof(sess.device_private));
+    x25519(device_public_out, sess.device_private, X25519_BASEPOINT);
 
-    x25519(device_public_out, device_private, X25519_BASEPOINT);
+    /* The nonce is generated HERE, before the host's is known, and only its
+     * hash goes out. That ordering is the defence: whatever the peer sends
+     * next, the device's contribution to the six digits is already fixed and
+     * it cannot be revised to land on a chosen value. */
+    memcpy(sess.pending_transcript.host_public, host_public, SESSION_PUBKEY_SIZE);
+    memcpy(sess.pending_transcript.device_public, device_public_out, SESSION_PUBKEY_SIZE);
+    random_buffer(sess.pending_transcript.device_nonce, SESSION_NONCE_SIZE);
 
-    bool ok = session_derive(device_private, host_public,
+    session_commitment(device_public_out, host_public,
+                       sess.pending_transcript.device_nonce, device_commit_out);
+
+    /* A small-order host key is still refused, but it can only be caught once
+     * the shared secret is computed, and that does not happen until the
+     * transcript is complete. So the refusal moved to session_reveal(); the
+     * device has revealed nothing but a public key and a hash by then. */
+    sess.state = SESSION_AWAITING_REVEAL;
+    return true;
+}
+
+bool session_reveal(const uint8_t host_nonce[SESSION_NONCE_SIZE],
+                    uint8_t device_nonce_out[SESSION_NONCE_SIZE])
+{
+    /* One reveal per commitment. Answering a second one would hand the peer a
+     * fresh derivation against a nonce it had already seen, which is the
+     * search this whole round trip exists to prevent. */
+    if (sess.state != SESSION_AWAITING_REVEAL) {
+        return false;
+    }
+
+    memcpy(sess.pending_transcript.host_nonce, host_nonce, SESSION_NONCE_SIZE);
+
+    bool ok = session_derive(sess.device_private,
+                             sess.pending_transcript.host_public,
+                             &sess.pending_transcript,
                              sess.k_h2d, sess.k_d2h, sess.passkey);
-    memzero(device_private, sizeof(device_private));
+    /* The private key has done its only job. Nothing after this point needs
+     * it, so it does not get to sit in RAM for the length of the session. */
+    memzero(sess.device_private, sizeof(sess.device_private));
 
     if (!ok) {
         session_reset();
         return false;
     }
 
+    memcpy(device_nonce_out, sess.pending_transcript.device_nonce, SESSION_NONCE_SIZE);
     sess.state = SESSION_PENDING;
     return true;
 }

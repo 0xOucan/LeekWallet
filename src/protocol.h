@@ -34,6 +34,25 @@
  */
 #define PROTOCOL_MAX_FRAME 1024
 
+/**
+ * The wire protocol this firmware speaks, offered and required in `hello`.
+ *
+ * v1 was the single-round-trip handshake whose passkey a relay could grind
+ * offline (docs/AUDIT-TRANSPORT.md C-1); v2 is the commit-then-reveal one that
+ * replaced it. The two are not compatible and must not be allowed to look
+ * compatible: v1's `hello` carried a version the client never read, so a
+ * mismatched pair would have negotiated half a handshake and then failed on
+ * the first encrypted frame with "decrypt failed", which says nothing true
+ * about what is wrong.
+ *
+ * So both ends check, and both ends name the versions in the message. A host
+ * that offers anything but this number is refused at `hello` with ERR_VERSION,
+ * and a host that gets back anything but this number stops before deriving.
+ * Old firmware answers v1 and is caught by the second rule; old hosts send no
+ * version at all and are caught by the first.
+ */
+#define PROTOCOL_VERSION 2
+
 /** Install the USB-Serial-JTAG driver and start the listener task. */
 void protocol_start(void);
 

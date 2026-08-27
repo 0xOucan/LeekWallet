@@ -61,6 +61,12 @@ static const char *TAG = "protocol";
 
 /* Error codes, matching transport.ts */
 #define ERR_MALFORMED    0x0001
+/* The host speaks a protocol this firmware does not. Its own code rather than
+ * ERR_MALFORMED because the two call for opposite responses: a malformed frame
+ * is a bug to retry past, a version mismatch is a build to replace, and the
+ * user should be told which. transport.ts has called this UnsupportedVersion
+ * since before anything sent it. */
+#define ERR_VERSION      0x0002
 #define ERR_NOT_UNLOCKED 0x0100
 #define ERR_NO_WALLET    0x0300
 #define ERR_SESSION      0x0400
@@ -287,19 +293,108 @@ static bool request_is_authenticated(void)
 }
 
 /* Handle the plaintext handshake. Runs before any session exists, so it must
- * reveal nothing: a device public key and a version, and no user-specific
- * state at all. */
+ * reveal nothing: a device public key, a commitment and a version, and no
+ * user-specific state at all.
+ *
+ * Both legs report their own failures, because the failures are worth telling
+ * apart. A single "handshake failed" was what let M-2 and the missing version
+ * check hide behind each other: an old host and a corrupt frame produced the
+ * same sentence, so nobody could act on either. */
 static bool handle_hello(const uint8_t *payload, size_t len,
                          uint8_t *out, size_t out_size, size_t *out_len)
 {
+    /* M-2. A plaintext `hello` is unauthenticated — anything with write access
+     * to the port or the characteristic can send one — and session_begin()
+     * resets the session and puts a Connect? screen up. While the user is
+     * answering a question the DEVICE asked them, that is an interruption an
+     * attacker gets to schedule: a signing approval replaced mid-read by a
+     * pairing prompt, with the sign request silently dropped.
+     *
+     * So a handshake waits while a confirmation is on screen. Deliberately not
+     * "refuse whenever a session is ACTIVE": there is no disconnect event on
+     * USB, so an app that crashed and restarted would be locked out until the
+     * device was power-cycled, and reconnecting is the common case while this
+     * is the rare one. */
+    if (ui_user_is_answering()) {
+        send_session_error(ERR_BUSY, "the device is waiting for the user; retry");
+        return false;
+    }
+
+    /* Version first, so a mismatch is reported as a mismatch rather than
+     * surfacing later as a decrypt failure against keys derived from labels
+     * the other end never used. An old host sends no `version` at all, which
+     * is a mismatch and is named as one. */
+    CborItem ver;
+    uint64_t offered = 0;
+    if (cbor_map_find(payload, len, "version", &ver) && ver.type == CBOR_UINT) {
+        offered = ver.value;
+    }
+    if (offered != PROTOCOL_VERSION) {
+        char why[80];
+        snprintf(why, sizeof(why),
+                 "this device speaks protocol v%u; the app offered v%u — update the older one",
+                 (unsigned)PROTOCOL_VERSION, (unsigned)offered);
+        send_session_error(ERR_VERSION, why);
+        return false;
+    }
+
     CborItem item;
     if (!cbor_map_find(payload, len, "hostPubkey", &item) ||
         item.type != CBOR_BYTES || item.value != SESSION_PUBKEY_SIZE) {
+        send_session_error(ERR_MALFORMED, "hello needs a 32-byte hostPubkey");
         return false;
     }
 
     uint8_t device_pub[SESSION_PUBKEY_SIZE];
-    if (!session_begin(item.data, device_pub)) {
+    uint8_t device_commit[SESSION_COMMIT_SIZE];
+    if (!session_begin(item.data, device_pub, device_commit)) {
+        send_session_error(ERR_SESSION, "handshake failed");
+        return false;
+    }
+
+    /* Nothing goes on screen yet. The passkey does not exist until the host
+     * reveals its nonce, and showing a prompt for a value that has not been
+     * computed is how a user learns to press ALLOW without reading. */
+    CborWriter w;
+    cbor_writer_init(&w, out, out_size);
+    cbor_write_map(&w, 1);
+    cbor_write_text(&w, "result");
+    cbor_write_map(&w, 3);
+    cbor_write_text(&w, "version");
+    cbor_write_uint(&w, PROTOCOL_VERSION);
+    cbor_write_text(&w, "devicePubkey");
+    cbor_write_bytes(&w, device_pub, sizeof(device_pub));
+    cbor_write_text(&w, "deviceCommit");
+    cbor_write_bytes(&w, device_commit, sizeof(device_commit));
+
+    if (!cbor_writer_ok(&w)) {
+        session_reset();
+        send_session_error(ERR_MALFORMED, "handshake reply did not fit");
+        return false;
+    }
+    *out_len = w.length;
+    return true;
+}
+
+/* Second leg: the host reveals its nonce and the device reveals the one it
+ * committed to. Only now can either side derive, and only now does the passkey
+ * exist to be displayed. */
+static bool handle_hello_reveal(const uint8_t *payload, size_t len,
+                                uint8_t *out, size_t out_size, size_t *out_len)
+{
+    CborItem item;
+    if (!cbor_map_find(payload, len, "hostNonce", &item) ||
+        item.type != CBOR_BYTES || item.value != SESSION_NONCE_SIZE) {
+        send_session_error(ERR_MALFORMED, "helloReveal needs a 16-byte hostNonce");
+        return false;
+    }
+
+    uint8_t device_nonce[SESSION_NONCE_SIZE];
+    if (!session_reveal(item.data, device_nonce)) {
+        /* Either no commitment is outstanding, or the peer key was
+         * small-order. Both mean there is no channel and no half-state left
+         * behind — session_reveal() tore it down. */
+        send_session_error(ERR_SESSION, "no handshake is waiting for a nonce");
         return false;
     }
 
@@ -311,13 +406,13 @@ static bool handle_hello(const uint8_t *payload, size_t len,
     cbor_writer_init(&w, out, out_size);
     cbor_write_map(&w, 1);
     cbor_write_text(&w, "result");
-    cbor_write_map(&w, 2);
-    cbor_write_text(&w, "devicePubkey");
-    cbor_write_bytes(&w, device_pub, sizeof(device_pub));
-    cbor_write_text(&w, "version");
-    cbor_write_uint(&w, 1);
+    cbor_write_map(&w, 1);
+    cbor_write_text(&w, "deviceNonce");
+    cbor_write_bytes(&w, device_nonce, sizeof(device_nonce));
 
     if (!cbor_writer_ok(&w)) {
+        session_reset();
+        send_session_error(ERR_MALFORMED, "handshake reply did not fit");
         return false;
     }
     *out_len = w.length;
@@ -1233,19 +1328,29 @@ void protocol_handle_frame(uint8_t *frame, size_t len)
     size_t   payload_len = body - 1;
 
     if (type == FRAME_REQUEST) {
-        /* Plaintext is only ever the handshake. */
-        uint8_t out[128];
+        /* Plaintext is only ever the handshake. 160 rather than 128: the v2
+         * helloAck carries a 32-byte public key AND a 32-byte commitment
+         * beside their key names, which lands around 112 bytes and left too
+         * little margin for a field to be added without silently overflowing
+         * into a refusal. 32 bytes of a task stack that is 8 KB. */
+        uint8_t out[160];
         size_t  out_len = 0;
         CborItem probe;
         char method[32] = {0};
 
-        if (cbor_map_find(payload, payload_len, "method", &probe) &&
-            cbor_text_copy(&probe, method, sizeof(method)) &&
-            strcmp(method, "hello") == 0) {
+        bool named = cbor_map_find(payload, payload_len, "method", &probe) &&
+                     cbor_text_copy(&probe, method, sizeof(method));
+
+        if (named && strcmp(method, "hello") == 0) {
+            /* Both handshake legs report their own errors, so there is nothing
+             * to say here on failure — saying it twice would put two frames on
+             * the wire for one request. */
             if (handle_hello(payload, payload_len, out, sizeof(out), &out_len)) {
                 send_frame(FRAME_RESPONSE, out, out_len);
-            } else {
-                send_session_error(ERR_MALFORMED, "handshake failed");
+            }
+        } else if (named && strcmp(method, "helloReveal") == 0) {
+            if (handle_hello_reveal(payload, payload_len, out, sizeof(out), &out_len)) {
+                send_frame(FRAME_RESPONSE, out, out_len);
             }
         } else {
             dispatch(payload, payload_len);
