@@ -24,9 +24,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Matches MAX_FRAME in protocol.c: the endpoint would refuse anything larger
- * anyway, so buffering it here would only be storing bytes to throw away. */
-#define BLE_CHUNK_MAX_FRAME 512
+#include "protocol.h"
+
+/* Defined FROM the protocol's limit rather than alongside it.
+ *
+ * These were two numbers that were supposed to be equal, with a comment saying
+ * so. When PROTOCOL_MAX_FRAME went 512 -> 1024 for EIP-712 this one stayed
+ * behind, and the comment kept asserting a match that had stopped being true.
+ * The result was a request that signs over the cable and cannot be sent over
+ * the radio at all: a Permit2 PermitSingle is 588 bytes on the wire, so BLE
+ * users simply could not sign one, with no error that pointed at the cause.
+ *
+ * Deriving it means the next change to the protocol limit carries this one
+ * with it, and there is no second number to forget. */
+#define BLE_CHUNK_MAX_FRAME PROTOCOL_MAX_FRAME
 
 #define BLE_CHUNK_MORE     0x80
 #define BLE_CHUNK_SEQ_MASK 0x7f

@@ -359,6 +359,43 @@ int main(void)
     test_degenerate_writes();
     test_completion_starts_a_new_frame();
 
+    /* -------------------------------------------------------------------
+     * A Permit2 approval fits over the radio.
+     *
+     * The regression test for a real gap rather than a boundary curiosity.
+     * BLE_CHUNK_MAX_FRAME was 512 while PROTOCOL_MAX_FRAME had gone to 1024
+     * for EIP-712, under a comment claiming the two matched. A Permit2
+     * PermitSingle is 588 bytes on the wire, so it signed over the cable and
+     * could not be sent over the radio at all -- and nothing said why.
+     *
+     * Driven through the same split-and-reassemble path as the round trip
+     * above, at MTU 23, which is the floor every central must support and the
+     * worst case for chunk count.
+     */
+    printf("== a Permit2-sized frame survives chunking at MTU 23\n");
+    {
+        static uint8_t big_frame[BLE_CHUNK_MAX_FRAME];
+        const size_t PERMIT2_WIRE = 588;
+        CHECK(PERMIT2_WIRE + 3 <= BLE_CHUNK_MAX_FRAME,
+              "a Permit2 request no longer fits the BLE frame limit");
+
+        size_t big_len = make_frame(big_frame, 0x01, PERMIT2_WIRE);
+
+        sink_reset();
+        CHECK(ble_chunk_split(big_frame, big_len, 23, sink_emit, NULL),
+              "splitting a Permit2-sized frame failed");
+
+        ble_chunk_reset(&r);
+        BleChunkResult big_res = BLE_CHUNK_NEED_MORE;
+        for (int i = 0; i < sink.count; i++) {
+            big_res = ble_chunk_push(&r, sink.data[i], sink.len[i]);
+        }
+        CHECK(big_res == BLE_CHUNK_FRAME_READY,
+              "a 588-byte request did not reassemble over BLE");
+        CHECK(r.len == big_len && memcmp(r.buf, big_frame, big_len) == 0,
+              "the Permit2-sized frame changed in transit");
+    }
+
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;

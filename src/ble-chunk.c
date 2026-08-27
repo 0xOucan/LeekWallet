@@ -107,7 +107,10 @@ bool ble_chunk_split(const uint8_t *frame, size_t len, uint16_t mtu,
     }
     size_t capacity = (size_t)mtu - 3 - 1;
 
-    uint8_t out[BLE_CHUNK_MAX_FRAME + 1];
+    /* Static for the same reason as the receive buffer in ble.c: it doubled
+     * with the frame limit, and the notify path is driven by one task at a
+     * time. The host suites drive this function single-threaded too. */
+    static uint8_t out[BLE_CHUNK_MAX_FRAME + 1];
     if (capacity > sizeof(out) - 1) {
         capacity = sizeof(out) - 1;
     }

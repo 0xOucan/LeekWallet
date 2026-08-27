@@ -185,7 +185,13 @@ static int on_rx_write(uint16_t conn, uint16_t attr_handle,
         return BLE_ATT_ERR_UNLIKELY;
     }
 
-    uint8_t  chunk[BLE_CHUNK_MAX_FRAME];
+    /* Static, not stack: this runs on NimBLE's host task, whose stack size
+     * this project does not set, and the buffer doubled when the frame limit
+     * followed the protocol's to 1024. NimBLE dispatches GATT callbacks
+     * serially on that one task, so a single scratch buffer has no second
+     * writer -- the same reasoning as `job` above, and stated here because a
+     * static buffer in a callback is worth justifying rather than assuming. */
+    static uint8_t chunk[BLE_CHUNK_MAX_FRAME];
     uint16_t got = 0;
 
     /* A write longer than any chunk we would accept is refused without being

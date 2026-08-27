@@ -100,6 +100,13 @@ buffered — a signing device must never let the peer dictate an allocation size
 runs on the first chunk, and a chunk that is out of sequence, empty, overshoots the declared
 length or falls short of it resets reassembly rather than being patched around.
 
+BLE carries the same limit rather than a matching one: `BLE_CHUNK_MAX_FRAME` is *defined as*
+`PROTOCOL_MAX_FRAME`. They used to be two numbers under a comment claiming they agreed, and when
+the protocol's went 512 -> 1024 for EIP-712 the radio's stayed behind -- so a Permit2
+`PermitSingle`, 588 bytes on the wire, signed over the cable and could not be sent over BLE at
+all, with nothing to say why. There is no second number to forget now, and
+`sim/test_ble_chunk.c` reassembles a Permit2-sized frame at MTU 23.
+
 ---
 
 ## 3. Session establishment
