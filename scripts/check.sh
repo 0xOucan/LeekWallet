@@ -46,6 +46,11 @@ run() {
 # The C suites are the fast ones and catch the most, so they go first: a broken
 # firmware invariant should not wait behind a toolchain download.
 if [[ "$WHAT" == "all" || "$WHAT" == "sim" ]]; then
+    # Cheap, and it guards the one function whose failure is silent: a second
+    # definition of random_buffer() would be resolved by link order rather than
+    # by anyone's decision. Run before the suites, since nothing below is worth
+    # much if seeds come from an unchecked source.
+    run "rng is unique" ./scripts/check-rng-unique.sh
     run "host suites (sim)" make -C sim test
 fi
 
