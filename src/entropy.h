@@ -86,14 +86,21 @@ void entropy_set_wifi_active(bool active);
  *
  * The bits do not come from which button was pressed (2 bits at best, and
  * humans are heavily biased in their choices). They come from `timestamp_us`:
- * the interval between two human keypresses, measured at microsecond
- * resolution, carries several bits of genuine jitter that no attacker can
- * predict or reproduce. Budget ~4 bits per press and stay conservative.
+ * the interval between two human keypresses carries jitter that no attacker can
+ * predict or reproduce.
+ *
+ * How much jitter is smaller than this file used to claim. The parameter is
+ * named `timestamp_us` and the clock behind it is microsecond-resolution, but
+ * the press has already been through a 10 ms polling grid and a 100 ms debounce
+ * by the time anyone reads that clock, so the honest resolution of an interval
+ * is 10 ms, not 1 us. Budget **2 bits per press**, and see the derivation above
+ * BITS_PER_EVENT in entropy.c for why that is a floor rather than a guess.
  *
  * Why bother when the hardware RNG works? Because Coldcard's hardware RNG also
  * "worked" — until a build flag meant it wasn't being used. A user-contributed
  * pool is the layer that survives that failure: even with a completely broken
  * silicon source, a seed generated after 64 presses is not brute-forceable.
+ * Sixty-four is also, at 2 bits each, the count the collection screen requires.
  */
 void entropy_add_user_event(uint8_t button, uint64_t timestamp_us);
 
@@ -101,7 +108,7 @@ void entropy_add_user_event(uint8_t button, uint64_t timestamp_us);
 int entropy_user_event_count(void);
 
 /**
- * Conservative lower bound on user-contributed entropy, in bits.
+ * Lower bound on user-contributed entropy, in bits: 2 per event.
  * Used to drive the collection screen's progress indicator.
  */
 int entropy_user_bits_estimate(void);
@@ -122,9 +129,20 @@ void entropy_mix_pool(const uint8_t *hw, size_t hw_len, uint8_t out32[32]);
  * Fill `buf` with seed-grade entropy, or fail.
  *
  * Guarantees a hardware entropy source is active for the duration, then runs
- * the health tests on the output. Returns false without writing usable data if
- * anything is wrong — callers must treat false as fatal and must not fall back
- * to any other source.
+ * the health tests. Returns false without writing usable data if anything is
+ * wrong — callers must treat false as fatal and must not fall back to any other
+ * source.
+ *
+ * The tests run on two samples, because they only have power on the larger one:
+ * a 512-byte sample drawn purely to be checked and then discarded, and the
+ * caller's own bytes. The deep sample is drawn on the first call of a boot and
+ * on every call of >= 16 bytes — i.e. everything in this firmware that is key
+ * material — and costs about 2.8 ms. Draws below that (the 12-byte GCM nonce)
+ * pay nothing after the first. Measured detection of a source with ~1 bit of
+ * min-entropy per byte: 0.21 on 32 bytes, 1.00 on 512.
+ *
+ * Serialised internally. The bootloader-RNG window is process-wide and IDF does
+ * not reference-count it, so concurrent callers would close each other's.
  */
 bool entropy_fill(uint8_t *buf, size_t len);
 

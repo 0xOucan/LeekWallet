@@ -683,13 +683,27 @@ static void test_settings_selects_one_transport(void)
  * T61 - one job per button on the entropy screen
  * ============================================================================ */
 
+/* Mirrors ENTROPY_TARGET_EVENTS in ui.c, which is static. Written once here
+ * and formatted into the expectations below rather than spelled into a dozen
+ * string literals: the target moved from 32 to 64 when BITS_PER_EVENT was
+ * corrected to 2, and it should be able to move again without this file
+ * needing a search-and-replace to notice. */
+#define UI_ENTROPY_TARGET 64
+
+static void counter_text(char *out, size_t n, int events)
+{
+    snprintf(out, n, "%d / %d", events, UI_ENTROPY_TARGET);
+}
+
 static void test_entropy_accept_only_proceeds(void)
 {
     printf("== ACCEPT collects nothing and only ever proceeds (T61)\n");
     boot_unlocked_with_seed();
     go(SCREEN_ENTROPY);
 
-    CHECK_SCREEN(fake_oled_contains("0 / 32"), "the pool did not start empty");
+    char want[24];
+    counter_text(want, sizeof(want), 0);
+    CHECK_SCREEN(fake_oled_contains(want), "the pool did not start empty");
     CHECK_SCREEN(fake_oled_row_contains(7, "----"),
                  "the footer offers something for ACCEPT before the target");
     CHECK_SCREEN(!fake_oled_contains("NEXT"), "NEXT is offered before the target");
@@ -701,19 +715,23 @@ static void test_entropy_accept_only_proceeds(void)
         press(BUTTON_ACCEPT);
     }
     CHECK(ui_get_screen() == SCREEN_ENTROPY, "ACCEPT left the screen early");
-    CHECK_SCREEN(fake_oled_contains("0 / 32"),
+    counter_text(want, sizeof(want), 0);
+    CHECK_SCREEN(fake_oled_contains(want),
                  "ACCEPT was counted as a sample");
 
     /* UP and DOWN are the samples. */
     press(BUTTON_UP);
-    CHECK_SCREEN(fake_oled_contains("1 / 32"), "UP did not collect a sample");
+    counter_text(want, sizeof(want), 1);
+    CHECK_SCREEN(fake_oled_contains(want), "UP did not collect a sample");
     press(BUTTON_DOWN);
-    CHECK_SCREEN(fake_oled_contains("2 / 32"), "DOWN did not collect a sample");
+    counter_text(want, sizeof(want), 2);
+    CHECK_SCREEN(fake_oled_contains(want), "DOWN did not collect a sample");
 
-    for (int i = 2; i < 32; i++) {
+    for (int i = 2; i < UI_ENTROPY_TARGET; i++) {
         press(BUTTON_UP);
     }
-    CHECK_SCREEN(fake_oled_contains("32 / 32"), "32 presses did not fill the pool");
+    counter_text(want, sizeof(want), UI_ENTROPY_TARGET);
+    CHECK_SCREEN(fake_oled_contains(want), "the target did not fill the pool");
     CHECK_SCREEN(fake_oled_contains("Ready"), "a full pool does not say Ready");
     CHECK_SCREEN(fake_oled_row_contains(7, "NEXT"), "NEXT is still not offered");
 
@@ -736,7 +754,9 @@ static void test_entropy_cancel_abandons(void)
 
     /* And the half-full pool does not survive to be topped up later. */
     go(SCREEN_ENTROPY);
-    CHECK_SCREEN(fake_oled_contains("0 / 32"), "the abandoned pool was kept");
+    char want[24];
+    counter_text(want, sizeof(want), 0);
+    CHECK_SCREEN(fake_oled_contains(want), "the abandoned pool was kept");
 }
 
 /* ============================================================================

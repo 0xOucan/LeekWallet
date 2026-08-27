@@ -148,6 +148,50 @@ static void test_low_variety_seed(void)
     CHECK(r != ENTROPY_OK, "4-value seed accepted as healthy");
 }
 
+/*
+ * Why entropy_fill() draws a 512-byte sample it throws away.
+ *
+ * This is the measurement the deep check exists for, run as an assertion. The
+ * source is one emitting 0x00 half the time — roughly 1 bit of min-entropy per
+ * byte, so a 32-byte draw from it is worth about 32 bits, comfortably
+ * brute-forceable. At the 32 bytes bip39.c asks for, the tests catch it about a
+ * fifth of the time. At 512 bytes they catch it every time, because that is the
+ * first length at which the windowed proportion test runs at all.
+ *
+ * The assertion is deliberately two-sided. If the 512-byte detection ever stops
+ * being total the deep check has been broken; if the 32-byte detection ever
+ * becomes total, the deep check is no longer buying anything and this test
+ * should be the thing that says so rather than a comment nobody re-measures.
+ */
+static void test_deep_sample_is_why(void)
+{
+    printf("== a shallow source is caught at 512 bytes and missed at 32\n");
+
+    const int trials = 4000;
+    int caught_short = 0, caught_deep = 0;
+    uint8_t deep[512];
+
+    for (int t = 0; t < trials; t++) {
+        for (size_t i = 0; i < sizeof(deep); i++) {
+            uint8_t b = next_byte();
+            deep[i] = (next_byte() & 1) ? 0x00 : b;
+        }
+        if (entropy_health_check(deep, 32) != ENTROPY_OK) caught_short++;
+        if (entropy_health_check(deep, sizeof(deep)) != ENTROPY_OK) caught_deep++;
+    }
+
+    CHECK(caught_deep == trials,
+          "512-byte sample missed a ~1 bit/byte source %d/%d times",
+          trials - caught_deep, trials);
+    CHECK(caught_short < trials / 2,
+          "32-byte detection is unexpectedly high (%d/%d) - re-measure the "
+          "deep check's justification before trusting this",
+          caught_short, trials);
+
+    printf("   detection: len=32 %.4f, len=512 %.4f\n",
+           (double)caught_short / trials, (double)caught_deep / trials);
+}
+
 static void test_degenerate_input(void)
 {
     printf("== degenerate inputs\n");
@@ -265,7 +309,12 @@ static void test_reset_clears_pool(void)
     entropy_reset_user_pool();
     for (int i = 0; i < 10; i++) entropy_add_user_event(3, 900 + i * 71);
     CHECK(entropy_user_event_count() == 10, "expected 10 events");
-    CHECK(entropy_user_bits_estimate() >= 40, "bit estimate too low: %d",
+    /* Two bits per event, not four: the press is quantised by a 10 ms poll and
+     * a 100 ms debounce before anything timestamps it, so the old estimate was
+     * an optimistic one wearing the word "conservative". The assertion is >=
+     * rather than == because raising the credit per event is a claim that needs
+     * evidence, while this test only guards against it silently reaching zero. */
+    CHECK(entropy_user_bits_estimate() >= 20, "bit estimate too low: %d",
           entropy_user_bits_estimate());
 
     entropy_reset_user_pool();
@@ -288,6 +337,7 @@ int main(void)
     test_stuck_run();
     test_biased_source();
     test_low_variety_seed();
+    test_deep_sample_is_why();
     test_degenerate_input();
     test_pool_changes_output();
     test_timing_is_the_entropy();

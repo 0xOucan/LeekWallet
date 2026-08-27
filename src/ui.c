@@ -595,6 +595,24 @@ static void forget_mnemonic_unless_needed(screen_id_t next)
     memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
     mnemonic_word_count = 0;
     mnemonic_page = 0;
+
+    /* And the copy nobody in this file owns. mnemonic_from_data() builds the
+     * phrase in a file-scope `static CONFIDENTIAL char mnemo[240]` inside
+     * bip39.c and returns a pointer into it; wallet_create_mnemonic() copies
+     * out of that pointer, so every generated seed leaves a second plaintext
+     * copy behind. mnemonic_clear() exists to wipe it and was called from
+     * nowhere in this firmware, which left a freshly generated phrase sitting
+     * in RAM until reboot - through lock, through wipe, into any crash dump or
+     * JTAG halt taken in between.
+     *
+     * Here is the right place rather than immediately after generation, for the
+     * same reason mnemonic_buffer is cleared here: this hook is the one moment
+     * that is both well-defined and known to be past the last reader. The
+     * import path reaches it too, which is free - clearing a buffer that
+     * already holds zeros costs nothing and means no future caller of
+     * mnemonic_from_data() can reintroduce the leak by taking a different route
+     * out of these screens. */
+    mnemonic_clear();
 }
 
 /* The import screen's word buffer. Nothing downstream reads it - the built
@@ -2796,13 +2814,22 @@ static void screen_qr_code_on_button(button_id_t btn)
 /* ============================================================================
  * Entropy Collection Screen
  *
- * Optional extra randomness before generating a seed. The user presses buttons;
- * what is harvested is not which button but the microsecond timing between
- * presses, which is genuinely unpredictable. It is mixed with the hardware RNG,
- * never substituted for it - see entropy.h.
+ * Mandatory extra randomness before generating a seed. The user presses
+ * buttons; what is harvested is not which button but the timing between
+ * presses, which is genuinely unpredictable - though at the 10 ms resolution
+ * the input path actually delivers, not the microsecond one this comment used
+ * to claim. It is mixed with the hardware RNG, never substituted for it - see
+ * entropy.h.
  * ============================================================================ */
 
-/* Enough presses that the conservative 4-bits-each estimate clears 128 bits.
+/* Enough presses that the 2-bits-each floor clears 128 bits.
+ *
+ * It was 32, against an estimate of 4 bits per press that assumed the press was
+ * timed at microsecond resolution. It is not: button.c polls on a 10 ms grid
+ * behind a 100 ms debounce, so the interval a user can vary is quantised long
+ * before ui.c reads a clock. The estimate is now 2 bits (see BITS_PER_EVENT in
+ * entropy.c), and the count doubles to keep the same 128-bit claim honest
+ * rather than keeping the same fifteen seconds.
  *
  * Mandatory, not advisory. The hardware RNG passes its own health checks before
  * anything is generated, but those checks cannot detect a source that is
@@ -2812,8 +2839,8 @@ static void screen_qr_code_on_button(button_id_t btn)
  * skip. Trezor takes the same position: external entropy is mandatory in its
  * seed generation protocol, not an option.
  *
- * Roughly fifteen seconds, once, for a key that holds funds indefinitely. */
-#define ENTROPY_TARGET_EVENTS 32
+ * Roughly half a minute, once, for a key that holds funds indefinitely. */
+#define ENTROPY_TARGET_EVENTS 64
 
 static void screen_entropy_enter(void)
 {
@@ -2895,7 +2922,7 @@ static void screen_entropy_on_button(button_id_t btn)
      * button whose meaning changes partway through teaches the user the wrong
      * reflex for the one press that creates a wallet.
      *
-     * This costs nothing in entropy. What the pool harvests is the microsecond
+     * This costs nothing in entropy. What the pool harvests is the timing
      * jitter between presses, so two collecting buttons gather exactly what
      * four would - and the seed is full strength either way, because
      * entropy_mix_pool() hashes this pool together with the hardware RNG and
@@ -2994,6 +3021,10 @@ static void screen_wipe_confirm_on_button(button_id_t btn)
             hd_account_set(0);
             memzero(mnemonic_buffer, sizeof(mnemonic_buffer));
             mnemonic_word_count = 0;
+            /* bip39.c's static phrase buffer as well. A wipe that leaves the
+             * seed readable in RAM is not a wipe, and this path does not exit
+             * through forget_mnemonic_unless_needed(). */
+            mnemonic_clear();
             mnemonic_entry_clear(&entry);
             entropy_reset_user_pool();
             ESP_LOGW(TAG, "Device wiped");
