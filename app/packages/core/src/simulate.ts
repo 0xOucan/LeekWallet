@@ -241,9 +241,20 @@ export function transfersFromLogs(logs: unknown): SimulatedTransfer[] {
     if (from === undefined || to === undefined || amount === undefined) continue;
 
     const emitter = typeof entry["address"] === "string" ? entry["address"] : "";
-    /* Native movements arrive as synthetic Transfer logs attributed to the
-     * zero address. Everything else is a real contract's own event. */
-    const native = emitter === "" || emitter.toLowerCase() === ZERO_ADDRESS;
+    /* Native movements arrive as synthetic Transfer logs, and which address
+     * they are attributed to was guessed here rather than observed. The guess
+     * was the zero address; geth uses the all-`e` sentinel below, and a live
+     * Sepolia send proved it -- an ordinary ETH transfer was reported to the
+     * user as "raw units of 0xEeee...EEeE", a token whose contract does not
+     * exist, because it failed both tests and fell through to the token arm.
+     *
+     * Both are accepted. The zero address costs nothing to keep and other
+     * nodes may well use it; what matters is that a native transfer is never
+     * again described as a token nobody can look up. */
+    const NATIVE_SENTINEL = "0x" + "e".repeat(40);
+    const emitterLower = emitter.toLowerCase();
+    const native =
+      emitter === "" || emitterLower === ZERO_ADDRESS || emitterLower === NATIVE_SENTINEL;
     out.push(
       native
         ? { asset: "native", from, to, amount }

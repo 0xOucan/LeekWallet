@@ -110,6 +110,29 @@ group("transfers out of logs, or nothing");
   check(transfersFromLogs([{ address: USDC, topics: [TRANSFER_TOPIC, `0x${"ff".repeat(32)}`, topic(BOB)], data: dataWord(1n) }]).length === 0,
     "a padded topic that is not an address became a party to a transfer");
   check(transfersFromLogs("not a list").length === 0, "a non-list of logs did not decode to nothing");
+
+  /* The sentinel geth actually uses, which this file previously guessed at.
+   * A live Sepolia send showed an ordinary ETH transfer reported to the user
+   * as "raw units of 0xEeee...EEeE" -- a token whose contract does not exist
+   * -- because the emitter matched neither the empty string nor the zero
+   * address and fell through to the token arm. Pinned in both cases so the
+   * guess cannot come back. */
+  const NATIVE = `0x${"e".repeat(40)}`;
+  const geth = transfersFromLogs([
+    { address: NATIVE, topics: [TRANSFER_TOPIC, topic(ALICE), topic(BOB)], data: dataWord(100000000000000n) },
+  ]);
+  check(geth.length === 1, "geth's native transfer did not decode at all");
+  check(geth[0]?.asset === "native",
+    `geth's native sentinel was classified as ${geth[0]?.asset}, not native`);
+  check(geth[0]?.amount === 100000000000000n, "the native amount decoded wrongly");
+
+  // Upper case is the checksummed form a node may emit; the test would have
+  // passed on the lower-case spelling alone while the app still failed.
+  const upper = transfersFromLogs([
+    { address: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      topics: [TRANSFER_TOPIC, topic(ALICE), topic(BOB)], data: dataWord(1n) },
+  ]);
+  check(upper[0]?.asset === "native", "the checksummed native sentinel was read as a token");
 }
 
 group("a working simulation");
