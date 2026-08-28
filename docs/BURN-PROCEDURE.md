@@ -91,10 +91,11 @@ one-way state, so no single board can hold two of them.
 | 1 | **Unburned control** | Once fuses burn there is no way back. One device has to keep booting plain firmware, for comparison and for ordinary development |
 | 2 | **Development-mode burn** | Secure boot, flash encryption and NVS encryption, still re-flashable with signed images. This is the board that gets `esptool read_flash` run against it to *prove* the vault is ciphertext |
 | 3 | **Release-mode burn** | One shot, permanent, and it disables the UART download that board 2 depends on. Verifies the configuration that would actually ship |
-| 4 | **Spare** | A wrong partition table or a wrong key costs a board outright, and finding that out with no spare stops the work |
+| 4 | **Migration** | A device provisioned with a wallet *before* encryption, then encrypted — the path a real user upgrading would take. One-way like the rest, and distinct from board 2, which is provisioned fresh afterwards |
+| 5 | **Spare** | A wrong partition table or a wrong key costs a board outright, and finding that out with no spare stops the work |
 
-Three would do if nothing goes wrong. The fourth exists because the two steps
-most likely to go wrong are the two that cannot be undone.
+Four would do if nothing goes wrong. The fifth exists because the two steps most
+likely to go wrong are the two that cannot be undone.
 
 QEMU covers the boot path and is why this is four rather than a drawer full:
 `scripts/qemu-secure.sh` already proves secure boot and flash encryption end to
