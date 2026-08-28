@@ -313,8 +313,29 @@ typecheck pass.
    the vault's PBKDF2 verifier, and existing devices migrate on the first boot or first unlock.
    PIN entry costs one extra derivation (~0.5 s on the S3).
 2. ~~**Then correct the numbers.**~~ **Done** — see F2 above.
-3. **Allow a non-numeric or longer PIN**, or accept that the KDF is defence-in-depth only and say
-   so. Nothing in `pin_is_valid_format` (`src/pin.c:410`) has to stay digits-only.
+3. ~~**Allow a non-numeric or longer PIN**~~ — **declined by the owner, and the second half of
+   this recommendation is therefore the standing position: the KDF is defence in depth only, and
+   this document says so.**
+
+   The reasoning against is practical and holds up. Entry is four buttons. An alphanumeric PIN
+   means many more presses per character and many more mis-entries, and a user who shortens their
+   secret to escape that is worse off than one using eight digits. The alphabet is not free.
+
+   What it costs, stated plainly so nobody has to rediscover it: against a flash dump, the PIN's
+   own entropy is now the binding constraint, because the fast verifier that used to dominate is
+   gone. Measured at 1441 us per guess on one CPU core, and roughly 45 seconds for the whole
+   8-digit space on one consumer GPU. Eight digits is meaningfully better than four -- ten
+   thousand times the work -- and it is still about a minute.
+
+   So the layer that actually defends a stolen device is **flash encryption, with NVS encryption
+   enabled**, not the PIN and not the iteration count. That is what makes the vault unreadable to
+   a dump in the first place, and it is why the NVS question ahead of any eFuse burn is the one
+   that matters. Raising iterations trades the user's unlock time for one order of magnitude;
+   encrypting the partition removes the attack.
+
+   Nothing in `pin_is_valid_format` (`src/pin.c:410`) requires digits, so the door is open if the
+   input method ever changes -- a longer numeric PIN is also available at no UX cost worth
+   speaking of, and eight is already the maximum this build accepts.
 4. **Zero the decrypted payload after dispatch** in `protocol_handle_frame`, and `memzero` the
    buffer in `ble_chunk_reset` (F3). Transport code — another owner.
 5. **Gate the plaintext fallback in `callNow`** on `session.isActive` for `setPassphrase`, or for
