@@ -251,7 +251,25 @@ impl BleTransport {
     }
 
     /// Wait for one complete frame.
+    ///
+    /// Half-received state does not outlive a failure. A timeout is the common
+    /// case — a dropped chunk (see the `try_send` above), a device waiting on a
+    /// human — and leaving `expected_seq` and the decoder's buffer where they
+    /// stopped poisons the *next* request: the device's first chunk arrives as
+    /// seq 0, mismatches, and the caller is told about chunk ordering rather
+    /// than about the timeout that actually happened. Worse, leftover bytes get
+    /// prepended to the next frame and can decode into a boundary the device
+    /// never sent, which is the one thing the wire layer must not do.
     pub async fn recv(&mut self, timeout: Duration) -> Result<(u8, Vec<u8>), BleError> {
+        let out = self.recv_inner(timeout).await;
+        if out.is_err() {
+            self.reassembler.reset();
+            self.decoder.reset();
+        }
+        out
+    }
+
+    async fn recv_inner(&mut self, timeout: Duration) -> Result<(u8, Vec<u8>), BleError> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let chunk = match tokio::time::timeout_at(deadline, self.notifications.recv()).await {

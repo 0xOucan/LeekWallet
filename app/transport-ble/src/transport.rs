@@ -161,7 +161,19 @@ impl BleTransport {
     }
 
     /// Wait for one complete frame.
+    ///
+    /// Half-received state does not outlive a failure — see the note on the
+    /// Android backend's `recv`, which has the same shape and the same reason.
     pub async fn recv(&mut self, timeout: Duration) -> Result<(u8, Vec<u8>), BleError> {
+        let out = self.recv_inner(timeout).await;
+        if out.is_err() {
+            self.reassembler.reset();
+            self.decoder.reset();
+        }
+        out
+    }
+
+    async fn recv_inner(&mut self, timeout: Duration) -> Result<(u8, Vec<u8>), BleError> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
