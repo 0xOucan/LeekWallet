@@ -25,6 +25,9 @@ use crate::wire::{chunk_for_ble, encode_frame, ChunkReassembler, FrameDecoder, M
 pub struct BleTransport {
     peripheral: Peripheral,
     write_char: Characteristic,
+    /// Kept so the subscription can be taken down explicitly on the way out.
+    /// See `disconnect`.
+    notify_char: Characteristic,
     notifications: Pin<Box<dyn Stream<Item = ValueNotification> + Send>>,
     reassembler: ChunkReassembler,
     decoder: FrameDecoder,
@@ -123,6 +126,7 @@ impl BleTransport {
         Ok(Self {
             peripheral,
             write_char,
+            notify_char,
             notifications,
             reassembler: ChunkReassembler::new(),
             decoder: FrameDecoder::new(),
@@ -189,6 +193,21 @@ impl BleTransport {
     /// across an await is not `Send` and cannot be a Tauri async command.
     /// A unique borrow needs only `Send`.
     pub async fn disconnect(&mut self) -> Result<(), BleError> {
+        /* Take the subscription down before the link, which the Android path
+         * has always done and this one never did.
+         *
+         * The asymmetry showed up as a reconnect that could not complete: the
+         * device's log proved it sent both handshake replies and put the
+         * passkey on its screen, while the app timed out claiming the device
+         * had not answered. A CCCD left set on a link that is then torn down
+         * leaves BlueZ believing the client is already subscribed, so the next
+         * subscribe is a no-op and the notifications go nowhere.
+         *
+         * The result is deliberately not propagated: this runs while tearing
+         * down, often against a link that is already gone, and a failure to
+         * unsubscribe from something that no longer exists must not stop the
+         * disconnect that follows it. */
+        let _ = self.peripheral.unsubscribe(&self.notify_char).await;
         self.peripheral.disconnect().await?;
         Ok(())
     }
