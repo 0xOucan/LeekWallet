@@ -3550,7 +3550,16 @@ function diagnosticsReport(): string {
     // form is for comparing against the device screen, which is a different
     // job done by a different surface.
     addresses.forEach((a, i) => L.push(`${i === selectedIndex ? ">" : " "} [${i}] ${a}`));
-    L.push(`Derivation: ${addressPath(derivedAccount, 0).slice(0, -1)}i`);
+    /* -1 is the sentinel for "these addresses are no longer known to be
+     * valid" -- set when the wallet, passphrase or account changes. Rendering
+     * it into the path produced `m/44'/60'/-1'/0/i`, which is not a path any
+     * BIP-44 wallet can derive, in a report meant to be pasted into a bug
+     * thread. The honest line is that the list is stale. */
+    L.push(
+      derivedAccount < 0
+        ? "Derivation: unknown — these addresses are stale, reconnect to re-derive"
+        : `Derivation: ${addressPath(derivedAccount, 0).slice(0, -1)}i`,
+    );
   }
   L.push("");
 
