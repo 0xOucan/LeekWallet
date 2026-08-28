@@ -45,6 +45,24 @@ const SPENDER = "0x2626664c2603336E57B271c5C0b26F421741e481";
 const MAX_UINT160 = (1n << 160n) - 1n;
 const HOUR = 3600;
 
+/* EIP-712 requires the domain's own type to be declared alongside the others.
+ * viem infers it when hashing locally, so leaving it out here produced typed
+ * data that verified fine in this process and was refused by the wallet -- and
+ * the wallet was right: without the field list there is no defined order to
+ * compute the domain separator over, and MetaMask refuses it too. The refusal
+ * named the exact problem, which is how this was a two-minute fix. */
+const DOMAIN_TYPE = [
+  { name: "name", type: "string" },
+  { name: "chainId", type: "uint256" },
+  { name: "verifyingContract", type: "address" },
+];
+const DOMAIN_TYPE_VERSIONED = [
+  { name: "name", type: "string" },
+  { name: "version", type: "string" },
+  { name: "chainId", type: "uint256" },
+  { name: "verifyingContract", type: "address" },
+];
+
 /** Payloads chosen for what each one proves, not for variety. */
 function payload(kind, owner, now) {
   switch (kind) {
@@ -57,6 +75,7 @@ function payload(kind, owner, now) {
         typed: {
           domain: { name: "Permit2", chainId: CHAIN_ID, verifyingContract: PERMIT2 },
           types: {
+            EIP712Domain: DOMAIN_TYPE,
             PermitDetails: [
               { name: "token", type: "address" },
               { name: "amount", type: "uint160" },
@@ -91,6 +110,7 @@ function payload(kind, owner, now) {
         typed: {
           domain: { name: "USD Coin", version: "2", chainId: CHAIN_ID, verifyingContract: USDC },
           types: {
+            EIP712Domain: DOMAIN_TYPE_VERSIONED,
             Permit: [
               { name: "owner", type: "address" },
               { name: "spender", type: "address" },
@@ -121,6 +141,7 @@ function payload(kind, owner, now) {
         typed: {
           domain: { name: "Permit2", chainId: CHAIN_ID, verifyingContract: PERMIT2 },
           types: {
+            EIP712Domain: DOMAIN_TYPE,
             PermitDetails: [
               { name: "token", type: "address" },
               { name: "amount", type: "uint160" },
