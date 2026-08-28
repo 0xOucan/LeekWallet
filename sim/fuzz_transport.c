@@ -266,7 +266,7 @@ static bool armed_session(void)
 
 /* Valid requests, as bytes, to be mutated. Written with the real encoder: the
  * point is to start from something the device accepts and walk away from it. */
-#define CORPUS_MAX 8
+#define CORPUS_MAX 10
 static uint8_t corpus[CORPUS_MAX][PROTOCOL_MAX_FRAME];
 static size_t  corpus_len[CORPUS_MAX];
 static int     corpus_count;
@@ -287,6 +287,33 @@ static void build_corpus(void)
     cbor_writer_init(&w, buf, sizeof(buf));
     cbor_write_map(&w, 1);
     cbor_write_text(&w, "method"); cbor_write_text(&w, "getStatus");
+    add_corpus(&w);
+
+    /* Both handshake legs.
+     *
+     * open_session() drives these with well-formed messages to get a channel
+     * up; that exercises the happy path and nothing else. These entries are
+     * what puts them in front of the mutator, and they are the only reason a
+     * mutant ever spells a method name the plaintext branch of
+     * protocol_handle_frame() dispatches on — random bytes do not produce
+     * "helloReveal". Without them the v2 parsing surface (a version of any
+     * CBOR width, a hostPubkey or hostNonce of any length or type, and the
+     * commit/reveal ordering behind them) was reachable by an attacker and by
+     * nothing in this file. */
+    cbor_writer_init(&w, buf, sizeof(buf));
+    cbor_write_map(&w, 3);
+    cbor_write_text(&w, "method");     cbor_write_text(&w, "hello");
+    cbor_write_text(&w, "version");    cbor_write_uint(&w, PROTOCOL_VERSION);
+    cbor_write_text(&w, "hostPubkey");
+    { uint8_t k[32]; memset(k, 0x5C, sizeof(k)); cbor_write_bytes(&w, k, sizeof(k)); }
+    add_corpus(&w);
+
+    cbor_writer_init(&w, buf, sizeof(buf));
+    cbor_write_map(&w, 2);
+    cbor_write_text(&w, "method");    cbor_write_text(&w, "helloReveal");
+    cbor_write_text(&w, "hostNonce");
+    { uint8_t n[SESSION_NONCE_SIZE]; memset(n, 0x3E, sizeof(n));
+      cbor_write_bytes(&w, n, sizeof(n)); }
     add_corpus(&w);
 
     cbor_writer_init(&w, buf, sizeof(buf));
@@ -487,7 +514,10 @@ static void fuzz_frames(int iterations)
 static void fuzz_cbor(int iterations)
 {
     static const char *keys[] = { "method", "index", "path", "data", "types",
-                                  "message", "passphrase", "", "hostPubkey" };
+                                  "message", "passphrase", "", "hostPubkey",
+                                  /* v2 handshake fields, so a mutated map can
+                                   * land on the commit/reveal parsers. */
+                                  "hostNonce", "version", "deviceCommit" };
     static uint8_t buf[1024];
     char text[64];
 

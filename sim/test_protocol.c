@@ -129,6 +129,23 @@ void ui_request_lock(void)            { lock_requests++; }
  * (T45) - "shown_index == 0" was true of two different wallets. */
 static HDPath shown_path;
 
+/* Set to model a link that dies while the approval screen is up.
+ *
+ * The device waits up to two minutes for a button, and a BLE disconnect is
+ * handled on NimBLE's host task, not on the one blocked in wait_for_user() —
+ * so session_reset() really can land inside that window on hardware. Here the
+ * suite is single-threaded, and the stub the endpoint calls immediately before
+ * it starts waiting is the honest place to inject it. */
+static bool disconnect_while_confirming;
+
+static void maybe_disconnect_mid_confirmation(void)
+{
+    if (disconnect_while_confirming) {
+        disconnect_while_confirming = false;
+        session_reset();
+    }
+}
+
 void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
 {
     confirm_requests++;
@@ -136,6 +153,7 @@ void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
     shown_path = *path;
     shown_index = path->address_index;
     snprintf(shown_from, sizeof(shown_from), "%s", from ? from : "");
+    maybe_disconnect_mid_confirmation();
 }
 
 void ui_request_sign_message(const char *message, size_t length,
@@ -842,6 +860,50 @@ static void test_hello_waits_for_a_user_who_is_answering(void)
     handshake(97);
     CHECK(session_state() == SESSION_PENDING,
           "a handshake was still refused after the user answered");
+}
+
+/* The other leg. M-2 gated `hello`, but `hello` is not the leg that puts a
+ * screen up — `helloReveal` is, and a handshake can sit in AWAITING_REVEAL for
+ * as long as the peer likes. So the interruption M-2 closed is still
+ * reachable in two moves: open a handshake while nothing is on screen, wait
+ * for the user to be reading something, then reveal. */
+static void test_a_reveal_cannot_interrupt_a_confirmation_either(void)
+{
+    printf("== the second handshake leg also waits for the user (M-2b)\n");
+
+    fresh_device();
+    device_unlocked();
+
+    /* Move one: a handshake opened at a quiet moment. Nothing on screen yet,
+     * by design — the passkey does not exist until the reveal. */
+    host_keypair(120);
+    send_hello_versioned(true, PROTOCOL_VERSION);
+    (void)next_frame();
+    CHECK(session_state() == SESSION_AWAITING_REVEAL,
+          "the device did not commit (state %d)", session_state());
+    CHECK(session_confirm_prompts == 0, "hello alone put a prompt on screen");
+
+    /* Move two: the user is now answering a question the DEVICE asked. */
+    stub_user_is_answering = true;
+
+    uint8_t nonce[SESSION_NONCE_SIZE];
+    fill(nonce, sizeof(nonce), 121);
+    send_hello_frame("helloReveal", "hostNonce", nonce, sizeof(nonce));
+    expect_error(T_ERROR, E_BUSY, "a helloReveal while the user is answering");
+    CHECK(session_confirm_prompts == 0,
+          "a reveal replaced the screen the user was reading");
+
+    /* A deferral, not a lockout: the commitment is still outstanding, so the
+     * same reveal works once the user has answered. */
+    CHECK(session_state() == SESSION_AWAITING_REVEAL,
+          "the deferred reveal threw the commitment away (state %d)",
+          session_state());
+    stub_user_is_answering = false;
+    send_hello_frame("helloReveal", "hostNonce", nonce, sizeof(nonce));
+    Frame f = next_frame();
+    CHECK(f.present && f.type == T_RESPONSE,
+          "the reveal was still refused after the user answered");
+    CHECK(session_confirm_prompts == 1, "the reveal put no passkey on screen");
 }
 
 static void test_keys_need_a_session_and_a_passkey(void)
@@ -3151,6 +3213,82 @@ static void test_the_signing_path_carries_the_account(void)
     CHECK(f.present && f.type == T_ENC_RESPONSE, "the signature was not returned");
 }
 
+/* T47 again, through a door the path check does not cover.
+ *
+ * `sign_path` is captured before the screen goes up and used unchanged for the
+ * signature, so the account and index cannot move underneath the user. The
+ * passphrase can: it is wallet-global rather than part of the path, and
+ * session_reset() drops a host-supplied one (T42) from a task that is not the
+ * one blocked in wait_for_user(). A BLE disconnect during the approval window
+ * — the most likely two minutes in the whole session for one to happen, since
+ * the user has just picked the device up and walked away from the phone —
+ * therefore leaves the OLED showing an address derived under the hidden wallet
+ * and the signature taken under the base one.
+ *
+ * The user approves address X and signs with key Y. Whether that is an
+ * attacker forcing the drop or a radio doing it by itself, the invariant the
+ * device exists to hold — what was approved is what was signed — does not
+ * hold, so the only correct answer is to refuse. */
+static void test_a_signature_matches_the_address_that_was_approved(void)
+{
+    printf("== a wallet that moves during approval voids the approval (T47)\n");
+    fresh_device();
+    device_unlocked();
+    confirmed_session(46);
+
+    /* A hidden wallet, applied by the host and approved on the device. */
+    uint8_t payload[256];
+    size_t len = set_passphrase_request(payload, sizeof(payload), "hunter2");
+    scripted_outcome = SIGN_APPROVED;
+    send_encrypted(payload, len);
+    (void)next_reply();
+    CHECK(wallet_has_passphrase(), "setup: the passphrase was not applied");
+
+    uint8_t to[20];
+    memset(to, 0xAB, sizeof(to));
+
+    CborWriter w;
+    cbor_writer_init(&w, payload, sizeof(payload));
+    cbor_write_map(&w, 4);
+    cbor_write_text(&w, "method");
+    cbor_write_text(&w, "signTransaction");
+    cbor_write_text(&w, "chainId");
+    cbor_write_uint(&w, 1);
+    cbor_write_text(&w, "path");
+    cbor_write_text(&w, "m/44'/60'/0'/0/0");
+    cbor_write_text(&w, "to");
+    cbor_write_bytes(&w, to, sizeof(to));
+    CHECK(cbor_writer_ok(&w), "request did not fit");
+
+    /* The link dies between the address going on screen and the button. */
+    disconnect_while_confirming = true;
+    scripted_outcome = SIGN_APPROVED;
+    send_encrypted(payload, w.length);
+
+    CHECK(confirm_requests == 1, "no confirmation was asked for");
+    CHECK(!wallet_has_passphrase(),
+          "setup: the disconnect did not drop the host passphrase");
+
+    /* An address was shown. Whatever comes back must have been signed at that
+     * address or must not come back at all. */
+    char approved[43];
+    snprintf(approved, sizeof(approved), "%s", shown_from);
+
+    EthAddress now;
+    HDPath p = { .account = 0, .address_index = 0 };
+    CHECK(wallet_get_address_at_path(&p, &now) == WALLET_OK,
+          "setup: the base wallet does not derive");
+    CHECK(strcmp(approved, now.hex) != 0,
+          "setup: the passphrase did not change the address, so this test "
+          "proves nothing");
+
+    Frame f = next_reply();
+    CHECK(f.present, "the request was answered with silence");
+    CHECK(f.type == T_ENC_ERROR || f.type == T_ERROR,
+          "the device signed after the wallet moved out from under the "
+          "approval: it showed %s and signed as %s", approved, now.hex);
+}
+
 /* ============================================================================
  * T42 - a host-supplied passphrase belongs to the host's session
  * ============================================================================ */
@@ -3767,6 +3905,7 @@ static int run_all_tests(void)
     test_version_mismatch_is_named();
     test_reveal_is_required_before_anything_is_shown();
     test_hello_waits_for_a_user_who_is_answering();
+    test_a_reveal_cannot_interrupt_a_confirmation_either();
     test_keys_need_a_session_and_a_passkey();
     test_locked_device_refuses_keys();
     test_address_derivation_reads_the_path();
@@ -3797,6 +3936,7 @@ static int run_all_tests(void)
     test_the_account_level_is_read_not_assumed();
     test_an_out_of_range_account_is_refused();
     test_the_signing_path_carries_the_account();
+    test_a_signature_matches_the_address_that_was_approved();
     test_a_host_passphrase_dies_with_its_session();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",

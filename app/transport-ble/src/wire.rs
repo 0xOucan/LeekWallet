@@ -147,6 +147,18 @@ impl ChunkReassembler {
             )));
         }
 
+        // A header with nothing behind it. `chunk_for_ble` never emits one, and
+        // a peer that does is either broken or probing: `more` chunks carrying
+        // no body advance `expected_seq` forever without ever growing `parts`,
+        // so the size cap below never bites and `recv` stalls until the
+        // caller's timeout. The firmware refuses these (`src/ble-chunk.c:54`)
+        // and so does the TypeScript reference (`framing.ts:161`); this was the
+        // one of the three implementations that did not.
+        if chunk.len() < 2 {
+            self.reset();
+            return Err(WireError::BadChunk("chunk carries no payload".into()));
+        }
+
         // Checked before extending, not after: the point is to never hold more
         // than one frame's worth of a hostile peer's bytes.
         if self.parts.len() + chunk.len() - 1 > MAX_FRAME {
@@ -231,6 +243,13 @@ impl FrameDecoder {
         Ok(frames)
     }
 
+    /// Throw away a partially received frame.
+    ///
+    /// Every error path out of a `recv` has to call this. A timeout leaves
+    /// whatever arrived before it sitting in the buffer, and the next request's
+    /// bytes are appended to it — so a stale prefix plus a fresh frame can
+    /// decode into a boundary the peer never sent, which is exactly what the
+    /// length check below exists to make impossible.
     pub fn reset(&mut self) {
         self.buffer.clear();
     }
@@ -320,6 +339,23 @@ mod tests {
         let mut r = ChunkReassembler::new();
         r.push(&chunks[0]).unwrap();
         assert!(r.push(&chunks[0]).is_err());
+    }
+
+    #[test]
+    fn a_header_with_no_body_is_refused() {
+        // The stall the size cap cannot catch: `more` chunks that carry only a
+        // header grow `expected_seq` and nothing else, so reassembly never
+        // exceeds MAX_FRAME and never finishes either. The firmware and the
+        // TypeScript reference both refuse these; this side used to accept them.
+        let mut r = ChunkReassembler::new();
+        assert!(r.push(&[CHUNK_HEADER_MORE]).is_err());
+        assert_eq!(r.pending(), 0);
+
+        // And it refuses one mid-frame rather than only as the first chunk.
+        let mut r = ChunkReassembler::new();
+        assert!(r.push(&[CHUNK_HEADER_MORE, 1, 2, 3]).is_ok());
+        assert!(r.push(&[CHUNK_HEADER_MORE | 1]).is_err());
+        assert_eq!(r.pending(), 0);
     }
 
     #[test]

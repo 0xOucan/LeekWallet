@@ -47,12 +47,22 @@ device is an attack surface.
 
 | type | meaning |
 |---|---|
-| `0x01` | Request (plaintext, pre-session only) |
-| `0x02` | Response (plaintext, pre-session only) |
+| `0x01` | Request (plaintext) |
+| `0x02` | Response (plaintext) |
 | `0x11` | Request (encrypted) |
 | `0x12` | Response (encrypted) |
-| `0x13` | Event (encrypted, device→host, unsolicited) |
-| `0x7F` | Error |
+| `0x7E` | Error (encrypted) |
+| `0x7F` | Error (plaintext) |
+
+Plaintext is **not** "pre-session only", and saying so was wrong in a way that
+mattered: the device answers a plaintext request in plaintext even while a
+session is up, which is the counter rule in section 7 and not a special case.
+What plaintext does not get is *authority* — every tier above `getStatus`
+refuses it with `0x0400` whether or not a session exists.
+
+There is no event type. `0x13 Event` was in this table and never in the
+firmware; nothing is unsolicited, and `0x7E` — which the firmware does send,
+and which section 7 relies on — was missing. See `src/protocol.c:55-60`.
 
 **BLE chunking.** GATT writes cap at MTU−3. Frames are split into chunks with a 1-byte header:
 bit 7 = "more follows", bits 0-6 = sequence, wrapping at 128. The receiver reassembles before
@@ -136,8 +146,11 @@ one, no nonces and no commitment: the passkey was `HKDF(X25519(a,B), "…passkey
 so it could compute what the host *would* display for any private key it chose and search
 offline until that matched the six digits the device was already showing. Nothing crossed the
 wire while it searched and no attempt failed. `sim/passkey_grind.c --v1 --search` still does it,
-against trezor-crypto's deliberately slow reference X25519 — **38 seconds on one core** of an
-ordinary laptop, and single-digit seconds for an optimised multicore implementation.
+against trezor-crypto's deliberately slow reference X25519 — **425 364 derivations in 91 s on one
+core** when `docs/AUDIT-TRANSPORT.md` §4 measured it, and single-digit seconds for an optimised
+multicore implementation. The wall-clock figure is machine-dependent and has been quoted as three
+different numbers in this repository; the rate is the durable part, and it is around 5 000
+derivations per second per core against the slowest X25519 in the tree.
 
 What closes it is the mechanism BLE Secure Connections and ZRTP use, adopted rather than
 approximated:
@@ -169,8 +182,8 @@ Two consequences that are not optional:
 Both keys are bound to the transcript too — it is the HKDF-Extract salt — so substituting a
 public key or a nonce anywhere changes every derived value, not only the digits.
 `sim/passkey_grind.c` (default mode) re-runs the relay against this construction; the search
-that took 38 seconds against v1 finds nothing it can use, and 500 000 committed attempts land
-where 1-in-10⁶ says they should.
+that succeeded against v1 finds nothing it can use — 0 matches in 20 000 derivations even when
+the host's nonce is handed to it — and committed attempts land where 1-in-10⁶ says they should.
 
 **What is still true:** none of this authenticates *which* device you are talking to. There is
 no long-term key and no attestation. It proves that the two ends of this connection are talking
@@ -178,7 +191,12 @@ directly to each other and to nobody in between, and it proves it only if the us
 compares the digits.
 
 Payload encryption is **ChaCha20-Poly1305** with a per-direction 96-bit nonce that is a
-monotonic counter. Counters never reset within a session; a reused nonce is a session abort. The
+monotonic counter. Counters never reset within a session, and a frame that replays or reorders
+fails authentication. **A repeat is not otherwise detected:** the counter is 32 bits inside a
+96-bit nonce (`src/session.c:305-315`, `session.ts:195`) and both ends wrap silently past
+`0xFFFFFFFF` rather than aborting. Unreachable in practice — 2^32 frames is weeks of unbroken
+traffic — but it is arithmetic doing the work, not a check, and this line used to claim
+otherwise. The
 ESP32-S3's AES accelerator would make AES-GCM tempting, but ChaCha20 is constant-time in
 software everywhere, which matters more on the host side than raw throughput does at our sizes.
 
@@ -191,8 +209,25 @@ the odds and the caveat above. A compromised host is entirely unaffected — see
 authenticate with — and it tears the current session down. Left ungated, that let anyone able to
 write to the port or the characteristic choose the moment a signing approval vanished from the
 screen, taking the request with it. So the device **defers a handshake while a confirmation is
-on screen**: a signing approval, a host-proposed passphrase, a wipe, or a seed on display. The
-host gets `0x0401` ("the device is waiting for the user; retry") and retries.
+on screen**: a signing approval, a host-proposed passphrase (either kind), a wipe, or a seed on
+display or being verified. The host gets `0x0401` ("the device is waiting for the user; retry")
+and retries. The exact list is `ui_user_is_answering()` in `src/ui.c`.
+
+**Both legs are gated, and the second one is the one that matters.** `hello` deliberately shows
+nothing — the passkey does not exist until the reveal — so gating only `hello` gated the half
+that never paints. A peer could open a handshake at a quiet moment, sit in `AWAITING_REVEAL`
+indefinitely (nothing times it out, and USB has no disconnect), and spend its `helloReveal` at a
+moment of its own choosing to wipe a seed off the glass. `helloReveal` now defers on the same
+condition, *before* consuming the commitment, so the deferral costs the host a retry rather than
+a fresh handshake.
+
+What is **not** gated, and is a deliberate gap rather than an oversight: `SCREEN_MNEMONIC_ENTRY`
+reached from Import Wallet, where the user is typing a recovery phrase with the link still live.
+Wallet *creation* is covered by something stronger — `screen_entropy_enter()` calls
+`transport_suspend()`, so nothing is listening for the whole of it — but the import path has no
+equivalent, and a peer can therefore clear a half-typed phrase (`forget_mnemonic_entry`) at will.
+It destroys work rather than leaking anything, but it is the same class as the seed-on-display
+case that *is* listed.
 
 Deliberately a deferral and not a lockout, and deliberately *not* "refuse whenever a session is
 active": USB has no disconnect for the device to notice, so an app that crashed and restarted
@@ -427,6 +462,19 @@ derived on the protocol task, at the same path the signature is taken at, and
 handed to the UI rather than looked up there: the UI task shares derivation
 state, which is how the original race happened.
 
+**And it is re-derived after the button, not only before it.** Pinning the path
+pins the path; it does not pin the wallet. A passphrase is global state rather
+than part of a path, and a host-supplied one is dropped by `session_reset()`
+(T42) — which runs on NimBLE's host task, not on the one blocked waiting for
+the user. So a disconnect during the approval window, the two minutes in which
+the user has picked the device up and walked away from the phone, left the OLED
+showing an address in the hidden wallet and the signature taken in the base one:
+approve X, sign with Y. The device now re-derives at the approved path once the
+user presses ALLOW and refuses with `0x0200` if the address is no longer the one
+it displayed. The check compares the rendered address rather than tracking the
+state that moved, so anything that moves the key in future — a wallet switch, a
+lock, an account change — is caught without a new flag to remember.
+
 ## 6. Errors
 
 ```
@@ -442,7 +490,7 @@ state, which is how the original race happened.
 | `0x0200` | User rejected on device |
 | `0x0201` | Timed out waiting for the user |
 | `0x0300` | No wallet selected |
-| `0x0400` | Session required / nonce reuse |
+| `0x0400` | Session required, or the channel is unusable (a frame that failed to authenticate) |
 | `0x0401` | Transport busy; the request was refused, not acted on — resend it |
 | `0x0202` | Outside the decodable set (section 6bis) |
 
@@ -977,6 +1025,22 @@ The domain-separation labels carry the version too (`leek-session-h2d-v2` and it
 even if the explicit check were somehow bypassed the two ends could not accidentally agree on a
 key. That is belt and braces, not the mechanism: the mechanism is the check, because only the
 check can produce a sentence a user can act on.
+
+**The version is not in the transcript, and that is load-bearing only while there is one of
+them.** `T` hashes `PKa ‖ PKb ‖ Na ‖ Nb` and nothing else, so the offered and answered version
+numbers are bound *indirectly*, by the `-v2` in the KDF labels. Today that is airtight: exactly
+one version is accepted at each end, so there is no version a relay could substitute that both
+ends would still derive under. It stops being airtight the moment a v3 accepts `{2, 3}` — a relay
+could then offer v2 to a v3 device and v3 to a v2 host, and nothing inside `T` would record the
+downgrade. Whoever adds a third version must put the negotiated version into the transcript hash
+in the same change, not after it.
+
+The same is true, more mildly, of the messages themselves. `T` binds the four cryptographic
+values, not the bytes that carried them: unknown CBOR keys in `hello` or `helloReveal` are
+ignored rather than hashed, so the transcript is a summary of the handshake and not a transcript
+of it in ZRTP's sense (RFC 6189 §4.5.2 hashes the actual messages). Nothing in v2 reads a field
+that is outside `T`, so there is nothing to substitute — but that is an invariant to preserve,
+and it is one an added field would quietly break.
 
 ---
 

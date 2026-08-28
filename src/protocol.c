@@ -382,6 +382,24 @@ static bool handle_hello(const uint8_t *payload, size_t len,
 static bool handle_hello_reveal(const uint8_t *payload, size_t len,
                                 uint8_t *out, size_t out_size, size_t *out_len)
 {
+    /* M-2 again, on the leg that actually paints. Gating only `hello` gated
+     * the wrong half: `hello` deliberately shows nothing — the passkey does
+     * not exist yet — and it is this leg that calls
+     * ui_request_session_confirm(). A peer could therefore open a handshake at
+     * a quiet moment, sit in AWAITING_REVEAL for as long as it liked (nothing
+     * times it out, and USB has no disconnect), and spend the reveal at a
+     * moment of its own choosing to wipe a seed off the glass or a wipe
+     * confirmation out from under the user.
+     *
+     * Deferred rather than refused, and BEFORE session_reveal(), so the
+     * outstanding commitment survives and the same reveal succeeds once the
+     * user has answered. Refusing would consume the commitment and force a
+     * fresh `hello`, which is the lockout this gate exists to avoid. */
+    if (ui_user_is_answering()) {
+        send_session_error(ERR_BUSY, "the device is waiting for the user; retry");
+        return false;
+    }
+
     CborItem item;
     if (!cbor_map_find(payload, len, "hostNonce", &item) ||
         item.type != CBOR_BYTES || item.value != SESSION_NONCE_SIZE) {
@@ -559,6 +577,37 @@ static SignOutcome wait_for_user(void)
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
+}
+
+/**
+ * Re-derive at the approved path and check it is still the address on screen.
+ *
+ * T47 said "what was approved and what was signed must be the same object",
+ * and the path is: `sign_path` is captured before the prompt and used unchanged
+ * for the signature. The *wallet* is not. A passphrase is global state rather
+ * than part of a path, and a host-supplied one is dropped by session_reset()
+ * (T42) — which is called from NimBLE's host task on a disconnect, not from
+ * the task sitting in wait_for_user(). So the approval window, the two minutes
+ * in which the user has picked the device up and walked away from the phone,
+ * is exactly when the wallet underneath the prompt can move.
+ *
+ * The device then shows an address in the hidden wallet and signs in the base
+ * one: the user approves X and signs with Y. Recomputing costs one BIP32
+ * derivation on a path that has just been derived anyway, and it can only ever
+ * refuse — there is no branch here that signs something it otherwise would not.
+ *
+ * Deliberately compares the rendered address rather than tracking the state
+ * that moved. Whatever moves the key in future — a wallet switch, an account
+ * change, a lock — moves the address too, and this catches it without anyone
+ * having to remember to add a flag.
+ */
+static bool approval_still_holds(const HDPath *path, const char *shown)
+{
+    EthAddress now;
+    if (wallet_get_address_at_path(path, &now) != WALLET_OK) {
+        return false;
+    }
+    return strcmp(now.hex, shown) == 0;
 }
 
 /* Handle one decoded request. */
@@ -829,6 +878,15 @@ static void dispatch(const uint8_t *payload, size_t len)
             return;
         }
 
+        /* The wallet may have moved while the screen was up. See
+         * approval_still_holds(). */
+        if (!approval_still_holds(&sign_path, from_addr.hex)) {
+            ui_sign_report(false);
+            send_error(ERR_USER_REJECTED,
+                       "the wallet changed while you were confirming; try again");
+            return;
+        }
+
         uint8_t digest[32];
         if (!eth_tx_hash(&tx, digest)) {
             send_error(ERR_MALFORMED, "could not encode the transaction");
@@ -937,6 +995,15 @@ static void dispatch(const uint8_t *payload, size_t len)
         }
         if (msg_outcome != SIGN_APPROVED) {
             send_error(ERR_USER_REJECTED, "rejected on device");
+            return;
+        }
+
+        /* The wallet may have moved while the screen was up. See
+         * approval_still_holds(). */
+        if (!approval_still_holds(&msg_path, msg_from.hex)) {
+            ui_sign_report(false);
+            send_error(ERR_USER_REJECTED,
+                       "the wallet changed while you were confirming; try again");
             return;
         }
 
@@ -1053,6 +1120,15 @@ static void dispatch(const uint8_t *payload, size_t len)
         }
         if (typed_outcome != SIGN_APPROVED) {
             send_error(ERR_USER_REJECTED, "rejected on device");
+            return;
+        }
+
+        /* The wallet may have moved while the screen was up. See
+         * approval_still_holds(). */
+        if (!approval_still_holds(&typed_path, typed_from.hex)) {
+            ui_sign_report(false);
+            send_error(ERR_USER_REJECTED,
+                       "the wallet changed while you were confirming; try again");
             return;
         }
 
