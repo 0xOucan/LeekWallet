@@ -4112,6 +4112,57 @@ static void screen_sign_confirm_enter(void)
 /* An address across three rows, never truncated: the user compares it against
  * what they intended, and a shortened address compares equal to one that is
  * not the same. */
+/**
+ * A count of seconds since 1970, as a calendar date.
+ *
+ * No clock is involved, and that is the point. This device has no RTC, which
+ * was once taken to mean it could not show a date at all -- but a date is a
+ * function of the number alone. Only "how far away is that" needs to know the
+ * present, and that is not the question a deadline poses. The question is
+ * whether the permission being signed ends this afternoon or in 2033, and
+ * "2033-05-18" answers it where "2000000000" does not: both deadlines are ten
+ * digits, and on a small screen they read the same.
+ *
+ * Hinnant's civil_from_days, exact for every day this can express and needing
+ * no table. Returns false rather than a wrong date when the text is not a
+ * plain decimal or the year would not fit four digits, so the caller can show
+ * the raw seconds instead of inventing something.
+ */
+bool unix_to_civil_date(const char *secs, int *year, int *month, int *day)
+{
+    if (!secs || !*secs) {
+        return false;
+    }
+    uint64_t t = 0;
+    for (const char *p = secs; *p; p++) {
+        if (*p < '0' || *p > '9') {
+            return false;
+        }
+        if (t > (UINT64_MAX - (uint64_t)(*p - '0')) / 10) {
+            return false;               /* longer than any real timestamp */
+        }
+        t = t * 10 + (uint64_t)(*p - '0');
+    }
+    if (t > 253402300799ULL) {          /* past 9999-12-31 */
+        return false;
+    }
+
+    int64_t  z   = (int64_t)(t / 86400) + 719468;
+    int64_t  era = (z >= 0 ? z : z - 146096) / 146097;
+    uint32_t doe = (uint32_t)(z - era * 146097);
+    uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int64_t  yr  = (int64_t)yoe + era * 400;
+    uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    uint32_t mp  = (5 * doy + 2) / 153;
+    uint32_t dd  = doy - (153 * mp + 2) / 5 + 1;
+    uint32_t mm  = mp + (mp < 10 ? 3 : (uint32_t)-9);
+
+    *year  = (int)(yr + (mm <= 2));
+    *month = (int)mm;
+    *day   = (int)dd;
+    return true;
+}
+
 static void sign_draw_address(int row, const char *hex42)
 {
     char part[17];
@@ -4396,10 +4447,40 @@ static void screen_sign_confirm_render(void)
             snprintf(line, sizeof(line), "%.20s", f->label);
             oled_draw_string(1, 0, line);
             if (f->is_deadline) {
-                /* Seconds since the epoch, which the device cannot turn into a
-                 * date — it has no clock. Saying what the number means is
-                 * still worth a row: a signature that stays good for a decade
-                 * is a standing authorisation, not a one-off. */
+                /* As a date, not as seconds since 1970.
+                 *
+                 * This row used to say "valid until (unix)" and leave the
+                 * number, on the reasoning that a device with no clock cannot
+                 * produce a date. The reasoning was wrong: turning a count of
+                 * seconds into a calendar date is arithmetic and needs no
+                 * clock. What needs a clock is saying how far away it is, and
+                 * that is not what makes a deadline suspicious.
+                 *
+                 * What makes it suspicious is being years out, and 2000000000
+                 * against 1787950000 is not a difference a person reads off a
+                 * small screen -- both are ten digits starting with 1 or 2.
+                 * "2033-05-18" against "2026-08-28" is. A far-future deadline
+                 * is the signature of a drainer holding a permit until it
+                 * suits them (docs/ANTI-SCAM.md), so it has to be the part
+                 * that is legible. */
+                int y = 0, mo = 0, d = 0;
+                if (unix_to_civil_date(f->value, &y, &mo, &d)) {
+                    char when[24];
+                    snprintf(when, sizeof(when), "%04d-%02d-%02d", y, mo, d);
+                    oled_draw_string(2, 0, "valid until");
+                    oled_draw_string(3, 0, when);
+                    /* The seconds stay too, one row down and quieter. The date
+                     * is what a person can judge; the number is what is
+                     * actually being signed, and it is the only form that can
+                     * be checked against what the dapp claims to have sent. A
+                     * rendering that replaced it would be asking to be trusted
+                     * about the very field it exists to expose. */
+                    snprintf(line, sizeof(line), "%.21s", f->value);
+                    oled_draw_string(5, 0, line);
+                    break;
+                }
+                /* Unparseable: fall through and show the raw seconds rather
+                 * than invent a date. */
                 oled_draw_string(2, 0, "valid until (unix)");
             }
 

@@ -2069,6 +2069,45 @@ int main(void)
         CHECK(fake_protocol_rx_enabled(), "a second resume disturbed the link");
     }
 
+    /* ---------------------------------------------------------------------
+     * A deadline reads as a date.
+     *
+     * The screen used to show "valid until (unix)" and ten raw digits, on the
+     * reasoning that a device with no clock cannot produce a date. It can: the
+     * date is a function of the number, and only "how far away" needs the
+     * present. It matters because a drainer's permit is far-future, and
+     * 2000000000 against 1787950000 is not a difference anyone reads off a
+     * 128x64 panel -- while 2033 against 2026 is.
+     */
+    printf("== a deadline is rendered as a date, not as seconds\n");
+    {
+        struct { const char *secs; int y, m, d; } ok[] = {
+            { "0",            1970,  1,  1 },   /* the epoch itself */
+            { "1735689600",   2025,  1,  1 },
+            { "1787950000",   2026,  8, 28 },   /* a plausible near deadline */
+            { "2000000000",   2033,  5, 18 },   /* the far-future one */
+            { "253402300799", 9999, 12, 31 },   /* the last day it will express */
+        };
+        for (size_t i = 0; i < sizeof(ok) / sizeof(ok[0]); i++) {
+            int y = 0, m = 0, d = 0;
+            CHECK(unix_to_civil_date(ok[i].secs, &y, &m, &d),
+                  "%s was refused", ok[i].secs);
+            CHECK(y == ok[i].y && m == ok[i].m && d == ok[i].d,
+                  "%s rendered as %04d-%02d-%02d, expected %04d-%02d-%02d",
+                  ok[i].secs, y, m, d, ok[i].y, ok[i].m, ok[i].d);
+        }
+
+        /* Refused rather than guessed at, so the caller falls back to the raw
+         * seconds instead of drawing a date nobody can justify. */
+        const char *bad[] = { "", "12x4", "-1", "99999999999999999999",
+                              "253402300800" /* one second past 9999 */ };
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+            int y = 0, m = 0, d = 0;
+            CHECK(!unix_to_civil_date(bad[i], &y, &m, &d),
+                  "\"%s\" was accepted as a date", bad[i]);
+        }
+    }
+
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;

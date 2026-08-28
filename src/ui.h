@@ -307,4 +307,11 @@ void ui_sign_report(bool ok);
 SignOutcome ui_sign_outcome(void);
 void ui_sign_clear(void);
 
+/**
+ * Seconds since 1970 as a calendar date. Exposed so the host suite can check
+ * it against known days; see the note on the definition for why a device with
+ * no clock can still say what date a deadline names.
+ */
+bool unix_to_civil_date(const char *secs, int *year, int *month, int *day);
+
 #endif /* UI_H */
