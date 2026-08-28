@@ -226,8 +226,16 @@ answer: a logical erase is not a physical one, and the only construction that ma
 useless is flash encryption. What the migration does guarantee is that no *newly provisioned*
 device, and no device whose NVS has since been collected, carries a cheap verifier — and that no
 firmware from here on writes one. A field device upgrading today should be assumed to still hold
-the old blob physically. Verifying that claim needs a board and a dump before and after; it has
-been read out of the NVS implementation, not observed.
+the old blob physically.
+
+**That is no longer an inference.** `esptool read_flash 0x9000 0x6000` on a board in this repo's
+own use returns four physically intact copies of `pin_hash` — all the same 32 bytes, all marked
+erased, three of them on page 0, which has `seq=0` and has therefore never been garbage-collected
+in the device's entire life. The same dump carries a superseded `pwd_hash`, an old `kdf_salt`, the
+pre-generation `m_1`/`m_2`/`iv_1`/`iv_2` ciphertext and a superseded `vault_rec`. The partition is
+24 KB — six pages, one held back for garbage collection — so a device with a handful of wallets
+never fills it and never collects. Read `docs/AUDIT-SECRETS-2.md` N2 for the dump and what it
+means for the wipe.
 
 #### What it actually costs an attacker
 
@@ -237,7 +245,7 @@ attacker with a flash dump does not use the device. They use a GPU, and they get
 space, not the 6-digit slice.
 
 Measured here (one core, `-O2`, this repo's own code, `sim/` build) the two verifiers cost
-34.8 µs and 1534 µs per guess — a factor of 44 on a CPU where both are plain reference C. On a
+40 µs and 1627 µs per guess — a factor of 41 on a CPU where both are plain reference C. On a
 GPU the gap is wider, because SHA-256 is the most heavily optimised primitive in existence there
 and PBKDF2-HMAC-SHA512 is among the least friendly: 64-bit operations, and 2250 sequential
 iterations that cannot be parallelised within one candidate.
@@ -266,6 +274,13 @@ The cost on the device is one extra derivation per unlock: the PIN screen now ta
 answer instead of being instant, and a full unlock goes from roughly 1.8 s to 2.3 s, most of which
 was always the BIP-39 seed derivation. That is the price of having no cheap verifier, and it is
 the right trade.
+
+Worth being precise about where those 2.3 s go, because it is also where the headroom is. A PIN
+entry runs PBKDF2 **three times**: `pin_verify()` derives the verifier, and `wallet_unlock()` then
+derives the verifier again and the encryption key. 3 × 508 ms ≈ 1.5 s of KDF, against an offline
+attacker who pays for exactly one derivation per candidate. Collapsing that to one — derive the
+key, and let the verifier be a cheap hash *of the key* rather than a second PBKDF2 pass — would
+fund a 2× or 3× iteration count at today's latency. See `docs/AUDIT-SECRETS-2.md` N1.
 
 ### 2. Authenticated encryption (replaces raw CBC)
 

@@ -69,7 +69,10 @@ an alternate-key fallback so an interrupted migration resumes instead of brickin
 - ~~Storage is still unauthenticated AES-CBC~~ **Superseded.** AES-256-GCM shipped as format v3
   (see S8h), with crash-safe migration verified on a device holding three v2 wallets.
 - **Flash encryption and secure boot are not enabled** (T11). Until they are, an attacker can
-  still dump NVS — the KDF raises the cost from instant to days, but does not stop the read.
+  still dump NVS. The KDF raises the cost of the offline search from instant to **minutes on one
+  GPU for the whole 4–8 digit PIN space** — not to days, which is what this line used to claim
+  and which priced the attacker at the device's own speed. It does not stop the read, and at a
+  numeric PIN's entropy no iteration count would. See `docs/AUDIT-SECRETS-2.md`.
 
 **Remaining fix direction:**
 - Enable flash encryption + secure boot v2 (QEMU emulates eFuses, so this is testable before
@@ -317,9 +320,18 @@ item wiped instantly. It now shows what is about to be destroyed and requires th
 OK presses; anything else aborts. The wipe also clears the UI-layer seed buffers, which the old
 path did not.
 
-Still open: `pin_wipe()` and `wallet_wipe()` remain two non-atomic calls. A power cut between
-them leaves ciphertext with no PIN, or a PIN with no wallet. That needs a single `device_wipe()`
-with a resume-on-boot flag.
+~~Still open: `pin_wipe()` and `wallet_wipe()` remain two non-atomic calls.~~ Superseded by the
+paragraph above: `device_wipe()` with its resume-on-boot marker is exactly that fix, and it
+landed.
+
+**Still open, and it is what "wipe" does not mean.** `nvs_erase_all()` is a *logical* erase: it
+marks entries deleted in the page's state bitmap and leaves the bytes in flash until NVS
+garbage-collects that page. Confirmed on hardware, not read out of the documentation — an
+`esptool read_flash` of the `nvs` partition on a board in this repo's own use shows erased-but
+intact copies of `pin_hash`, `pwd_hash`, `kdf_salt`, `m_1`, `m_2`, `iv_1`, `iv_2` and a
+superseded `vault_rec`, on a page that has never been collected. So a wiped device is not a
+clean device until flash encryption is burned or the partition is physically erased. See
+`docs/AUDIT-SECRETS-2.md` N2.
 
 ---
 

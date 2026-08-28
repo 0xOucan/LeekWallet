@@ -113,13 +113,84 @@ static void make_legacy_verifier(const char *pin)
 }
 
 /* The property, asked of storage rather than of the code: nowhere in flash is
- * there a value that recognises this PIN more cheaply than the vault does. */
+ * there a value that recognises this PIN more cheaply than the vault does.
+ *
+ * Searching only for the retired SHA-256x101 chain would prove that one
+ * construction is gone, which is a fact about the blob that was removed rather
+ * than about the property. So this sweeps the family a cheap verifier would
+ * plausibly be built from - every chained SHA-256 depth this codebase has ever
+ * used, plus the salted one-shot forms - and asks whether any of them appears
+ * anywhere in simulated flash:
+ *
+ *   SHA-256^1   the obvious mistake
+ *   SHA-256^2   the legacy v1 ENCRYPTION key (vault-kdf.c, VAULT_KDF_V1_LEGACY)
+ *   SHA-256^3   the legacy v1 VERIFIER
+ *   SHA-256^101 the retired src/pin.c verifier
+ *   SHA-256(salt || pin), SHA-256(pin || salt)
+ *
+ * The salted forms use the device's own kdf_salt, read back out of the fake
+ * NVS: a salted-but-unstretched verifier is still one hash per guess, and it
+ * is exactly the shortcut somebody adds while "keeping the salt".
+ *
+ * Anything caught here is worth a hard look even if it is not the retired
+ * blob. Nothing this firmware writes should hash the PIN cheaply at all.
+ */
+static bool chained_sha_in_flash(const char *pin, int depth)
+{
+    uint8_t h[32];
+    sha256_Raw((const uint8_t *)pin, strlen(pin), h);
+    for (int i = 1; i < depth; i++) {
+        sha256_Raw(h, 32, h);
+    }
+    return fake_nvs_contains_bytes(h, sizeof(h));
+}
+
+static bool salted_sha_in_flash(const char *pin)
+{
+    uint8_t salt[16];
+    size_t  len = sizeof(salt);
+    nvs_handle_t nvs;
+    if (nvs_open("colibri", NVS_READONLY, &nvs) != ESP_OK) {
+        return false;
+    }
+    esp_err_t err = nvs_get_blob(nvs, "kdf_salt", salt, &len);
+    nvs_close(nvs);
+    if (err != ESP_OK || len != sizeof(salt)) {
+        return false;   /* no salt yet: nothing salted can have been written */
+    }
+
+    uint8_t buf[16 + 8];
+    uint8_t h[32];
+    size_t  plen = strlen(pin);
+    if (plen > 8) {
+        plen = 8;
+    }
+
+    memcpy(buf, salt, sizeof(salt));
+    memcpy(buf + sizeof(salt), pin, plen);
+    sha256_Raw(buf, sizeof(salt) + plen, h);
+    if (fake_nvs_contains_bytes(h, sizeof(h))) {
+        return true;
+    }
+
+    memcpy(buf, pin, plen);
+    memcpy(buf + plen, salt, sizeof(salt));
+    sha256_Raw(buf, plen + sizeof(salt), h);
+    return fake_nvs_contains_bytes(h, sizeof(h));
+}
+
 static bool fast_verifier_in_flash(const char *pin)
 {
-    uint8_t hash[RETIRED_HASH_SIZE];
-    retired_hash(pin, hash);
-    return fake_nvs_has("leek_pin", KEY_RETIRED) ||
-           fake_nvs_contains_bytes(hash, sizeof(hash));
+    if (fake_nvs_has("leek_pin", KEY_RETIRED)) {
+        return true;
+    }
+    static const int depths[] = { 1, 2, 3, 101 };
+    for (size_t i = 0; i < sizeof(depths) / sizeof(depths[0]); i++) {
+        if (chained_sha_in_flash(pin, depths[i])) {
+            return true;
+        }
+    }
+    return salted_sha_in_flash(pin);
 }
 
 static void test_set_and_verify(void)
@@ -371,6 +442,31 @@ static void test_no_fast_verifier_in_nvs(void)
     reboot();
     CHECK(fast_verifier_in_flash("246801") == false,
           "a fast verifier appeared across a reboot");
+
+    /* A detector that cannot fail proves nothing. Plant one - under a key name
+     * nothing looks for, at a non-zero offset inside a larger blob, so what is
+     * being demonstrated is the byte scan and not a lookup - and require the
+     * check to catch it. Then take it away again. */
+    {
+        uint8_t planted[64] = {0};
+        uint8_t h[32];
+        sha256_Raw((const uint8_t *)"246801", 6, h);
+        sha256_Raw(h, 32, h);                 /* the legacy v1 encryption key */
+        memcpy(planted + 17, h, sizeof(h));
+
+        nvs_handle_t nvs;
+        CHECK(nvs_open("colibri", NVS_READWRITE, &nvs) == ESP_OK, "setup: NVS");
+        nvs_set_blob(nvs, "innocuous", planted, sizeof(planted));
+        nvs_commit(nvs);
+        CHECK(fast_verifier_in_flash("246801") == true,
+              "the check cannot see a fast verifier that is definitely there");
+        nvs_erase_key(nvs, "innocuous");
+        nvs_commit(nvs);
+        nvs_close(nvs);
+
+        CHECK(fast_verifier_in_flash("246801") == false,
+              "the planted verifier outlived its own removal");
+    }
 }
 
 /*
@@ -390,6 +486,7 @@ static void test_crash_at_every_migration_write(void)
     int before = fake_nvs_write_count();
     pin_verify("482913");
     int total = fake_nvs_write_count() - before;
+    printf("   sweeping %d writes (vault present)\n", total);
     CHECK(total >= 1, "the migration made %d writes; the sweep is meaningless", total);
 
     for (int cut = 0; cut <= total; cut++) {
@@ -411,8 +508,33 @@ static void test_crash_at_every_migration_write(void)
     }
 
     /* And the same sweep for the harder case: no vault password to fall back
-     * on, so the migration has to write one before it erases anything. */
-    for (int cut = 0; cut <= 3; cut++) {
+     * on, so the migration has to write one before it erases anything. This
+     * one writes more than the case above - a salt, a version marker, the
+     * record and the erase - so the bound is measured rather than assumed. A
+     * hard-coded bound that fell short would silently stop sweeping exactly
+     * the late writes this test exists to cover. */
+    int vaultless_writes;
+    {
+        fresh_device();
+        uint8_t hash[RETIRED_HASH_SIZE];
+        retired_hash("7788", hash);
+        nvs_handle_t nvs;
+        if (nvs_open("leek_pin", NVS_READWRITE, &nvs) == ESP_OK) {
+            nvs_set_blob(nvs, KEY_RETIRED, hash, sizeof(hash));
+            nvs_commit(nvs);
+            nvs_close(nvs);
+        }
+        reboot();
+        int before = fake_nvs_write_count();
+        pin_verify("7788");
+        vaultless_writes = fake_nvs_write_count() - before;
+        printf("   sweeping %d writes (no vault)\n", vaultless_writes);
+    CHECK(vaultless_writes >= 1,
+              "the vault-less migration made %d writes; the sweep is meaningless",
+              vaultless_writes);
+    }
+
+    for (int cut = 0; cut <= vaultless_writes; cut++) {
         fresh_device();
         uint8_t hash[RETIRED_HASH_SIZE];
         retired_hash("7788", hash);
@@ -429,7 +551,12 @@ static void test_crash_at_every_migration_write(void)
 
         reboot();
         CHECK(pin_verify("7788") == true,
-              "vault-less migration, crash after write %d: the PIN stopped working", cut);
+              "vault-less migration, crash after write %d/%d: the PIN stopped working",
+              cut, vaultless_writes);
+        pin_reset_attempts();
+        CHECK(pin_verify("9999") == false,
+              "vault-less migration, crash after write %d/%d: a wrong PIN works",
+              cut, vaultless_writes);
         pin_reset_attempts();
     }
 }
