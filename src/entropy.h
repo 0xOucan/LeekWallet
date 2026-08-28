@@ -108,6 +108,54 @@ void entropy_add_user_event(uint8_t button, uint64_t timestamp_us);
 int entropy_user_event_count(void);
 
 /**
+ * Mix one physical die roll into the same pool.
+ *
+ * `face` is 1..6 and anything else is ignored rather than clamped. The pool and
+ * the mixing construction are shared with the press events above: dice **add
+ * to** the hardware source and never replace it, so a user who rolls badly,
+ * gives up halfway, or rolls a loaded die cannot end up with a weaker seed than
+ * one who rolls nothing at all.
+ *
+ * Why dice exist alongside the press pool, given the press pool already runs:
+ * the press estimate is a model. Both audits found that its bits come from
+ * `ui_task` dequeue jitter rather than from the human (docs/AUDIT-ENTROPY-2.md
+ * S7.1), and that variance has never been measured on hardware. A die's
+ * contribution is arithmetic instead: **log2(6) = 2.5849625 bits per roll**, so
+ * 50 rolls is 129 bits and 100 rolls is 258, on the sole assumption that the die
+ * is fair and the user types what it showed.
+ *
+ * `timestamp_us` is hashed in and credited **zero** bits, deliberately. Entering
+ * a roll takes button presses, which carry the same jitter the press pool banks
+ * on; discarding it would be silly, and counting it would charge the same
+ * physical act twice. So the combined figure -- press bits plus dice bits -- is
+ * a lower bound with no overlap between its two terms, and the uncounted jitter
+ * of the dice presses sits on top of it as margin.
+ *
+ * A dice app on a phone is NOT a substitute and is worse than not rolling. See
+ * DICE_MILLIBITS_PER_ROLL in entropy.c for why, and the entropy screen for the
+ * short version the user actually reads.
+ */
+void entropy_add_dice_roll(uint8_t face, uint64_t timestamp_us);
+
+/** Number of die rolls entered since the last reset. */
+int entropy_dice_roll_count(void);
+
+/**
+ * Dice entropy in bits: floor(rolls * 2585 / 1000), i.e. log2(6) per roll
+ * rounded down. Fixed point rather than floating, and truncated rather than
+ * rounded, so the number the screen shows can never exceed the number the
+ * arithmetic supports.
+ */
+int entropy_dice_bits(void);
+
+/**
+ * The combined floor the collection screen gates on: press bits + dice bits.
+ * Summing is sound because the two terms count disjoint things -- see
+ * entropy_add_dice_roll() on why a roll's press timing is credited to neither.
+ */
+int entropy_total_bits_estimate(void);
+
+/**
  * Lower bound on user-contributed entropy, in bits: 2 per event.
  * Used to drive the collection screen's progress indicator.
  */

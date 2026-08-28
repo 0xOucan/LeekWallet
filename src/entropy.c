@@ -162,6 +162,7 @@ const char *entropy_result_str(EntropyResult r)
  */
 static SHA256_CTX user_pool;
 static int  user_events   = 0;
+static int  dice_rolls    = 0;
 static bool user_pool_init = false;
 
 /*
@@ -196,6 +197,36 @@ static bool user_pool_init = false;
  */
 #define BITS_PER_EVENT 2
 
+/*
+ * Dice are here because the press pool's number is an estimate and this one is
+ * not. A fair six-sided die has exactly log2(6) = 2.5849625... bits of
+ * min-entropy per roll, by definition of "fair", and that figure owes nothing
+ * to a scheduler measurement nobody has taken (docs/AUDIT-ENTROPY-2.md S7.1
+ * shows the press pool's bits come from ui_task dequeue jitter, not from the
+ * human). Fifty rolls is 129 bits; a hundred is 258. That is the whole point of
+ * the feature: a claim that can be defended arithmetically rather than modelled.
+ *
+ * Credited as floor(n * 2585 / 1000) — fixed point, rounded DOWN, because every
+ * number in this file is a floor and a gate that over-credits opens early. The
+ * truncation costs at most 0.06 bits per hundred rolls against exact log2(6).
+ *
+ * The assumption the arithmetic rests on, stated so it can be attacked: the die
+ * is physical and fair, and the user reports what it actually showed. A loaded
+ * die or a bored user entering a pattern reduces the real figure — which is why
+ * this is mixed with the hardware draw and never substituted for it, exactly as
+ * the press pool is. The floor of the whole construction is the hardware source;
+ * dice can only add.
+ *
+ * A dice app on a phone is not a die and is worse than rolling nothing. It is an
+ * unauditable PRNG on a networked, general-purpose computer, so a compromised
+ * phone hands the wallet an attacker-chosen "roll" sequence — and the user, who
+ * did the ceremony properly, ends up MORE confident in a WEAKER seed. That is
+ * the Coldcard 2021 shape exactly (see entropy.h): the failure was never the
+ * absence of a strong source, it was confidence in one that was not there. The
+ * screen says so in as many words; see screen_entropy_render() in ui.c.
+ */
+#define DICE_MILLIBITS_PER_ROLL 2585
+
 static void ensure_pool(void)
 {
     if (!user_pool_init) {
@@ -221,7 +252,56 @@ void entropy_add_user_event(uint8_t button, uint64_t timestamp_us)
     memzero(rec, sizeof(rec));
 }
 
+void entropy_add_dice_roll(uint8_t face, uint64_t timestamp_us)
+{
+    /* Refuse anything that is not a die face rather than clamping it. A caller
+     * that has lost track of its selector must not be able to feed the pool a
+     * value it will then credit 2.585 bits for. */
+    if (face < 1 || face > 6) {
+        return;
+    }
+
+    ensure_pool();
+
+    /*
+     * Tagged 0xD1 so a roll and a button event can never hash to the same
+     * record: entropy_add_user_event() writes a button id in 0..3 as its first
+     * byte, and an untagged roll of 1..6 would share that space for no reason.
+     *
+     * The timestamp goes in even though not one bit of it is credited. Pressing
+     * a button to enter a roll produces the same dequeue jitter the press pool
+     * lives on, and throwing it away would be discarding entropy for the sake of
+     * a tidy ledger. Crediting it would be the real mistake: the roll's presses
+     * would then be counted twice, once as arithmetic and once as an estimate of
+     * the same physical act. So it is mixed and not counted, which makes the
+     * combined claim a strict lower bound rather than a sum of overlaps.
+     */
+    uint8_t rec[10];
+    rec[0] = 0xD1;
+    rec[1] = face;
+    for (int i = 0; i < 8; i++) {
+        rec[2 + i] = (uint8_t)(timestamp_us >> (8 * i));
+    }
+
+    sha256_Update(&user_pool, rec, sizeof(rec));
+    dice_rolls++;
+
+    memzero(rec, sizeof(rec));
+}
+
 int entropy_user_event_count(void) { return user_events; }
+
+int entropy_dice_roll_count(void) { return dice_rolls; }
+
+int entropy_dice_bits(void)
+{
+    return (int)(((long)dice_rolls * DICE_MILLIBITS_PER_ROLL) / 1000);
+}
+
+int entropy_total_bits_estimate(void)
+{
+    return entropy_user_bits_estimate() + entropy_dice_bits();
+}
 
 int entropy_user_bits_estimate(void) { return user_events * BITS_PER_EVENT; }
 
@@ -229,6 +309,7 @@ void entropy_reset_user_pool(void)
 {
     memzero(&user_pool, sizeof(user_pool));
     user_events    = 0;
+    dice_rolls     = 0;
     user_pool_init = false;
 }
 
@@ -260,9 +341,15 @@ void entropy_mix_pool(const uint8_t *hw, size_t hw_len, uint8_t out32[32])
         memzero(&snapshot, sizeof(snapshot));
     }
 
-    uint8_t count_le[4] = {
+    /* Both counts, not just one. They are independent sources with independent
+     * ledgers, and two sessions that happened to reach the same digest by
+     * different routes -- 10 presses and 5 rolls versus 5 presses and 10 rolls
+     * -- should not produce the same mix input. */
+    uint8_t count_le[8] = {
         (uint8_t)user_events, (uint8_t)(user_events >> 8),
         (uint8_t)(user_events >> 16), (uint8_t)(user_events >> 24),
+        (uint8_t)dice_rolls, (uint8_t)(dice_rolls >> 8),
+        (uint8_t)(dice_rolls >> 16), (uint8_t)(dice_rolls >> 24),
     };
     sha256_Update(&ctx, count_le, sizeof(count_le));
 
@@ -495,9 +582,9 @@ bool entropy_fill(uint8_t *buf, size_t len)
      * both. The health tests above catch a grossly broken source (stuck,
      * biased, dead). They cannot catch a source that is statistically clean but
      * has little real entropy behind it - which is precisely what Coldcard's
-     * weak software PRNG was. Its output would sail through these tests. Human
-     * keypress jitter is the layer that survives that, because no amount of
-     * firmware misconfiguration can predict it.
+     * weak software PRNG was. Its output would sail through these tests. User
+     * input is the layer that survives that, because no amount of firmware
+     * misconfiguration can predict a die on a table or the jitter of a hand.
      */
     if (user_pool_init) {
         for (size_t off = 0; off < len; off += 32) {
@@ -518,8 +605,11 @@ bool entropy_fill(uint8_t *buf, size_t len)
             memzero(input, sizeof(input));
             memzero(mixed, sizeof(mixed));
         }
-        ESP_LOGI(TAG, "Mixed in %d user events (~%d bits)",
-                 user_events, entropy_user_bits_estimate());
+        /* Counts and bit totals only. The roll VALUES are entropy and never
+         * reach a log line, a protocol frame or the console -- the same rule
+         * the seed words are under. */
+        ESP_LOGI(TAG, "Mixed in %d user events + %d dice rolls (~%d bits)",
+                 user_events, dice_rolls, entropy_total_bits_estimate());
     }
 
 #ifndef LEEK_HOST_TEST

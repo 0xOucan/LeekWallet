@@ -683,23 +683,33 @@ static void test_settings_selects_one_transport(void)
  * T61 - one job per button on the entropy screen
  * ============================================================================ */
 
-/* Mirrors ENTROPY_TARGET_EVENTS in ui.c, which is static. Written once here
- * and formatted into the expectations below rather than spelled into a dozen
- * string literals: the target moved from 32 to 64 when BITS_PER_EVENT was
- * corrected to 2, and it should be able to move again without this file
- * needing a search-and-replace to notice. */
-#define UI_ENTROPY_TARGET 64
+/* Mirrors ENTROPY_TARGET_BITS / BITS_PER_EVENT in ui.c and entropy.c, which are
+ * static. Written once here and formatted into the expectations below rather
+ * than spelled into a dozen string literals: the press count moved from 32 to 64
+ * when BITS_PER_EVENT was corrected to 2, and it should be able to move again
+ * without this file needing a search-and-replace to notice. */
+#define UI_ENTROPY_TARGET_BITS 128
+#define UI_ENTROPY_TARGET      (UI_ENTROPY_TARGET_BITS / 2)
 
 static void counter_text(char *out, size_t n, int events)
 {
     snprintf(out, n, "%d / %d", events, UI_ENTROPY_TARGET);
 }
 
+/* The screen opens on a chooser now, because there are two ways to feed the
+ * pool. Item 0 is dice, item 1 is taps. */
+static void enter_entropy_mode(int item)
+{
+    go(SCREEN_ENTROPY);
+    for (int i = 0; i < item; i++) press(BUTTON_DOWN);
+    press(BUTTON_ACCEPT);
+}
+
 static void test_entropy_accept_only_proceeds(void)
 {
     printf("== ACCEPT collects nothing and only ever proceeds (T61)\n");
     boot_unlocked_with_seed();
-    go(SCREEN_ENTROPY);
+    enter_entropy_mode(1);
 
     char want[24];
     counter_text(want, sizeof(want), 0);
@@ -744,19 +754,149 @@ static void test_entropy_cancel_abandons(void)
 {
     printf("== CANCEL abandons wallet creation rather than lowering the bar\n");
     boot_unlocked_with_seed();
-    go(SCREEN_ENTROPY);
+    enter_entropy_mode(1);
 
     for (int i = 0; i < 10; i++) {
         press(BUTTON_UP);
     }
+    /* One step back to the chooser, keeping what was collected, then out. */
+    press(BUTTON_CANCEL);
+    CHECK(ui_get_screen() == SCREEN_ENTROPY, "CANCEL skipped the chooser");
+    CHECK_SCREEN(fake_oled_contains("taps 10"),
+                 "backing out of tap mode discarded the pool");
     press(BUTTON_CANCEL);
     CHECK(ui_get_screen() == SCREEN_MAIN_MENU, "CANCEL did not leave the screen");
 
     /* And the half-full pool does not survive to be topped up later. */
-    go(SCREEN_ENTROPY);
+    enter_entropy_mode(1);
     char want[24];
     counter_text(want, sizeof(want), 0);
     CHECK_SCREEN(fake_oled_contains(want), "the abandoned pool was kept");
+    press(BUTTON_CANCEL);
+    press(BUTTON_CANCEL);
+}
+
+/* ============================================================================
+ * Dice entropy
+ *
+ * The reason this mode exists is that its bit count is arithmetic rather than
+ * modelled, so the tests are about the arithmetic being on screen and about
+ * ROLL never turning into "create a wallet" under the user's thumb.
+ * ============================================================================ */
+
+/* log2(6) = 2.5849625, credited as floor(n * 2585 / 1000). */
+static int dice_bits_for(int rolls)
+{
+    return (rolls * 2585) / 1000;
+}
+
+/* Commit `face` on the wrapping 1..6 selector, which starts (and stays) on
+ * whatever was last armed. Walks up because that is all these tests need. */
+static void roll(int from, int face)
+{
+    int steps = (face - from + 6) % 6;
+    for (int i = 0; i < steps; i++) press(BUTTON_UP);
+    press(BUTTON_ACCEPT);
+}
+
+static void test_dice_counts_are_arithmetic(void)
+{
+    printf("== the dice screen shows a defensible bit count\n");
+    boot_unlocked_with_seed();
+    enter_entropy_mode(0);
+
+    CHECK_SCREEN(fake_oled_contains("REAL die"),
+                 "the screen does not say the die must be physical");
+    CHECK_SCREEN(fake_oled_contains("phone apps"),
+                 "the screen does not warn against phone dice apps");
+    CHECK_SCREEN(fake_oled_contains("roll 0/50"),
+                 "50 rolls is the 128-bit target and the screen does not say so");
+    CHECK_SCREEN(fake_oled_contains("[1]"), "the selector does not start on 1");
+
+    /* The selector is a position, not a free-typed digit: it must show which
+     * face is armed before ROLL commits it. */
+    press(BUTTON_UP);
+    CHECK_SCREEN(fake_oled_contains("[2]"), "UP did not move the selector");
+    CHECK_SCREEN(fake_oled_contains("roll 0/50"),
+                 "moving the selector was counted as a roll");
+    press(BUTTON_DOWN);
+    CHECK_SCREEN(fake_oled_contains("[1]"), "DOWN did not move the selector back");
+
+    press(BUTTON_ACCEPT);
+    char want[32];
+    snprintf(want, sizeof(want), "roll 1/50  ~%d bits", dice_bits_for(1));
+    CHECK_SCREEN(fake_oled_contains(want), "one roll is not credited %d bits",
+                 dice_bits_for(1));
+    CHECK_SCREEN(fake_oled_contains("entered: 1"),
+                 "the committed roll is not echoed back");
+
+    /* Ten rolls of assorted faces: 10 * 2.585 = 25 bits, floored. */
+    int cur = 1;
+    static const int faces[9] = {4, 4, 6, 2, 5, 1, 3, 6, 2};
+    for (int i = 0; i < 9; i++) { roll(cur, faces[i]); cur = faces[i]; }
+    snprintf(want, sizeof(want), "roll 10/50  ~%d bits", dice_bits_for(10));
+    CHECK_SCREEN(fake_oled_contains(want), "10 rolls is not %d bits",
+                 dice_bits_for(10));
+    CHECK(dice_bits_for(10) == 25, "log2(6) arithmetic drifted: %d",
+          dice_bits_for(10));
+}
+
+static void test_dice_roll_never_creates_a_wallet(void)
+{
+    printf("== ROLL only ever commits a roll; creating is elsewhere\n");
+    boot_unlocked_with_seed();
+    enter_entropy_mode(0);
+
+    int cur = 1;
+    for (int i = 0; i < 60; i++) { roll(cur, (i % 6) + 1); cur = (i % 6) + 1; }
+
+    /* Past the target, and pressing the collect button dozens more times still
+     * cannot generate a seed - the reflex button is not the commit button. */
+    CHECK(ui_get_screen() == SCREEN_ENTROPY, "ROLL wandered off the screen");
+    for (int i = 0; i < 5; i++) press(BUTTON_ACCEPT);
+    CHECK(ui_get_screen() == SCREEN_ENTROPY, "ROLL created a wallet");
+
+    press(BUTTON_CANCEL);
+    char want[40];
+    snprintf(want, sizeof(want), "dice 65 = %d bits", dice_bits_for(65));
+    CHECK_SCREEN(fake_oled_contains(want), "the chooser lost the dice total");
+    CHECK_SCREEN(fake_oled_contains("Create wallet"),
+                 "a met target does not offer to create the wallet");
+
+    press(BUTTON_DOWN);
+    press(BUTTON_DOWN);
+    press(BUTTON_ACCEPT);
+    CHECK(ui_get_screen() == SCREEN_WALLET_CREATE,
+          "the chooser would not proceed on a met target");
+}
+
+static void test_dice_and_taps_compose(void)
+{
+    printf("== dice and tap bits add up to one gate\n");
+    boot_unlocked_with_seed();
+    enter_entropy_mode(0);
+
+    int cur = 1;
+    for (int i = 0; i < 20; i++) { roll(cur, (i % 6) + 1); cur = (i % 6) + 1; }
+    press(BUTTON_CANCEL);
+
+    /* 20 rolls = 51 bits, so tap mode should now be asking for the remaining
+     * 77 bits as ceil(77/2) = 39 presses on top of nothing - not 64. */
+    int have = dice_bits_for(20);
+    int taps = (UI_ENTROPY_TARGET_BITS - have + 1) / 2;
+    press(BUTTON_DOWN);
+    press(BUTTON_ACCEPT);
+    char want[32];
+    snprintf(want, sizeof(want), "0 / %d", taps);
+    CHECK_SCREEN(fake_oled_contains(want),
+                 "tap mode ignored the dice already rolled (wanted %s)", want);
+
+    for (int i = 0; i < taps; i++) press(BUTTON_UP);
+    CHECK_SCREEN(fake_oled_contains("Ready"),
+                 "dice plus taps did not reach the gate");
+    press(BUTTON_ACCEPT);
+    CHECK(ui_get_screen() == SCREEN_WALLET_CREATE,
+          "a combined pool would not proceed");
 }
 
 /* ============================================================================
@@ -2009,6 +2149,9 @@ int main(void)
     test_settings_selects_one_transport();
     test_entropy_accept_only_proceeds();
     test_entropy_cancel_abandons();
+    test_dice_counts_are_arithmetic();
+    test_dice_roll_never_creates_a_wallet();
+    test_dice_and_taps_compose();
     test_xfp_is_shown_with_the_address();
     test_xfp_tells_passphrase_wallets_apart();
     test_xfp_is_absent_when_it_cannot_be_derived();

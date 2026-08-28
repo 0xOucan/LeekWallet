@@ -2816,33 +2816,86 @@ static void screen_qr_code_on_button(button_id_t btn)
 /* ============================================================================
  * Entropy Collection Screen
  *
- * Mandatory extra randomness before generating a seed. The user presses
- * buttons; what is harvested is not which button but the timing between
- * presses, which is genuinely unpredictable - though at the 10 ms resolution
- * the input path actually delivers, not the microsecond one this comment used
- * to claim. It is mixed with the hardware RNG, never substituted for it - see
- * entropy.h.
+ * Mandatory extra randomness before generating a seed, in two flavours, both
+ * mixed with the hardware RNG and neither substituted for it (entropy.h).
+ *
+ *   - Button presses. What is harvested is not which button but the timing
+ *     between presses. Worth 2 bits each, and that number is an estimate: both
+ *     audits found the bits actually come from ui_task's dequeue jitter rather
+ *     than from the human, and that variance has never been measured on a
+ *     board.
+ *   - Physical dice. Worth log2(6) = 2.585 bits each, and that number is
+ *     arithmetic. This is why the mode exists: the health checks in entropy.c
+ *     provably cannot see a source that is statistically clean and shallow -
+ *     0 detections in 200,000 trials, which is Coldcard's 2021 defect exactly -
+ *     so user-supplied entropy is the only layer covering it, and a layer that
+ *     important should rest on a number that can be defended rather than
+ *     modelled.
+ *
+ * The two compose without overlapping: a roll's own button presses are hashed
+ * into the pool and credited zero bits, so the gate's total is a strict lower
+ * bound with the dice-press jitter left over as margin.
  * ============================================================================ */
 
-/* Enough presses that the 2-bits-each floor clears 128 bits.
+/* The gate, in bits rather than in presses. 128 is the strength of a 12-word
+ * seed and the floor this screen has always enforced; expressing it as bits is
+ * what lets presses and rolls be spent interchangeably against it.
  *
- * It was 32, against an estimate of 4 bits per press that assumed the press was
- * timed at microsecond resolution. It is not: button.c polls on a 10 ms grid
- * behind a 100 ms debounce, so the interval a user can vary is quantised long
- * before ui.c reads a clock. The estimate is now 2 bits (see BITS_PER_EVENT in
- * entropy.c), and the count doubles to keep the same 128-bit claim honest
- * rather than keeping the same fifteen seconds.
- *
- * Mandatory, not advisory. The hardware RNG passes its own health checks before
- * anything is generated, but those checks cannot detect a source that is
- * statistically clean and shallow - which is precisely what Coldcard's weak
- * PRNG was, and why it went unnoticed for five years. User keypress jitter is
- * the only layer that survives that failure, so it cannot be the layer users
- * skip. Trezor takes the same position: external entropy is mandatory in its
- * seed generation protocol, not an option.
- *
- * Roughly half a minute, once, for a key that holds funds indefinitely. */
-#define ENTROPY_TARGET_EVENTS 64
+ * Pure press mode still means exactly 64 presses (64 x 2 bits), which is where
+ * the count landed when BITS_PER_EVENT was corrected from 4 to 2. Pure dice mode
+ * means 50 rolls: 50 x 2585/1000 = 129 bits. A hundred rolls is 258 bits, i.e.
+ * full 256-bit strength from the dice alone, which anyone who wants it can reach
+ * by carrying on rolling rather than being demanded of everyone. */
+#define ENTROPY_TARGET_BITS 128
+
+/* Mirrors DICE_MILLIBITS_PER_ROLL in entropy.c. Used only to turn a bits
+ * shortfall back into a roll count for the display; the credited figure always
+ * comes from entropy_dice_bits() so there is one source of truth for the claim. */
+#define ENTROPY_MILLIBITS_PER_ROLL 2585
+
+typedef enum {
+    ENTROPY_MODE_CHOOSE = 0,
+    ENTROPY_MODE_DICE,
+    ENTROPY_MODE_PRESS,
+} entropy_mode_t;
+
+static entropy_mode_t entropy_mode = ENTROPY_MODE_CHOOSE;
+static int  entropy_menu_sel = 0;
+/* The face the selector is showing, which is NOT yet in the pool. It survives a
+ * commit so that rolling the same number twice is one press, and so the screen
+ * always displays a value the user last looked at rather than snapping back to
+ * a default they then have to re-read. */
+static uint8_t dice_face = 1;
+/* The last committed face, echoed back so a misentry is visible immediately.
+ * There is no undo, and cannot be: the pool is a running SHA-256 and a commit is
+ * not reversible. That is acceptable precisely because a wrong roll is not a
+ * security problem - it is still an unpredictable value mixed into a hash - but
+ * a user who cannot tell what they entered will not trust the ceremony, so the
+ * cost of the missing undo is paid in confirmation instead. */
+static uint8_t dice_last = 0;
+
+static bool entropy_target_met(void)
+{
+    return entropy_total_bits_estimate() >= ENTROPY_TARGET_BITS;
+}
+
+/* How many more presses / rolls would finish the job, given what the OTHER
+ * source has already contributed. Computed rather than fixed because a user who
+ * rolled 30 dice should not then be told they still owe 64 presses. */
+static int entropy_press_target(void)
+{
+    int need = ENTROPY_TARGET_BITS - entropy_total_bits_estimate();
+    if (need <= 0) return entropy_user_event_count();
+    return entropy_user_event_count() + (need + 1) / 2;
+}
+
+static int entropy_dice_target(void)
+{
+    int need = ENTROPY_TARGET_BITS - entropy_total_bits_estimate();
+    if (need <= 0) return entropy_dice_roll_count();
+    int rolls = (need * 1000 + ENTROPY_MILLIBITS_PER_ROLL - 1) / ENTROPY_MILLIBITS_PER_ROLL;
+    return entropy_dice_roll_count() + rolls;
+}
 
 static void screen_entropy_enter(void)
 {
@@ -2858,15 +2911,99 @@ static void screen_entropy_enter(void)
      * generating a seed on power alone. */
     transport_suspend();
     entropy_reset_user_pool();
+    entropy_mode     = ENTROPY_MODE_CHOOSE;
+    entropy_menu_sel = 0;
+    dice_face        = 1;
+    dice_last        = 0;
 }
 
-static void screen_entropy_render(void)
+/* --------------------------------------------------------------- chooser */
+
+static void screen_entropy_render_choose(void)
+{
+    oled_clear();
+    oled_draw_string_centered(0, "Add Randomness");
+
+    /* 32 rather than the 21 columns the display has: the compiler has to be able
+     * to prove no truncation, and the bit totals are int-width to it. */
+    char line[32];
+    snprintf(line, sizeof(line), "dice %d = %d bits",
+             entropy_dice_roll_count(), entropy_dice_bits());
+    oled_draw_string(1, 0, line);
+    snprintf(line, sizeof(line), "taps %d = %d bits",
+             entropy_user_event_count(), entropy_user_bits_estimate());
+    oled_draw_string(2, 0, line);
+
+    bool ready = entropy_target_met();
+
+    oled_draw_string(4, 0, entropy_menu_sel == 0 ? "> Roll dice" : "  Roll dice");
+    oled_draw_string(5, 0, entropy_menu_sel == 1 ? "> Tap buttons" : "  Tap buttons");
+    if (ready) {
+        oled_draw_string(6, 0, entropy_menu_sel == 2 ? "> Create wallet"
+                                                     : "  Create wallet");
+    } else {
+        snprintf(line, sizeof(line), "  need %d bits",
+                 ENTROPY_TARGET_BITS - entropy_total_bits_estimate());
+        oled_draw_string(6, 0, line);
+    }
+
+    oled_draw_string(7, 0, "UP  DN  BCK SEL");
+}
+
+/* ------------------------------------------------------------ dice entry */
+
+static void screen_entropy_render_dice(void)
+{
+    oled_clear();
+    oled_draw_string_centered(0, "Physical Dice");
+
+    /* The warning is on screen every frame, not once behind an OK button,
+     * because the failure it prevents is a user who is *more* confident for
+     * having done the ceremony wrong. A phone's dice app is an unauditable PRNG
+     * on a networked computer: if the phone is compromised the attacker chose
+     * this seed, and the user believes it is the strongest one they have ever
+     * made. Rolling nothing at all is strictly safer than that. */
+    oled_draw_string(1, 0, "Use a REAL die -");
+    oled_draw_string(2, 0, "phone apps can lie");
+
+    char line[22];
+    snprintf(line, sizeof(line), "roll %d/%d  ~%d bits",
+             entropy_dice_roll_count(), entropy_dice_target(),
+             entropy_dice_bits());
+    oled_draw_string(3, 0, line);
+
+    /* All six faces, with the armed one bracketed. Showing the whole range
+     * rather than a bare number means the value is read as a position as well
+     * as a digit, which is what makes a slip visible before ROLL commits it. */
+    char sel[20];
+    int n = 0;
+    for (int f = 1; f <= 6; f++) {
+        sel[n++] = (f == dice_face) ? '[' : ' ';
+        sel[n++] = (char)('0' + f);
+        sel[n++] = (f == dice_face) ? ']' : ' ';
+    }
+    sel[n] = '\0';
+    oled_draw_string_centered(5, sel);
+
+    if (dice_last) {
+        snprintf(line, sizeof(line), "entered: %d", dice_last);
+        oled_draw_string_centered(6, line);
+    } else {
+        oled_draw_string_centered(6, "roll, then ROLL");
+    }
+
+    oled_draw_string(7, 0, "+1  -1  BCK ROLL");
+}
+
+/* ---------------------------------------------------------- press entry */
+
+static void screen_entropy_render_press(void)
 {
     oled_clear();
     oled_draw_string_centered(0, "Add Randomness");
 
     int events = entropy_user_event_count();
-    int target = ENTROPY_TARGET_EVENTS;
+    int target = entropy_press_target();
 
     char line[22];
     snprintf(line, sizeof(line), "%d / %d  (+%d bits)",
@@ -2891,7 +3028,7 @@ static void screen_entropy_render(void)
      * "collect" and then "create a wallet" - the one press on this screen that
      * must not be reached by reflex. Until it does something it is drawn as
      * unavailable rather than as a third way to stir the pool. */
-    if (events >= target) {
+    if (entropy_target_met()) {
         oled_draw_string_centered(5, "Ready");
         oled_draw_string(7, 0, "MIX MIX BCK NEXT");
     } else {
@@ -2899,30 +3036,111 @@ static void screen_entropy_render(void)
         snprintf(remaining, sizeof(remaining), "%d more to go", target - events);
         oled_draw_string_centered(5, remaining);
         /* No NEXT yet - the target is required, not suggested. CANCEL still
-         * abandons wallet creation so nobody is stuck on this screen. */
+         * backs out so nobody is stuck on this screen. */
         oled_draw_string(7, 0, "MIX MIX BCK ----");
     }
 }
 
+static void screen_entropy_render(void)
+{
+    switch (entropy_mode) {
+        case ENTROPY_MODE_DICE:  screen_entropy_render_dice();   break;
+        case ENTROPY_MODE_PRESS: screen_entropy_render_press();  break;
+        default:                 screen_entropy_render_choose(); break;
+    }
+}
+
+static void screen_entropy_proceed(void)
+{
+    /* Counts and totals. The roll values themselves are entropy and never reach
+     * a log line - the same rule the seed words are under. */
+    ESP_LOGI(TAG, "Collected %d taps + %d rolls (~%d bits) for the pool",
+             entropy_user_event_count(), entropy_dice_roll_count(),
+             entropy_total_bits_estimate());
+    ui_set_screen(SCREEN_WALLET_CREATE);
+}
+
 static void screen_entropy_on_button(button_id_t btn)
 {
-    /* CANCEL abandons wallet creation. Mandatory entropy must not mean a screen
-     * with no way out - the escape is "do not create a wallet", never "create
-     * one with less entropy". */
+    /* CANCEL never lowers the bar. From a collection mode it steps back to the
+     * chooser, keeping everything already contributed - a user switching from
+     * dice to taps is not restarting. From the chooser it abandons wallet
+     * creation outright, which is the only escape offered: "do not create a
+     * wallet", never "create one with less entropy". */
     if (btn == BUTTON_CANCEL) {
-        ESP_LOGI(TAG, "Entropy collection cancelled at %d events",
-                 entropy_user_event_count());
+        if (entropy_mode != ENTROPY_MODE_CHOOSE) {
+            entropy_mode = ENTROPY_MODE_CHOOSE;
+            ui_invalidate();
+            return;
+        }
+        ESP_LOGI(TAG, "Entropy collection cancelled at %d taps, %d rolls",
+                 entropy_user_event_count(), entropy_dice_roll_count());
         entropy_reset_user_pool();
+        dice_face = 1;
+        dice_last = 0;
         ui_set_screen(SCREEN_MAIN_MENU);
         return;
     }
 
-    int events = entropy_user_event_count();
+    if (entropy_mode == ENTROPY_MODE_CHOOSE) {
+        int items = entropy_target_met() ? 3 : 2;
+        switch (btn) {
+            case BUTTON_UP:
+                entropy_menu_sel = (entropy_menu_sel + items - 1) % items;
+                break;
+            case BUTTON_DOWN:
+                entropy_menu_sel = (entropy_menu_sel + 1) % items;
+                break;
+            case BUTTON_ACCEPT:
+                if (entropy_menu_sel == 0) {
+                    entropy_mode = ENTROPY_MODE_DICE;
+                } else if (entropy_menu_sel == 1) {
+                    entropy_mode = ENTROPY_MODE_PRESS;
+                } else {
+                    screen_entropy_proceed();
+                    return;
+                }
+                break;
+            default:
+                break;
+        }
+        ui_invalidate();
+        return;
+    }
 
-    /* ACCEPT is the "proceed" button and nothing else. It does nothing at all
-     * until the target is met, rather than quietly counting as a sample: a
-     * button whose meaning changes partway through teaches the user the wrong
-     * reflex for the one press that creates a wallet.
+    if (entropy_mode == ENTROPY_MODE_DICE) {
+        /* UP and DOWN move the selector; ACCEPT is the only thing that commits,
+         * and it commits a roll and nothing else. Proceeding to generation is
+         * not reachable from this mode at all - it lives behind BCK, on the
+         * chooser - so the button being pressed a hundred times in a row can
+         * never become the button that creates a wallet.
+         *
+         * The selector wraps, which is what keeps entry at roughly two presses
+         * per roll: the mean circular distance between two faces of a d6 is 1.5,
+         * plus the commit. It also keeps the previous face armed, so a repeated
+         * number costs a single press. */
+        switch (btn) {
+            case BUTTON_UP:
+                dice_face = (uint8_t)(dice_face % 6 + 1);
+                break;
+            case BUTTON_DOWN:
+                dice_face = (uint8_t)((dice_face + 4) % 6 + 1);
+                break;
+            case BUTTON_ACCEPT:
+                entropy_add_dice_roll(dice_face, (uint64_t)esp_timer_get_time());
+                dice_last = dice_face;
+                break;
+            default:
+                break;
+        }
+        ui_invalidate();
+        return;
+    }
+
+    /* Press mode. ACCEPT is the "proceed" button and nothing else. It does
+     * nothing at all until the target is met, rather than quietly counting as a
+     * sample: a button whose meaning changes partway through teaches the user
+     * the wrong reflex for the one press that creates a wallet.
      *
      * This costs nothing in entropy. What the pool harvests is the timing
      * jitter between presses, so two collecting buttons gather exactly what
@@ -2930,10 +3148,8 @@ static void screen_entropy_on_button(button_id_t btn)
      * entropy_mix_pool() hashes this pool together with the hardware RNG and
      * user input can only add to it. */
     if (btn == BUTTON_ACCEPT) {
-        if (events >= ENTROPY_TARGET_EVENTS) {
-            ESP_LOGI(TAG, "Collected %d events (~%d bits) for the pool",
-                     events, entropy_user_bits_estimate());
-            ui_set_screen(SCREEN_WALLET_CREATE);
+        if (entropy_target_met()) {
+            screen_entropy_proceed();
         }
         return;
     }
@@ -5148,6 +5364,11 @@ void ui__reset_static_state_for_test(void)
     mnemonic_word_count = 0;
     mnemonic_page = 0;
     pending_mnemonic_display = false;
+
+    entropy_mode     = ENTROPY_MODE_CHOOSE;
+    entropy_menu_sel = 0;
+    dice_face        = 1;
+    dice_last        = 0;
 
     create_word_count = 12;
     create_show_mnemonic = false;

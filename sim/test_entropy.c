@@ -330,6 +330,180 @@ static void test_reset_clears_pool(void)
     CHECK(memcmp(after_reset, fresh, 32) == 0, "reset left residue in the pool");
 }
 
+/* ------------------------------------------------------------- dice entropy */
+
+/*
+ * The arithmetic, asserted rather than asserted-in-a-comment.
+ *
+ * log2(6) = 2.5849625007... bits per roll of a fair d6. The module credits
+ * floor(n * 2585 / 1000), i.e. the same figure truncated to three decimal
+ * places and then rounded DOWN, so the credited number can never exceed the
+ * real one. The table below is the claim the screen makes; if anyone retunes
+ * the constant, this is what says so.
+ */
+static void test_dice_bits_are_arithmetic(void)
+{
+    printf("== dice bits are log2(6) per roll, rounded down\n");
+
+    static const struct { int rolls; int bits; } table[] = {
+        {  0,   0},
+        {  1,   2},   /* 2.585  */
+        { 10,  25},   /* 25.85  */
+        { 37,  95},   /* 95.64  */
+        { 50, 129},   /* 129.25 -- the 128-bit gate */
+        { 99, 255},   /* 255.91 */
+        {100, 258},   /* 258.50 -- 256-bit strength from dice alone */
+    };
+
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+        entropy_reset_user_pool();
+        for (int r = 0; r < table[i].rolls; r++) {
+            entropy_add_dice_roll((uint8_t)(r % 6 + 1), 1000000 + r * 700);
+        }
+        CHECK(entropy_dice_roll_count() == table[i].rolls,
+              "%d rolls counted as %d", table[i].rolls, entropy_dice_roll_count());
+        CHECK(entropy_dice_bits() == table[i].bits,
+              "%d rolls credited %d bits, expected %d",
+              table[i].rolls, entropy_dice_bits(), table[i].bits);
+
+        /* Never over-credit against the real value, at any count. */
+        double exact = table[i].rolls * 2.5849625007211562;
+        CHECK((double)entropy_dice_bits() <= exact + 1e-9,
+              "%d rolls over-credited: %d > %.3f",
+              table[i].rolls, entropy_dice_bits(), exact);
+    }
+
+    entropy_reset_user_pool();
+}
+
+/* Rolls and presses are credited to separate ledgers and summed. They must be,
+ * because a roll's press timing is deliberately mixed in and credited zero -
+ * see entropy_add_dice_roll(). A roll that also bumped the press counter would
+ * charge one physical act twice and the total would stop being a lower bound. */
+static void test_dice_and_presses_are_separate_ledgers(void)
+{
+    printf("== a roll is not also counted as a press\n");
+
+    entropy_reset_user_pool();
+    for (int r = 0; r < 20; r++) entropy_add_dice_roll((uint8_t)(r % 6 + 1), r * 900);
+    CHECK(entropy_user_event_count() == 0, "rolls inflated the press counter");
+    CHECK(entropy_user_bits_estimate() == 0, "rolls were credited press bits");
+
+    for (int i = 0; i < 10; i++) entropy_add_user_event(1, 5000000 + i * 210000);
+    CHECK(entropy_dice_roll_count() == 20, "presses disturbed the roll count");
+    CHECK(entropy_total_bits_estimate()
+              == entropy_dice_bits() + entropy_user_bits_estimate(),
+          "the combined total is not the sum of its two ledgers");
+    CHECK(entropy_total_bits_estimate() == 51 + 20,
+          "20 rolls + 10 presses is %d bits, expected 71",
+          entropy_total_bits_estimate());
+
+    entropy_reset_user_pool();
+}
+
+static void test_dice_change_the_output(void)
+{
+    printf("== rolls reach the mixed output, and their values matter\n");
+
+    uint8_t hw[32];
+    fill_good(hw, sizeof(hw));
+    uint8_t none[32], a[32], b[32], timing[32];
+
+    entropy_reset_user_pool();
+    entropy_mix_pool(hw, sizeof(hw), none);
+
+    entropy_reset_user_pool();
+    for (int r = 0; r < 5; r++) entropy_add_dice_roll((uint8_t)(r % 6 + 1), r * 1000);
+    entropy_mix_pool(hw, sizeof(hw), a);
+
+    /* Same count, same timings, different faces. */
+    entropy_reset_user_pool();
+    for (int r = 0; r < 5; r++) entropy_add_dice_roll((uint8_t)(6 - r % 6), r * 1000);
+    entropy_mix_pool(hw, sizeof(hw), b);
+
+    /* Same faces, one microsecond of difference in when they were entered. The
+     * timing is credited nothing but it is still mixed, which is the margin the
+     * combined claim leaves on the table. */
+    entropy_reset_user_pool();
+    for (int r = 0; r < 5; r++) entropy_add_dice_roll((uint8_t)(r % 6 + 1), r * 1000 + 1);
+    entropy_mix_pool(hw, sizeof(hw), timing);
+
+    CHECK(memcmp(none, a, 32) != 0, "rolls did not reach the output");
+    CHECK(memcmp(a, b, 32) != 0, "the face values do not affect the output");
+    CHECK(memcmp(a, timing, 32) != 0, "roll timing is not mixed in");
+
+    entropy_reset_user_pool();
+}
+
+/* The rule the whole design rests on: mixed, never substituted. A user who
+ * rolls a loaded die - every face a 1 - must not end up worse off than one who
+ * rolls nothing at all. */
+static void test_loaded_die_cannot_weaken(void)
+{
+    printf("== a loaded die cannot weaken the output\n");
+
+    uint8_t hw[64];
+    fill_good(hw, sizeof(hw));
+
+    uint8_t without[32], with_loaded[32];
+    entropy_reset_user_pool();
+    entropy_mix_pool(hw, sizeof(hw), without);
+
+    entropy_reset_user_pool();
+    for (int r = 0; r < 99; r++) entropy_add_dice_roll(1, 250000);
+    entropy_mix_pool(hw, sizeof(hw), with_loaded);
+
+    CHECK(entropy_health_check(with_loaded, 32) == ENTROPY_OK,
+          "a loaded-die mix failed its own health check");
+    CHECK(memcmp(without, with_loaded, 32) != 0,
+          "99 identical rolls collapsed onto the no-pool output");
+
+    /* And distinct hardware states stay distinct underneath it. */
+    uint8_t hw2[64], mixed2[32];
+    fill_good(hw2, sizeof(hw2));
+    entropy_mix_pool(hw2, sizeof(hw2), mixed2);
+    CHECK(memcmp(with_loaded, mixed2, 32) != 0,
+          "the dice pool collapsed two hardware states");
+
+    entropy_reset_user_pool();
+}
+
+static void test_dice_rejects_impossible_faces(void)
+{
+    printf("== a value that is not a die face is refused, not clamped\n");
+
+    entropy_reset_user_pool();
+    uint8_t hw[32];
+    fill_good(hw, sizeof(hw));
+    uint8_t before[32], after[32];
+    entropy_mix_pool(hw, sizeof(hw), before);
+
+    entropy_add_dice_roll(0, 1000);
+    entropy_add_dice_roll(7, 1000);
+    entropy_add_dice_roll(255, 1000);
+    CHECK(entropy_dice_roll_count() == 0, "a non-face was credited as a roll");
+    CHECK(entropy_dice_bits() == 0, "a non-face was credited bits");
+
+    entropy_mix_pool(hw, sizeof(hw), after);
+    CHECK(memcmp(before, after, 32) == 0, "a rejected face still entered the pool");
+
+    entropy_reset_user_pool();
+}
+
+static void test_reset_clears_dice(void)
+{
+    printf("== reset clears the dice ledger too\n");
+
+    entropy_reset_user_pool();
+    for (int r = 0; r < 12; r++) entropy_add_dice_roll((uint8_t)(r % 6 + 1), r * 313);
+    CHECK(entropy_dice_bits() > 0, "no dice bits to clear");
+
+    entropy_reset_user_pool();
+    CHECK(entropy_dice_roll_count() == 0, "rolls survived reset");
+    CHECK(entropy_dice_bits() == 0, "dice bits survived reset");
+    CHECK(entropy_total_bits_estimate() == 0, "the combined total survived reset");
+}
+
 int main(void)
 {
     test_good_entropy_passes();
@@ -344,6 +518,12 @@ int main(void)
     test_pool_is_deterministic();
     test_worst_case_user_cannot_weaken();
     test_reset_clears_pool();
+    test_dice_bits_are_arithmetic();
+    test_dice_and_presses_are_separate_ledgers();
+    test_dice_change_the_output();
+    test_loaded_die_cannot_weaken();
+    test_dice_rejects_impossible_faces();
+    test_reset_clears_dice();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");

@@ -454,15 +454,26 @@ someone being able to look.
 So LeekWallet's argument is not "our crypto is better." It is that the parts that have actually
 failed in the field are the parts you can inspect here:
 
-- **You add your own entropy, and it is not optional.** Before a seed is generated you press
-  buttons until the device has 64 timing samples, and they are hashed *together with* the
-  hardware RNG — never instead of it, so they can only help. This is the layer that survives a
-  compromised silicon source, because no firmware bug can predict when a human presses a button,
-  and it is the layer that protected the Coldcard users who supplied their own entropy. Sixty-four
-  presses at a deliberately pessimistic **2 bits each** is where the 128-bit claim comes from; the
-  press is quantised by a 10 ms poll and a 100 ms debounce before it is ever timestamped, so it is
-  worth rather less than the microsecond resolution of the clock suggests. `docs/AUDIT-ENTROPY.md`
-  shows the derivation.
+- **You add your own entropy, and it is not optional.** Before a seed is generated the device
+  demands 128 bits of user contribution, and whatever it collects is hashed *together with* the
+  hardware RNG — never instead of it, so it can only help. This is the layer that survives a
+  compromised silicon source, and it is the layer that protected the Coldcard users who supplied
+  their own entropy. Two ways to supply it, and they can be mixed freely:
+  - **Physical dice**, worth exactly **log2(6) = 2.585 bits per roll** — arithmetic, not an
+    estimate. 50 rolls is 129 bits; 100 is 258. Rolls are entered on a 1–6 selector, roughly two
+    presses each, with the armed face bracketed and the committed one echoed back. This must be a
+    real die: a dice app runs an unauditable PRNG on a networked phone, so a compromised phone
+    picks your seed while you feel *more* confident in it — the Coldcard failure shape exactly.
+    The screen says so while you roll.
+  - **Button presses**, at a deliberately pessimistic **2 bits each**, so 64 presses on their own.
+    The press is quantised by a 10 ms poll and a 100 ms debounce before it is timestamped, and
+    `docs/AUDIT-ENTROPY-2.md` §7.1 measures where the bits really come from (`ui_task` dequeue
+    jitter, not the human) — which is precisely why the dice figure, which needs no such
+    measurement, exists beside it.
+
+  The press timing of the dice entry itself is mixed in and credited **zero** bits, so the two
+  numbers never count the same act twice and the total is a floor with that jitter left over as
+  margin. `docs/AUDIT-ENTROPY.md` shows the derivations.
 - **Entropy is gated and fails closed.** Every byte of key material goes through
   `src/entropy.c`, which runs NIST SP 800-90B style health tests and **refuses to generate**
   rather than degrade. There is no second path — `random_buffer()` itself is routed through the
