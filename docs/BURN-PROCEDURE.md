@@ -49,12 +49,42 @@ not answer them. Say "a flash dump yields nothing useful", never "impenetrable".
 
 From [VAULT.md](VAULT.md), stated honestly:
 
-| Attacker | After this procedure |
-|---|---|
-| Finds the device, runs `esptool read_flash` | Ciphertext only |
-| Desolders the flash chip and reads it directly | Ciphertext only — the key never leaves the SoC |
-| Brute-forces the PIN through the firmware | Unchanged; this is now the only software route |
-| Funded lab: decapping, fault injection, side-channel | **Probably still wins** |
+| Attacker | After this procedure | Which half stops them |
+|---|---|---|
+| Finds the device, runs `esptool read_flash` | Ciphertext only | flash encryption |
+| Desolders the flash chip and reads it directly | Ciphertext only — the key never leaves the SoC | flash encryption |
+| Has the device for five minutes and flashes their own firmware | Refuses to boot | **secure boot** |
+| Returns a device carrying backdoored firmware that captures the PIN | Refuses to boot | **secure boot** |
+| Brute-forces the PIN through the firmware | Unchanged; this is now the only software route | neither |
+| Funded lab: decapping, fault injection, side-channel | **Probably still wins** | neither |
+
+### The two halves answer different attacks
+
+They are usually spoken of together and they are not the same protection.
+
+**Flash encryption stops the device being read.** Without it, anyone holding the
+board recovers the vault with `esptool read_flash` and attacks the PIN offline,
+where the three-attempt wipe does not apply.
+
+**Secure boot stops the device being rewritten**, and that is the attack the
+first half does nothing about. Without it, someone with brief physical access
+flashes firmware that looks and behaves exactly like this one but keeps the PIN,
+or sends the seed out over BLE the next time it is unlocked, and hands the
+device back. Nothing is read at the time, so encryption is irrelevant — the
+owner unlocks it later and does the extraction for them. It is the classic evil
+maid, and a wallet is the ideal target for it, because the owner is guaranteed
+to come back and type the secret in.
+
+That is also why the firmware flasher ([ROADMAP](../ROADMAP.md) T65) is gated on
+this and not merely scheduled after it. A companion app that writes firmware to
+a device on request, on hardware with no secure boot, is a one-click backdoor
+installer wearing a friendly name.
+
+**A caveat worth stating plainly:** secure boot binds the device to whoever holds
+the signing key. If that is you, it protects you. If it is somebody else, it
+protects *them* — including from you. That is the whole argument for users
+burning their own key rather than shipping devices trusting a project key, and
+it is recorded under the key-custody discussion in the roadmap.
 
 ESP32-S3 is a general-purpose MCU, not a certified secure element, and the
 ESP32 family has a documented history of glitching attacks against eFuse
