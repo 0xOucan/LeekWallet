@@ -2730,11 +2730,23 @@ async function logSimulation(
     log(`simulation: this transaction would fail on chain — ${outcome.why}`);
     return;
   }
+  /* The gas token's units are known without asking anyone: 18 decimals and a
+   * symbol from this app's own chain registry, neither of which a contract
+   * gets to disagree with. So a native movement is written the way the user
+   * thinks about it. A token's are not known here -- the decimals would have
+   * to come from the contract, and that is the disclosure and the trust the
+   * preview deliberately avoids -- so those stay raw beside their address,
+   * which is the same rule the transaction preview already follows. */
+  const describe = (t: { amount: bigint; token?: string }): string =>
+    t.token
+      ? `${t.amount} raw units of ${t.token}`
+      : `${formatUnits(t.amount, info.nativeCurrency.decimals)} ${info.nativeCurrency.symbol}`;
+
   for (const t of outcome.leaving) {
-    log(`simulation: LEAVES ${t.amount} raw units${t.token ? ` of ${t.token}` : " (native)"} → ${t.to}`);
+    log(`simulation: LEAVES ${describe(t)} → ${t.to}`);
   }
   for (const t of outcome.arriving) {
-    log(`simulation: arrives ${t.amount} raw units${t.token ? ` of ${t.token}` : " (native)"} ← ${t.from}`);
+    log(`simulation: arrives ${describe(t)} ← ${t.from}`);
   }
   if (outcome.transfers.length === 0) {
     /* Said explicitly rather than left as silence: an empty transfer list is
