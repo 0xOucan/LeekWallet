@@ -541,8 +541,19 @@ void entropy_dump_for_analysis(size_t bytes)
         return;
     }
 
+    /* Remember whether WE enabled it, exactly as entropy_fill() does, rather
+     * than asking rf_is_active() again at the end. The flags are written by
+     * transport.c and the Wi-Fi toggle from other tasks and are not covered by
+     * this lock, so the answer can differ between the two calls -- and both
+     * ways it differs are wrong. If a radio comes up mid-dump, the disable is
+     * skipped and the SAR ADC noise source is left running underneath a live
+     * radio, which is the one thing Espressif documents as unsafe. If a radio
+     * goes down mid-dump, disable() is called for a window this function never
+     * opened, turning the bootloader RNG off for whoever did. */
+    bool bootloader_rng = false;
     if (!rf_is_active()) {
         bootloader_random_enable();
+        bootloader_rng = true;
     }
 
     uint8_t chunk[32];
@@ -558,7 +569,7 @@ void entropy_dump_for_analysis(size_t bytes)
         printf("%s\n", hex);
     }
 
-    if (!rf_is_active()) {
+    if (bootloader_rng) {
         bootloader_random_disable();
     }
 
