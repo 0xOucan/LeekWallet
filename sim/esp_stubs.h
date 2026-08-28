@@ -41,6 +41,7 @@ typedef enum {
 
 esp_err_t nvs_flash_init(void);
 esp_err_t nvs_flash_erase(void);
+esp_err_t nvs_flash_deinit(void);
 esp_err_t nvs_open(const char *ns, nvs_open_mode_t mode, nvs_handle_t *out);
 void      nvs_close(nvs_handle_t handle);
 esp_err_t nvs_commit(nvs_handle_t handle);

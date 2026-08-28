@@ -191,7 +191,18 @@ static esp_err_t load(nvs_handle_t handle, const char *key,
 /* ------------------------------------------------------------- public API */
 
 esp_err_t nvs_flash_init(void)  { return ESP_OK; }
-esp_err_t nvs_flash_erase(void) { fake_nvs_reset(); return ESP_OK; }
+esp_err_t nvs_flash_erase(void)
+{
+    /* Obeys the simulated failure like every other NVS call. A stub that
+     * erased regardless would let device_wipe() succeed in exactly the test
+     * that exists to show a dead NVS leaves the device untouched -- and would
+     * report the wipe working when the hardware it models could not. */
+    if (crashed) {
+        return ESP_FAIL;
+    }
+    fake_nvs_reset();
+    return ESP_OK;
+}
 
 esp_err_t nvs_open(const char *ns, nvs_open_mode_t mode, nvs_handle_t *out)
 {
@@ -328,3 +339,10 @@ void leek_log(const char *level, const char *tag, const char *fmt, ...)
     fprintf(stderr, "\n");
     va_end(args);
 }
+
+/* The host model has no pages, so it cannot show the difference this stub
+ * exists for -- an entry marked deleted versus bytes actually gone. It answers
+ * OK so device_wipe()'s flash-level path runs and can be asserted; proving the
+ * bytes are gone needs `esptool read_flash` on a board, and the wipe test says
+ * so where it stops being able to check. */
+esp_err_t nvs_flash_deinit(void) { return crashed ? ESP_FAIL : ESP_OK; }

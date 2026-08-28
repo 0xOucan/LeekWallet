@@ -215,6 +215,40 @@ int main(void)
     test_crash_before_the_marker();
     test_resume_is_a_noop_on_a_healthy_device();
 
+
+    /* -------------------------------------------------------------------
+     * A wipe takes the partition, not just the entries.
+     *
+     * `nvs_erase_all()` marks entries deleted and leaves the bytes in place
+     * until NVS garbage-collects the page, which on a six-page partition with
+     * a few wallets may be never. An audit read this device's flash and found
+     * four intact copies of a retired PIN verifier that way.
+     *
+     * The host model has no pages, so what it can check is that settings no
+     * part of the wipe path touches are gone afterwards -- `leek_ui` is erased
+     * by nothing else, and a wiped device used to be handed on with the
+     * previous owner's blind-signing preference still enabled. Proving the
+     * *bytes* are gone needs `esptool read_flash` on a board, before and
+     * after; this test cannot and does not claim it.
+     */
+    printf("== a wipe erases settings nothing else touches\n");
+    {
+        provisioned_device();
+
+        nvs_handle_t nvs;
+        CHECK(nvs_open("leek_ui", NVS_READWRITE, &nvs) == ESP_OK, "could not open settings");
+        CHECK(nvs_set_u8(nvs, "blind", 1) == ESP_OK, "could not set blind signing");
+        CHECK(nvs_commit(nvs) == ESP_OK, "could not commit the setting");
+        nvs_close(nvs);
+        CHECK(fake_nvs_has("leek_ui", "blind"), "setup: the setting was not stored");
+
+        device_wipe();
+        reboot();
+
+        CHECK(!fake_nvs_has("leek_ui", "blind"),
+              "a setting outside the wipe path survived the wipe");
+    }
+
     if (failures) {
         printf("FAILED (%d failure(s))\n", failures);
         return 1;

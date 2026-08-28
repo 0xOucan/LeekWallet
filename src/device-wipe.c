@@ -66,6 +66,55 @@ bool device_wipe_pending(void)
     return err == ESP_OK && value != 0;
 }
 
+/**
+ * Erase the NVS partition itself, not merely its entries.
+ *
+ * `nvs_erase_all()` is a bookkeeping operation: it marks entries deleted in
+ * the page state bitmap and leaves the bytes where they are until NVS decides
+ * to garbage-collect that page. An audit read this device's flash with
+ * `esptool read_flash` and found four intact copies of a retired PIN verifier,
+ * plus superseded mnemonics, IVs and salts, on a page whose sequence number
+ * showed it had never been collected in the device's life. The partition is
+ * six pages; a device with a few wallets never comes round to reusing them.
+ *
+ * So a "wiped" device still held its secrets, which is the one thing this
+ * function's name promises it does not. The erase below is the flash-level
+ * one, and it takes the whole partition -- including `leek_ui`, which nothing
+ * else here touches and which is why a wiped device used to be handed on with
+ * the previous owner's blind-signing setting still enabled.
+ *
+ * A power cut in the middle leaves NVS unmountable, and `app_main()` already
+ * answers that by erasing and re-initialising it. The end state of an
+ * interrupted wipe is therefore a blank device, which is the end state the
+ * wipe was asking for.
+ */
+static void scrub_nvs_partition(void)
+{
+    esp_err_t err = nvs_flash_deinit();
+    if (err != ESP_OK) {
+        /* Something still holds a handle. The entry-level erase above has
+         * already happened, so this degrades to the old behaviour rather than
+         * to no wipe -- said out loud, because the difference is exactly what
+         * an owner selling the device would want to know. */
+        ESP_LOGE(TAG, "NVS still in use; secrets remain readable in flash");
+        return;
+    }
+
+    err = nvs_flash_erase();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Flash-level erase failed (%s)", esp_err_to_name(err));
+    }
+
+    err = nvs_flash_init();
+    if (err != ESP_OK) {
+        /* Leaving NVS down would brick the device until the next boot, and
+         * the next boot repairs it: app_main() erases and re-initialises when
+         * the partition will not mount. */
+        ESP_LOGE(TAG, "NVS did not come back up (%s); the next boot repairs it",
+                 esp_err_to_name(err));
+    }
+}
+
 /* The destructive half, without the marker bookkeeping. */
 static void erase_everything(void)
 {
@@ -75,6 +124,11 @@ static void erase_everything(void)
      * would leave the ciphertext behind with its attempt counter gone. */
     wallet_wipe();
     pin_wipe();
+
+    /* Then take the pages themselves. Entry-level erasure first is not
+     * redundant: it is what keeps the device consistent if the flash-level
+     * erase cannot run because a handle is still open. */
+    scrub_nvs_partition();
 }
 
 void device_wipe(void)
