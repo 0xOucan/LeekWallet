@@ -37,6 +37,7 @@ insecure=$(grep -rl 'USE_INSECURE_PRNG' \
         --include='*.c' --include='*.h' --include='*.ini' --include='*.txt' \
         --include='*.cmake' --include='sdkconfig*' --include='*.py' \
         --exclude-dir=node_modules --exclude-dir=.pio --exclude-dir=.git \
+        --exclude-dir=.claude \
         . 2>/dev/null | grep -v '^\./components/trezor-crypto/rand\.c$' || true)
 if [ -n "$insecure" ]; then
     echo "check-rng-unique: USE_INSECURE_PRNG appears outside rand.c's own #ifdef"
@@ -76,6 +77,9 @@ fi
 # lib/ is searched too. PlatformIO compiles it to a static library and links it,
 # which is precisely the archive-member shape the original bug had.
 for sym in random_buffer random32; do
+    # Only the tree this checkout builds. Agent worktrees under .claude/ are
+    # whole copies of the repository, so scanning from the root reported every
+    # one of them as a second definition of everything.
     hits=$(find src components lib -name '*.c' 2>/dev/null \
              | grep -v 'components/trezor-crypto/rand\.c$' | sort \
              | xargs -r awk -v sym="$sym" '
