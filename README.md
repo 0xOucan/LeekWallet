@@ -169,6 +169,35 @@ access to a page — and `docs/RELEASE.md` explains how to check it.
 
 What actually closes the gap is not trusting the release at all.
 
+### Testing signing paths without a dapp
+
+Real dapps are a poor test rig: Uniswap hides testnets behind a settings toggle,
+Aave never offers a custom approval amount, and none of them can be asked to send
+the one payload you want to see. `app/scripts/test-dapp.mjs` is the dapp half of
+WalletConnect and nothing else — it prints a pairing code, waits for the wallet,
+sends exactly the request you name, and then does the check the device cannot
+make for itself.
+
+```bash
+node app/scripts/test-dapp.mjs permit2     # Permit2 PermitSingle, 588 bytes, six leaves
+node app/scripts/test-dapp.mjs permit      # EIP-2612, five leaves, renders in full
+node app/scripts/test-dapp.mjs unlimited   # a drainer-shaped permit: 2^160-1, far deadline
+node app/scripts/test-dapp.mjs personal    # personal_sign
+```
+
+Scan the QR it prints with the companion's camera, or paste the `wc:` line into
+the pairing field. **Nothing is deployed and no gas is spent** — these are
+signature requests, and Permit2 is a canonical singleton already present at the
+same address on every chain.
+
+The last step is the one that matters: it recovers the signer from the returned
+signature and compares it to the address the wallet claims. A device that renders
+a Permit beautifully and signs a *different digest* passes every other test in
+this repo and fails here.
+
+A refusal can also be the correct answer — see [docs/PROTOCOL.md](docs/PROTOCOL.md)
+section 6bis on what the device will not sign.
+
 ### If you can build it, please audit it
 
 The builds are reproducible: two machines building the same tag produce
