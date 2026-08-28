@@ -59,6 +59,22 @@ pub async fn ble_scan() -> Result<Vec<Device>, String> {
 
 #[tauri::command]
 pub async fn ble_connect(id: String, state: State<'_, Connection>) -> Result<(), String> {
+    // Tear the previous link down FIRST. Assigning over it would only drop the
+    // transport, and neither backend implements `Drop`, so the CCCD would stay
+    // written and `disconnect()` would never run — which is the bug already
+    // fixed inside `BleTransport::disconnect`, reachable again by the implicit
+    // path. BlueZ then still believes the client is subscribed, the next
+    // subscribe is a no-op, and the device answers correctly into a dead
+    // channel. Reachable in normal use: a drop the frontend never noticed,
+    // followed by the user pressing Connect again.
+    //
+    // The old link's failure is not this call's failure. It is gone either way,
+    // and refusing a new connection because a corpse would not close cleanly is
+    // the wrong trade.
+    if let Some(mut old) = state.0.lock().await.take() {
+        let _ = old.disconnect().await;
+    }
+
     let transport = BleTransport::connect_id(&id, Duration::from_millis(SCAN_MS))
         .await
         .map_err(|e| e.to_string())?;
