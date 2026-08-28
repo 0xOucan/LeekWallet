@@ -146,8 +146,11 @@ one, no nonces and no commitment: the passkey was `HKDF(X25519(a,B), "…passkey
 so it could compute what the host *would* display for any private key it chose and search
 offline until that matched the six digits the device was already showing. Nothing crossed the
 wire while it searched and no attempt failed. `sim/passkey_grind.c --v1 --search` still does it,
-against trezor-crypto's deliberately slow reference X25519 — **38 seconds on one core** of an
-ordinary laptop, and single-digit seconds for an optimised multicore implementation.
+against trezor-crypto's deliberately slow reference X25519 — **425 364 derivations in 91 s on one
+core** when `docs/AUDIT-TRANSPORT.md` §4 measured it, and single-digit seconds for an optimised
+multicore implementation. The wall-clock figure is machine-dependent and has been quoted as three
+different numbers in this repository; the rate is the durable part, and it is around 5 000
+derivations per second per core against the slowest X25519 in the tree.
 
 What closes it is the mechanism BLE Secure Connections and ZRTP use, adopted rather than
 approximated:
@@ -179,8 +182,8 @@ Two consequences that are not optional:
 Both keys are bound to the transcript too — it is the HKDF-Extract salt — so substituting a
 public key or a nonce anywhere changes every derived value, not only the digits.
 `sim/passkey_grind.c` (default mode) re-runs the relay against this construction; the search
-that took 38 seconds against v1 finds nothing it can use, and 500 000 committed attempts land
-where 1-in-10⁶ says they should.
+that succeeded against v1 finds nothing it can use — 0 matches in 20 000 derivations even when
+the host's nonce is handed to it — and committed attempts land where 1-in-10⁶ says they should.
 
 **What is still true:** none of this authenticates *which* device you are talking to. There is
 no long-term key and no attestation. It proves that the two ends of this connection are talking
