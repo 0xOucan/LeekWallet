@@ -1014,8 +1014,10 @@ static bool ensure_wallet_unlocked(void)
         }
     }
 
-    /* Key derivation blocks for around a second; drop anything pressed while
-     * the screen was frozen. */
+    /* Key derivation blocks for roughly a second and a half - a PIN entry runs
+     * PBKDF2 three times, once here in pin_verify() and twice inside
+     * wallet_unlock() (see docs/AUDIT-SECRETS-2.md N1). Drop anything pressed
+     * while the screen was frozen. */
     button_drain();
     return true;
 }

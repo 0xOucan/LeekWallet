@@ -18,6 +18,14 @@
  * v2 fixes both: PBKDF2-HMAC-SHA512 over a per-device random salt, with
  * distinct domain separators so the encryption key and the verifier are
  * independent. Cracking the verifier no longer yields the encryption key.
+ *
+ * Do not over-read that last sentence. It removes a shortcut between the two
+ * outputs; it does not deny the attacker a way to test a PIN. The stored
+ * mnemonic is AES-GCM, and its tag verifies the encryption key at exactly the
+ * cost of deriving it - so an attacker with a flash dump ignores the verifier
+ * and attacks the ciphertext, at one PBKDF2 per candidate either way. The
+ * separation buys the honest case (a leaked verifier is not a key), not the
+ * dump case. Only the iteration count and the PIN's own entropy price that one.
  */
 
 #ifndef VAULT_KDF_H
@@ -56,13 +64,14 @@ typedef enum {
  * Iteration count for v2.
  *
  * Measured on hardware, not guessed. On an ESP32-S3 at 160 MHz this
- * implementation costs 0.224 ms per iteration (12000 took 2688 ms), so 4500
- * lands near 1.0 s. A desktop runs the same work ~380x faster, which is exactly
- * why this number could not be chosen from the host suite.
+ * implementation costs 0.226 ms per iteration: vault_kdf_benchmark_ms() reports
+ * 508 ms for the 2250 below, on a board running this code. A desktop core runs
+ * the same work ~310x faster (1.63 ms/derivation, gcc -O2), which is exactly why
+ * this number could not be chosen from the host suite.
  *
- * Why 1.0 s and not the 0.5 s originally planned: unlocking already pays ~800 ms
- * for BIP39 seed derivation, so the marginal cost of a slower KDF is small
- * against a doubled work factor.
+ * One derivation is 508 ms, but an unlock pays for more than one - see
+ * docs/AUDIT-SECRETS-2.md, N1. Raising this number costs the user in multiples
+ * of that, and collapsing the count is the cheaper half of the same trade.
  *
  * This is still a modest work factor in absolute terms. PBKDF2-HMAC-SHA512 is
  * slow here because SHA-512's 64-bit operations are expensive on a 32-bit core
