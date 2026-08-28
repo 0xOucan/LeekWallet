@@ -367,6 +367,38 @@ The one thing this does **not** protect against is someone who has the device in
 their hand: flash encryption is not enabled, so the vault can be read off the
 chip. See [S1 in AUDIT.md](AUDIT.md), and the box below.
 
+### If your device is stolen, the passphrase is what protects you
+
+There is no flash encryption yet. That means someone holding the device can read
+the chip and attack the PIN offline, where the three-attempt wipe does not apply:
+eight digits is about **45 seconds** against one consumer GPU. The PIN protects
+against someone pressing buttons, not against someone with a chip reader.
+
+A **BIP-39 passphrase** is the one defence that still stands in that situation,
+because of where it lives:
+
+- It is **never written to flash**. Verified by enumerating every write in the
+  firmware — see [docs/AUDIT-SECRETS.md](docs/AUDIT-SECRETS.md).
+- It is erased from RAM on lock, on wallet switch, on wipe, and when the session
+  ends. A locked device does not contain it in any form.
+- **Nothing stored can confirm a guess.** No check-value, no fingerprint, no
+  cached address. So an attacker who reads the chip and cracks the PIN cannot
+  tell a passphrase wallet exists at all — they find the wallet the mnemonic
+  alone produces, and it looks complete.
+
+Two things about it are not optional to understand:
+
+**Its strength is its entropy, and nothing else.** There is no lockout behind it.
+An attacker holding your mnemonic can try passphrase after passphrase offline,
+deriving addresses and checking the chain for funds. A short or guessable
+passphrase falls the same way a short PIN does. Treat it as a second secret to be
+chosen properly, not as a second factor.
+
+**There is no recovery.** Lose it and the funds are gone — not locked, gone. The
+same property that stops an attacker confirming a guess stops anyone, including
+you, proving which passphrase was right. Back it up as carefully as the seed
+phrase, and separately from it: together in one place, they are one secret.
+
 ### Backing up a seed that holds value
 
 The device protects a seed while it is on the device. The copy you write down is
