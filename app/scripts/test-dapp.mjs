@@ -196,6 +196,18 @@ const { uri, approval } = await client.connect({
 console.log(`\nScan this with the companion, or paste it in:\n`);
 showQr(uri);
 console.log(uri + "\n");
+
+/* Also to a file. A wc: URI is one long line with a symKey at the end, and the
+ * first thing that happened to one was a paste that lost the tail: the wallet
+ * refused it as truncated, which was correct and told nobody the cause was the
+ * copy. `cat` it, or pipe it to a clipboard tool, and nothing has a chance to
+ * wrap it. */
+try {
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync("/tmp/leek-pairing-uri.txt", uri + "\n");
+  console.log("also written to /tmp/leek-pairing-uri.txt");
+  console.log("  copy it with:  xclip -sel c < /tmp/leek-pairing-uri.txt\n");
+} catch { /* the URI is on screen either way */ }
 console.log("waiting for the wallet to approve the session…");
 
 const session = await approval();
