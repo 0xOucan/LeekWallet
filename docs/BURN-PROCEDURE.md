@@ -35,6 +35,18 @@ on it. Not your only spare.
 
 ## What this actually buys you
 
+**Not impenetrability.** The honest claim is that a flash dump stops yielding
+anything useful — `esptool read_flash` returns ciphertext, and firmware that is
+not signed by the right key will not boot. That is a large step up from a chip
+anyone can read in a minute.
+
+It is not a secure element. There is no certified tamper resistance here, and
+the ESP32 family has a public history of voltage-glitching and fault-injection
+work against exactly these protections. An attacker with the device, equipment
+and motivation is a different threat from one with a chip reader, and this does
+not answer them. Say "a flash dump yields nothing useful", never "impenetrable".
+
+
 From [VAULT.md](VAULT.md), stated honestly:
 
 | Attacker | After this procedure |
@@ -68,6 +80,32 @@ whole sequence runs; timing, glitch resistance, eFuse write errors and the
 physical download-mode paths are not.
 
 ---
+
+## How many boards this needs
+
+Four, and the reason is that eFuses do not come back. Each of these is a
+one-way state, so no single board can hold two of them.
+
+| Board | Role | Why it cannot be shared |
+|---|---|---|
+| 1 | **Unburned control** | Once fuses burn there is no way back. One device has to keep booting plain firmware, for comparison and for ordinary development |
+| 2 | **Development-mode burn** | Secure boot, flash encryption and NVS encryption, still re-flashable with signed images. This is the board that gets `esptool read_flash` run against it to *prove* the vault is ciphertext |
+| 3 | **Release-mode burn** | One shot, permanent, and it disables the UART download that board 2 depends on. Verifies the configuration that would actually ship |
+| 4 | **Spare** | A wrong partition table or a wrong key costs a board outright, and finding that out with no spare stops the work |
+
+Three would do if nothing goes wrong. The fourth exists because the two steps
+most likely to go wrong are the two that cannot be undone.
+
+QEMU covers the boot path and is why this is four rather than a drawer full:
+`scripts/qemu-secure.sh` already proves secure boot and flash encryption end to
+end without burning anything.
+
+**Settle the partition table first.** `CONFIG_NVS_ENCRYPTION` is currently `n`,
+and ESP-IDF turns it on by default when flash encryption is enabled — the vault
+lives in NVS, so as configured a burn would protect the app and leave the
+wallet readable. Turning it on needs an `nvs_keys` partition or an HMAC eFuse
+key, and **the partition table is one of the things the burn freezes**. Getting
+it wrong is exactly the mistake board 4 exists for.
 
 ## Before you start
 
