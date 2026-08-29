@@ -341,6 +341,46 @@ static void test_the_flash_scan_can_fail(void)
           "other assertion in this file is worthless if this one fails");
 }
 
+
+/* A passphrase on top of a temporary seed.
+ *
+ * Worth pinning because it is the strongest arrangement this device offers and
+ * nothing in the code announces it: neither secret is stored, so a flash dump
+ * has nothing to attack and there is no verifier to confirm a guess against.
+ * wallet_set_passphrase() asks only that the device is unlocked -- it never
+ * looks at where the mnemonic came from -- so this works today by construction
+ * rather than by decision, which is exactly the kind of property that quietly
+ * stops working. */
+static void test_a_passphrase_applies_to_a_temporary_seed(void)
+{
+    printf("== a passphrase changes what a temporary seed derives\n");
+    device_with_a_stored_wallet();
+
+    CHECK(wallet_use_temporary_mnemonic(TEMPORARY) == WALLET_OK,
+          "the temporary seed was refused");
+
+    EthAddress bare;
+    CHECK(wallet_get_address_at_path(&ETH0, &bare) == WALLET_OK,
+          "no address without a passphrase");
+
+    CHECK(wallet_set_passphrase("hunter2", 7) == WALLET_OK,
+          "the passphrase was refused on a temporary seed");
+
+    EthAddress with;
+    CHECK(wallet_get_address_at_path(&ETH0, &with) == WALLET_OK,
+          "no address with a passphrase");
+    CHECK(memcmp(&bare, &with, sizeof(bare)) != 0,
+          "the passphrase did not change the derivation");
+
+    /* And neither secret reached flash. Two hidden things, nothing stored. */
+    CHECK(!fake_nvs_contains_bytes(TEMPORARY, strlen(TEMPORARY)),
+          "the temporary seed reached flash once a passphrase was set");
+    CHECK(!fake_nvs_contains_bytes("hunter2", 7),
+          "the passphrase reached flash");
+    CHECK(!fake_nvs_contains_bytes(&with, sizeof(with)),
+          "the passphrase-derived address reached flash");
+}
+
 int main(void)
 {
     test_the_flash_scan_can_fail();
@@ -349,6 +389,8 @@ int main(void)
     test_every_clearing_path();
     test_it_is_a_different_wallet();
     test_it_refuses_what_it_should();
+
+    test_a_passphrase_applies_to_a_temporary_seed();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");

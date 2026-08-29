@@ -2828,7 +2828,14 @@ static void screen_settings_on_button(button_id_t btn)
                     ui_set_screen(SCREEN_PIN_UNLOCK);
                     break;
                 case SET_NEW_WALLET:
-                    ui_set_screen(SCREEN_ENTROPY);
+                    /* The same route as the main menu's New Wallet, and for
+                     * the same reason: the entropy gate is 128 bits for 12
+                     * words and 256 for 24, so the length has to be chosen
+                     * before the screen that measures against it. Two entry
+                     * points to one flow is exactly how one of them keeps the
+                     * old behaviour -- this one did. */
+                    create_entropy_ready = false;
+                    ui_set_screen(SCREEN_WALLET_CREATE);
                     break;
                 case SET_IMPORT_WALLET:
                     ui_set_screen(SCREEN_MNEMONIC_ENTRY);
