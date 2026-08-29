@@ -367,6 +367,30 @@ The one thing this does **not** protect against is someone who has the device in
 their hand: flash encryption is not enabled, so the vault can be read off the
 chip. See [S1 in AUDIT.md](AUDIT.md), and the box below.
 
+### The security ladder, cheapest first
+
+Nothing here is mandatory. Each rung defends something the one below it does not,
+and the honest ceiling is stated at the top rather than at the bottom.
+
+| | What it defends | Cost |
+|---|---|---|
+| 24 words + 8-digit PIN | Someone pressing buttons | none |
+| **+ passphrase** | **A stolen device** — nothing stored can confirm a guess | remember a second secret |
+| + temporary seed | Everything at rest — there is no vault to attack | retype the phrase each session |
+| + HMAC-eFuse binding | A flash dump, without secure boot | one small irreversible burn |
+| + ATECC608B gatekeeper | Hardware attempt limiting the firmware cannot override | ~$1, four wires, real work |
+| + secure boot | Firmware replacement (the evil maid) | irreversible, user-held key |
+
+Two rungs are worth singling out. **The passphrase is the one that matters today**,
+because there is no at-rest protection yet. And a **temporary seed with a passphrase**
+stores nothing at all — a flash dump has neither secret to attack and nothing to
+confirm a guess against.
+
+None of this makes an ESP32-S3 a secure element. There is no certified tamper
+resistance, and the ESP32 family has a public history of glitching work against
+these very protections. The claim is *"a flash dump yields nothing useful"*, never
+*"impenetrable"*.
+
 ### If your device is stolen, the passphrase is what protects you
 
 There is no flash encryption yet. That means someone holding the device can read
@@ -701,10 +725,18 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
 - [x] Account selector and host-side passphrase entry, both reachable from the app
 - [x] Screen-reader labels, keyboard traversal and a measured contrast audit
 - [x] Reproducible builds, firmware and companion, with a signed release manifest
-- [ ] Flash encryption + secure boot — **the gate before real funds**
+- [x] Physical-dice entropy, counted in bits, optional and mixed never substituted
+- [x] Temporary seed: type a phrase, store nothing, lose it on lock — the SeedSigner
+      arrangement, offered as a menu action
+- [x] Passkey comparison that actually resists a relay (commitment round, v2 handshake)
+- [x] The PIN's only stored verifier is behind the vault's slow KDF
+- [x] A wipe that erases the flash rather than the bookkeeping
+- [ ] At-rest protection — **nothing yet.** A flash dump still yields the vault and the
+      PIN falls in minutes. HMAC-eFuse binding is the cheapest fix; flash encryption
+      and secure boot are the fuller one, and optional per user
 - [ ] Firmware flasher in the companion app (ROADMAP T65, gated on secure boot)
 - [ ] Airgapped QR signing (needs a camera)
-- [ ] Secure element integration
+- [ ] Secure element integration (ATECC608B as a PIN gatekeeper)
 
 **Chains.** EVM only — deliberately, not pending. Solana, Bitcoin and Monero are not on the
 roadmap; if coins are ever added the shape is one seed and one firmware at a time
