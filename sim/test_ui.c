@@ -825,8 +825,8 @@ static void test_dice_counts_are_arithmetic(void)
     boot_unlocked_with_seed();
     enter_entropy_mode(0);
 
-    CHECK_SCREEN(fake_oled_contains("REAL die"),
-                 "the screen does not say the die must be physical");
+    CHECK_SCREEN(fake_oled_contains("REAL dice"),
+                 "the screen does not say the dice must be physical");
     CHECK_SCREEN(fake_oled_contains("phone apps"),
                  "the screen does not warn against phone dice apps");
     CHECK_SCREEN(fake_oled_contains("roll 0/50"),

@@ -3160,7 +3160,12 @@ static void screen_entropy_render_dice(void)
      * on a networked computer: if the phone is compromised the attacker chose
      * this seed, and the user believes it is the strongest one they have ever
      * made. Rolling nothing at all is strictly safer than that. */
-    oled_draw_string(1, 0, "Use a REAL die -");
+    /* "dice", not the singular "die", which is the technically correct word
+     * and the wrong one here. Most readers of this screen do not have English
+     * as a first language and know "dice"; and on a wallet's warning line the
+     * word "die" reads for half a second as the verb. Grammar loses to being
+     * understood at a glance. */
+    oled_draw_string(1, 0, "Use REAL dice -");
     oled_draw_string(2, 0, "phone apps can lie");
 
     char line[22];
