@@ -5632,6 +5632,14 @@ void ui_task(void *pvParameters)
             ui_set_screen(SCREEN_WALLET_INFO);
         }
 
+        /* A companion that died without saying so. Tears down the channel
+         * only: the wallet stays unlocked and a temporary seed survives, so
+         * this costs a re-handshake and never a retyped phrase. */
+        if (session_check_idle()) {
+            ESP_LOGI(TAG, "Session idle for %d s; channel closed",
+                     SESSION_IDLE_TIMEOUT_S);
+        }
+
         service_sign_expiry();
 
         if (sign_request_pending) {

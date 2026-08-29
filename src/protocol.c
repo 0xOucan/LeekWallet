@@ -579,6 +579,12 @@ static SignOutcome wait_for_user(void)
             ui_sign_expire();
             return SIGN_PENDING;        /* nobody answered */
         }
+        /* A user standing at the device reading pages is not an idle
+         * session, but no frames cross the wire while they do it. Without
+         * this the idle timeout would tear the channel down mid-approval and
+         * approval_still_holds() would then refuse the signature -- H-1's
+         * shape, reintroduced as a feature. */
+        session_note_activity();
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }

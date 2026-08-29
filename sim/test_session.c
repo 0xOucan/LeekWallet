@@ -21,6 +21,16 @@
 
 static int failures = 0;
 
+/* For assertions inside a long loop: report the first failure and stay quiet
+ * afterwards, so one bug does not bury the run in thousands of lines. */
+static int check_once_fired = 0;
+#define CHECK_ONCE(cond, ...) do {                   \
+    if (!(cond) && !check_once_fired) {              \
+        check_once_fired = 1;                        \
+        CHECK(cond, __VA_ARGS__);                    \
+    }                                                \
+} while (0)
+
 #define CHECK(cond, ...) do {                        \
     if (!(cond)) {                                   \
         printf("  FAIL: "); printf(__VA_ARGS__);     \
@@ -372,6 +382,85 @@ static void test_encrypt_round_trip(void)
     session_reset();
 }
 
+/* A companion that dies without saying so must not leave the channel open.
+ *
+ * btleplug's clean unsubscribe/disconnect runs only on an orderly shutdown; a
+ * crash or a SIGKILL skips it and BlueZ then holds the ACL with no application
+ * behind it. Observed on hardware: closing the companion window left the
+ * session up, and the link layer could not tell -- supervision timeout detects
+ * a dead radio, not a dead app. So the device times the channel out itself.
+ */
+static void test_a_silent_host_loses_the_channel(void)
+{
+    printf("== a host that goes silent loses the channel\n");
+    fake_clock_reset();
+    session_reset();
+
+    uint8_t host_priv[32], host_pub[32];
+    keypair(host_priv, host_pub, 11);
+    uint8_t dev_pub[32], commit[SESSION_COMMIT_SIZE];
+    uint8_t host_nonce[SESSION_NONCE_SIZE], dev_nonce[SESSION_NONCE_SIZE];
+    fill(host_nonce, sizeof(host_nonce), 44);
+
+    CHECK(session_begin(host_pub, dev_pub, commit), "session_begin failed");
+    CHECK(session_reveal(host_nonce, dev_nonce), "session_reveal failed");
+    session_confirm();
+    CHECK(session_state() == SESSION_ACTIVE, "session did not come up");
+
+    /* Just short of the deadline: still there. */
+    fake_clock_advance_us((int64_t)(SESSION_IDLE_TIMEOUT_S - 1) * 1000000);
+    CHECK(!session_check_idle(), "the channel closed early");
+    CHECK(session_state() == SESSION_ACTIVE, "the channel closed early");
+
+    /* Past it: gone. */
+    fake_clock_advance_us(2 * 1000000);
+    CHECK(session_check_idle(), "a silent host kept the channel");
+    CHECK(session_state() == SESSION_IDLE, "the channel survived the timeout");
+
+    /* And an idle session does not keep re-reporting a death. */
+    CHECK(!session_check_idle(), "an already-closed channel reported closing again");
+}
+
+/* An approval window is not silence.
+ *
+ * A user paging through a transaction sends no frames for up to the 120 s
+ * approval deadline. If the idle timeout fired during that, session_reset()
+ * would drop the host passphrase and approval_still_holds() would then refuse
+ * the signature -- H-1's exact shape, reintroduced as a feature. wait_for_user()
+ * calls session_note_activity() on every poll for this reason.
+ */
+static void test_a_long_approval_does_not_starve_the_session(void)
+{
+    printf("== a long approval does not starve the session\n");
+    fake_clock_reset();
+    session_reset();
+
+    uint8_t host_priv[32], host_pub[32];
+    keypair(host_priv, host_pub, 12);
+    uint8_t dev_pub[32], commit[SESSION_COMMIT_SIZE];
+    uint8_t host_nonce[SESSION_NONCE_SIZE], dev_nonce[SESSION_NONCE_SIZE];
+    fill(host_nonce, sizeof(host_nonce), 55);
+
+    CHECK(session_begin(host_pub, dev_pub, commit), "session_begin failed");
+    CHECK(session_reveal(host_nonce, dev_nonce), "session_reveal failed");
+    session_confirm();
+
+    /* wait_for_user()'s loop: 50 ms polls, each stamping activity. Run it for
+     * well past the idle timeout -- deliberately longer than the 120 s
+     * approval deadline, so the test still holds if that deadline grows. */
+    const int64_t span_s = SESSION_IDLE_TIMEOUT_S * 2;
+    for (int64_t elapsed_ms = 0; elapsed_ms < span_s * 1000; elapsed_ms += 50) {
+        session_note_activity();
+        fake_clock_advance_us(50 * 1000);
+        CHECK_ONCE(!session_check_idle(),
+                   "the channel closed while the user was still answering");
+    }
+    CHECK(session_state() == SESSION_ACTIVE,
+          "a session died under a user who was still there");
+
+    session_reset();
+}
+
 /* ------------------------------------------------------- cross-implementation */
 
 /*
@@ -485,6 +574,8 @@ int main(int argc, char **argv)
     test_reveal_is_required_and_single_use();
     test_device_nonce_is_fresh();
     test_encrypt_round_trip();
+    test_a_silent_host_loses_the_channel();
+    test_a_long_approval_does_not_starve_the_session();
     kat(false);
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",

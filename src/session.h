@@ -160,6 +160,45 @@ void session_confirm(void);
 void session_reset(void);
 
 /**
+ * How long the channel survives silence from the host.
+ *
+ * A dying companion cannot be relied on to say goodbye. btleplug's clean
+ * unsubscribe/disconnect runs only on an orderly shutdown -- a crash, a
+ * force-stop or a SIGKILL skips it, and BlueZ then holds the ACL open with no
+ * application behind it. The device sees a perfectly healthy link. Observed on
+ * hardware: closing the companion window left the session up indefinitely.
+ *
+ * The link layer cannot help either. Supervision timeout detects a dead
+ * *radio*, not a dead *app*. So the device times the channel out itself.
+ *
+ * Three minutes, chosen against the 120 s approval deadline: a user standing
+ * at the device paging through a transaction sends no frames for up to two
+ * minutes, and a timeout below that would tear the channel down mid-approval.
+ * wait_for_user() stamps activity for exactly that reason, so this margin is
+ * belt and braces rather than the only defence.
+ */
+#define SESSION_IDLE_TIMEOUT_S 180
+
+/**
+ * Note that the host, or the user answering it, is still there.
+ *
+ * Called on every authenticated frame in both directions, and throughout an
+ * approval window.
+ */
+void session_note_activity(void);
+
+/**
+ * Tear the channel down if the host has gone silent. Returns true if it just
+ * did. Called from the UI task's periodic loop.
+ *
+ * Resets the *session* and nothing else: the wallet stays unlocked, a
+ * device-entered passphrase stays applied, and a temporary seed survives. A
+ * dropped channel costs a re-handshake, never a retyped seed phrase -- which
+ * is the whole reason this is separate from the auto-lock.
+ */
+bool session_check_idle(void);
+
+/**
  * Register something to run whenever the session goes away (T42).
  *
  * The session is torn down from four places — a disconnect, a new connection,

@@ -57,7 +57,7 @@ $(BUILD)/test_session: test_session.c host_stubs.c ../src/session.c \
                        $(CRYPTO)/chacha20poly1305/poly1305-donna.c \
                        $(CRYPTO)/chacha20poly1305/rfc7539.c \
                        $(CRYPTO)/hmac.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c \
-                       $(CRYPTO)/rand.c | $(BUILD)
+                       $(CRYPTO)/rand.c esp_stubs.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -o $@ $^
 
 $(BUILD)/test_text_entry: test_text_entry.c ../src/text-entry.c $(CRYPTO)/memzero.c | $(BUILD)

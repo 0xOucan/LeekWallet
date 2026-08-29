@@ -11,6 +11,7 @@
 #include "sha2.h"
 #include "memzero.h"
 #include "rand.h"
+#include "esp_timer.h"
 
 /* X25519 via the Montgomery ladder directly, rather than
  * curve25519_scalarmult_basepoint(). The "fast basepoint" variant routes
@@ -270,10 +271,37 @@ const char *session_passkey(void)
     return sess.passkey;
 }
 
+/* Last sign of life from the host, or from a user answering it. Deliberately
+ * outside `sess`, which session_reset() zeroes: the stamp is about the channel
+ * that just died as much as the one that is alive. */
+static int64_t session_last_activity_us = 0;
+
+void session_note_activity(void)
+{
+    session_last_activity_us = esp_timer_get_time();
+}
+
+bool session_check_idle(void)
+{
+    if (sess.state != SESSION_ACTIVE) {
+        return false;
+    }
+    int64_t idle_us = esp_timer_get_time() - session_last_activity_us;
+    if (idle_us < (int64_t)SESSION_IDLE_TIMEOUT_S * 1000000) {
+        return false;
+    }
+    session_reset();
+    return true;
+}
+
 void session_confirm(void)
 {
     if (sess.state == SESSION_PENDING) {
         sess.state = SESSION_ACTIVE;
+        /* The clock starts when the channel does, not at boot: otherwise a
+         * device that has been sitting unlocked all afternoon tears down a
+         * session in the first 100 ms tick after approving it. */
+        session_note_activity();
     }
 }
 
@@ -351,6 +379,7 @@ int session_decrypt(uint8_t *data, size_t len)
     }
 
     sess.rx_counter++;
+    session_note_activity();
     return (int)body;
 }
 
@@ -370,5 +399,6 @@ int session_encrypt(uint8_t *data, size_t len, size_t capacity)
     memzero(&ctx, sizeof(ctx));
 
     sess.tx_counter++;
+    session_note_activity();
     return (int)(len + SESSION_TAG_SIZE);
 }
