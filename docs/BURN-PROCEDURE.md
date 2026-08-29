@@ -113,30 +113,32 @@ physical download-mode paths are not.
 
 ## How many boards this needs
 
-Four, and the reason is that eFuses do not come back. Each of these is a
-one-way state, so no single board can hold two of them.
+**Three, and four is comfortable.** An earlier version of this section said five,
+which double-counted: development mode is *re-flashable*, so one board covers
+several roles that looked separate.
 
 | Board | Role | Why it cannot be shared |
 |---|---|---|
-| 1 | **Unburned control** | Once fuses burn there is no way back. One device has to keep booting plain firmware, for comparison and for ordinary development |
-| 2 | **Development-mode burn** | Secure boot, flash encryption and NVS encryption, still re-flashable with signed images. This is the board that gets `esptool read_flash` run against it to *prove* the vault is ciphertext |
-| 3 | **Release-mode burn** | One shot, permanent, and it disables the UART download that board 2 depends on. Verifies the configuration that would actually ship |
-| 4 | **Migration** | A device provisioned with a wallet *before* encryption, then encrypted — the path a real user upgrading would take. One-way like the rest, and distinct from board 2, which is provisioned fresh afterwards |
-| 5 | **Spare** | A wrong partition table or a wrong key costs a board outright, and finding that out with no spare stops the work |
+| 1 | **Unburned control** | Once fuses burn there is no way back. One device has to keep booting plain firmware, for comparison and ordinary development |
+| 2 | **The burn board** | Provision a wallet, burn development mode — which *is* the migration test, since the wallet has to survive it — iterate as often as needed, run `esptool read_flash` against it to prove the vault is ciphertext, then take it to release mode once. Only that last step is one-way |
+| 3 | **Spare** | A wrong partition table or a wrong key costs a board outright, and finding that out with no spare stops the work |
 
-Four would do if nothing goes wrong. The fifth exists because the two steps most
-likely to go wrong are the two that cannot be undone.
-
-QEMU covers the boot path and is why this is four rather than a drawer full:
+A fourth gives a second release-mode attempt after the spare has told you what
+was wrong. Beyond that they sit in a drawer: QEMU covers the boot path, and
 `scripts/qemu-secure.sh` already proves secure boot and flash encryption end to
 end without burning anything.
 
+**Why run this at all, if secure boot is optional and user-performed?** Because
+this document asks a reader to do something irreversible to their own hardware,
+and it currently rests on QEMU alone. One clean end-to-end run is what makes it
+honest to publish; the spare is what makes a mistake survivable.
+
 **Settle the partition table first.** `CONFIG_NVS_ENCRYPTION` is currently `n`,
 and ESP-IDF turns it on by default when flash encryption is enabled — the vault
-lives in NVS, so as configured a burn would protect the app and leave the
-wallet readable. Turning it on needs an `nvs_keys` partition or an HMAC eFuse
-key, and **the partition table is one of the things the burn freezes**. Getting
-it wrong is exactly the mistake board 4 exists for.
+lives in NVS, so as configured a burn would protect the app and leave the wallet
+readable. Turning it on needs an `nvs_keys` partition or an HMAC eFuse key, and
+**the partition table is one of the things the burn freezes**. Getting it wrong
+is exactly the mistake the spare exists for.
 
 ## Before you start
 
