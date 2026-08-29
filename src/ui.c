@@ -571,6 +571,11 @@ static int wallet_list_selection = 0;
 
 /* Create wallet state */
 static int create_word_count = 12;  /* 12 or 24 */
+/* Set when the entropy screen has met the gate for the chosen length, so the
+ * create screen knows it is being re-entered to finish rather than to ask
+ * again. Cleared by the menu on the way in, which is the only path that starts
+ * a new wallet. */
+static bool create_entropy_ready = false;
 static bool create_show_mnemonic = false;
 static char create_error[32] = {0};
 
@@ -1713,8 +1718,12 @@ static void screen_main_menu_on_button(button_id_t btn)
                 case MENU_SELECT_WALLET:
                     ui_set_screen(SCREEN_WALLET_SELECT);
                     break;
-                case MENU_NEW_WALLET:   /* entropy first */
-                    ui_set_screen(SCREEN_ENTROPY);
+                case MENU_NEW_WALLET:
+                    /* Length first: the entropy gate is 128 bits for 12 words
+                     * and 256 for 24, so the screen that collects it has to
+                     * know which was asked for. */
+                    create_entropy_ready = false;
+                    ui_set_screen(SCREEN_WALLET_CREATE);
                     break;
                 case MENU_IMPORT_WALLET:
                     entry_is_temporary = false;
@@ -2018,11 +2027,25 @@ static void screen_wallet_info_on_button(button_id_t btn)
 static void screen_wallet_create_enter(void)
 {
     ESP_LOGI(TAG, "Wallet create screen");
-    create_word_count = 12;
     create_show_mnemonic = false;
     create_generate_pending = false;
     create_error[0] = '\0';
     memset(mnemonic_buffer, 0, sizeof(mnemonic_buffer));
+
+    if (create_entropy_ready) {
+        /* Coming back from the entropy screen with the gate met for the length
+         * chosen on the way in. Generate straight away: asking again would
+         * invite a different answer, and the entropy that was just collected
+         * was measured against the first one. */
+        create_entropy_ready = false;
+        create_show_mnemonic = true;
+        create_generate_pending = true;
+        return;
+    }
+
+    /* Fresh start. The length is chosen here, before any entropy is gathered,
+     * because the gate depends on it. */
+    create_word_count = 12;
 }
 
 static void screen_wallet_create_render(void)
@@ -2065,12 +2088,10 @@ static void screen_wallet_create_on_button(button_id_t btn)
         case BUTTON_ACCEPT:
             if (!create_show_mnemonic) {
                 create_error[0] = '\0';
-
-                /* Ask for the work; do not do it here. The frame the user
-                 * needs to see is painted by the loop, and ui_poll_deferred()
-                 * runs the generation immediately afterwards (AUDIT S8f). */
-                create_show_mnemonic = true;
-                create_generate_pending = true;
+                /* Length first, then entropy measured against it. The screen
+                 * that gathers it reads create_word_count for its target and
+                 * returns here to generate. */
+                ui_set_screen(SCREEN_ENTROPY);
             }
             break;
 
@@ -3003,7 +3024,19 @@ static void screen_qr_code_on_button(button_id_t btn)
  * means 50 rolls: 50 x 2585/1000 = 129 bits. A hundred rolls is 258 bits, i.e.
  * full 256-bit strength from the dice alone, which anyone who wants it can reach
  * by carrying on rolling rather than being demanded of everyone. */
-#define ENTROPY_TARGET_BITS 128
+/* The gate follows the seed the user asked for, which is why the word count is
+ * now chosen before this screen rather than after it.
+ *
+ * Collecting 128 bits and then choosing 24 words used to be possible, and it
+ * quietly meant a 256-bit seed with 128 bits of user entropy behind it. That is
+ * only a real difference if the hardware RNG is shallow -- but that is the
+ * exact case this pool exists for, so it is the case the number has to be right
+ * in. Asking for the length first costs one screen and makes the gate mean what
+ * a reader would assume it means. */
+static int entropy_target_bits(void)
+{
+    return create_word_count == 24 ? 256 : 128;
+}
 
 /* Mirrors DICE_MILLIBITS_PER_ROLL in entropy.c. Used only to turn a bits
  * shortfall back into a roll count for the display; the credited figure always
@@ -3033,7 +3066,7 @@ static uint8_t dice_last = 0;
 
 static bool entropy_target_met(void)
 {
-    return entropy_total_bits_estimate() >= ENTROPY_TARGET_BITS;
+    return entropy_total_bits_estimate() >= entropy_target_bits();
 }
 
 /* How many more presses / rolls would finish the job, given what the OTHER
@@ -3041,14 +3074,14 @@ static bool entropy_target_met(void)
  * rolled 30 dice should not then be told they still owe 64 presses. */
 static int entropy_press_target(void)
 {
-    int need = ENTROPY_TARGET_BITS - entropy_total_bits_estimate();
+    int need = entropy_target_bits() - entropy_total_bits_estimate();
     if (need <= 0) return entropy_user_event_count();
     return entropy_user_event_count() + (need + 1) / 2;
 }
 
 static int entropy_dice_target(void)
 {
-    int need = ENTROPY_TARGET_BITS - entropy_total_bits_estimate();
+    int need = entropy_target_bits() - entropy_total_bits_estimate();
     if (need <= 0) return entropy_dice_roll_count();
     int rolls = (need * 1000 + ENTROPY_MILLIBITS_PER_ROLL - 1) / ENTROPY_MILLIBITS_PER_ROLL;
     return entropy_dice_roll_count() + rolls;
@@ -3100,7 +3133,7 @@ static void screen_entropy_render_choose(void)
                                                      : "  Create wallet");
     } else {
         snprintf(line, sizeof(line), "  need %d bits",
-                 ENTROPY_TARGET_BITS - entropy_total_bits_estimate());
+                 entropy_target_bits() - entropy_total_bits_estimate());
         oled_draw_string(6, 0, line);
     }
 
@@ -3214,6 +3247,9 @@ static void screen_entropy_proceed(void)
     ESP_LOGI(TAG, "Collected %d taps + %d rolls (~%d bits) for the pool",
              entropy_user_event_count(), entropy_dice_roll_count(),
              entropy_total_bits_estimate());
+    /* Set before the screen change, because ui_set_screen() runs the enter
+     * hook synchronously and that hook is what reads it. */
+    create_entropy_ready = true;
     ui_set_screen(SCREEN_WALLET_CREATE);
 }
 

@@ -709,6 +709,22 @@ static void enter_entropy_mode(int item)
     press(BUTTON_ACCEPT);
 }
 
+/* Walk the real creation flow up to the point of generation.
+ *
+ * The length is chosen first now, because the entropy gate depends on it (128
+ * bits for 12 words, 256 for 24). Tests that used to open the create screen and
+ * press ACCEPT have to come through here instead -- which is the point of the
+ * change, and worth their going the long way for. */
+static void reach_generation_ready(void)
+{
+    go(SCREEN_WALLET_CREATE);          /* the length chooser, 12 by default */
+    press(BUTTON_ACCEPT);              /* -> entropy, target 128 bits */
+    press(BUTTON_DOWN);                /* chooser: dice -> taps */
+    press(BUTTON_ACCEPT);              /* -> taps mode */
+    for (int i = 0; i < UI_ENTROPY_TARGET; i++) press(BUTTON_UP);
+    press(BUTTON_ACCEPT);              /* full pool proceeds -> create, ready */
+}
+
 static void test_entropy_accept_only_proceeds(void)
 {
     printf("== ACCEPT collects nothing and only ever proceeds (T61)\n");
@@ -1702,8 +1718,7 @@ static void test_seed_generation_happens_behind_its_own_frame(void)
     printf("== generating a seed is deferred out of the button handler (S8f)\n");
     boot_unlocked_with_seed();
 
-    go(SCREEN_WALLET_CREATE);
-    press(BUTTON_ACCEPT);   /* GEN */
+    reach_generation_ready();
 
     CHECK(ui_get_screen() == SCREEN_WALLET_CREATE,
           "the handler left the screen before the work was announced");
