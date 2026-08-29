@@ -33,6 +33,7 @@ bool fake_protocol_rx_enabled(void);
 #include "sha3.h"
 #include "memzero.h"
 #include "leek-wallet.h"
+#include "session.h"
 
 /* Test hooks from ui.c and pin.c (compiled with -DLEEK_HOST_TEST). */
 void        pin__reset_static_state_for_test(void);
@@ -1467,6 +1468,46 @@ static void test_blind_confirmation_is_marked_and_shows_the_digest(void)
     ui_sign_clear();
 }
 
+/* Locking takes the channel with it.
+ *
+ * The encrypted session used to survive a lock: the wallet closed, the host
+ * kept talking, and a user returning to enter their PIN resumed on a session
+ * authorised before the lock -- possibly hours before, with the device
+ * unattended in between. Seen on hardware, where the companion carried on
+ * polling for two minutes after a 300 s auto-lock.
+ *
+ * Checked through the auto-lock because it is the path nobody chooses; the
+ * others reach the same lock_device().
+ */
+static void test_locking_closes_the_channel(void)
+{
+    printf("== locking the device closes the channel too\n");
+    boot_unlocked_with_seed();
+
+    /* Any well-formed peer key will do: this is about the lock, not the
+     * handshake, which test_session covers. */
+    uint8_t host_pub[SESSION_PUBKEY_SIZE];
+    for (size_t i = 0; i < sizeof(host_pub); i++) {
+        host_pub[i] = (uint8_t)(0x40 + i);
+    }
+    uint8_t dev_pub[SESSION_PUBKEY_SIZE], commit[SESSION_COMMIT_SIZE];
+    uint8_t host_nonce[SESSION_NONCE_SIZE], dev_nonce[SESSION_NONCE_SIZE];
+    memset(host_nonce, 0x5a, sizeof(host_nonce));
+
+    CHECK(session_begin(host_pub, dev_pub, commit), "session_begin refused");
+    CHECK(session_reveal(host_nonce, dev_nonce), "session_reveal refused");
+    session_confirm();
+    CHECK(session_state() == SESSION_ACTIVE, "no session to lose");
+
+    /* Idle past the auto-lock deadline. */
+    fake_clock_advance_us((int64_t)31 * 60 * 1000000);
+    CHECK(ui__check_autolock_for_test(), "the device did not auto-lock");
+
+    CHECK(session_state() == SESSION_IDLE,
+          "the channel survived the lock: a returning host resumes on a session "
+          "authorised before the device was left unattended");
+}
+
 /* An approval nobody answered has to leave the screen.
  *
  * wait_for_user()'s 120 s deadline answers the host and calls ui_sign_clear(),
@@ -2475,6 +2516,7 @@ int main(void)
 {
     test_blind_signing_takes_a_deliberate_act();
     test_blind_confirmation_is_marked_and_shows_the_digest();
+    test_locking_closes_the_channel();
     test_an_expired_approval_leaves_the_screen();
     test_a_decoded_call_is_not_marked_blind();
     test_a_generic_call_shows_every_argument();

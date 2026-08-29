@@ -464,6 +464,15 @@ static bool handle_hello_reveal(const uint8_t *payload, size_t len,
  */
 static bool host_passphrase_applied = false;
 
+/* Set by the `lock` handler, honoured once its reply is on the wire.
+ *
+ * lock_device() drops the session, and the UI task is what runs it -- so
+ * without this the channel could close in the ~100 us between ui_request_lock()
+ * and the reply being encrypted, and the host would get no answer to a call it
+ * made itself. Rare, non-deterministic, and exactly the kind of thing that
+ * costs a day to find later. */
+static bool drop_session_after_reply = false;
+
 void protocol_note_device_passphrase(void)
 {
     host_passphrase_applied = false;
@@ -623,6 +632,11 @@ static bool approval_still_holds(const HDPath *path, const char *shown)
 /* Handle one decoded request. */
 static void dispatch(const uint8_t *payload, size_t len)
 {
+    /* Cleared per request: every branch below can bail out through
+     * send_error(), and a flag left armed would drop the *next* request's
+     * session instead of this one's. */
+    drop_session_after_reply = false;
+
     CborItem item;
     if (!cbor_map_find(payload, len, "method", &item)) {
         send_error(ERR_MALFORMED, "no method");
@@ -714,6 +728,9 @@ static void dispatch(const uint8_t *payload, size_t len)
             return;
         }
         ui_request_lock();
+        /* The lock takes the channel with it (see lock_device()), but not
+         * before this answer lands. */
+        drop_session_after_reply = true;
         cbor_write_map(&w, 1);
         cbor_write_text(&w, "result");
         cbor_write_map(&w, 1);
@@ -1339,6 +1356,11 @@ static void dispatch(const uint8_t *payload, size_t len)
         send_frame(FRAME_ENC_RESPONSE, out, (size_t)enc);
     } else {
         send_frame(FRAME_RESPONSE, out, w.length);
+    }
+
+    if (drop_session_after_reply) {
+        drop_session_after_reply = false;
+        session_reset();
     }
 }
 

@@ -935,6 +935,26 @@ static void lock_device(void)
      * timeout it justified goes with it. The user's own preference is what is
      * left, and it was never overwritten. */
     lock_timeout_choice = lock_timeout_stored_choice;
+
+    /* And the channel goes too.
+     *
+     * Locking used to leave the encrypted session up: the wallet closed, the
+     * host kept talking, and a user who came back and entered their PIN
+     * resumed on a session they had authorised before the lock -- possibly
+     * hours before, with the device unattended in between. Seen on hardware,
+     * where the companion carried on polling for two minutes after an
+     * auto-lock.
+     *
+     * A lock is the deliberate hammer, so it should mean what a user assumes:
+     * wallet away, channel closed, and a returning host compares six fresh
+     * digits. That costs a handshake and never a retyped seed phrase -- which
+     * is precisely why this belongs here and not in the idle timeout, whose
+     * whole point is to be the weaker of the two.
+     *
+     * Here rather than at the five call sites because they have disagreed
+     * before: this one shipped calling pin_lock() alone and left the vault
+     * open underneath the PIN gate. */
+    session_reset();
 }
 
 static void lock_timeout_save(void)

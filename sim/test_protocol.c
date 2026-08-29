@@ -974,6 +974,57 @@ static void test_locked_device_refuses_keys(void)
     }
 }
 
+/* `lock` answers before the channel closes.
+ *
+ * lock_device() drops the session, and on the device the UI task is what runs
+ * it -- so the reply to the host's own lock call had to be on the wire first.
+ * A frame that comes back T_ENC_RESPONSE proves it was encrypted while the
+ * session was still up; a session that is IDLE straight afterwards proves the
+ * drop happened at all. Getting only one of those is the bug.
+ */
+static void test_lock_answers_before_it_closes_the_channel(void)
+{
+    printf("== the host's own lock is answered, then the channel closes\n");
+    fresh_device();
+    device_unlocked();
+    confirmed_session(31);
+    CHECK(session_state() == SESSION_ACTIVE, "the fixture left no session");
+
+    uint8_t payload[64];
+    send_encrypted(payload, req(payload, sizeof(payload), "lock"));
+
+    Frame f = next_reply();
+    CHECK(f.present, "lock was not answered at all");
+    CHECK(f.present && f.type == T_ENC_RESPONSE,
+          "the lock reply was not encrypted: the channel closed before it was sent");
+
+    const uint8_t *body;
+    size_t body_len;
+    CborItem it;
+    if (f.present && result_body(&f, &body, &body_len)) {
+        CHECK(cbor_map_find(body, body_len, "unlocked", &it) &&
+              it.type == CBOR_UINT && it.value == 0,
+              "lock did not report the device as locked");
+    }
+
+    CHECK(session_state() == SESSION_IDLE,
+          "the channel survived a lock the host asked for");
+
+    /* And the flag does not linger: a later request must not drop its own
+     * session as a side effect of an earlier lock.
+     *
+     * The host's frame counters are reset by hand because only fresh_device()
+     * does it, and a fresh device would throw away the state under test. A
+     * second session on stale counters fails its tag and tears itself down,
+     * which would look exactly like the bug being checked for. */
+    host_tx = host_rx = 0;
+    confirmed_session(32);
+    send_encrypted(payload, req(payload, sizeof(payload), "getStatus"));
+    (void)next_reply();
+    CHECK(session_state() == SESSION_ACTIVE,
+          "a request after a lock dropped its own session");
+}
+
 static void test_address_derivation_reads_the_path(void)
 {
     printf("== getAddress derives from the path, not from address zero\n");
@@ -3914,6 +3965,7 @@ static int run_all_tests(void)
     test_a_reveal_cannot_interrupt_a_confirmation_either();
     test_keys_need_a_session_and_a_passkey();
     test_locked_device_refuses_keys();
+    test_lock_answers_before_it_closes_the_channel();
     test_address_derivation_reads_the_path();
     test_undecodable_calldata_refused_before_confirmation();
     test_blind_signing_is_off_until_the_device_says_otherwise();
