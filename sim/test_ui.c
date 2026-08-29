@@ -31,6 +31,7 @@ bool fake_protocol_rx_enabled(void);
 #include "blind-signing.h"
 #include "eth-tx.h"
 #include "sha3.h"
+#include "memzero.h"
 #include "leek-wallet.h"
 
 /* Test hooks from ui.c and pin.c (compiled with -DLEEK_HOST_TEST). */
@@ -52,6 +53,9 @@ int         ui__pin_option_for_test(void);
 const MnemonicEntry *ui__entry_for_test(void);
 bool        ui__entry_choosing_length_for_test(void);
 int         ui__entry_length_choice_for_test(void);
+bool        ui__entry_is_temporary_for_test(void);
+int         ui__lock_timeout_choice_for_test(void);
+int         ui__lock_timeout_stored_choice_for_test(void);
 
 void fake_input_reset(void);
 
@@ -1973,6 +1977,285 @@ static void test_show_seed_relocks_the_vault_too(void)
     press(BUTTON_ACCEPT);
 }
 
+
+/* ============================================================================
+ * T69 - the temporary seed
+ *
+ * The mode's whole claim is that nothing is stored. That property is asserted
+ * against real NVS bytes in test_temp_seed.c, which links the real vault; what
+ * belongs here is the half a user can see and act on: that the device says it
+ * is in the mode, that it says what the mode costs before they type 24 words,
+ * and that every way of leaving it actually leaves it.
+ * ============================================================================ */
+
+/* Walk the main menu to the item with this label and stop on it selected. The
+ * temporary-seed entry moves as wallets appear and disappear, so the tests find
+ * it by name rather than by index. */
+static bool menu_goto(const char *label)
+{
+    go(SCREEN_MAIN_MENU);
+    for (int guard = 0; guard < 12; guard++) {
+        for (int row = 2; row <= 6; row += 2) {
+            const char *r = fake_oled_row(row);
+            if (r && r[0] == '>' && strstr(r, label)) {
+                return true;
+            }
+        }
+        press(BUTTON_DOWN);
+    }
+    CHECK(false, "the main menu has no item labelled \"%s\"", label);
+    return false;
+}
+
+/* Menu -> warning -> twelve words, the way a user gets there. */
+static void enter_temporary_seed(void)
+{
+    if (!menu_goto("Temp Seed")) {
+        return;
+    }
+    press(BUTTON_ACCEPT);
+    CHECK(ui_get_screen() == SCREEN_TEMP_SEED, "the warning screen did not open");
+    press(BUTTON_ACCEPT);
+    CHECK(ui_get_screen() == SCREEN_MNEMONIC_ENTRY, "seed entry did not open");
+    CHECK(ui__entry_is_temporary_for_test(), "entry is not marked temporary");
+
+    press(BUTTON_ACCEPT);   /* 12 words, the default */
+
+    char words[16][16];
+    int n = 0;
+    const char *p = PHRASE_12;
+    while (*p && n < 16) {
+        int k = 0;
+        while (*p && *p != ' ' && k < 15) { words[n][k++] = *p++; }
+        words[n][k] = '\0';
+        n++;
+        while (*p == ' ') { p++; }
+    }
+    /* The last word is the one that commits the phrase: mnemonic_entry_finish()
+     * runs inside that press, clears the entry and changes screen, so
+     * type_word() sees an emptied buffer and reports failure. What proves the
+     * word landed there is the mode being on, not the word counter. */
+    for (int i = 0; i < n; i++) {
+        const bool last = (i == n - 1);
+        if (!type_word(words[i]) && !last) {
+            CHECK(false, "could not type word %d (\"%s\")", i + 1, words[i]);
+            return;
+        }
+    }
+    CHECK(wallet_has_temporary_mnemonic(),
+          "the phrase was typed in full and the device did not adopt it");
+}
+
+static void test_temp_seed_warns_before_it_is_used(void)
+{
+    printf("== the temporary seed says what it costs before a word is typed (T69)\n");
+    boot_unlocked_with_seed();
+
+    CHECK(menu_goto("Temp Seed"), "the mode is not offered on the home screen");
+    press(BUTTON_ACCEPT);
+
+    /* Consequence one: it is not stored, and losing power loses it. */
+    CHECK_SCREEN(fake_oled_contains("NOT saved"),
+                 "the warning does not say the seed is not stored");
+    CHECK_SCREEN(fake_oled_contains("reboot") && fake_oled_contains("erases"),
+                 "the warning does not say a reboot destroys the seed");
+
+    press(BUTTON_DOWN);
+    /* Consequence two: the PIN is guarding nothing at rest, and the longer
+     * auto-lock this mode runs on. */
+    CHECK_SCREEN(fake_oled_contains("PIN guards nothing"),
+                 "the warning does not say what the PIN is worth here");
+    CHECK_SCREEN(fake_oled_contains("30 min"),
+                 "the warning does not state this mode's auto-lock");
+
+    /* And it is escapable without entering anything. */
+    press(BUTTON_CANCEL);
+    CHECK(ui_get_screen() == SCREEN_MAIN_MENU, "CANCEL did not return to the menu");
+    CHECK(!wallet_has_temporary_mnemonic(), "backing out started the mode anyway");
+}
+
+static void test_temp_seed_is_visible_on_screen(void)
+{
+    printf("== a temporary seed is named on screen, not merely in effect (T69)\n");
+    boot_unlocked_with_seed();
+
+    /* Typing it says so on every word, not only on the warning. */
+    CHECK(menu_goto("Temp Seed"), "the mode is not offered");
+    press(BUTTON_ACCEPT);
+    press(BUTTON_ACCEPT);
+    CHECK_SCREEN(fake_oled_contains("Temp seed"),
+                 "the entry screen does not say which flow this is");
+    press(BUTTON_ACCEPT);
+    CHECK_SCREEN(fake_oled_row_contains(0, "TEMP word 1/12"),
+                 "the word header reads \"%s\"", fake_oled_row(0));
+    go(SCREEN_MAIN_MENU);
+
+    enter_temporary_seed();
+    CHECK(wallet_has_temporary_mnemonic(), "the seed was not adopted");
+    CHECK(ui_get_screen() == SCREEN_WALLET_INFO,
+          "the device did not land on the address screen");
+
+    /* The address screen names the seed it derived from. "W1/1" here would be
+     * a lie about a wallet that is not the one being signed with. */
+    CHECK_SCREEN(fake_oled_row_contains(0, "TEMP"),
+                 "the address screen reads \"%s\"", fake_oled_row(0));
+    CHECK_SCREEN(!fake_oled_row_contains(0, "W1/1"),
+                 "the address screen claims a stored wallet");
+    /* A real, complete address off the typed seed - the mode has to be usable,
+     * not merely announced. */
+    CHECK_SCREEN(fake_oled_contains("0x"),
+                 "no address was derived from the temporary seed");
+    CHECK_SCREEN(fake_oled_contains("XFP"),
+                 "no fingerprint - the user cannot tell which seed this is");
+
+    go(SCREEN_MAIN_MENU);
+    CHECK_SCREEN(fake_oled_row_contains(0, "TEMP"),
+                 "the home screen does not say the device is in temporary mode: \"%s\"",
+                 fake_oled_row(0));
+    CHECK(menu_goto("End Temp Seed"), "there is no way out of the mode on the menu");
+}
+
+/* The stored wallet is untouched underneath: the temporary seed did not become
+ * wallet 2, and it did not replace wallet 1. */
+static void test_temp_seed_does_not_become_a_stored_wallet(void)
+{
+    printf("== a temporary seed never joins the stored wallets (T69)\n");
+    boot_unlocked_with_seed();
+    enter_temporary_seed();
+
+    WalletStatus st = wallet_get_status();
+    CHECK(st.wallet_count == 1, "the wallet count moved to %u", (unsigned)st.wallet_count);
+    CHECK(st.active_wallet_index == 0,
+          "a stored wallet is still selected (%u) while a temporary seed is in use",
+          (unsigned)st.active_wallet_index);
+    CHECK(!fake_wallet_backup_verified(1),
+          "the stored wallet's backup state was rewritten");
+}
+
+/* Every way out. Each is checked through the same predicate, because "cleared"
+ * has to mean the same thing on all of them. */
+static void check_temp_seed_gone(const char *path)
+{
+    CHECK(!wallet_has_temporary_mnemonic(), "%s: the temporary seed survived", path);
+
+    /* And nothing is deriving from it. While the vault is open that means a
+     * stored wallet has taken over the selection; while it is locked it means
+     * the vault answers nothing at all. Both are checked, because the paths
+     * out of this mode are of both kinds. */
+    WalletStatus st = wallet_get_status();
+    if (st.unlocked) {
+        CHECK(st.active_wallet_index != 0,
+              "%s: the vault is open with no wallet selected - something is "
+              "still deriving from a seed nobody named", path);
+    } else {
+        char leaked[256];
+        CHECK(wallet_get_mnemonic(leaked, sizeof(leaked)) != WALLET_OK,
+              "%s: a locked device still hands out a seed phrase", path);
+        memzero(leaked, sizeof(leaked));
+    }
+}
+
+static void test_temp_seed_every_clearing_path(void)
+{
+    printf("== every way out of temporary mode destroys the seed (T69)\n");
+
+    /* 1. The deliberate exit, from the menu. */
+    boot_unlocked_with_seed();
+    enter_temporary_seed();
+    CHECK(menu_goto("End Temp Seed"), "no exit on the menu");
+    press(BUTTON_ACCEPT);
+    check_fully_locked("end temp seed");
+    check_temp_seed_gone("end temp seed");
+
+    /* 2. CANCEL on the menu, the other deliberate lock. */
+    boot_unlocked_with_seed();
+    enter_temporary_seed();
+    go(SCREEN_MAIN_MENU);
+    press(BUTTON_CANCEL);
+    check_fully_locked("menu lock");
+    check_temp_seed_gone("menu lock");
+
+    /* 3. Auto-lock. The one nobody presses, and the one that matters most:
+     * here it destroys a seed that exists nowhere else. */
+    boot_unlocked_with_seed();
+    enter_temporary_seed();
+    fake_clock_advance_us(31 * 60 * 1000000LL);
+    CHECK(ui__check_autolock_for_test(), "the device did not auto-lock");
+    idle_pump();
+    check_fully_locked("auto-lock");
+    check_temp_seed_gone("auto-lock");
+
+    /* 4. A host-requested lock. */
+    boot_unlocked_with_seed();
+    enter_temporary_seed();
+    ui_request_lock();
+    ui__service_host_lock_for_test();
+    idle_pump();
+    check_temp_seed_gone("host lock");
+
+    /* 5. Switching to a stored wallet. Not a lock, so the device stays
+     * unlocked - which is exactly why the temporary seed has to go: two seeds
+     * live at once is the ambiguous state this feature refuses to have. */
+    boot_unlocked_with_seed();
+    CHECK(fake_wallet_preload(PHRASE_12) == 2, "setup: could not preload a second seed");
+    enter_temporary_seed();
+    CHECK(wallet_select_wallet(1) == WALLET_OK, "could not switch wallets");
+    check_temp_seed_gone("wallet switch");
+    CHECK(wallet_get_status().active_wallet_index == 1, "the switch did not take effect");
+
+    /* 6. A wipe. */
+    boot_unlocked_with_seed();
+    enter_temporary_seed();
+    CHECK(wallet_wipe() == WALLET_OK, "the wipe failed");
+    check_temp_seed_gone("wipe");
+}
+
+/* The longer default is this mode's, and only this mode's. A stored wallet's
+ * timeout is the user's setting, before and after. */
+static void test_temp_seed_autolock_is_scoped_to_the_mode(void)
+{
+    printf("== temporary mode lengthens its own auto-lock, and nothing else's (T69)\n");
+    boot_unlocked_with_seed();
+
+    const int before = ui__lock_timeout_choice_for_test();
+    CHECK(before == 1, "the stored default is not 5 min (choice %d)", before);
+
+    enter_temporary_seed();
+    CHECK(ui__lock_timeout_choice_for_test() == 3,
+          "temporary mode did not take the 30 min default (choice %d)",
+          ui__lock_timeout_choice_for_test());
+    CHECK(ui__lock_timeout_stored_choice_for_test() == 1,
+          "the stored preference was overwritten - a stored wallet would now "
+          "sit unlocked for 30 minutes too");
+
+    /* Five idle minutes no longer lock it, which is the point of the change. */
+    fake_clock_advance_us(6 * 60 * 1000000LL);
+    CHECK(!ui__check_autolock_for_test(),
+          "the temporary session locked at the stored wallet's timeout");
+    CHECK(wallet_has_temporary_mnemonic(), "the seed was dropped anyway");
+
+    /* And once it does lock, the user's own choice is what is back in force. */
+    fake_clock_advance_us(31 * 60 * 1000000LL);
+    CHECK(ui__check_autolock_for_test(), "the device never auto-locked");
+    idle_pump();
+    CHECK(ui__lock_timeout_choice_for_test() == 1,
+          "the 30 min timeout outlived the temporary seed (choice %d)",
+          ui__lock_timeout_choice_for_test());
+
+    /* The user is still free to choose mid-session, and their choice sticks
+     * rather than being reverted by the next lock. */
+    boot_unlocked_with_seed();
+    enter_temporary_seed();
+    /* The row reads "Lock 30 min" - the label carries the value, which is
+     * what makes the override visible in Settings as well. */
+    settings_goto("Lock 30 min");
+    press(BUTTON_ACCEPT);
+    const int picked = ui__lock_timeout_choice_for_test();
+    CHECK(picked == 0, "cycling from 30 min did not wrap to 1 min (choice %d)", picked);
+    CHECK(ui__lock_timeout_stored_choice_for_test() == picked,
+          "a choice made during a temporary session was not stored");
+}
+
 int main(void)
 {
     test_blind_signing_takes_a_deliberate_act();
@@ -2034,6 +2317,12 @@ int main(void)
     test_the_host_lock_actually_locks();
     test_the_autolock_timeout_locks();
     test_show_seed_relocks_the_vault_too();
+
+    test_temp_seed_warns_before_it_is_used();
+    test_temp_seed_is_visible_on_screen();
+    test_temp_seed_does_not_become_a_stored_wallet();
+    test_temp_seed_every_clearing_path();
+    test_temp_seed_autolock_is_scoped_to_the_mode();
 
     /* ---------------------------------------------------------------------
      * Seed creation talks to nothing.

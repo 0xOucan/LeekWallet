@@ -131,6 +131,10 @@ static void screen_passphrase_enter(void);
 static void screen_passphrase_render(void);
 static void screen_passphrase_on_button(button_id_t btn);
 
+static void screen_temp_seed_enter(void);
+static void screen_temp_seed_render(void);
+static void screen_temp_seed_on_button(button_id_t btn);
+
 static void screen_ble_name_enter(void);
 static void screen_ble_name_render(void);
 static void screen_ble_name_on_button(button_id_t btn);
@@ -289,6 +293,13 @@ static const screen_t screen_passphrase = {
     .exit = forget_passphrase_entry
 };
 
+static const screen_t screen_temp_seed = {
+    .enter = screen_temp_seed_enter,
+    .render = screen_temp_seed_render,
+    .on_button = screen_temp_seed_on_button,
+    .exit = NULL
+};
+
 static const screen_t screen_ble_name = {
     .enter = screen_ble_name_enter,
     .render = screen_ble_name_render,
@@ -418,6 +429,16 @@ typedef enum {
     MENU_SELECT_WALLET,
     MENU_NEW_WALLET,
     MENU_IMPORT_WALLET,
+    /* Temporary seed (T69). A menu action rather than a settings toggle, and
+     * that is a security decision, not a layout one: a toggle leaves the device
+     * in a state where stored wallets and a typed seed both exist and nothing
+     * on screen settles which one is being signed with. Entering the mode is an
+     * act with a beginning and an end, so it is a verb in the menu. */
+    MENU_TEMP_SEED,
+    /* And the way out, offered only while the mode is on. It locks - which is
+     * the only way out there is, because ending temporary mode means destroying
+     * the seed, and destroying the seed is what locking does. */
+    MENU_END_TEMP,
     MENU_SETTINGS,
     MENU_ACTION_COUNT
 } MenuAction;
@@ -435,6 +456,8 @@ static const char *menu_action_label(MenuAction a)
         case MENU_SELECT_WALLET: return "Select Wallet";
         case MENU_NEW_WALLET:    return "New Wallet";
         case MENU_IMPORT_WALLET: return "Import Wallet";
+        case MENU_TEMP_SEED:     return "Temp Seed";
+        case MENU_END_TEMP:      return "End Temp Seed";
         case MENU_SETTINGS:      return "Settings";
         default:                 return "?";
     }
@@ -445,11 +468,24 @@ static void menu_rebuild(void)
     WalletStatus status = wallet_get_status();
     menu_item_count = 0;
 
-    if (status.wallet_count > 0) {
+    const bool temp = wallet_has_temporary_mnemonic();
+
+    if (status.wallet_count > 0 || temp) {
         menu_actions[menu_item_count++] = MENU_VIEW_ADDRESS;
     }
-    if (status.wallet_count > 1) {
+    if (status.wallet_count > 1 || (temp && status.wallet_count > 0)) {
         menu_actions[menu_item_count++] = MENU_SELECT_WALLET;
+    }
+
+    /* Unlike New/Import below, this stays on the home screen whatever is
+     * stored. It is the whole feature: a user who wants to sign with a seed
+     * this device must never keep should not have to go looking for the option
+     * under Settings, and a careless press costs them a warning screen and a
+     * seed phrase they would have to type in full. */
+    if (temp) {
+        menu_actions[menu_item_count++] = MENU_END_TEMP;
+    } else {
+        menu_actions[menu_item_count++] = MENU_TEMP_SEED;
     }
 
     /* Creating or importing a seed is only a top-level action on a device that
@@ -566,6 +602,14 @@ static char entry_error[20] = {0};
 static bool entry_choosing_length = true;
 static int  entry_length_choice = 12;
 
+/* Whether the phrase being typed is destined for storage or for this session
+ * only (T69). The two flows are the same keystrokes over the same buffers and
+ * differ in exactly one place - what mnemonic_entry_finish() hands the phrase
+ * to - so they share a screen rather than being copied. The screen still says
+ * which one it is on every frame, because the difference between them is
+ * whether the user's seed survives the next reboot. */
+static bool entry_is_temporary = false;
+
 /* ============================================================================
  * Leaving a screen that held a secret (AUDIT S5, T6)
  *
@@ -624,6 +668,7 @@ static void forget_mnemonic_entry(screen_id_t next)
     mnemonic_entry_clear(&entry);
     memzero(entry_error, sizeof(entry_error));
     entry_choosing_length = true;
+    entry_is_temporary = false;
 }
 
 /* The digits as typed. `pin.c` keeps its own verified copy for wallet
@@ -664,6 +709,24 @@ static const uint32_t LOCK_TIMEOUT_CHOICES[] = { 60, 300, 600, 1800 };
 #define LOCK_TIMEOUT_COUNT (sizeof(LOCK_TIMEOUT_CHOICES) / sizeof(LOCK_TIMEOUT_CHOICES[0]))
 
 static int      lock_timeout_choice = 1;   /* default 5 minutes */
+
+/* What NVS holds, which is not always what is in force (T69).
+ *
+ * A temporary seed changes what a lock costs. With a stored wallet, locking
+ * costs one PIN entry; with a seed that exists only in RAM, it costs the seed
+ * and up to 24 words to type it again. So temporary mode runs on a longer
+ * default - and only temporary mode does, which is why the override lives in
+ * a second variable instead of being written to flash. Nothing about a stored
+ * wallet's timeout changes, and the user's own choice comes back untouched the
+ * moment the temporary seed is gone. */
+static int      lock_timeout_stored_choice = 1;
+
+/* 30 minutes, the longest offer, as this mode's default. Chosen by the owner:
+ * re-entering a 24-word phrase every five idle minutes is the kind of friction
+ * that ends with the seed being stored after all. Every other choice stays
+ * reachable in Settings while the mode is on. */
+#define LOCK_TIMEOUT_TEMP_SEED 3
+
 static int64_t  last_activity_us = 0;
 
 /* Settings are persisted separately from the vault: they are not secret, and
@@ -734,6 +797,7 @@ static void settings_load(void)
     if (nvs_get_u8(nvs, UI_KEY_LOCK_TIMEOUT, &stored) == ESP_OK &&
         stored < LOCK_TIMEOUT_COUNT) {
         lock_timeout_choice = (int)stored;
+        lock_timeout_stored_choice = (int)stored;
     }
     if (nvs_get_u8(nvs, UI_KEY_BRIGHTNESS, &stored) == ESP_OK &&
         stored < BRIGHTNESS_COUNT) {
@@ -861,6 +925,11 @@ static void lock_device(void)
 
     memzero(master_xfp, sizeof(master_xfp));
     wallet_info_passphrase_shown = false;
+
+    /* wallet_lock() has just destroyed any temporary seed, so the longer
+     * timeout it justified goes with it. The user's own preference is what is
+     * left, and it was never overwritten. */
+    lock_timeout_choice = lock_timeout_stored_choice;
 }
 
 static void lock_timeout_save(void)
@@ -873,6 +942,11 @@ static void lock_timeout_save(void)
     nvs_set_u8(nvs, UI_KEY_LOCK_TIMEOUT, (uint8_t)lock_timeout_choice);
     nvs_commit(nvs);
     nvs_close(nvs);
+
+    /* Whatever the user picks becomes their standing preference, including one
+     * picked while a temporary seed is in use. Otherwise the restore on lock
+     * would quietly undo a setting they had just chosen. */
+    lock_timeout_stored_choice = lock_timeout_choice;
 }
 
 static const char *lock_timeout_label(int choice)
@@ -1579,7 +1653,12 @@ static void screen_main_menu_render(void)
     /* Show which wallet is active, so "View Address" is not a mystery box. */
     WalletStatus status = wallet_get_status();
     char header[22];
-    if (status.wallet_count > 1) {
+    if (wallet_has_temporary_mnemonic()) {
+        /* Named on the home screen, permanently, in place of the wallet
+         * number. A user who forgets which mode the device is in and reboots
+         * has lost the seed; there is no recovering it from anywhere. */
+        snprintf(header, sizeof(header), "-- Menu -- TEMP");
+    } else if (status.wallet_count > 1) {
         snprintf(header, sizeof(header), "-- Menu -- W%u/%u",
                  (unsigned)status.active_wallet_index, (unsigned)status.wallet_count);
     } else {
@@ -1638,7 +1717,18 @@ static void screen_main_menu_on_button(button_id_t btn)
                     ui_set_screen(SCREEN_ENTROPY);
                     break;
                 case MENU_IMPORT_WALLET:
+                    entry_is_temporary = false;
                     ui_set_screen(SCREEN_MNEMONIC_ENTRY);
+                    break;
+                case MENU_TEMP_SEED:
+                    ui_set_screen(SCREEN_TEMP_SEED);
+                    break;
+                case MENU_END_TEMP:
+                    /* Ending the mode is locking. There is no lighter version:
+                     * the seed only exists in RAM, so "put it away" and "destroy
+                     * it" are the same operation. */
+                    lock_device();
+                    ui_set_screen(SCREEN_PIN_UNLOCK);
                     break;
                 case MENU_SETTINGS:
                     ui_set_screen(SCREEN_SETTINGS);
@@ -1747,13 +1837,19 @@ static void screen_wallet_info_enter(void)
     }
 
     WalletStatus status = wallet_get_status();
-    if (status.wallet_count == 0) {
+    const bool temp = wallet_has_temporary_mnemonic();
+    if (status.wallet_count == 0 && !temp) {
         set_address_error("No wallet");
         return;
     }
 
-    /* Select first wallet if none active */
-    if (status.active_wallet_index == 0) {
+    /* Select first wallet if none active.
+     *
+     * Not in temporary mode: the active index is 0 there by design, and
+     * "helpfully" selecting wallet 1 would load a stored seed over the one the
+     * user typed - silently deriving addresses off the wrong wallet, which is
+     * the exact failure this screen's title row exists to make impossible. */
+    if (!temp && status.active_wallet_index == 0) {
         WalletError err = wallet_select_wallet(1);
         if (err != WALLET_OK) {
             ESP_LOGE(TAG, "Failed to select wallet: %d", err);
@@ -1785,14 +1881,25 @@ static void screen_wallet_info_render(void)
     oled_clear();
 
     WalletStatus status = wallet_get_status();
+    const bool temp = wallet_has_temporary_mnemonic();
     char title[22];
     /* Which seed, and whether a passphrase is on it. The passphrase marker is
      * on the title row rather than buried because a passphrase changes every
      * address on this screen and leaves no other visible trace (T42) - the
      * XFP below says the seed changed, but only to someone who recorded it. */
-    snprintf(title, sizeof(title), "W%u/%u  addr %u%s",
-             (unsigned)status.active_wallet_index, (unsigned)status.wallet_count,
-             (unsigned)address_index, wallet_has_passphrase() ? " P" : "");
+    if (temp) {
+        /* "TEMP" where the wallet number goes, because there is no wallet
+         * number: this address came off a seed no slot holds. It is the same
+         * row the passphrase marker uses and for the same reason - the address
+         * below it is indistinguishable from a stored wallet's, and the user
+         * is about to hand it to someone. */
+        snprintf(title, sizeof(title), "TEMP  addr %u%s",
+                 (unsigned)address_index, wallet_has_passphrase() ? " P" : "");
+    } else {
+        snprintf(title, sizeof(title), "W%u/%u  addr %u%s",
+                 (unsigned)status.active_wallet_index, (unsigned)status.wallet_count,
+                 (unsigned)address_index, wallet_has_passphrase() ? " P" : "");
+    }
     oled_draw_string_centered(0, title);
 
     /* The full derivation path, on its own row (T45).
@@ -1802,14 +1909,14 @@ static void screen_wallet_info_render(void)
      * entirely. The path is the only text on this screen that says which one,
      * and it is the same string the signing confirmation shows, so the two can
      * be compared by eye. */
-    if (status.wallet_count > 0) {
+    if (status.wallet_count > 0 || temp) {
         char path_str[24];
         HDPath shown = hd_path_at(address_index);
         format_hd_path(path_str, sizeof(path_str), &shown);
         oled_draw_string_centered(1, path_str);
     }
 
-    if (status.wallet_count == 0) {
+    if (status.wallet_count == 0 && !temp) {
         oled_draw_string_centered(3, "No wallet");
         oled_draw_string_centered(4, "Create one first");
     } else if (!address_valid()) {
@@ -2287,8 +2394,13 @@ static void screen_mnemonic_entry_render(void)
     oled_clear();
 
     if (entry_choosing_length) {
-        oled_draw_string_centered(0, "Import seed");
+        oled_draw_string_centered(0, entry_is_temporary ? "Temp seed" : "Import seed");
         oled_draw_string(2, 0, "How many words?");
+        if (entry_is_temporary) {
+            /* Repeated here, one screen after the warning, because this is the
+             * last page before the user starts typing 24 words. */
+            oled_draw_string(3, 0, "Not saved anywhere");
+        }
 
         char line[22];
         snprintf(line, sizeof(line), "%s 12", entry_length_choice == 12 ? ">" : " ");
@@ -2301,7 +2413,12 @@ static void screen_mnemonic_entry_render(void)
     }
 
     char header[22];
-    snprintf(header, sizeof(header), "Word %d/%d",
+    /* The mode is on the header row of every word, not just the first. Twelve
+     * to twenty-four screens pass between the warning and the last word, and a
+     * user who has forgotten which flow they are in is exactly the user who
+     * reboots afterwards. */
+    snprintf(header, sizeof(header), entry_is_temporary ? "TEMP word %d/%d"
+                                                        : "Word %d/%d",
              entry.current_word + 1, entry.target_words);
     oled_draw_string_centered(0, header);
 
@@ -2362,6 +2479,30 @@ static void mnemonic_entry_finish(void)
         memzero(full_mnemonic, sizeof(full_mnemonic));
         mnemonic_entry_clear(&entry);
         ui_set_screen(SCREEN_MAIN_MENU);
+        return;
+    }
+
+    if (entry_is_temporary) {
+        /* The one line that differs from an import: the phrase goes into RAM
+         * and nothing else happens to it. No slot is allocated, no ciphertext
+         * is written, no wallet count moves, and the backup bitmask - which
+         * would record that a seed exists here - is not touched. */
+        WalletError terr = wallet_use_temporary_mnemonic(full_mnemonic);
+        memzero(full_mnemonic, sizeof(full_mnemonic));
+        mnemonic_entry_clear(&entry);
+
+        if (terr != WALLET_OK) {
+            ESP_LOGE(TAG, "Temporary seed rejected: %d", terr);
+            ui_set_screen(SCREEN_MAIN_MENU);
+            return;
+        }
+
+        /* The longer default takes effect now rather than at the warning
+         * screen, so an abandoned entry leaves the user's own timeout alone. */
+        lock_timeout_choice = LOCK_TIMEOUT_TEMP_SEED;
+        ESP_LOGI(TAG, "Temporary seed active; auto-lock %s",
+                 lock_timeout_label(lock_timeout_choice));
+        ui_set_screen(SCREEN_WALLET_INFO);
         return;
     }
 
@@ -4854,6 +4995,94 @@ static const screen_t screen_host_passphrase = {
 };
 
 /* ============================================================================
+ * Temporary Seed Screen (T69)
+ *
+ * What SeedSigner does by construction, offered here as a session: the seed is
+ * typed, held in RAM, and never written down by the device. Every at-rest
+ * attack in docs/AUDIT-SECRETS.md - the flash dump, the PIN that falls to a GPU
+ * in seconds, the logical erase that leaves ciphertext behind - is an attack on
+ * a stored seed. This mode has nothing stored to attack.
+ *
+ * It buys that with two costs the user must read before they pay them, which
+ * is why this screen exists between the menu and the keyboard:
+ *
+ *   The PIN protects nothing at rest. It still stops someone picking up an
+ *   unlocked device, and that is genuinely all it does here - there is no
+ *   ciphertext for it to guard, because there is no ciphertext.
+ *
+ *   A reboot, a crash or a flat battery loses the seed. The device cannot
+ *   warn about that after the fact; the words are gone and only the user's own
+ *   backup has them.
+ *
+ * Two pages rather than one dense screen: 128x64 fits about five readable rows,
+ * and a warning nobody can read is decoration.
+ * ============================================================================ */
+
+#define TEMP_SEED_PAGES 2
+static int temp_seed_page = 0;
+
+static void screen_temp_seed_enter(void)
+{
+    ESP_LOGI(TAG, "Temporary seed warning");
+    temp_seed_page = 0;
+}
+
+static void screen_temp_seed_render(void)
+{
+    oled_clear();
+    oled_draw_string_centered(0, "-- Temp seed --");
+
+    if (temp_seed_page == 0) {
+        oled_draw_string(2, 0, "Seed is NOT saved.");
+        oled_draw_string(3, 0, "Lock, reboot or");
+        oled_draw_string(4, 0, "power loss erases");
+        oled_draw_string(5, 0, "it. Keep a backup.");
+        oled_draw_string(7, 0, "DN:more BCK  SEL");
+    } else {
+        oled_draw_string(2, 0, "PIN guards nothing");
+        oled_draw_string(3, 0, "at rest: nothing");
+        oled_draw_string(4, 0, "is stored to guard.");
+        oled_draw_string(5, 0, "Auto-lock 30 min.");
+        oled_draw_string(7, 0, "UP:back BCK  SEL");
+    }
+}
+
+static void screen_temp_seed_on_button(button_id_t btn)
+{
+    switch (btn) {
+        case BUTTON_UP:
+            if (temp_seed_page > 0) {
+                temp_seed_page--;
+            }
+            break;
+
+        case BUTTON_DOWN:
+            if (temp_seed_page < TEMP_SEED_PAGES - 1) {
+                temp_seed_page++;
+            }
+            break;
+
+        case BUTTON_CANCEL:
+            ui_set_screen(SCREEN_MAIN_MENU);
+            return;
+
+        case BUTTON_ACCEPT:
+            /* Accepting from either page. The second page is the harsher one,
+             * but forcing a scroll to reach the button teaches scrolling, not
+             * reading, and the first page already carries the loss the user
+             * cannot undo. */
+            entry_is_temporary = true;
+            ui_set_screen(SCREEN_MNEMONIC_ENTRY);
+            return;
+
+        default:
+            break;
+    }
+
+    ui_invalidate();
+}
+
+/* ============================================================================
  * Public API
  * ============================================================================ */
 
@@ -4879,6 +5108,7 @@ void ui_init(void)
     screens[SCREEN_SESSION_CONFIRM] = &screen_session_confirm;
     screens[SCREEN_PASSPHRASE] = &screen_passphrase;
     screens[SCREEN_BLE_NAME] = &screen_ble_name;
+    screens[SCREEN_TEMP_SEED] = &screen_temp_seed;
     screens[SCREEN_PASSPHRASE_CONFIRM] = &screen_passphrase_confirm;
     screens[SCREEN_SIGN_CONFIRM] = &screen_sign_confirm;
     screens[SCREEN_SIGN_RESULT] = &screen_sign_result;
@@ -5125,6 +5355,13 @@ uint32_t ui__account_for_test(void)            { return hd_account; }
 bool ui__wallet_info_pass_shown_for_test(void) { return wallet_info_passphrase_shown; }
 
 const MnemonicEntry *ui__entry_for_test(void)  { return &entry; }
+bool ui__entry_is_temporary_for_test(void)     { return entry_is_temporary; }
+
+/* The timeout in force and the one in NVS. Separate on purpose (T69), and a
+ * test that could only see one of them could not tell a temporary session's
+ * longer default from a stored wallet's timeout having been lengthened. */
+int ui__lock_timeout_choice_for_test(void)        { return lock_timeout_choice; }
+int ui__lock_timeout_stored_choice_for_test(void) { return lock_timeout_stored_choice; }
 bool ui__entry_choosing_length_for_test(void)  { return entry_choosing_length; }
 int  ui__entry_length_choice_for_test(void)    { return entry_length_choice; }
 
@@ -5158,6 +5395,8 @@ void ui__reset_static_state_for_test(void)
     memzero(entry_error, sizeof(entry_error));
     entry_choosing_length = true;
     entry_length_choice = 12;
+    entry_is_temporary = false;
+    temp_seed_page = 0;
     /* Both selectors back to the default, together - a test that flipped the
      * setting must not leak it into the next one. */
     entry_blocks_apply(false);
@@ -5194,6 +5433,7 @@ void ui__reset_static_state_for_test(void)
     memzero(host_passphrase_address, sizeof(host_passphrase_address));
 
     lock_timeout_choice = 1;
+    lock_timeout_stored_choice = 1;
     brightness_choice = 2;
     memzero(master_xfp, sizeof(master_xfp));
     last_activity_us = 0;

@@ -34,7 +34,30 @@ static struct {
     bool verified[FAKE_MAX_WALLETS];
     char passphrase[64];
     bool has_passphrase;
+    /* The session-only seed (T69). A separate buffer from mnemonics[] on
+     * purpose: the property the UI tests are here to defend is that this one
+     * never becomes a stored wallet, and a stand-in that parked it in the
+     * stored array could not tell the two apart. */
+    char temp_mnemonic[FAKE_MNEMONIC_LEN];
+    bool temp;
 } w;
+
+/* Which seed the device is deriving from: the temporary one when it is in use,
+ * the selected stored one otherwise. */
+static const char *active_mnemonic(void)
+{
+    if (w.temp) {
+        return w.temp_mnemonic;
+    }
+    return w.active ? w.mnemonics[w.active - 1] : "";
+}
+
+/* True when some seed is live, stored or not. Every derivation gate below asks
+ * this rather than testing w.active, which is 0 throughout temporary mode. */
+static bool have_seed(void)
+{
+    return w.temp || w.active != 0;
+}
 
 /* Recorded so the PIN-change path has a real "wrong current PIN" to hit. */
 static char fake_password[16] = {0};
@@ -84,7 +107,7 @@ WalletStatus wallet_get_status(void)
         .initialized = w.initialized,
         .password_set = w.password_set,
         .unlocked = w.unlocked,
-        .has_mnemonic = w.count > 0,
+        .has_mnemonic = w.count > 0 || w.temp,
         .active_wallet_index = w.active,
         .wallet_count = w.count,
     };
@@ -119,6 +142,36 @@ void wallet_lock(void)
 {
     w.unlocked = false;
     wallet_clear_passphrase();
+    /* As the real vault does: locking destroys the temporary seed, because
+     * nothing anywhere else has a copy of it. */
+    memzero(w.temp_mnemonic, sizeof(w.temp_mnemonic));
+    w.temp = false;
+}
+
+WalletError wallet_use_temporary_mnemonic(const char *mnemonic)
+{
+    if (!w.initialized) {
+        return WALLET_ERROR_NOT_INITIALIZED;
+    }
+    if (!w.unlocked) {
+        return WALLET_ERROR_LOCKED;
+    }
+    if (!mnemonic || mnemonic_check(mnemonic) == 0) {
+        return WALLET_ERROR_INVALID_MNEMONIC;
+    }
+
+    wallet_clear_passphrase();
+    snprintf(w.temp_mnemonic, sizeof(w.temp_mnemonic), "%s", mnemonic);
+    w.temp = true;
+    /* No stored wallet is selected while a temporary seed is in use, and the
+     * fake has to agree: the screens read this to decide what to name. */
+    w.active = 0;
+    return WALLET_OK;
+}
+
+bool wallet_has_temporary_mnemonic(void)
+{
+    return w.temp;
 }
 
 WalletError wallet_set_passphrase(const char *passphrase, size_t length)
@@ -151,10 +204,10 @@ WalletError wallet_create_mnemonic(int word_count, char *mnemonic_out, size_t ma
 
 WalletError wallet_get_mnemonic(char *mnemonic_out, size_t max_length)
 {
-    if (!mnemonic_out || w.active == 0 || !w.unlocked) {
+    if (!mnemonic_out || !have_seed() || !w.unlocked) {
         return WALLET_ERROR_NO_MNEMONIC;
     }
-    snprintf(mnemonic_out, max_length, "%s", w.mnemonics[w.active - 1]);
+    snprintf(mnemonic_out, max_length, "%s", active_mnemonic());
     return WALLET_OK;
 }
 
@@ -174,6 +227,10 @@ WalletError wallet_select_wallet(uint8_t index)
         return WALLET_ERROR_NO_MNEMONIC;
     }
     w.active = index;
+    /* And drops the temporary seed, as the real wallet does: this is a
+     * deliberate move to a stored seed, and the typed one does not survive it. */
+    memzero(w.temp_mnemonic, sizeof(w.temp_mnemonic));
+    w.temp = false;
     /* Mirrors the real wallet, which drops the passphrase on a switch: a
      * passphrase belongs to the seed it was entered against (T42). The fake
      * kept it, which meant every UI test of a wallet switch was asserting
@@ -236,7 +293,7 @@ WalletError wallet_get_master_fingerprint(uint32_t *fingerprint_out)
     if (!fingerprint_out) {
         return WALLET_ERROR_DERIVATION_FAILED;
     }
-    if (!w.unlocked || w.active == 0) {
+    if (!w.unlocked || !have_seed()) {
         return WALLET_ERROR_LOCKED;
     }
     if (fail_derivation || fail_fingerprint) {
@@ -244,7 +301,7 @@ WalletError wallet_get_master_fingerprint(uint32_t *fingerprint_out)
     }
 
     uint32_t h = 2166136261u;   /* FNV-1a */
-    const char *parts[2] = { w.mnemonics[w.active - 1], w.passphrase };
+    const char *parts[2] = { active_mnemonic(), w.passphrase };
     for (int i = 0; i < 2; i++) {
         for (const char *p = parts[i]; *p; p++) {
             h = (h ^ (uint8_t)*p) * 16777619u;
@@ -271,13 +328,16 @@ WalletError wallet_sign_hash_at_path(const HDPath *path, const uint8_t hash[32],
     if (fail_derivation) {
         return WALLET_ERROR_DERIVATION_FAILED;
     }
-    if (!w.unlocked || w.active == 0) {
+    if (!w.unlocked || !have_seed()) {
         return WALLET_ERROR_LOCKED;
     }
 
     memcpy(signature_out->r, hash, 32);
     memset(signature_out->s, 0, 32);
-    signature_out->s[0] = w.active;
+    /* 0xFF for the temporary seed: it is a seed no stored index names, and a
+     * test must be able to see that a signature came off it rather than off
+     * wallet 1. */
+    signature_out->s[0] = w.temp ? 0xFF : w.active;
     signature_out->s[1] = (uint8_t)(path->address_index & 0xFF);
     signature_out->v = 27 + (hash[31] & 1);
     return WALLET_OK;
@@ -291,7 +351,7 @@ WalletError wallet_get_address_at_path(const HDPath *path, EthAddress *address_o
     if (fail_derivation) {
         return WALLET_ERROR_DERIVATION_FAILED;
     }
-    if (!w.unlocked || w.active == 0) {
+    if (!w.unlocked || !have_seed()) {
         return WALLET_ERROR_LOCKED;
     }
     /* A full 42-character address: "0x" and 40 hex digits, exactly what the
@@ -307,7 +367,7 @@ WalletError wallet_get_address_at_path(const HDPath *path, EthAddress *address_o
      * a test that cannot tell them apart cannot catch the failure where the
      * screen shows one and the device derives another (T42, T45). */
     snprintf(address_out->hex, sizeof(address_out->hex),
-             "0x%02x%02x%02x%01x%s", w.active,
+             "0x%02x%02x%02x%01x%s", w.temp ? 0xFFu : (unsigned)w.active,
              (unsigned)(path->account & 0xFF),
              (unsigned)(path->address_index & 0xFF),
              w.has_passphrase ? 1u : 0u,

@@ -40,7 +40,7 @@ VAULT_CRYPTO :=                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/aes/aestab.c $(CRYPTO)/aes/aes_modes.c \
                 $(CRYPTO)/aes/aesgcm.c $(CRYPTO)/aes/gf128mul.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39 test_temp_seed
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
@@ -171,6 +171,14 @@ $(BUILD)/test_button: test_button.c esp_stubs.c ../src/button.c | $(BUILD)
 $(BUILD)/test_pin: CFLAGS += -DAES_VAR
 $(BUILD)/test_pin: test_pin.c esp_stubs.c host_stubs.c \
                    $(VAULT_SRC) ../src/pin.c $(VAULT_CRYPTO) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST -o $@ $^
+
+# The temporary seed (T69), against the real vault and the fake NVS. It has to
+# be the real one: the feature's whole claim is about what does and does not
+# reach storage, and a stubbed vault would only prove things about the stub.
+$(BUILD)/test_temp_seed: CFLAGS += -DAES_VAR
+$(BUILD)/test_temp_seed: test_temp_seed.c esp_stubs.c host_stubs.c \
+                         $(VAULT_SRC) $(VAULT_CRYPTO) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST -o $@ $^
 
 # The UI layer, against a framebuffer OLED and a fake wallet (see fake_wallet.c
