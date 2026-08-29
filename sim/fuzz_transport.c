@@ -72,6 +72,7 @@ void ui_request_passphrase_confirm(const char *a) { (void)a; }
 SignOutcome ui_sign_outcome(void) { return SIGN_REJECTED; }
 void ui_sign_report(bool ok) { (void)ok; }
 void ui_sign_clear(void) { }
+void ui_sign_expire(void) { }
 
 /* ---------------------------------------------------------------- random */
 

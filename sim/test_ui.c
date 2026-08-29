@@ -38,6 +38,7 @@ bool fake_protocol_rx_enabled(void);
 void        pin__reset_static_state_for_test(void);
 void        ui__reset_static_state_for_test(void);
 bool        ui__check_autolock_for_test(void);
+void        ui__service_sign_expiry_for_test(void);
 void        ui__service_host_lock_for_test(void);
 const char *ui__master_xfp_for_test(void);
 uint32_t    ui__account_for_test(void);
@@ -1466,6 +1467,65 @@ static void test_blind_confirmation_is_marked_and_shows_the_digest(void)
     ui_sign_clear();
 }
 
+/* An approval nobody answered has to leave the screen.
+ *
+ * wait_for_user()'s 120 s deadline answers the host and calls ui_sign_clear(),
+ * which zeroes the request and nothing else. So the device sat on a
+ * confirmation screen rendering a *wiped* transaction and still taking
+ * buttons: pressing SIGN advanced to the result screen and reported the
+ * transaction approved, seconds after the host had been told no.
+ *
+ * Found on hardware while reproducing H-1. Nothing was exploitable -- the
+ * outcome is no longer read by then -- but a device whose one guarantee is
+ * "what you see is what you sign" must not tell a user it signed something it
+ * did not.
+ */
+static void test_an_expired_approval_leaves_the_screen(void)
+{
+    printf("== an approval nobody answered comes off the screen\n");
+    boot_unlocked_with_seed();
+
+    EthTx tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.chain_id = 1;
+    memset(tx.to, 0xab, sizeof(tx.to));
+
+    HDPath sign_at = HDPATH_ETH_DEFAULT;
+    ui_request_sign(&tx, &sign_at, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_SIGN_CONFIRM);
+
+    /* The protocol task gives up: answers the host, clears the request. */
+    ui_sign_clear();
+    ui_sign_expire();
+    ui__service_sign_expiry_for_test();
+    ui_render();
+
+    CHECK(ui_get_screen() != SCREEN_SIGN_CONFIRM,
+          "an expired request left the confirmation screen up, still taking presses");
+    CHECK(ui_get_screen() == SCREEN_SIGN_RESULT,
+          "an expired request did not land on the result screen");
+
+    /* And it says what happened, rather than borrowing the wording for a
+     * refusal -- "you said no" and "you said nothing" are different facts. */
+    CHECK_SCREEN(fake_oled_contains("Expired"),
+                 "the device does not say the request expired");
+    CHECK_SCREEN(!fake_oled_contains("Signed"),
+                 "an expired request claimed a signature");
+    CHECK_SCREEN(!fake_oled_contains("Approved"),
+                 "an expired request claimed an approval");
+
+    /* The same expiry on the host-passphrase question, which shares
+     * wait_for_user() and had the same gap. */
+    ui_request_passphrase_confirm("0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_HOST_PASSPHRASE_CONFIRM);
+    ui_sign_clear();
+    ui_sign_expire();
+    ui__service_sign_expiry_for_test();
+    ui_render();
+    CHECK(ui_get_screen() != SCREEN_HOST_PASSPHRASE_CONFIRM,
+          "an expired passphrase question left its confirmation screen up");
+}
+
 /* A decodable call must not borrow the blind wording: "unknown" on a screen
  * that did understand the call would teach the user to ignore it. */
 static void test_a_decoded_call_is_not_marked_blind(void)
@@ -2415,6 +2475,7 @@ int main(void)
 {
     test_blind_signing_takes_a_deliberate_act();
     test_blind_confirmation_is_marked_and_shows_the_digest();
+    test_an_expired_approval_leaves_the_screen();
     test_a_decoded_call_is_not_marked_blind();
     test_a_generic_call_shows_every_argument();
     test_message_confirmation_shows_all_of_it();

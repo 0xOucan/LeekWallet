@@ -573,6 +573,10 @@ static SignOutcome wait_for_user(void)
         }
         if (xTaskGetTickCount() > deadline) {
             ui_sign_clear();
+            /* Clearing the request is not the same as taking the question off
+             * the screen, and for a long time only the first happened. See
+             * ui_sign_expire(). */
+            ui_sign_expire();
             return SIGN_PENDING;        /* nobody answered */
         }
         vTaskDelay(pdMS_TO_TICKS(50));

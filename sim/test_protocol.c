@@ -214,6 +214,12 @@ void ui_sign_report(bool ok)
 }
 void ui_sign_clear(void) { }
 
+/* Counted, because the timeout path answering the host is only half of what it
+ * owes: the confirmation screen has to come down too, and for a long time it
+ * did not. */
+static int sign_expiries;
+void ui_sign_expire(void) { sign_expiries++; }
+
 /* ------------------------------------------------------------ host side */
 
 /* The host half of the session: same derivation, opposite direction. Written

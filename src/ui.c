@@ -4437,11 +4437,19 @@ static volatile bool  sign_result_ok = false;
 static volatile bool  sign_result_ready = false;
 static int64_t        sign_result_until_us = 0;
 
+/* Raised when the approval window closed with nobody answering. Separate from
+ * sign_result_ok because "you said no" and "you said nothing" are different
+ * things to tell a user, and only one of them means the host is still waiting
+ * for an answer it will never get. */
+static volatile bool  sign_result_expired = false;
+static volatile bool  sign_expired_pending = false;
+
 #define SIGN_RESULT_HOLD_US 2000000   /* long enough to read, short enough not to nag */
 
 void ui_sign_report(bool ok)
 {
     sign_result_ok = ok;
+    sign_result_expired = false;
     sign_result_ready = true;
     sign_result_until_us = esp_timer_get_time() + SIGN_RESULT_HOLD_US;
 
@@ -4467,6 +4475,35 @@ void ui_sign_report(bool ok)
     ui_invalidate();
 }
 
+/**
+ * The approval window closed with nobody answering. Take the question down.
+ *
+ * wait_for_user() has a 120 s deadline, after which it answers the host and
+ * calls ui_sign_clear() -- which zeroes the request but leaves the screen
+ * exactly where it was. The device then sat on a confirmation screen rendering
+ * a *wiped* request and still accepting buttons: pressing SIGN advanced to the
+ * result screen and said the transaction had been approved, when nothing was
+ * signed and the host had been told no seconds earlier.
+ *
+ * Found on hardware while reproducing H-1, and it is the one thing this device
+ * must never do -- claim an approval happened. Nothing was exploitable, because
+ * the outcome is no longer read by then; the harm is entirely that the screen
+ * lied about what the device had done.
+ *
+ * Sets a flag rather than moving the screen, for the same reason
+ * ui_sign_report() does: screen transitions belong to the UI task, and this
+ * runs on the protocol task.
+ */
+void ui_sign_expire(void)
+{
+    sign_result_ok = false;
+    sign_result_expired = true;
+    sign_result_ready = true;
+    sign_result_until_us = esp_timer_get_time() + SIGN_RESULT_HOLD_US;
+    sign_expired_pending = true;
+    ui_invalidate();
+}
+
 static void screen_sign_result_enter(void)
 {
     ESP_LOGI(TAG, "Sign result screen");
@@ -4481,6 +4518,16 @@ static void screen_sign_result_render(void)
          * saying so beats a frozen-looking screen if it ever is not. */
         oled_draw_string_centered(2, "Approved");
         oled_draw_string_centered(4, "Signing...");
+        return;
+    }
+
+    if (sign_result_expired) {
+        oled_draw_string_centered(2, "Expired");
+        /* Says why, because the user's next question is what they did wrong,
+         * and the answer is that they took longer than the device waits. */
+        oled_draw_string_centered(4, "No answer in time");
+        oled_draw_string_centered(6, "Nothing was sent");
+        oled_draw_string(7, 0, "any key");
         return;
     }
 
@@ -5511,6 +5558,28 @@ static void service_host_lock(void)
     ui_set_screen(SCREEN_PIN_UNLOCK);
 }
 
+/* Take down a confirmation nobody answered. Guarded on the screen still being
+ * the one that was raised: by the time this runs the user may have walked
+ * somewhere else entirely, and yanking them out of it to report a question
+ * they already abandoned is its own annoyance. */
+static void service_sign_expiry(void)
+{
+    if (!sign_expired_pending) {
+        return;
+    }
+    sign_expired_pending = false;
+
+    screen_id_t here = ui_get_screen();
+    if (here == SCREEN_SIGN_CONFIRM) {
+        ui_set_screen(SCREEN_SIGN_RESULT);
+    } else if (here == SCREEN_HOST_PASSPHRASE_CONFIRM) {
+        /* Same expiry, different question. There is no result screen for a
+         * passphrase, and the wallet is the honest place to land: whatever was
+         * proposed has already been dropped by the protocol task. */
+        ui_set_screen(SCREEN_WALLET_INFO);
+    }
+}
+
 void ui_task(void *pvParameters)
 {
     (void)pvParameters;
@@ -5562,6 +5631,8 @@ void ui_task(void *pvParameters)
             esp_timer_get_time() > sign_result_until_us) {
             ui_set_screen(SCREEN_WALLET_INFO);
         }
+
+        service_sign_expiry();
 
         if (sign_request_pending) {
             sign_request_pending = false;
@@ -5621,6 +5692,7 @@ int         ui__pin_option_for_test(void) { return current_digit; }
  * it locks itself" is a T42 invariant, and a test asserting it against its own
  * copy of the rule would pass while the device kept a passphrase applied. */
 bool ui__check_autolock_for_test(void) { return lock_check_timeout(); }
+void ui__service_sign_expiry_for_test(void) { service_sign_expiry(); }
 void ui__service_host_lock_for_test(void) { service_host_lock(); }
 
 /* The cached fingerprint, which is not on any screen while the device is

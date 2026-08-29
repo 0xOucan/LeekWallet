@@ -309,6 +309,10 @@ typedef enum {
  */
 void ui_sign_report(bool ok);
 
+/* The approval window closed with nobody answering: take the question off the
+ * screen. Safe from the protocol task. */
+void ui_sign_expire(void);
+
 SignOutcome ui_sign_outcome(void);
 void ui_sign_clear(void);
 
