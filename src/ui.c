@@ -2786,6 +2786,22 @@ static void screen_settings_on_button(button_id_t btn)
                      * is one re-derivation the correct PIN pays for anyway;
                      * the benefit is that a device sitting on a PIN prompt has
                      * no seed in memory no matter how it got there. */
+                    if (wallet_has_temporary_mnemonic()) {
+                        /* Locking is what this menu item does, and locking is
+                         * what destroys a temporary seed. Someone who has just
+                         * typed 24 words and wants to check them would lose
+                         * them to the act of asking -- the one outcome nobody
+                         * would choose on purpose.
+                         *
+                         * There is also nothing to show: the phrase came from
+                         * the user's own paper a moment ago, and no stored
+                         * seed is reachable while a temporary one is loaded.
+                         * So this goes to the screen that explains the mode
+                         * rather than silently doing nothing or destroying
+                         * what it was asked to display. */
+                        ui_set_screen(SCREEN_TEMP_SEED);
+                        break;
+                    }
                     lock_device();
                     pending_mnemonic_display = true;
                     ui_set_screen(SCREEN_PIN_UNLOCK);
