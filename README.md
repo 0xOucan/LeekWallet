@@ -372,14 +372,21 @@ chip. See [S1 in AUDIT.md](AUDIT.md), and the box below.
 Nothing here is mandatory. Each rung defends something the one below it does not,
 and the honest ceiling is stated at the top rather than at the bottom.
 
-| | What it defends | Cost |
-|---|---|---|
-| 24 words + 8-digit PIN | Someone pressing buttons | none |
-| **+ passphrase** | **A stolen device** — nothing stored can confirm a guess | remember a second secret |
-| + temporary seed | Everything at rest — there is no vault to attack | retype the phrase each session |
-| + HMAC-eFuse binding | A flash dump, without secure boot | one small irreversible burn |
-| + ATECC608B gatekeeper | Hardware attempt limiting the firmware cannot override | ~$1, four wires, real work |
-| + secure boot | Firmware replacement (the evil maid) | irreversible, user-held key |
+| | What it defends | Cost | Status |
+|---|---|---|---|
+| 24 words + 8-digit PIN | Someone pressing buttons | none | shipped |
+| **+ passphrase** | **A stolen device** — nothing stored can confirm a guess | remember a second secret | shipped |
+| + temporary seed | Everything at rest — there is no vault to attack | retype the phrase each session | shipped |
+| + HMAC-eFuse binding | A flash dump, without secure boot | one small irreversible burn | **researched only** |
+| + ATECC608B gatekeeper | Hardware attempt limiting the firmware cannot override | ~$1, four wires, real work | **researched only** |
+| + secure boot | Firmware replacement (the evil maid) | irreversible, user-held key | **rehearsed in QEMU only** |
+
+The bottom three rungs have **never been executed on hardware** — no spare board
+and no secure element are available to this project. They are written up in
+[docs/BURN-PROCEDURE.md](docs/BURN-PROCEDURE.md) and
+[docs/RESEARCH-SECURE-ELEMENT.md](docs/RESEARCH-SECURE-ELEMENT.md) as procedures
+to be verified, not as results. **Do not read them as protections the wallet
+currently has.**
 
 Two rungs are worth singling out. **The passphrase is the one that matters today**,
 because there is no at-rest protection yet. And a **temporary seed with a passphrase**

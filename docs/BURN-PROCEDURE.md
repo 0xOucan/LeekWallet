@@ -1,6 +1,16 @@
 # Burning flash encryption and secure boot v2 on a real ESP32-S3
 
-**Status: rehearsed in QEMU, never executed on hardware.** ([T11c](../ROADMAP.md), [VAULT.md](VAULT.md))
+**Status: researched and rehearsed in QEMU. Never executed on hardware, and no
+spare board currently exists to execute it on.** ([T11c](../ROADMAP.md),
+[VAULT.md](VAULT.md))
+
+Everything below is a *procedure*, not a *report*. It has been written carefully
+and dry-run in emulation, but no eFuse described here has ever been burned by
+this project. The board counts, orderings and failure modes are reasoned from
+the ESP-IDF documentation and QEMU runs — treat them as a plan to be verified,
+not as experience to be trusted. See
+[RESEARCH-SECURE-ELEMENT.md](RESEARCH-SECURE-ELEMENT.md) for the ATECC608B
+route, which is at the same stage.
 
 This document is written to be followed by someone who was not present when it
 was written. Read all of it before running any of it.
