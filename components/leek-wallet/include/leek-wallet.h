@@ -157,6 +157,36 @@ void wallet_clear_passphrase(void);
  */
 bool wallet_has_passphrase(void);
 
+// ========== Temporary (session-only) seed ========== //
+
+/**
+ * Adopt a seed phrase for this session only, storing nothing.
+ *
+ * The seed lives in the same .bss struct, under the same lifetime, as the
+ * BIP39 passphrase: it is cleared by wallet_lock(), by wallet_select_wallet(),
+ * by wallet_wipe(), and by power going away. No NVS key is written on this
+ * path - not the mnemonic, not a fingerprint, not a check value, not a flag
+ * saying the mode was ever used. That is the entire point of the mode: a flash
+ * dump of a device that was using a temporary seed contains nothing about it,
+ * because a device that is not powered is not using one.
+ *
+ * The corollary the caller has to put on screen: locking, rebooting, or losing
+ * power destroys this seed, and the PIN protects nothing at rest while it is
+ * in use, because nothing is at rest.
+ *
+ * Requires an unlocked vault - the device still has a PIN gate, and this does
+ * not open it. Rejects a phrase that fails its BIP39 checksum.
+ */
+WalletError wallet_use_temporary_mnemonic(const char *mnemonic);
+
+/**
+ * True while the seed in use was typed for this session and is stored nowhere.
+ *
+ * Screens are expected to ask, and to say so: a user who believes their seed
+ * was saved and then reboots has lost it.
+ */
+bool wallet_has_temporary_mnemonic(void);
+
 /**
  * Master key fingerprint (BIP32 "XFP"): the first four bytes of
  * hash160(master public key).

@@ -69,6 +69,17 @@ static struct {
     bool has_mnemonic;
     bool seed_cached;  // True if seed[] contains valid cached seed
     bool has_passphrase;  // True if passphrase is set (25th word)
+    /* True while `mnemonic` holds a seed the user typed for this session only
+     * and that storage has never seen (T69). It rides in the same struct, on
+     * the same lifetime, as `passphrase` immediately below it, and for the
+     * same reason: that field is the one secret two audits have confirmed
+     * leaves no trace in flash (docs/AUDIT-SECRETS.md, lifetime table), and
+     * a second secret on a subtly different lifetime is how the next audit
+     * finds something.
+     * Nothing here is a storage flag - no NVS key exists for it, and no code
+     * path writes one. It exists so the screen can SAY the seed is temporary,
+     * and so a stored seed arriving in this buffer clears the claim. */
+    bool temporary;
     uint8_t password_hash[HASH_SIZE];
     uint8_t encryption_key[HASH_SIZE];
     char mnemonic[MAX_MNEMONIC_LENGTH];
@@ -650,6 +661,9 @@ static WalletError load_encrypted_mnemonic_at_index(uint8_t index) {
         }
 
         state.has_mnemonic = true;
+    /* A seed arriving from storage ends temporary mode by definition:
+     * the buffer these two flags describe has just been overwritten. */
+    state.temporary = false;
         invalidate_seed_cache();
         return WALLET_OK;
     }
@@ -709,6 +723,9 @@ static WalletError load_encrypted_mnemonic_at_index(uint8_t index) {
     }
 
     state.has_mnemonic = true;
+    /* A seed arriving from storage ends temporary mode by definition:
+     * the buffer these two flags describe has just been overwritten. */
+    state.temporary = false;
     state.active_wallet_index = index;
     return WALLET_OK;
 }
@@ -1284,6 +1301,11 @@ void wallet_lock(void) {
     state.unlocked = false;
     state.has_mnemonic = false;
     state.has_passphrase = false;
+    /* The temporary seed dies here, and this is the whole bargain of that mode:
+     * the buffer was zeroed with the rest a few lines up, so all that is left
+     * to drop is the claim. Nothing anywhere can bring it back - it was never
+     * written down. */
+    state.temporary = false;
 
     ESP_LOGI(TAG, "Wallet locked");
 }
@@ -1534,6 +1556,73 @@ WalletError wallet_set_passphrase(const char *passphrase, size_t length) {
     return WALLET_OK;
 }
 
+// ========== Temporary (session-only) seed ========== //
+
+WalletError wallet_use_temporary_mnemonic(const char *mnemonic) {
+    if (!state.initialized) {
+        return WALLET_ERROR_NOT_INITIALIZED;
+    }
+    if (!state.unlocked) {
+        return WALLET_ERROR_LOCKED;
+    }
+    if (!mnemonic) {
+        return WALLET_ERROR_INVALID_MNEMONIC;
+    }
+
+    size_t length = strlen(mnemonic);
+    if (length == 0 || length >= MAX_MNEMONIC_LENGTH) {
+        return WALLET_ERROR_INVALID_MNEMONIC;
+    }
+    /* Checked here as well as at the screen. A seed that fails its checksum is
+     * a typo, and the only moment it can still be rejected for free is before
+     * anything derives from it. */
+    if (!mnemonic_check(mnemonic)) {
+        return WALLET_ERROR_INVALID_MNEMONIC;
+    }
+
+    /* Everything below is the code that loads a stored seed, minus the
+     * storage. There is deliberately no nvs_open, no save_encrypted_mnemonic,
+     * no metadata write and no backup-bitmask update on this path: the seed
+     * reaches `state.mnemonic` in .bss and stops there.
+     *
+     * The passphrase goes first, for the wallet-switch reason: it was entered
+     * against whatever seed was loaded a moment ago, and carrying it onto a
+     * different seed silently derives a third wallet nobody asked for. */
+    invalidate_seed_cache();
+    memzero(state.passphrase, sizeof(state.passphrase));
+    state.has_passphrase = false;
+    memzero(&state.node, sizeof(state.node));
+    memzero(state.mnemonic, sizeof(state.mnemonic));
+
+    memcpy(state.mnemonic, mnemonic, length);
+    state.mnemonic[length] = '\0';
+    state.has_mnemonic = true;
+    state.temporary = true;
+
+    /* No stored wallet is selected any more, and saying so is not cosmetic:
+     * every screen that names the active wallet would otherwise vouch for a
+     * stored seed while the device derives from this one. Only the in-RAM
+     * index moves - the persisted active_idx is written by wallet_select_wallet
+     * alone, so the user's real selection is untouched and comes back from NVS
+     * at the next unlock. */
+    state.active_wallet_index = 0;
+
+    /* A word count, and nothing else. The phrase never reaches the console,
+     * and neither does anything that would confirm a guess at it. */
+    int words = 1;
+    for (const char *p = state.mnemonic; *p; p++) {
+        if (*p == ' ') {
+            words++;
+        }
+    }
+    ESP_LOGI(TAG, "Temporary seed in use (%d words, nothing stored)", words);
+    return WALLET_OK;
+}
+
+bool wallet_has_temporary_mnemonic(void) {
+    return state.temporary && state.has_mnemonic;
+}
+
 void wallet_clear_passphrase(void) {
     memzero(state.passphrase, sizeof(state.passphrase));
     state.has_passphrase = false;
@@ -1565,6 +1654,9 @@ WalletError wallet_create_mnemonic(int word_count, char *mnemonic_out, size_t ma
     strncpy(state.mnemonic, mnemonic, MAX_MNEMONIC_LENGTH - 1);
     state.mnemonic[MAX_MNEMONIC_LENGTH - 1] = '\0';
     state.has_mnemonic = true;
+    /* A seed arriving from storage ends temporary mode by definition:
+     * the buffer these two flags describe has just been overwritten. */
+    state.temporary = false;
 
     // Output to caller
     if (mnemonic_out && max_length > 0) {
@@ -1619,6 +1711,9 @@ WalletError wallet_import_mnemonic(const char *mnemonic) {
     strncpy(state.mnemonic, mnemonic, MAX_MNEMONIC_LENGTH - 1);
     state.mnemonic[MAX_MNEMONIC_LENGTH - 1] = '\0';
     state.has_mnemonic = true;
+    /* A seed arriving from storage ends temporary mode by definition:
+     * the buffer these two flags describe has just been overwritten. */
+    state.temporary = false;
 
     // Save to next wallet slot
     uint8_t new_index = state.wallet_count + 1;
@@ -2088,6 +2183,10 @@ WalletError wallet_select_wallet(uint8_t index) {
     // Clear current mnemonic
     memzero(state.mnemonic, sizeof(state.mnemonic));
     memzero(&state.node, sizeof(state.node));
+    /* And with it any temporary seed that was living in that buffer. Switching
+     * wallets is a deliberate move to a stored seed; the typed one is gone for
+     * good, exactly as the passphrase above it is. */
+    state.temporary = false;
     state.has_mnemonic = false;
 
     // Load the selected wallet
@@ -2123,6 +2222,9 @@ uint8_t wallet_add_mnemonic(const char *mnemonic) {
     strncpy(state.mnemonic, mnemonic, MAX_MNEMONIC_LENGTH - 1);
     state.mnemonic[MAX_MNEMONIC_LENGTH - 1] = '\0';
     state.has_mnemonic = true;
+    /* A seed arriving from storage ends temporary mode by definition:
+     * the buffer these two flags describe has just been overwritten. */
+    state.temporary = false;
 
     // Save to next wallet slot
     uint8_t new_index = state.wallet_count + 1;

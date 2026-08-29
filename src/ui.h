@@ -62,6 +62,11 @@ typedef enum {
     SCREEN_BLIND_WARN,
     /* Renaming the device for BLE advertising (T56). */
     SCREEN_BLE_NAME,
+    /* What a temporary seed costs, before one is typed (T69). Its own screen
+     * for the same reason SCREEN_BLIND_WARN is: the user is about to enter a
+     * mode where locking, rebooting or a flat battery destroys their seed, and
+     * that has to be read rather than discovered. */
+    SCREEN_TEMP_SEED,
     SCREEN_COUNT
 } screen_id_t;
 
