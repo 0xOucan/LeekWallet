@@ -75,6 +75,35 @@ button-timing pool is not.
 Use **real dice**. A dice app runs an unauditable PRNG on a networked phone, which
 is the one device this whole design assumes is compromised.
 
+#### How long a passphrase lasts
+
+A passphrase is never stored — there is nothing on the device that could confirm
+a guess at one, which is what makes it the best defence against a stolen device.
+So the only question is how long the one you typed stays applied, and that
+depends on *where* you typed it:
+
+| | Typed **on the device**<br>(Settings → Passphrase) | Typed **in the companion** |
+|---|---|---|
+| Who ever sees it | only the device | **the computer, in plaintext** |
+| Companion closed or crashes | **survives** | dropped |
+| 180 s with no host traffic | **survives** | dropped |
+| Device locked | dropped | dropped |
+
+**On-device entry is the default and the one to use.** The companion reads every
+character before encryption touches it, so a compromised host learns a passphrase
+typed there — and a compromised host is most of what a passphrase exists to defend
+against. Host entry sits behind a closed disclosure for the case where a long
+passphrase is genuinely impractical on four buttons; a host-supplied one
+deliberately lives no longer than the session that carried it.
+
+The practical consequence: **a device-typed passphrase survives connection churn
+and dies only when you lock.** Killing the companion, walking out of Bluetooth
+range, or letting the link time out all cost you a re-handshake — six fresh digits
+to compare — and nothing else. Locking is the one action that ends the session
+itself, and it is meant to be: one press of BACK from the main menu, no
+confirmation, because a lock you have to think about is a lock that does not
+happen when someone walks into the room.
+
 **Not yet connected:** dice entropy generates seeds that are *stored*. There is no
 path today that generates a temporary seed — temporary mode takes a phrase you
 already have. Combining them is on the list.
