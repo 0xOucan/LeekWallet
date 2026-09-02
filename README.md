@@ -62,6 +62,14 @@ back, because it was never written down. A passphrase works in this mode too, an
 the pairing of the two is the strongest rung on the ladder below — a flash dump
 then has neither secret to attack.
 
+**Dapps work exactly the same way.** Pair over WalletConnect, connect, sign — the
+signing path gates on *is a seed loaded*, never on *is a seed stored*, so nothing
+above the wallet layer can tell the difference. Addresses, EIP-712 rendering, the
+approval screens and all four signing methods behave identically. The only thing
+that changes is what the device keeps afterwards, which is nothing. The app says
+**temp seed (nothing stored)** where it would otherwise number a wallet, because
+`activeWallet` is 0 throughout — there is no stored wallet to point at.
+
 The cost is the honest one: you retype the phrase every session, and nothing on
 the device will remind you of it.
 
