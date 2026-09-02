@@ -105,11 +105,93 @@ into this one. The shim is written fresh against the MIT headers. This is the
 standing rule of the project and the port is where it will be most tempting to
 break.
 
+## Which Firefly components to take, and which not to
+
+The Pixie ecosystem offers three, all **MIT**, and the reference firmware
+([firefly/pixie-firmware](https://github.com/firefly/pixie-firmware)) is **BSD**.
+All four are compatible with Apache-2.0. The question is not licensing, it is
+how much of the application to hand over.
+
+| Component | Take it? |
+|---|---|
+| `firefly-display` | **Yes.** The ST7789 driver with fragment rendering — the one thing this project does not have and should not write |
+| `firefly-hollows/src/pixels.c` | **Yes, as a file.** Self-contained WS2812B over RMT, ~200 lines |
+| `firefly-hollows` (the framework) | **No** — see below |
+| `firefly-scene` | **No.** A scene graph for a UI that is 21 characters wide is machinery without a purpose |
+
+### Why not `firefly-hollows`
+
+Its entry point is `ffx_init(FfxBackgroundFunc, void *)` — no pins, no options.
+It starts its own IO task that owns *the display, the LEDs and the keypad*
+together, plus BLE and a panel/event model that calls the application back. It
+is a complete application framework, and its reference firmware's `main.c` is 84
+lines precisely because hollows does everything else.
+
+LeekWallet already has all of that, and it is the part of this project with the
+most hardware-proven behaviour behind it:
+
+- `ui_task` with its 100 ms loop, the auto-lock timer, the hold-to-lock poll and
+  the sign-expiry service
+- `button.c`, a debounced sampler feeding a queue
+- `transport.c`, `ble.c`, `protocol.c`, `session.c`
+
+Adopting hollows means deleting the approval guard, the session idle timeout,
+the lock behaviour and the hold gesture — **the exact code this project spent a
+week proving correct on real hardware** — and re-earning that on someone else's
+event model. The display driver is the only thing missing. Take the driver.
+
+## The board, concretely
+
+From `firefly-hollows/src/config.h`, `BOARD_REV == 5`:
+
+| | |
+|---|---|
+| Display | SPI bus 2, `DC = GPIO4`, `RESET = GPIO5`, CS tied to ground |
+| Buttons | `GPIO10`, `GPIO8`, `GPIO3`, `GPIO2` — active low, internal pull-ups |
+| LEDs | WS2812B on `GPIO9`, **4 pixels, one beside each button** |
+
+Firefly's button semantics map onto LeekWallet's without an argument:
+
+| Pixie | GPIO | Firefly meaning | LeekWallet |
+|---|---|---|---|
+| Button 3 | 3 | North | `BUTTON_UP` (K1) |
+| Button 4 | 2 | South | `BUTTON_DOWN` (K2) |
+| Button 1 | 10 | Cancel | `BUTTON_CANCEL` (K3) |
+| Button 2 | 8 | OK | `BUTTON_ACCEPT` (K4) |
+
+Four buttons, same four meanings, no compromise. `button.c` needs a pin table
+and nothing else.
+
+Note the board revisions differ — rev.2 and rev.4 use other pins, and rev.4 has
+one LED rather than four. The pin map belongs in a `board-pixie.h` with the
+revision named, not scattered through the port.
+
+### The four LEDs are the one real design opportunity
+
+One pixel sits beside each button. That is not decoration — it is a way to say
+*which button matters right now* without spending any of a 21-character line:
+
+- the SIGN key lit while a confirmation is up, and only then
+- all four dark when the device is locked
+- a slow pulse on BACK during the three-second lock hold, tracking the bar
+
+None of that exists on the reference board, and none of it should change what
+the screen says. Additive, and last.
+
 ## Phases
 
+**0 — Decide the build.**
+LeekWallet builds with PlatformIO; the Pixie world builds with ESP-IDF, CMake
+and Docker, and `firefly-display` ships an `idf_component.yml`. PlatformIO can
+target the C3 with `framework = espidf` and consume IDF components, so one
+`platformio.ini` with two environments is the cheaper answer — but it wants
+proving before anything is built on it, because the alternative is two build
+systems for one codebase forever.
+
 **1 — It boots and shows a PIN screen.**
-Board target, `sdkconfig.pixie`, GPIO map for four buttons, the six-function
-shim. Done when the PIN screen renders and a button moves the cursor.
+`board-pixie.h` with the rev.5 pin map, `sdkconfig.pixie`, the six-function
+shim over `firefly-display`. Done when the PIN screen renders and a button moves
+the cursor.
 
 **2 — It is a wallet.**
 Unlock, create a seed, view an address, sign over USB. Everything above the
@@ -122,10 +204,9 @@ Re-run the hardware tests that only real scheduling can exercise — see the
 single-core note below.
 
 **4 — It is a Pixie.**
-The four WS2812B LEDs, which LeekWallet has no concept of today. Deliberately
-last: they are the only genuinely new feature, and they are decoration until
-the wallet works. Worth doing well — a colour cue for *awaiting your approval*
-versus *idle* is real UX, not ornament.
+The four WS2812B LEDs, one beside each button — vendor `pixels.c` from hollows
+rather than writing an RMT driver. Deliberately last: the only genuinely new
+feature, and decoration until the wallet works.
 
 **5 — Native screens, optional and incremental.**
 Whichever screens most want the extra pixels. The address, the transaction
