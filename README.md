@@ -853,6 +853,10 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
 - [ ] Firmware flasher in the companion app (ROADMAP T65, gated on secure boot)
 - [ ] Generate a temporary seed, with dice — the two stateless halves currently
       meet only if you write the phrase down in between
+- [ ] Firefly Pixie as a second target (ESP32-C3, 240x240 colour) —
+      [docs/PIXIE-PORT.md](docs/PIXIE-PORT.md). One codebase, two boards: the
+      protocol and the whole wallet port unchanged, and `ui.c` reaches the
+      display through six functions, so the work is a shim rather than a rewrite
 - [ ] Airgapped QR signing (needs a camera)
 - [ ] Secure element integration (ATECC608B as a PIN gatekeeper)
 
