@@ -287,24 +287,39 @@ confirmed over one channel authorises the other. It does not.
 
 Permission tiers mirror the existing `RPC_PERM_*` model in the pixiecolibri sibling project.
 
-| Command | Tier | Device confirmation |
-|---|---|---|
-| `ping` | always | — |
-| `getFeatures` | always | — |
-| `getStatus` | always | — |
-| `unlock` | always | PIN entered **on device** |
-| `lock` | always | — |
-| `listWallets` | unlocked | — |
-| `selectWallet` | unlocked | — |
-| `setPassphrase` | unlocked | **yes — fingerprint confirm (§5)** |
-| `clearPassphrase` | unlocked | — |
-| `getFingerprint` | keys | — |
-| `getAddress` | keys | optional `display: true` |
-| `getPublicKey` | keys | — |
-| `signMessage` | keys | **yes** |
-| `signTypedData` | keys | **yes** |
-| `signTransaction` | keys | **yes** |
-| `signHash` | keys | **yes**, and refused unless blind signing is enabled on-device |
+**Read the Status column before building a client.** This table was written as
+a design for the whole surface, and five of its rows have never been
+implemented — a client written from the unqualified table would call methods the
+device answers as unknown. The authority on what the firmware speaks is the
+`strcmp(method, ...)` chain in `src/protocol.c`; this column is kept honest
+against it.
+
+| Command | Tier | Device confirmation | Status |
+|---|---|---|---|
+| `ping` | always | — | implemented |
+| `getFeatures` | always | — | implemented |
+| `getStatus` | always | — | implemented |
+| `unlock` | always | PIN entered **on device** | implemented |
+| `lock` | always | — | implemented |
+| `listWallets` | unlocked | — | **not implemented** |
+| `selectWallet` | unlocked | — | implemented |
+| `setPassphrase` | unlocked | **yes — fingerprint confirm (§5)** | implemented |
+| `clearPassphrase` | unlocked | — | **not implemented** — `setPassphrase` with an empty string is refused, and locking is the way back to the base wallet |
+| `getFingerprint` | keys | — | **not implemented** — the fingerprint is shown on the device's own screen |
+| `getAddress` | keys | optional `display: true` | implemented |
+| `getPublicKey` | keys | — | **not implemented** |
+| `signMessage` | keys | **yes** | implemented |
+| `signTypedData` | keys | **yes** | implemented |
+| `signTransaction` | keys | **yes** | implemented |
+| `signHash` | keys | **yes**, and refused unless blind signing is enabled on-device | **not implemented** — a host-supplied digest is the one thing this device will not sign, and nothing needs it yet |
+
+Plus `hello` and `helloReveal`, which carry the handshake (§3) rather than a
+command.
+
+**Three signing methods, not four.** `signHash` is described above and
+elsewhere in this document as the thing the others are defined against — the
+device builds its own preimage and signs what it rendered — but it does not
+exist as a callable method.
 
 An unknown method is an error frame, never silence, and identical over both
 transports — `sim/test_protocol.c` runs every conformance case down each channel

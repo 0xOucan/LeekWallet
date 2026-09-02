@@ -33,7 +33,7 @@ refuses to sign.
 | **Seed phrases** | 12 or 24-word generation and import; BIP39 passphrase entered on-device |
 | **PIN** | 4-8 digits, 3-attempt wipe, counter hardened against power-cut attacks |
 | **Change PIN** | Re-encrypts every wallet atomically — a power cut leaves exactly one PIN that opens everything (`sim/test_pin_change.c`) |
-| **Vault** | Per-device salted PBKDF2-HMAC-SHA512, ~1 s on hardware, AES-256-GCM, domain-separated key and verifier |
+| **Vault** | Per-device salted PBKDF2-HMAC-SHA512, 2250 iterations (508 ms on the board, 1.63 ms on a desktop core — see the threat model), AES-256-GCM, domain-separated key and verifier |
 | **Entropy** | Hardware RNG behind a fails-closed SP 800-90B gate that health-checks a 512-byte sample, plus a mandatory button-timing pool that is mixed in, never substituted |
 | **Physical dice** | Optional at seed creation, worth exactly **log2(6) = 2.585 bits** per roll, counted on screen. Mixed with the RNG, never substituted — physical dice only, never a phone app |
 | **Temporary seed** | Type a phrase, sign with it, and the device stores **nothing**: no slot, no ciphertext, no wallet count. Gone on lock |
@@ -65,7 +65,7 @@ then has neither secret to attack.
 **Dapps work exactly the same way.** Pair over WalletConnect, connect, sign — the
 signing path gates on *is a seed loaded*, never on *is a seed stored*, so nothing
 above the wallet layer can tell the difference. Addresses, EIP-712 rendering, the
-approval screens and all four signing methods behave identically. The only thing
+approval screens and all three signing methods behave identically. The only thing
 that changes is what the device keeps afterwards, which is nothing. The app says
 **temp seed (nothing stored)** where it would otherwise number a wallet, because
 `activeWallet` is 0 throughout — there is no stored wallet to point at.
@@ -437,7 +437,7 @@ while the wallet was unlocked (AUDIT S8g).
 |-----------|-----------|
 | Seed generation | BIP39 over `src/entropy.c` — hardware RNG plus a mandatory button-timing pool, SP 800-90B health tests on a 512-byte sample, fails closed |
 | Key derivation | BIP32/BIP44 |
-| Vault key | PBKDF2-HMAC-SHA512 over a per-device random salt, ~1 s on hardware; key and verifier domain-separated so the stored verifier is not an oracle for the key |
+| Vault key | PBKDF2-HMAC-SHA512, 2250 iterations over a per-device random salt: 508 ms on the board, 1.63 ms on a desktop core; key and verifier domain-separated so the stored verifier is not an oracle for the key |
 | Storage encryption | AES-256-GCM, `nonce ‖ ciphertext ‖ tag`, format v3, with crash-safe migration from the older CBC vaults |
 | Transport session | X25519 → HKDF (salted with the handshake transcript) → ChaCha20-Poly1305, passkey compared on the device screen |
 | Signing | ECDSA secp256k1 (RFC6979) |
@@ -445,7 +445,7 @@ while the wallet was unlocked (AUDIT S8g).
 ### Security Features
 
 - **Encrypted at rest**: mnemonics in the NVS partition, each under its own nonce, authenticated
-- **PIN**: 4-8 digits; 3 failed attempts wipes the device, and the counter is written before the compare so a power cut grants no free attempts
+- **PIN**: 4-8 digits; 3 failed attempts wipes the device, and the counter is written before the compare so a power cut grants no free attempts. The counter binds only attacks that go *through the firmware* — against a flash dump the PIN is worth what its length buys against an offline KDF, which for 4 digits is seconds
 - **Keys never leave the device**: the protocol has no method that returns a private key or a seed
 - **What you see is what you sign**: the device re-serialises and re-hashes the transaction itself and signs only what it rendered
 
@@ -676,9 +676,25 @@ it is the one that matters:
 > 3-attempt wipe counter never involved — because that attack never goes through
 > the firmware.
 >
-> The key derivation is salted PBKDF2 at roughly a second per guess and storage
-> is authenticated AES-256-GCM, so a 4-8 digit PIN costs days rather than
-> microseconds. **That is a delay, not a defence. It does not stop the read.**
+> The key derivation is salted PBKDF2-HMAC-SHA512 (2250 iterations) and storage
+> is authenticated AES-256-GCM. **Do not read the on-device timing as the
+> attacker's cost.** One derivation takes 508 ms on the board, but the same work
+> takes **1.63 ms on a single desktop core** — 310x faster, both figures measured
+> and recorded in `components/leek-wallet/include/vault-kdf.h`. The attack in this
+> section runs on their hardware, not yours, so theirs is the number that counts:
+>
+> | PIN length | One desktop core |
+> |---|---|
+> | 4 digits | **~16 seconds** |
+> | 6 digits | ~27 minutes |
+> | 8 digits | ~45 hours |
+>
+> More cores divide those directly, and a GPU divides them much further. So a
+> **4-digit PIN is worth seconds against someone holding your board** — pick 8,
+> and read the passphrase rung below, which is the one that actually helps here
+> because nothing stored can confirm a guess at it.
+>
+> **This is a delay, not a defence. It does not stop the read.**
 >
 > The procedure to close it is written
 > ([docs/BURN-PROCEDURE.md](docs/BURN-PROCEDURE.md)), gated by a pre-flight
