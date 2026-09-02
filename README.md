@@ -35,6 +35,8 @@ refuses to sign.
 | **Change PIN** | Re-encrypts every wallet atomically — a power cut leaves exactly one PIN that opens everything (`sim/test_pin_change.c`) |
 | **Vault** | Per-device salted PBKDF2-HMAC-SHA512, ~1 s on hardware, AES-256-GCM, domain-separated key and verifier |
 | **Entropy** | Hardware RNG behind a fails-closed SP 800-90B gate that health-checks a 512-byte sample, plus a mandatory button-timing pool that is mixed in, never substituted |
+| **Physical dice** | Optional at seed creation, worth exactly **log2(6) = 2.585 bits** per roll, counted on screen. Mixed with the RNG, never substituted — physical dice only, never a phone app |
+| **Temporary seed** | Type a phrase, sign with it, and the device stores **nothing**: no slot, no ciphertext, no wallet count. Gone on lock |
 | **Transaction signing** | EIP-1559, re-serialised and re-hashed on-device, displayed page by page, signed only as rendered |
 | **Decodable set** | Native transfer, ERC-20 `transfer`/`approve`/`transferFrom`, `setApprovalForAll`, WETH `deposit`/`withdraw`, three `mint` shapes. Anything else — including contract creation — is **refused** (`src/eth-decode.c`) |
 | **Blind signing** | Off by default, set on the device only, five presses past a warning screen. No command can turn it on |
@@ -43,6 +45,39 @@ refuses to sign.
 | **Session** | X25519 with a commit-then-reveal nonce exchange, passkey bound to the whole transcript and compared on the device's own screen; ChaCha20-Poly1305 frames |
 | **QR codes** | Display addresses as scannable QR codes |
 | **Companion app** | Tauri v2 on Linux/macOS/Windows and an Android APK, with WalletConnect v2 for real dapps |
+
+### Stateless mode, and dice
+
+Two features that answer the same question — *what does this device leave behind?*
+Both are optional, and neither is required to use the wallet normally.
+
+**Temporary seed** is the arrangement [SeedSigner](https://seedsigner.com/) is
+built around, and the credit belongs there: a wallet that holds no key at rest
+cannot have one taken from it. Enter a phrase from Main menu → **Temp Seed**, and
+it goes into RAM and nowhere else — no vault slot is allocated, no ciphertext is
+written, the wallet count does not move. Sign as normal; the device derives,
+displays and signs exactly as it does for a stored wallet. Lock it, or lose power,
+and the seed is gone: `wallet_lock()` zeroes it, and nothing anywhere can bring it
+back, because it was never written down. A passphrase works in this mode too, and
+the pairing of the two is the strongest rung on the ladder below — a flash dump
+then has neither secret to attack.
+
+The cost is the honest one: you retype the phrase every session, and nothing on
+the device will remind you of it.
+
+**Physical dice** apply when *creating* a seed. Choose 12 or 24 words first, since
+that sets the target, then roll: each roll is credited **2.585 bits** — arithmetic,
+not an estimate — and the screen counts down to the target. The rolls are mixed
+into the hardware RNG's output, **never substituted for it**, so a mistake with the
+dice cannot make the seed weaker than it would have been. Dice are optional; the
+button-timing pool is not.
+
+Use **real dice**. A dice app runs an unauditable PRNG on a networked phone, which
+is the one device this whole design assumes is compromised.
+
+**Not yet connected:** dice entropy generates seeds that are *stored*. There is no
+path today that generates a temporary seed — temporary mode takes a phrase you
+already have. Combining them is on the list.
 
 ### Capacity
 
@@ -742,6 +777,8 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
       PIN falls in minutes. HMAC-eFuse binding is the cheapest fix; flash encryption
       and secure boot are the fuller one, and optional per user
 - [ ] Firmware flasher in the companion app (ROADMAP T65, gated on secure boot)
+- [ ] Generate a temporary seed, with dice — the two stateless halves currently
+      meet only if you write the phrase down in between
 - [ ] Airgapped QR signing (needs a camera)
 - [ ] Secure element integration (ATECC608B as a PIN gatekeeper)
 
