@@ -38,7 +38,7 @@ refuses to sign.
 | **Physical dice** | Optional at seed creation, worth exactly **log2(6) = 2.585 bits** per roll, counted on screen. Mixed with the RNG, never substituted — physical dice only, never a phone app |
 | **Temporary seed** | Type a phrase, sign with it, and the device stores **nothing**: no slot, no ciphertext, no wallet count. Gone on lock |
 | **Transaction signing** | EIP-1559, re-serialised and re-hashed on-device, displayed page by page, signed only as rendered |
-| **Decodable set** | Native transfer, ERC-20 `transfer`/`approve`/`transferFrom`, `setApprovalForAll`, WETH `deposit`/`withdraw`, three `mint` shapes. Anything else — including contract creation — is **refused** (`src/eth-decode.c`) |
+| **Decodable set** | 15 signatures: native transfer, ERC-20 `transfer`/`approve`/`transferFrom`, Permit2 `approve`, ERC-721 `safeTransferFrom`/`setApprovalForAll`, Aave `supply`/`borrow`/`repay`/`withdraw`, WETH `deposit`/`withdraw`, three `mint` shapes. Anything else — including contract creation — is **refused**. The table in `src/eth-decode.c` is the authority; it is checked by hashing, not trusted |
 | **Blind signing** | Off by default, set on the device only, five presses past a warning screen. No command can turn it on |
 | **Link** | USB CDC-ACM **or** BLE GATT, one at a time, chosen on the device (Settings → Link) |
 | **BLE name** | User-set, 1-29 printable ASCII, refused rather than truncated — an over-long name would silently stop advertising |
