@@ -840,6 +840,13 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
 - [x] Passkey comparison that actually resists a relay (commitment round, v2 handshake)
 - [x] The PIN's only stored verifier is behind the vault's slow KDF
 - [x] A wipe that erases the flash rather than the bookkeeping
+- [x] An approval that is void if the wallet moved under it, proven on hardware
+      against a race the host-side simulator structurally cannot reproduce
+- [x] A channel that closes itself: 180 s of host silence, or any lock. A dying
+      companion cannot be relied on to say goodbye, and BLE supervision timeout
+      detects a dead radio rather than a dead app
+- [x] Locking held for three seconds against a filling bar, and naming what it
+      costs when a passphrase or temporary seed is live
 - [ ] At-rest protection — **nothing yet.** A flash dump still yields the vault and the
       PIN falls in minutes. HMAC-eFuse binding is the cheapest fix; flash encryption
       and secure boot are the fuller one, and optional per user
