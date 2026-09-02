@@ -1,0 +1,27 @@
+## IDF Component Manager Manifest File
+
+description: "A simple fragment-based display driver for the st7789 displays."
+license: "MIT"
+version: "0.0.1"
+
+dependencies:
+  idf:
+    version: ">=4.1.0"
+
+maintainers:
+  - "Richard Moore <me@ricmoo.com>"
+
+tags:
+  - "firefly"
+  - "st7789"
+  - "display"
+
+discussion: https://github.com/firefly/component-display/discussions
+issues: "https://github.com/firefly/component-display/issues"
+repository: git@github.com:firefly/component-display.git
+url: https://docs.firefly.app/v0/components/display/
+
+files:
+  exclude:
+    - ".iterm2-project"
+    - ".gitignore"
