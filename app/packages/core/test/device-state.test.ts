@@ -43,7 +43,15 @@ async function main() {
     check(derivationsInvalidated(S({}), S({ activeWallet: 2 })), "wallet switch should invalidate");
     check(derivationsInvalidated(S({}), S({ passphrase: true })), "applying a passphrase should invalidate");
     check(derivationsInvalidated(S({ passphrase: true }), S({})), "clearing one should invalidate");
-    check(!derivationsInvalidated(S({}), S({})), "an unchanged status should not invalidate");
+    /* A device with a PIN and no stored wallets is already on activeWallet 0, so
+   * loading a temporary seed moves nothing else. Without the flag the app goes
+   * on believing there is nothing to derive. */
+  check(derivationsInvalidated(S({ walletCount: 0, activeWallet: 0 }),
+                               S({ walletCount: 0, activeWallet: 0, temporary: true })),
+    "loading a temporary seed on a device with no stored wallets should invalidate");
+  check(derivationsInvalidated(S({ activeWallet: 0, temporary: true }), S({ activeWallet: 2 })),
+    "leaving temporary mode should invalidate");
+  check(!derivationsInvalidated(S({}), S({})), "an unchanged status should not invalidate");
   }
 
   group("the device really does drop the passphrase on lock");

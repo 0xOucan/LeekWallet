@@ -64,6 +64,14 @@ export function derivationsInvalidated(before: DeviceStatus, after: DeviceStatus
   if (before.unlocked && !after.unlocked) return true;      // locked
   if (!before.unlocked && after.unlocked) return true;      // fresh unlock, passphrase may differ
   if (before.activeWallet !== after.activeWallet) return true;
+  /* Nearly always redundant, because loading a temporary seed moves
+   * activeWallet to 0 and every way back out moves it off 0 again. The
+   * exception is a device with a PIN and no stored wallets: activeWallet is
+   * already 0, so entering temporary mode changes no other field, and the app
+   * would go on believing there was nothing to derive. Comparing the flag
+   * makes the rule complete rather than nearly complete -- the tuple this
+   * function claims to watch is the tuple it should watch. */
+  if (before.temporary !== after.temporary) return true;
   if (before.passphrase !== after.passphrase) return true;
   if (before.account !== after.account) return true;
   return false;
