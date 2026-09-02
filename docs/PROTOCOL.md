@@ -407,8 +407,16 @@ valid ones. So:
   unlock — the user may have entered a different passphrase, or none.
 - **The app must poll**, not merely react to its own commands. The device
   auto-locks on its own timer and the user can switch wallets by hand; neither
-  passes through the app. `getStatus` returns `unlocked`, `activeWallet` and a
-  boolean `passphrase`, which is enough to detect every case.
+  passes through the app. `getStatus` returns `unlocked`, `activeWallet`, a
+  boolean `passphrase` and a boolean `temporary`, which is enough to detect
+  every case.
+- **`activeWallet` is 0 for the whole of temporary mode**, because no stored
+  seed is selected while a RAM-only one is in use. A host reading only that
+  number cannot tell "signing from a seed this device will never keep" from
+  "something is wrong", and the app rendered `wallet 0/5` — which reads as a
+  fault. `temporary` is what distinguishes them. It is not a secret: it says a
+  seed is in RAM, never what it is, and the same fact is on the device's own
+  screen throughout.
 - **Never persist derived addresses.** A passphrase wallet leaves no trace on
   the device by design, and writing its addresses into host storage undoes
   precisely that: anyone reading the app's data learns a hidden wallet exists,

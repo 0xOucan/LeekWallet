@@ -680,7 +680,7 @@ static void dispatch(const uint8_t *payload, size_t len)
         WalletStatus status = wallet_get_status();
         cbor_write_map(&w, 1);
         cbor_write_text(&w, "result");
-        cbor_write_map(&w, 5);
+        cbor_write_map(&w, 6);
         /* The account the device's own screens are on. Reported so the host can
          * follow it: the app invalidates everything it derived whenever this
          * changes, exactly as it does for the passphrase, which stops the
@@ -689,6 +689,17 @@ static void dispatch(const uint8_t *payload, size_t len)
         cbor_write_uint(&w, ui_hd_account());
         cbor_write_text(&w, "activeWallet");
         cbor_write_uint(&w, status.active_wallet_index);
+        /* Temporary mode, said out loud.
+         *
+         * `activeWallet` is 0 throughout it -- deliberately, because no stored
+         * seed is selected -- and a host with only that number cannot tell
+         * "signing from a seed this device will never keep" from "something is
+         * wrong". The app rendered `wallet 0/5`, which reads as a fault.
+         *
+         * It is not a secret: it says a seed is in RAM, never what it is, and
+         * the same fact is on the device's own screen the whole time. */
+        cbor_write_text(&w, "temporary");
+        cbor_write_uint(&w, wallet_has_temporary_mnemonic() ? 1 : 0);
         cbor_write_text(&w, "passphrase");
         cbor_write_uint(&w, wallet_has_passphrase() ? 1 : 0);
         cbor_write_text(&w, "unlocked");

@@ -553,6 +553,9 @@ async function readStatus(): Promise<DeviceStatus> {
     unlocked: s["unlocked"] === 1,
     walletCount: Number(s["walletCount"] ?? 0),
     activeWallet: Number(s["activeWallet"] ?? 0),
+    /* Absent on firmware that predates the field, where it is also always
+     * false: temporary mode and this flag shipped together. */
+    temporary: s["temporary"] === 1,
     passphrase: s["passphrase"] === 1,
     /* Absent on firmware older than this field. Defaulting to 0 makes such a
      * device look permanently parked on the default account, which is what it
@@ -613,8 +616,13 @@ function walletLabel(s: DeviceStatus): string {
   const account = chosenAccount === null || chosenAccount === s.account
     ? `account ${s.account}`
     : `account ${chosenAccount} (device on ${s.account})`;
-  return `wallet ${s.activeWallet}/${s.walletCount}` +
-    (s.passphrase ? " + passphrase" : "") + ` · ${account}`;
+  /* Not "wallet 0/5". In temporary mode there is no stored wallet to number,
+   * and a zero where a wallet number belongs reads as a fault rather than as
+   * the feature it is. */
+  const wallet = s.temporary
+    ? "temp seed (nothing stored)"
+    : `wallet ${s.activeWallet}/${s.walletCount}`;
+  return wallet + (s.passphrase ? " + passphrase" : "") + ` · ${account}`;
 }
 
 async function poll(): Promise<void> {

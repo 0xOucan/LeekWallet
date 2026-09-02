@@ -25,6 +25,13 @@ export interface DeviceStatus {
   unlocked: boolean;
   walletCount: number;
   activeWallet: number;
+  /**
+   * Whether the device is signing from a temporary seed — one held in RAM and
+   * stored nowhere. `activeWallet` is 0 for the whole of it, because no stored
+   * seed is selected, so without this the app cannot tell that mode from a
+   * fault and renders `wallet 0/N`.
+   */
+  temporary: boolean;
   /** Whether a passphrase is applied. Never *which* one — see docs/VAULT.md. */
   passphrase: boolean;
   /**
@@ -41,6 +48,7 @@ export const UNKNOWN_STATUS: DeviceStatus = {
   unlocked: false,
   walletCount: 0,
   activeWallet: 0,
+  temporary: false,
   passphrase: false,
   account: 0,
 };

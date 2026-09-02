@@ -327,6 +327,11 @@ export class MockDevice implements Transport {
       unlocked: this.unlocked ? 1 : 0,
       walletCount: this.opts.walletCount,
       activeWallet: this.activeWallet,
+      /* The mock has no temporary mode -- it is a device-side flow with no
+       * host half -- but the field has to be here, because the app decides
+       * what to render from it and a mock that omits it certifies an app that
+       * would show `wallet 0/N` against real firmware. */
+      temporary: 0,
       passphrase: this.passphraseActive ? 1 : 0,
       /* Reported like the real device, so the mock cannot certify an app that
        * ignores the field -- the failure this suite exists to catch. */

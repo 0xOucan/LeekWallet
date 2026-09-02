@@ -17,7 +17,7 @@ const check = (c: boolean, m: string) => { if (!c) { console.log(`  FAIL: ${m}`)
 const group = (n: string) => console.log(`== ${n}`);
 
 const S = (o: Partial<DeviceStatus>): DeviceStatus => ({
-  unlocked: true, walletCount: 1, activeWallet: 1, passphrase: false, account: 0, ...o,
+  unlocked: true, walletCount: 1, activeWallet: 1, temporary: false, passphrase: false, account: 0, ...o,
 });
 
 async function call(dev: MockDevice, method: string, params: Record<string, CborValue> = {}) {
@@ -82,6 +82,7 @@ async function main() {
       unlocked: s["unlocked"] === 1,
       walletCount: Number(s["walletCount"]),
       activeWallet: Number(s["activeWallet"]),
+      temporary: s["temporary"] === 1,
       passphrase: s["passphrase"] === 1,
       account: Number(s["account"] ?? 0),
     };
