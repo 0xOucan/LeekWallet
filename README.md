@@ -46,6 +46,32 @@ refuses to sign.
 | **QR codes** | Display addresses as scannable QR codes |
 | **Companion app** | Tauri v2 on Linux/macOS/Windows and an Android APK, with WalletConnect v2 for real dapps |
 
+### Also running on the Firefly Pixie
+
+**Researching, developing and testing a build for the
+[Firefly Pixie](https://github.com/firefly/pixie-device)** — a second target,
+not a fork. The Pixie is an ESP32-C3 with a 240×240 colour display, four
+buttons and four RGB LEDs, and it is **already in the hands of Ethereum
+developers**, which makes it the cheapest distribution this project could ask
+for: a working hardware wallet for people who do not have to buy anything.
+
+The firmware **already compiles and links for the C3** — first attempt, no
+source changes, `pio run -e pixie`. What remains is a display shim: `src/ui.c`
+is 5,989 lines written for an 8×21 monochrome grid and reaches the panel through
+exactly six functions, 298 of its 332 calls being two of them, so the port is a
+shim rather than a rewrite and every screen and refusal survives it.
+
+**The companion needs no changes at all** — desktop or Android. The wire format
+comes out of files that port untouched.
+
+Not everything will follow. Airgapped QR signing needs a camera and PSRAM; the
+Pixie has neither, and the S3 keeps that lane. The S3 also has hardware SHA-512
+where the C3 stops at SHA-256, so the two boards are close today and will not
+stay close once the KDF is accelerated.
+
+Status, phases, the board pin map and the full comparison are in
+[docs/PIXIE-PORT.md](docs/PIXIE-PORT.md).
+
 ### Stateless mode, and dice
 
 Two features that answer the same question — *what does this device leave behind?*
@@ -853,10 +879,7 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
 - [ ] Firmware flasher in the companion app (ROADMAP T65, gated on secure boot)
 - [ ] Generate a temporary seed, with dice — the two stateless halves currently
       meet only if you write the phrase down in between
-- [ ] Firefly Pixie as a second target (ESP32-C3, 240x240 colour) —
-      [docs/PIXIE-PORT.md](docs/PIXIE-PORT.md). One codebase, two boards: the
-      protocol and the whole wallet port unchanged, and `ui.c` reaches the
-      display through six functions, so the work is a shim rather than a rewrite
+- [ ] Firefly Pixie as a second target — **in progress**, see below
 - [ ] Airgapped QR signing (needs a camera)
 - [ ] Secure element integration (ATECC608B as a PIN gatekeeper)
 

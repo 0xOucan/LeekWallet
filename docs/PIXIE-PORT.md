@@ -1,7 +1,29 @@
 # Running LeekWallet on the Firefly Pixie
 
-**Status: planned, not started.** Everything below is a design with measurements
-attached, not a report. No LeekWallet code has been compiled for an ESP32-C3.
+**Status: phase 0 done, the rest planned.** The firmware **compiles and links
+for the ESP32-C3** — first attempt, with no source changes at all — and phases 1
+onward are still a design rather than a report.
+
+```
+$ pio run -e pixie
+RAM:   [==        ]  15.6% (used 51212 bytes from 327680 bytes)
+Flash: [===       ]  29.4% (used 1233874 bytes from 4194304 bytes)
+[SUCCESS] Took 83.55 seconds
+
+$ file .pio/build/pixie/firmware.elf
+ELF 32-bit LSB executable, UCB RISC-V, RVC, soft-float ABI
+```
+
+That answered the only question that could have killed the idea. The build is
+`board = esp32-c3-devkitm-1` and four inherited lines; every other setting,
+including the whole of `sdkconfig.defaults`, carried over untouched because none
+of it was ever target-specific.
+
+Two things worth noting from it. **The C3 build uses less RAM than the S3 one**
+— 51 KB against 57 KB, single-core FreeRTOS being cheaper — so the 400 KB budget
+was never the constraint. And **`src/oled.c` compiled too**: the C3 has I²C, so a
+C3 wired to an SSD1306 would run this firmware today. The Pixie work is
+specifically about its 240×240 SPI panel, not about the C3.
 
 ---
 
@@ -180,13 +202,14 @@ the screen says. Additive, and last.
 
 ## Phases
 
-**0 — Decide the build.**
-LeekWallet builds with PlatformIO; the Pixie world builds with ESP-IDF, CMake
-and Docker, and `firefly-display` ships an `idf_component.yml`. PlatformIO can
-target the C3 with `framework = espidf` and consume IDF components, so one
-`platformio.ini` with two environments is the cheaper answer — but it wants
-proving before anything is built on it, because the alternative is two build
-systems for one codebase forever.
+**0 — Decide the build. DONE.**
+One `platformio.ini`, two environments. `[env:pixie]` extends `[env:esp32s3]`
+and changes the board line; the firmware compiles and links for RISC-V with no
+source changes. The alternative — ESP-IDF and CMake alongside PlatformIO, two
+build systems for one codebase forever — is not needed.
+
+Still open within this: whether PlatformIO will consume `firefly-display` as an
+IDF component cleanly, which is phase 1's first task rather than a blocker.
 
 **1 — It boots and shows a PIN screen.**
 `board-pixie.h` with the rev.5 pin map, `sdkconfig.pixie`, the six-function
