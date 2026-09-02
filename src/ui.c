@@ -115,6 +115,13 @@ static void screen_wipe_confirm_enter(void);
 static void screen_wipe_confirm_render(void);
 static void screen_wipe_confirm_on_button(button_id_t btn);
 
+static void screen_lock_hold_enter(void);
+static void screen_lock_hold_render(void);
+static void screen_lock_hold_on_button(button_id_t btn);
+
+static void screen_lock_confirm_render(void);
+static void screen_lock_confirm_on_button(button_id_t btn);
+
 static void screen_blind_warn_enter(void);
 static void screen_blind_warn_render(void);
 static void screen_blind_warn_on_button(button_id_t btn);
@@ -262,6 +269,20 @@ static const screen_t screen_wipe_confirm = {
     .enter = screen_wipe_confirm_enter,
     .render = screen_wipe_confirm_render,
     .on_button = screen_wipe_confirm_on_button,
+    .exit = NULL
+};
+
+static const screen_t screen_lock_hold = {
+    .enter = screen_lock_hold_enter,
+    .render = screen_lock_hold_render,
+    .on_button = screen_lock_hold_on_button,
+    .exit = NULL
+};
+
+static const screen_t screen_lock_confirm = {
+    .enter = NULL,
+    .render = screen_lock_confirm_render,
+    .on_button = screen_lock_confirm_on_button,
     .exit = NULL
 };
 
@@ -1768,16 +1789,16 @@ static void screen_main_menu_on_button(button_id_t btn)
             break;
 
         case BUTTON_CANCEL:
-            /* Lock device.
+            /* Lock device -- held, not tapped. See LOCK_HOLD_US.
              *
-             * This called pin_lock() alone and shipped that way: the PIN gate
-             * closed and the vault stayed open underneath it, so unlocking
-             * again landed the user back in their passphrase wallet with the
-             * seed never having left RAM. Reported from hardware. It is the
-             * deliberate lock, so it must be at least as strong as the one
-             * that happens by itself. */
-            lock_device();
-            ui_set_screen(SCREEN_PIN_UNLOCK);
+             * The lock itself called pin_lock() alone and shipped that way:
+             * the PIN gate closed and the vault stayed open underneath it, so
+             * unlocking again landed the user back in their passphrase wallet
+             * with the seed never having left RAM. Reported from hardware. It
+             * is the deliberate lock, so it must be at least as strong as the
+             * one that happens by itself -- which is why it goes through
+             * lock_device() and not through anything lighter. */
+            ui_set_screen(SCREEN_LOCK_HOLD);
             break;
 
         default:
@@ -2038,6 +2059,142 @@ static void screen_wallet_info_on_button(button_id_t btn)
     }
 
     ui_invalidate();
+}
+
+/* ============================================================================
+ * Lock: held, not tapped
+ * ============================================================================ */
+
+/* LOCK_HOLD_US, and why locking is held rather than tapped, are in ui.h.
+ *
+ * Width of the bar, in characters. Text rather than pixels because every other
+ * screen here is text, and because a test can read it back. */
+#define LOCK_HOLD_SEGMENTS 16
+
+static int64_t lock_hold_start_us = 0;
+
+/* Is there anything here that a lock would cost more than a PIN entry to get
+ * back? Both of these live only in RAM and both die in wallet_lock(). */
+static bool lock_would_lose_something(void)
+{
+    return wallet_has_passphrase() || wallet_has_temporary_mnemonic();
+}
+
+static void screen_lock_hold_enter(void)
+{
+    ESP_LOGI(TAG, "Lock hold screen");
+    lock_hold_start_us = esp_timer_get_time();
+}
+
+static void screen_lock_hold_render(void)
+{
+    int64_t held = esp_timer_get_time() - lock_hold_start_us;
+    if (held < 0) held = 0;
+
+    int filled = (int)((held * LOCK_HOLD_SEGMENTS) / LOCK_HOLD_US);
+    if (filled > LOCK_HOLD_SEGMENTS) filled = LOCK_HOLD_SEGMENTS;
+
+    char bar[LOCK_HOLD_SEGMENTS + 3];
+    bar[0] = '[';
+    for (int i = 0; i < LOCK_HOLD_SEGMENTS; i++) {
+        bar[i + 1] = (i < filled) ? '#' : ' ';
+    }
+    bar[LOCK_HOLD_SEGMENTS + 1] = ']';
+    bar[LOCK_HOLD_SEGMENTS + 2] = '\0';
+
+    oled_clear();
+    oled_draw_string_centered(0, "Lock device");
+    oled_draw_string_centered(2, "Keep holding BACK");
+    oled_draw_string_centered(4, bar);
+    oled_draw_string_centered(6, "Let go to cancel");
+}
+
+static void screen_lock_hold_on_button(button_id_t btn)
+{
+    /* Any other button abandons it. The hold itself is not a button event --
+     * there is no press to repeat and no release to hear -- so it is watched
+     * from the task loop instead. See service_lock_hold(). */
+    (void)btn;
+    ui_set_screen(SCREEN_MAIN_MENU);
+}
+
+/**
+ * Watch the hold. Called once per turn of the UI task's loop.
+ *
+ * Polls the debounced level rather than waiting for an event, because a button
+ * held down produces exactly one event and no more, and a button released
+ * produces none at all.
+ */
+static void service_lock_hold(void)
+{
+    if (ui_get_screen() != SCREEN_LOCK_HOLD) {
+        return;
+    }
+
+    if (!button_is_pressed(BUTTON_CANCEL)) {
+        /* A tap. Which is what leaving a menu looks like, and is exactly why
+         * this screen exists. */
+        ui_set_screen(SCREEN_MAIN_MENU);
+        return;
+    }
+
+    if (esp_timer_get_time() - lock_hold_start_us < LOCK_HOLD_US) {
+        ui_invalidate();        /* advance the bar */
+        return;
+    }
+
+    if (lock_would_lose_something()) {
+        ui_set_screen(SCREEN_LOCK_CONFIRM);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Locked by held BACK");
+    lock_device();
+    ui_set_screen(SCREEN_PIN_UNLOCK);
+}
+
+/* Names what the lock costs, rather than asking whether the user is sure.
+ *
+ * "Are you sure?" is answered reflexively within a week and then protects
+ * nothing. What the user cannot see from the home screen is which of the two
+ * RAM-only secrets is about to go, and how much typing it will take to get it
+ * back -- so that is what this says. */
+static void screen_lock_confirm_render(void)
+{
+    bool temp = wallet_has_temporary_mnemonic();
+    bool pass = wallet_has_passphrase();
+
+    oled_clear();
+    oled_draw_string_centered(0, "Lock device?");
+
+    if (temp && pass) {
+        oled_draw_string_centered(2, "Temp seed AND");
+        oled_draw_string_centered(3, "passphrase go.");
+        oled_draw_string_centered(5, "Type both again.");
+    } else if (temp) {
+        oled_draw_string_centered(2, "Temp seed goes.");
+        oled_draw_string_centered(4, "Nothing stored it.");
+        oled_draw_string_centered(5, "Type it again.");
+    } else {
+        oled_draw_string_centered(2, "Passphrase goes.");
+        oled_draw_string_centered(4, "Type it again to");
+        oled_draw_string_centered(5, "reach this wallet.");
+    }
+
+    oled_draw_string(7, 0, "BACK        LOCK");
+}
+
+static void screen_lock_confirm_on_button(button_id_t btn)
+{
+    if (btn == BUTTON_ACCEPT) {
+        ESP_LOGI(TAG, "Locked by held BACK, confirmed");
+        lock_device();
+        ui_set_screen(SCREEN_PIN_UNLOCK);
+        return;
+    }
+    if (btn == BUTTON_CANCEL) {
+        ui_set_screen(SCREEN_MAIN_MENU);
+    }
 }
 
 /* ============================================================================
@@ -5453,6 +5610,8 @@ void ui_init(void)
     screens[SCREEN_BLIND_WARN] = &screen_blind_warn;
     screens[SCREEN_MNEMONIC_VERIFY] = &screen_mnemonic_verify;
     screens[SCREEN_SESSION_CONFIRM] = &screen_session_confirm;
+    screens[SCREEN_LOCK_HOLD] = &screen_lock_hold;
+    screens[SCREEN_LOCK_CONFIRM] = &screen_lock_confirm;
     screens[SCREEN_PASSPHRASE] = &screen_passphrase;
     screens[SCREEN_BLE_NAME] = &screen_ble_name;
     screens[SCREEN_TEMP_SEED] = &screen_temp_seed;
@@ -5652,6 +5811,8 @@ void ui_task(void *pvParameters)
             ui_set_screen(SCREEN_WALLET_INFO);
         }
 
+        service_lock_hold();
+
         /* A companion that died without saying so. Tears down the channel
          * only: the wallet stays unlocked and a temporary seed survives, so
          * this costs a re-handshake and never a retyped phrase. */
@@ -5721,6 +5882,7 @@ int         ui__pin_option_for_test(void) { return current_digit; }
  * copy of the rule would pass while the device kept a passphrase applied. */
 bool ui__check_autolock_for_test(void) { return lock_check_timeout(); }
 void ui__service_sign_expiry_for_test(void) { service_sign_expiry(); }
+void ui__service_lock_hold_for_test(void) { service_lock_hold(); }
 void ui__service_host_lock_for_test(void) { service_host_lock(); }
 
 /* The cached fingerprint, which is not on any screen while the device is

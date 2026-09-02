@@ -40,6 +40,9 @@ void        pin__reset_static_state_for_test(void);
 void        ui__reset_static_state_for_test(void);
 bool        ui__check_autolock_for_test(void);
 void        ui__service_sign_expiry_for_test(void);
+void        ui__service_lock_hold_for_test(void);
+void        fake_button_hold(button_id_t id);
+void        fake_button_release(void);
 void        ui__service_host_lock_for_test(void);
 const char *ui__master_xfp_for_test(void);
 uint32_t    ui__account_for_test(void);
@@ -2178,13 +2181,162 @@ static void unlocked_in_a_passphrase_wallet(void)
     CHECK_SCREEN(fake_oled_contains("XFP"), "setup: no fingerprint on screen");
 }
 
+/* Perform the deliberate lock: hold BACK on the home screen for its full
+ * duration, and answer the confirmation if one is raised.
+ *
+ * BACK is held rather than tapped because a tap is how you leave every other
+ * screen, and on the home screen it used to also throw away the passphrase,
+ * the temporary seed and the channel. `confirm` says whether this call expects
+ * the device to ask first -- it does exactly when there is a RAM-only secret
+ * to lose. */
+static void hold_back_to_lock(bool expect_confirm)
+{
+    go(SCREEN_MAIN_MENU);
+    press(BUTTON_CANCEL);
+    CHECK(ui_get_screen() == SCREEN_LOCK_HOLD,
+          "BACK on the home screen did not start a hold");
+
+    fake_button_hold(BUTTON_CANCEL);
+    fake_clock_advance_us(LOCK_HOLD_US);
+    ui__service_lock_hold_for_test();
+    fake_button_release();
+
+    if (expect_confirm) {
+        CHECK(ui_get_screen() == SCREEN_LOCK_CONFIRM,
+              "a lock that costs a RAM-only secret did not say so first");
+        CHECK(pin_is_unlocked(), "the confirmation screen had already locked");
+        press(BUTTON_ACCEPT);
+    }
+    ui_render();
+}
+
+/* Defined further down, with the other temporary-seed fixtures. */
+static void enter_temporary_seed(void);
+
+/* A tap is not a lock.
+ *
+ * The whole reason this screen exists: BACK is how you leave every other
+ * screen, and on the home screen the same press used to throw away the
+ * passphrase, the temporary seed and the encrypted channel.
+ */
+static void test_a_tap_on_back_does_not_lock(void)
+{
+    printf("== a tap on BACK does not lock; only a full hold does\n");
+    unlocked_in_a_passphrase_wallet();
+
+    go(SCREEN_MAIN_MENU);
+    press(BUTTON_CANCEL);
+    CHECK(ui_get_screen() == SCREEN_LOCK_HOLD, "BACK did not start a hold");
+
+    /* Released immediately -- which is what a tap is. */
+    fake_button_release();
+    ui__service_lock_hold_for_test();
+
+    CHECK(ui_get_screen() == SCREEN_MAIN_MENU,
+          "letting go did not abandon the lock");
+    CHECK(pin_is_unlocked(), "a tap locked the device");
+    CHECK(wallet_has_passphrase(), "a tap threw away the passphrase");
+
+    /* Nor does letting go part-way through. */
+    press(BUTTON_CANCEL);
+    fake_button_hold(BUTTON_CANCEL);
+    fake_clock_advance_us(LOCK_HOLD_US - 1);
+    ui__service_lock_hold_for_test();
+    CHECK(ui_get_screen() == SCREEN_LOCK_HOLD, "the hold ended early");
+    CHECK(pin_is_unlocked(), "the device locked before the hold completed");
+
+    fake_button_release();
+    ui__service_lock_hold_for_test();
+    CHECK(pin_is_unlocked(), "letting go one tick short still locked");
+}
+
+/* The bar has to move, or the user lets go thinking the button is broken. */
+static void test_the_hold_shows_progress(void)
+{
+    printf("== the hold draws a bar that fills\n");
+    boot_unlocked_with_seed();
+
+    go(SCREEN_MAIN_MENU);
+    press(BUTTON_CANCEL);
+    fake_button_hold(BUTTON_CANCEL);
+
+    ui_render();
+    CHECK_SCREEN(fake_oled_contains("[") && !fake_oled_contains("#"),
+                 "the bar was not empty at the start of the hold");
+
+    fake_clock_advance_us(LOCK_HOLD_US / 2);
+    ui_render();
+    CHECK_SCREEN(fake_oled_contains("########") &&
+                 !fake_oled_contains("################"),
+                 "the bar was not half full half way through the hold");
+
+    fake_button_release();
+}
+
+/* With nothing RAM-only to lose, the hold is the whole gesture. A confirmation
+ * every time is answered reflexively within a week and then protects nothing. */
+static void test_a_hold_with_nothing_to_lose_locks_outright(void)
+{
+    printf("== a hold with no passphrase or temp seed locks without asking\n");
+    boot_unlocked_with_seed();
+    CHECK(!wallet_has_passphrase(), "setup: a passphrase is applied");
+    CHECK(!wallet_has_temporary_mnemonic(), "setup: a temporary seed is loaded");
+
+    hold_back_to_lock(false);       /* nothing to lose: no question */
+
+    CHECK(ui_get_screen() == SCREEN_PIN_UNLOCK, "the device did not ask for the PIN");
+    CHECK(!pin_is_unlocked(), "the hold did not lock the device");
+}
+
+/* And when there is something to lose, the screen says what it is. A bare
+ * "Are you sure?" is friction; naming the cost is information. */
+static void test_the_confirmation_names_what_is_lost(void)
+{
+    printf("== the lock confirmation names what the lock costs\n");
+
+    /* A passphrase on a stored wallet. */
+    unlocked_in_a_passphrase_wallet();
+    go(SCREEN_MAIN_MENU);
+    press(BUTTON_CANCEL);
+    fake_button_hold(BUTTON_CANCEL);
+    fake_clock_advance_us(LOCK_HOLD_US);
+    ui__service_lock_hold_for_test();
+    fake_button_release();
+    ui_render();
+
+    CHECK(ui_get_screen() == SCREEN_LOCK_CONFIRM, "no confirmation was raised");
+    CHECK_SCREEN(fake_oled_contains("Passphrase"),
+                 "the confirmation does not say the passphrase is at stake");
+    CHECK(pin_is_unlocked(), "the confirmation had already locked the device");
+
+    /* Backing out leaves everything exactly as it was. */
+    press(BUTTON_CANCEL);
+    CHECK(ui_get_screen() == SCREEN_MAIN_MENU, "backing out did not return home");
+    CHECK(pin_is_unlocked() && wallet_has_passphrase(),
+          "backing out of the confirmation locked anyway");
+
+    /* A temporary seed, which is the more expensive one to retype. */
+    boot_unlocked_with_seed();
+    enter_temporary_seed();
+    go(SCREEN_MAIN_MENU);
+    press(BUTTON_CANCEL);
+    fake_button_hold(BUTTON_CANCEL);
+    fake_clock_advance_us(LOCK_HOLD_US);
+    ui__service_lock_hold_for_test();
+    fake_button_release();
+    ui_render();
+
+    CHECK(ui_get_screen() == SCREEN_LOCK_CONFIRM, "no confirmation for a temp seed");
+    CHECK_SCREEN(fake_oled_contains("Temp seed"),
+                 "the confirmation does not say the temporary seed is at stake");
+}
+
 static void test_the_menu_lock_actually_locks(void)
 {
     printf("== \"Lock device\" on the menu locks the vault, not just the PIN\n");
     unlocked_in_a_passphrase_wallet();
 
-    go(SCREEN_MAIN_MENU);
-    press(BUTTON_CANCEL);   /* Lock device */
+    hold_back_to_lock(true);    /* a passphrase is live: it must ask */
 
     check_fully_locked("menu lock");
 }
@@ -2426,8 +2578,7 @@ static void test_temp_seed_every_clearing_path(void)
     /* 2. CANCEL on the menu, the other deliberate lock. */
     boot_unlocked_with_seed();
     enter_temporary_seed();
-    go(SCREEN_MAIN_MENU);
-    press(BUTTON_CANCEL);
+    hold_back_to_lock(true);    /* a temporary seed is live: it must ask */
     check_fully_locked("menu lock");
     check_temp_seed_gone("menu lock");
 
@@ -2574,6 +2725,10 @@ int main(void)
     test_a_wipe_resets_the_account();
     test_the_signing_confirmation_shows_the_account();
 
+    test_a_tap_on_back_does_not_lock();
+    test_the_hold_shows_progress();
+    test_a_hold_with_nothing_to_lose_locks_outright();
+    test_the_confirmation_names_what_is_lost();
     test_the_menu_lock_actually_locks();
     test_the_host_lock_actually_locks();
     test_the_autolock_timeout_locks();

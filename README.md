@@ -100,9 +100,23 @@ The practical consequence: **a device-typed passphrase survives connection churn
 and dies only when you lock.** Killing the companion, walking out of Bluetooth
 range, or letting the link time out all cost you a re-handshake — six fresh digits
 to compare — and nothing else. Locking is the one action that ends the session
-itself, and it is meant to be: one press of BACK from the main menu, no
-confirmation, because a lock you have to think about is a lock that does not
-happen when someone walks into the room.
+itself.
+
+So locking is **held, not tapped**: press and hold BACK on the home screen for
+three seconds, watching a bar fill. BACK is how you leave every other screen, and
+on the home screen that same tap used to throw away the passphrase, the temporary
+seed and the channel together. A hold defeats an accidental press outright while
+staying a single gesture.
+
+And when there **is** something RAM-only to lose, the device says what it is
+before it goes — *"Temp seed goes. Nothing stored it."* — rather than asking
+whether you are sure. A prompt you see every time is answered reflexively within
+a week and then protects nothing; one that names the cost is information. With no
+passphrase and no temporary seed, the hold is the whole gesture and nothing is
+asked.
+
+**Auto-lock is unaffected.** It is not a press, so there is no accident to
+prevent, and nobody is standing there to hold anything or answer a question.
 
 **Not yet connected:** dice entropy generates seeds that are *stored*. There is no
 path today that generates a temporary seed — temporary mode takes a phrase you

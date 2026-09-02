@@ -67,8 +67,35 @@ typedef enum {
      * mode where locking, rebooting or a flat battery destroys their seed, and
      * that has to be read rather than discovered. */
     SCREEN_TEMP_SEED,
+    /* Locking is one gesture, held rather than tapped. See LOCK_HOLD_US: a
+     * tap is how you leave a menu, and BACK on the home screen used to mean
+     * both that and "throw away the session". */
+    SCREEN_LOCK_HOLD,
+    SCREEN_LOCK_CONFIRM,
     SCREEN_COUNT
 } screen_id_t;
+
+/**
+ * How long BACK must be held on the home screen to lock the device.
+ *
+ * BACK on the home screen means "lock", and it used to mean it on a single
+ * press -- the same press that leaves every other screen. One stray tap threw
+ * away the session: the passphrase (which wallet_lock() zeroes), a temporary
+ * seed, and the encrypted channel with it, so the user retyped a passphrase on
+ * four buttons to get back where they were.
+ *
+ * A hold fixes that without making locking harder in the moment that matters.
+ * Any hold past a few hundred milliseconds defeats an accidental press
+ * outright, so the length is a matter of feel rather than of safety; three
+ * seconds is deliberate without being a puzzle. The progress bar is not
+ * decoration -- a hold with no feedback reads as a button that did not work,
+ * and the user lets go.
+ *
+ * Only this path holds. Auto-lock is auto-lock: it is not a press, there is no
+ * accident to prevent, and nobody is there to hold anything. The host's `lock`
+ * is deliberate by construction. End Temp Seed already says what it does.
+ */
+#define LOCK_HOLD_US 3000000
 
 /**
  * Screen interface - each screen implements these callbacks

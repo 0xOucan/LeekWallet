@@ -59,7 +59,15 @@ const char *button_get_action_name(button_id_t id)
     }
 }
 
-bool button_is_pressed(button_id_t id) { (void)id; return false; }
+/* Which button the test is holding down, if any. The real driver reads a
+ * debounced GPIO level; a hold has no event of its own, so anything that polls
+ * it needs this to be steerable. */
+static button_id_t held_button = BUTTON_NONE;
+
+void fake_button_hold(button_id_t id)  { held_button = id; }
+void fake_button_release(void)         { held_button = BUTTON_NONE; }
+
+bool button_is_pressed(button_id_t id) { return held_button == id; }
 
 /* ------------------------------------------------------------- FreeRTOS */
 
