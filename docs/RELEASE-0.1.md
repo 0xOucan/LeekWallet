@@ -116,11 +116,23 @@ library, Tauri's backend is Rust, and the desktop app already owns a serial
 transport. The work is real but ordinary: enter download mode (DTR/RTS), run
 the stub, write the image, verify.
 
-Android is harder and not free: `espflash` cannot use the `serialport` crate
-there, so the transfer has to go through Android's `UsbManager` host API behind
-a Tauri plugin, with the OTG cable and runtime USB permission that implies. It
-reuses the two-backend split `transport-serial` already has, which is why the
-roadmap puts desktop first.
+**Android is close to free, and an earlier draft of this document said
+otherwise.** The claim was that `espflash` cannot use the `serialport` crate on
+a phone, so the transfer would need Android's `UsbManager` behind a new Tauri
+plugin. That plugin already exists: T59 shipped USB serial on Android, and
+`transport-serial` carries two backends behind one API precisely so the phone is
+not a special case.
+
+Better still, `android-usb-serial` ships a `serialport_compat` module whose
+`SerialPortAdapter` implements the whole `serialport::SerialPort` trait —
+`write_data_terminal_ready` and `write_request_to_send` included, which are
+exactly the two calls that toggle DTR/RTS to put the chip into download mode. So
+the chain is `SerialPortAdapter` → `espflash::Connection` → image, with no new
+transport work on either platform.
+
+What remains on Android is the ordinary part: an OTG cable, the runtime USB
+permission prompt, and a UI that can survive the device disappearing and
+re-enumerating mid-flash.
 
 **And T65 stays gated on secure boot, in substance rather than in sequence.**
 Without it, a one-click flasher is a one-click way to install firmware that
