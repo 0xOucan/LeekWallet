@@ -265,3 +265,37 @@ Tested:
 - **Any dapp.** No site has connected to this provider.
 
 Do not treat this as working with a device until someone has watched it do so.
+
+## Browsers, and one that will not work
+
+**Chromium desktop only.** Web Serial is implemented by Chrome, Brave, Edge and
+Opera on the desktop. It is not implemented by Firefox or Safari, and not by
+Chrome on Android, which also ships no extensions at all.
+
+**Firefox cannot run this**, and not because the manifest is the wrong shape.
+Mozilla has declined both Web Serial and WebUSB on privacy and security
+grounds — it is a settled position, not a gap that closes by waiting. An
+extension there would load and then have no way to reach the device. The only
+route on Firefox is **native messaging** to a helper program that owns the port,
+which means shipping a native component; the desktop companion in `app/` is
+already that program, so it is a real option rather than a fantasy, but it is a
+different piece of work.
+
+### If your browser is a Flatpak or Snap
+
+The port chooser will be **empty**, and the extension cannot tell you why,
+because from inside the sandbox there is simply nothing there. Chromium
+enumerates serial ports through udev, and a Flatpak has no `/run/udev` unless
+it is given one:
+
+```sh
+flatpak override --user --filesystem=/run/udev:ro com.brave.Browser
+flatpak override --user --device=all com.brave.Browser
+```
+
+Then quit the browser completely — closing the window is not enough — and start
+it again. If the list is still empty, a browser installed from a package rather
+than a sandbox is the reliable answer.
+
+Observed, not guessed: inside `com.brave.Browser` the device appeared as
+`crw-rw---- nfsnobody nfsnobody /dev/ttyACM0` and `/run/udev` did not exist.

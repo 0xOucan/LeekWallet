@@ -189,7 +189,33 @@ async function grantPort(): Promise<void> {
 
   try {
     await navigator.serial.requestPort({ filters: DEVICE_FILTERS });
-  } catch {
+  } catch (e) {
+    /*
+     * Cancelling the chooser and failing to open it are different events, and
+     * catching both silently made them indistinguishable — the button appeared
+     * dead either way, with nothing on screen and nothing in the console. That
+     * cost a debugging round trip on real hardware.
+     *
+     * A cancelled picker throws NotFoundError and is a decision, not a fault:
+     * dropped without comment, because a red banner after someone closes a
+     * dialog is the extension arguing with them. Anything else is a fault and
+     * is shown, including the one that matters here — a chooser that opened
+     * with nothing in it still resolves as NotFoundError, so the empty case is
+     * called out separately rather than looking like a cancellation.
+     */
+    const err = e as DOMException;
+    if (err?.name === "NotFoundError") {
+      const ports = await navigator.serial.getPorts();
+      if (ports.length === 0) {
+        lastError =
+          "No serial device was chosen. If the list was empty, the browser " +
+          "cannot see the board: check the cable carries data, and that this " +
+          "browser is allowed to reach it — a Flatpak or Snap browser often " +
+          "cannot without extra permission.";
+      }
+    } else {
+      lastError = `${err?.name ?? "Error"}: ${err?.message ?? String(e)}`;
+    }
     await refresh();
     return;
   }
