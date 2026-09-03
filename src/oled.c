@@ -166,7 +166,15 @@ esp_err_t oled_flush(void)
     ssd1306_send_cmd(0x22);
     ssd1306_send_cmd(0x00);
     ssd1306_send_cmd(OLED_PAGES - 1);
-    return ssd1306_send_data(framebuffer, sizeof(framebuffer));
+    /* The explicit size, never sizeof.
+     *
+     * `framebuffer` here is a macro that calls oled_core_framebuffer(), so
+     * sizeof() measures a POINTER -- four bytes -- and this sent four bytes of
+     * a 1024-byte frame. The panel kept whatever was in the rest of its GDDRAM,
+     * which is what a screen full of stale pixels looks like. The array lives
+     * in oled-core.c now and this file cannot see its extent, so the extent has
+     * to be named. */
+    return ssd1306_send_data(framebuffer, (size_t)OLED_WIDTH * OLED_PAGES);
 }
 
 esp_err_t oled_set_contrast(uint8_t level)
@@ -223,7 +231,8 @@ esp_err_t oled_refresh(void)
     ssd1306_send_cmd(0x00);  /* Start page 0 */
     ssd1306_send_cmd(0x07);  /* End page 7 */
 
-    return ssd1306_send_data(framebuffer, sizeof(framebuffer));
+    /* Explicit, for the reason given in oled_flush(). */
+    return ssd1306_send_data(framebuffer, (size_t)OLED_WIDTH * OLED_PAGES);
 }
 
 
