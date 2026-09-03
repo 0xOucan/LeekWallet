@@ -142,6 +142,13 @@ out.
 
 ## Mechanism
 
+Steps 1-3 are now written: `.github/workflows/ci.yml` carries the matrix and
+`check.sh firmware` builds both boards, and `.github/workflows/release.yml`
+builds everything a tag needs, merges each firmware into one flashable image
+and attaches a `SHA256SUMS` to a **draft** release. Written, not demonstrated:
+this repository has no remote and neither workflow has ever executed. Step 4 is
+a human act by construction.
+
 1. **Extend CI to a matrix** — `ubuntu-latest`, `windows-latest`, `macos-latest`
    for the app jobs; firmware stays Linux-only, since both targets cross-compile
    there.

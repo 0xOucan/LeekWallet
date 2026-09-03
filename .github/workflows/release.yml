@@ -1,0 +1,405 @@
+# What a tag produces.
+#
+# CI answers "does this commit build". This answers "what do people download",
+# and the two are deliberately separate files: a release runs once, cannot be
+# re-run against a moving branch, and is allowed to be slow. Everything here is
+# built from the tag by a runner, so the artefacts are a function of the tag
+# and of nothing on a maintainer's machine.
+#
+# What this workflow does NOT do, and must not be extended to do:
+#
+#   - generate, print, export or commit key material of any kind. Not a
+#     keystore, not a GPG key, not the secure boot key. Signing inputs arrive
+#     as repository secrets that a human created elsewhere; see
+#     docs/RELEASE.md, "Keys, and where they are not".
+#   - sign macOS or Windows binaries. That is a deliberate cost decision, also
+#     documented there. Checksums and reproducible builds are the substitute,
+#     and they are a different claim rather than a weaker version of the same
+#     one.
+#
+# A green run here is not evidence that anything was tested on a device. No
+# runner has a board or a radio. docs/RELEASE-0.1.md carries the per-platform
+# test status that the release notes must repeat.
+#
+# This workflow has never executed - the repository has no remote. It is
+# written to be correct on inspection; expect the first tag to need fixing.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Only the final job needs to write to the repository, so only it gets the
+# token. The build jobs handle a tag's worth of untrusted-until-reviewed
+# toolchain and have no business holding a credential that can publish.
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Firmware, both boards.
+  #
+  # The Pixie image is built here even though docs/RELEASE-0.1.md argues it
+  # should not ship in 0.1: building it is free and cheap to discard, whereas
+  # discovering at tag time that the second target stopped compiling is not.
+  # Whether an image is *published* is a decision made in the release notes,
+  # not by omitting it from a build matrix.
+  # --------------------------------------------------------------------------
+  firmware:
+    name: Firmware (${{ matrix.env }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - env: esp32s3
+            chip: esp32s3
+            board: s3
+          - env: pixie
+            chip: esp32c3
+            board: pixie
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # PROJECT_VER comes from `git describe`, so a checkout without tags
+          # stamps a different version into the image than a full clone does -
+          # and this is the one build where that version is the whole point.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # esptool is pinned to the 4.x line. v5 still accepts `merge_bin` and the
+      # `--flash_*` options, with deprecation warnings - that was checked
+      # against v5.1.0, not assumed - but a published image should come from
+      # one known version of the tool that assembles it rather than from
+      # whichever one a runner resolved that morning. When the pin is lifted,
+      # the same command in scripts/release.sh and docs/RELEASE.md moves with
+      # it.
+      - run: pip install --upgrade platformio "esptool<5"
+      - run: pio run -e ${{ matrix.env }}
+
+      # The merged image, at offset 0. The three separate binaries go to three
+      # different offsets and a user who transposes two of them gets a board
+      # that does not boot rather than an error message. The web flasher writes
+      # one file for exactly this reason; scripts/release.sh produces the same
+      # image locally, from the same command, so a verifier can reproduce it.
+      - name: Merge into a single flashable image
+        run: |
+          set -euo pipefail
+          B=.pio/build/${{ matrix.env }}
+          V="${GITHUB_REF_NAME#v}"
+          mkdir -p out
+          esptool.py --chip ${{ matrix.chip }} merge_bin \
+            -o "out/leekwallet-${{ matrix.board }}-${V}.bin" \
+            --flash_mode dio --flash_freq 80m --flash_size 16MB \
+            0x0 "$B/bootloader.bin" \
+            0x8000 "$B/partitions.bin" \
+            0x10000 "$B/firmware.bin"
+          # The parts are published alongside the merged image, not replaced by
+          # it: anyone diagnosing a board, or flashing with a tool that wants
+          # offsets, needs them, and the merged file is a repackaging rather
+          # than a separate artefact to be trusted on its own.
+          cp "$B/bootloader.bin"  "out/bootloader-${{ matrix.board }}-${V}.bin"
+          cp "$B/partitions.bin"  "out/partitions-${{ matrix.board }}-${V}.bin"
+          cp "$B/firmware.bin"    "out/firmware-${{ matrix.board }}-${V}.bin"
+
+      # The fragment the website's assets/firmware/manifest.json expects. Built
+      # here rather than transcribed later, because a hash typed by a human is
+      # a hash that eventually names the wrong file - and the flasher re-checks
+      # that hash after downloading, so a wrong one fails loudly on a perfectly
+      # good binary and teaches people to click past the warning.
+      # The fragment the website's assets/firmware/manifest.json expects. Built
+      # here rather than transcribed later, because a hash typed by a human is
+      # a hash that eventually names the wrong file - and the flasher re-checks
+      # that hash after downloading, so a wrong one fails loudly on a perfectly
+      # good binary and teaches people to click past the warning.
+      #
+      # Same shape as scripts/release.sh writes, deliberately: a "releases"
+      # array of one, so merging into the website's manifest is inserting an
+      # element rather than reshaping anything.
+      - name: Emit the flasher manifest fragment
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          F="leekwallet-${{ matrix.board }}-${V}.bin"
+          SHA="$(sha256sum "out/$F" | cut -d' ' -f1)"
+          SIZE="$(wc -c < "out/$F" | tr -d ' ')"
+          cat > "out/manifest-${{ matrix.board }}.json" <<EOF
+          {
+            "releases": [
+              {
+                "id": "${{ matrix.board }}-${V}",
+                "board": "${{ matrix.board }}",
+                "version": "${V}",
+                "file": "${F}",
+                "sha256": "${SHA}",
+                "size": ${SIZE}
+              }
+            ]
+          }
+          EOF
+          cat "out/manifest-${{ matrix.board }}.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.board }}
+          path: out/
+
+  # --------------------------------------------------------------------------
+  # The desktop companion, three operating systems.
+  #
+  # Unsigned on macOS and Windows, on purpose. See docs/RELEASE.md.
+  # --------------------------------------------------------------------------
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      # Tauri links against WebKitGTK directly, so a bare Linux runner cannot
+      # compile the crate at all. The other two ship their webview with the OS.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+      - run: pnpm --dir app install --frozen-lockfile
+      # No signing credentials are passed to this step, and none should be
+      # added without the cost discussion in docs/RELEASE.md being revisited
+      # first. tauri build signs nothing it is not given a key for.
+      - run: pnpm --dir app tauri build
+      # `if-no-files-found: warn` on the upload below would let a platform that
+      # produced nothing pass quietly and leave a release page missing its
+      # .dmg, so the existence of a bundle is asserted here instead - before
+      # the upload, where the failure names the platform.
+      - name: Check a bundle was produced
+        shell: bash
+        run: |
+          set -euo pipefail
+          B=app/src-tauri/target/release/bundle
+          found=$(find "$B" -type f \( -name '*.AppImage' -o -name '*.deb' \
+                  -o -name '*.msi' -o -name '*.dmg' \) | wc -l)
+          if [ "$found" -eq 0 ]; then
+            echo "tauri build produced no installer under $B" >&2
+            find "$B" -type f >&2 || true
+            exit 1
+          fi
+          find "$B" -type f \( -name '*.AppImage' -o -name '*.deb' \
+               -o -name '*.msi' -o -name '*.dmg' \)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          # The packaged installers only. The rest of target/release is
+          # intermediate output that nobody installs, runs or verifies, and
+          # publishing it invites verifying the wrong thing. The bare
+          # executable is deliberately left out too: its name depends on
+          # tauri.conf.json's productName rather than on the crate name, and a
+          # published file whose name is a build detail is a file whose hash
+          # nobody can predict.
+          path: |
+            app/src-tauri/target/release/bundle/**/*.AppImage
+            app/src-tauri/target/release/bundle/**/*.deb
+            app/src-tauri/target/release/bundle/**/*.msi
+            app/src-tauri/target/release/bundle/**/*.dmg
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
+  # Android.
+  #
+  # A release APK must be signed or Android will not install it, and the only
+  # key that can sign it is one a human generated and stored as a secret. This
+  # job therefore has two outcomes and says which one happened, rather than
+  # quietly producing an unsigned file named as though it were installable:
+  #
+  #   - the keystore secret exists  -> a signed release APK
+  #   - it does not                 -> the job fails, with the reason
+  #
+  # It fails rather than falls back because an unsigned APK in a release is a
+  # download that cannot be installed, and a user meeting that concludes the
+  # project is broken rather than that a secret is missing.
+  #
+  # Nothing here generates a keystore. See docs/RELEASE.md.
+  # --------------------------------------------------------------------------
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - run: pnpm --dir app install --frozen-lockfile
+
+      # gen/android is generated, not tracked (app/ANDROID.md explains why: a
+      # committed copy becomes the truth and silently ignores tauri.conf.json).
+      # So a release build has to generate it, and every hand-made change to it
+      # has to be re-applied by a script rather than remembered.
+      - name: Generate the Android project
+        run: pnpm --dir app tauri android init --skip-targets-install
+
+      # The two lines that regeneration loses. Not cosmetic: without them
+      # Android denies the camera with no dialog and QR scanning fails with no
+      # clue why. The check script says exactly what to add; it is applied here
+      # and then re-checked below, so a release cannot ship the broken variant.
+      - name: Restore the hand-added manifest entries
+        run: |
+          set -euo pipefail
+          M=app/src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          if ! grep -q 'android.permission.CAMERA' "$M"; then
+            sed -i 's|<application|<uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n    <application|' "$M"
+          fi
+          # Re-checked rather than assumed: the same script CI runs on every
+          # push, so "the edit took" is a check and not a belief.
+          ./scripts/check-android-manifest.sh
+
+      # The keystore arrives base64-encoded in a secret, is written outside the
+      # workspace, and is deleted at the end of the job whatever happens. Not
+      # into the checkout: a keystore inside the worktree is one `git add -A`
+      # away from being in the repository forever.
+      - name: Materialise the signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "No ANDROID_KEYSTORE_BASE64 secret." >&2
+            echo "A release APK cannot be signed without one, and an unsigned" >&2
+            echo "APK will not install. See docs/RELEASE.md, 'The Android" >&2
+            echo "release keystore'." >&2
+            exit 1
+          fi
+          # Never echoed, never written to a log, never inside $GITHUB_WORKSPACE.
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          chmod 600 "$RUNNER_TEMP/release.keystore"
+
+      # Wiring the keystore into the generated Gradle project is a script
+      # rather than inline YAML so that a maintainer building a release APK on
+      # their own machine runs the same code, and so that the rule "never
+      # create or print key material" lives in one reviewable place.
+      - name: Wire release signing into the generated project
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./scripts/android-release-signing.sh
+
+      - name: Build the release APK
+        env:
+          NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          # --target aarch64 only: every Android device this wallet can talk to
+          # over USB OTG or BLE is arm64. A universal APK would double the
+          # download to carry code for emulators.
+          #
+          # The CC/AR variables are the same ones app/package.json sets for the
+          # android:build scripts - the Rust build needs the NDK's clang by
+          # absolute path, and without them the link fails late and obscurely.
+          export CC_aarch64_linux_android="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+          export AR_aarch64_linux_android="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          pnpm --dir app exec tauri android build --target aarch64
+          mkdir -p out
+          V="${GITHUB_REF_NAME#v}"
+          find app/src-tauri/gen/android -name '*.apk' -path '*release*' \
+            -exec cp {} "out/leekwallet-${V}.apk" \;
+          test -f "out/leekwallet-${V}.apk"
+
+      # The assertion that matters, made about the artefact rather than about
+      # the build files: an APK that was not signed installs nowhere, and it is
+      # far better to learn that here than from the first user who tries. The
+      # certificate digest is printed because it is public by construction and
+      # is the value a user can compare against a previous release to see that
+      # the signing identity has not changed.
+      - name: Verify the APK is signed
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -1)"
+          "$APKSIGNER" verify --print-certs --verbose "out/leekwallet-${V}.apk"
+
+      - name: Remove the keystore
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/release.keystore"
+          rm -f app/src-tauri/gen/android/keystore.properties
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: out/
+
+  # --------------------------------------------------------------------------
+  # Publish.
+  #
+  # One job, so that SHA256SUMS is computed over exactly the set of files that
+  # is uploaded. Computing it per-build-job and concatenating would let a file
+  # be listed that was never attached, or attached without being listed.
+  #
+  # SHA256SUMS is deliberately not signed here. The GPG key that signs it is a
+  # human's, held off any build machine, and putting it in a repository secret
+  # would move it onto every runner this workflow ever schedules. The
+  # maintainer signs the published manifest afterwards and uploads the
+  # signature - see docs/RELEASE.md.
+  # --------------------------------------------------------------------------
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [firmware, desktop, android]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+      - name: Collect and hash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Flattened: the artifact directory structure is an implementation
+          # detail of this workflow, and a release page that mirrors it makes
+          # users guess which folder their download is in.
+          find staged -type f -exec cp {} dist/ \;
+          cd dist
+          # Over everything, including the JSON fragments - a manifest that
+          # covers only some of what was published is a manifest a verifier
+          # has to be told how to read.
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          # Drafted, not published. The release notes must carry the
+          # per-platform test status from docs/RELEASE-0.1.md, and SHA256SUMS
+          # still needs a signature made off this machine. Both are human acts,
+          # and a workflow that publishes without them ships a release that
+          # overclaims.
+          draft: true
+          generate_release_notes: true

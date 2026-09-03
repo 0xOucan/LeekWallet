@@ -118,9 +118,123 @@ if [[ "${SIGNED}" -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# The merged image: bootloader + partition table + application, in one file
+# that is written at offset 0.
+#
+# This exists for the web flasher and for anyone flashing by hand. The three
+# separate binaries go to three different offsets, and a user who transposes
+# two of them does not get an error - they get a board that no longer boots and
+# no obvious way back. One file at one offset removes the only step in the
+# procedure where a typo is destructive.
+#
+# It is a repackaging of the three binaries above and nothing else: it adds no
+# bytes that are not already in them, and it appears in SHA256SUMS alongside
+# them so a verifier can check either form. Rebuilding the tag reproduces it,
+# because merge_bin is a deterministic concatenation into a padded image.
+#
+# The chip is derived from the environment rather than guessed, because
+# merge_bin writes a chip id into the image header and a wrong one produces a
+# file that flashes cleanly and then never boots.
+# ---------------------------------------------------------------------------
+case "${ENV_NAME}" in
+    pixie*)   CHIP="esp32c3"; BOARD="pixie" ;;
+    esp32s3*) CHIP="esp32s3"; BOARD="s3" ;;
+    *)        CHIP=""; BOARD="" ;;
+esac
+
+# Prefer the signed binaries where they exist. Merging the unsigned ones from a
+# secure build would produce an image that a board with secure boot enabled
+# refuses - which is the correct refusal, but it would be discovered by whoever
+# flashed it rather than here.
+if [[ -f "${OUT}/firmware-signed.bin" ]]; then
+    MERGE_APP="firmware-signed.bin"; MERGE_BOOT="bootloader-signed.bin"; MERGE_PART="partitions-signed.bin"
+else
+    MERGE_APP="firmware.bin"; MERGE_BOOT="bootloader.bin"; MERGE_PART="partitions.bin"
+fi
+
+# esptool ships as `esptool.py` up to v4 and as `esptool` from v5, and both are
+# on PATH in some installs and neither in others. Resolved once here rather
+# than assumed, because the failure mode of assuming is a release that silently
+# has no merged image in it. v5 renamed `merge_bin` to `merge-bin` and the
+# `--flash_*` options to `--flash-*`, but still accepts the old spellings with a
+# deprecation warning - checked, not assumed, against v5.1.0. The release
+# workflow pins the 4.x line so that the published image comes from one known
+# version rather than whichever one a runner resolved that day.
+ESPTOOL=""
+if command -v esptool.py >/dev/null 2>&1; then
+    ESPTOOL="esptool.py"
+elif command -v esptool >/dev/null 2>&1; then
+    ESPTOOL="esptool"
+fi
+
+MERGED=""
+if [[ -z "${CHIP}" ]]; then
+    echo "-- no merged image: '${ENV_NAME}' is not a known board environment"
+elif [[ -z "${ESPTOOL}" ]]; then
+    # Not fatal. The separate binaries are the authoritative artefacts; the
+    # merged one is a convenience, and half a release is worse than a release
+    # without the convenience.
+    echo "-- no merged image: neither esptool.py nor esptool is on PATH" >&2
+elif [[ ! -f "${OUT}/${MERGE_APP}" || ! -f "${OUT}/${MERGE_BOOT}" || ! -f "${OUT}/${MERGE_PART}" ]]; then
+    echo "-- no merged image: the build did not produce all three parts" >&2
+else
+    MERGED="leekwallet-${BOARD}-${TAG#v}.bin"
+    echo "-- merging into ${MERGED} (${CHIP})"
+    if ! (cd "${OUT}" && "${ESPTOOL}" --chip "${CHIP}" merge_bin \
+            -o "${MERGED}" \
+            --flash_mode dio --flash_freq 80m --flash_size 16MB \
+            0x0 "${MERGE_BOOT}" \
+            0x8000 "${MERGE_PART}" \
+            0x10000 "${MERGE_APP}"); then
+        echo "release: merge_bin failed" >&2
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # The manifest. Written last, over the exact files that were copied.
 # ---------------------------------------------------------------------------
 (cd "${OUT}" && sha256sum -- *.bin > SHA256SUMS)
+
+# ---------------------------------------------------------------------------
+# The website's flasher manifest, as a fragment rather than a whole file.
+#
+# ../leekwalletwebsite carries assets/firmware/manifest.json with a "releases"
+# array; publishing a release should be a copy of these lines into it, not a
+# person retyping a 64-character hash. A hash transcribed by hand is a hash
+# that eventually disagrees with the file it names, and the flasher's whole
+# defence is that it re-checks the hash after downloading - a wrong one there
+# fails loudly on a good binary, which trains people to click past it.
+#
+# Emitted as a fragment because merging it is the website repository's
+# decision: this script must not write outside release/, and reaching into a
+# sibling checkout to edit JSON is exactly the kind of action that is
+# convenient once and unexplainable later.
+# ---------------------------------------------------------------------------
+if [[ -n "${MERGED}" ]]; then
+    MERGED_SHA=$(cd "${OUT}" && sha256sum "${MERGED}" | cut -d' ' -f1)
+    MERGED_SIZE=$(wc -c < "${OUT}/${MERGED}" | tr -d ' ')
+    # Shaped as the whole manifest, with a one-element "releases" array, rather
+    # than as a bare object: it is the shape the website file already has, so
+    # merging is inserting one array element into another array of the same
+    # kind, and a maintainer can also drop this file in unchanged for a
+    # single-board release without editing its structure.
+    cat > "${OUT}/manifest-fragment.json" <<EOF
+{
+  "releases": [
+    {
+      "id": "${BOARD}-${TAG#v}",
+      "board": "${BOARD}",
+      "version": "${TAG#v}",
+      "file": "${MERGED}",
+      "sha256": "${MERGED_SHA}",
+      "size": ${MERGED_SIZE}
+    }
+  ]
+}
+EOF
+    echo "-- manifest-fragment.json (paste into the website's releases[])"
+fi
 
 {
     echo "tag:        ${TAG}"
