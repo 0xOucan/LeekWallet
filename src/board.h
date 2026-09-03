@@ -37,13 +37,29 @@
 #define BOARD_NAME              "Firefly Pixie"
 #define BOARD_MODEL             "LeekWallet-Pixie"
 
-/* Buttons. Firefly's meanings map onto this project's without a compromise:
-   North/South/Cancel/OK against UP/DOWN/CANCEL/ACCEPT. Active low with
-   internal pull-ups, same as the reference board. */
-#define PIN_BUTTON_UP           GPIO_NUM_3    /* Firefly "Button 3", North */
-#define PIN_BUTTON_DOWN         GPIO_NUM_2    /* Firefly "Button 4", South */
-#define PIN_BUTTON_CANCEL       GPIO_NUM_10   /* Firefly "Button 1", Cancel */
-#define PIN_BUTTON_ACCEPT       GPIO_NUM_8    /* Firefly "Button 2", OK */
+/*
+ * Buttons, in PHYSICAL order — SW1..SW4 left to right — not in Firefly's
+ * semantic order.
+ *
+ * Firefly's own config assigns meanings to its four keys: Button 1 is Cancel,
+ * Button 2 is OK, Button 3 North and Button 4 South. Mapping those meanings
+ * straight through looked like the respectful thing to do and was wrong in
+ * use: it puts Up and Down on the third and fourth keys, so the same gesture
+ * is in a different place depending on which board you picked up. Reported
+ * from a Pixie after the first wallet was created on one.
+ *
+ * The reference board is UP, DOWN, BACK, OK across the row, and that is what a
+ * user's hand learns. The Pixie matches it. Firefly's labels are theirs and
+ * still correct for their firmware; this is a different application on the same
+ * hardware, and consistency between OUR two boards is worth more than agreement
+ * with somebody else's key names.
+ *
+ * Active low with internal pull-ups, same as the reference board.
+ */
+#define PIN_BUTTON_UP           GPIO_NUM_10   /* SW1 — Firefly calls it Button 1 */
+#define PIN_BUTTON_DOWN         GPIO_NUM_8    /* SW2 — Firefly's Button 2 */
+#define PIN_BUTTON_CANCEL       GPIO_NUM_3    /* SW3 — Firefly's Button 3 */
+#define PIN_BUTTON_ACCEPT       GPIO_NUM_2    /* SW4 — Firefly's Button 4 */
 
 /* Display: ST7789 on SPI2. CS is tied to ground from rev.3 onward, which is
    why the bus variant without it is the correct one. */
