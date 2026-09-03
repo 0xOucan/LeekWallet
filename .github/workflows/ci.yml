@@ -13,16 +13,48 @@ on:
   pull_request:
 
 jobs:
+  # The three-OS matrix exists because the companion is published for three
+  # operating systems, and "it builds on Linux" is not evidence about the other
+  # two. It is not evidence about devices either: no runner has a board or a
+  # Bluetooth radio, so USB enumeration, pairing and every signing flow stay
+  # unverified on Windows and macOS until a person with that OS and a board
+  # runs them. docs/RELEASE-0.1.md says so per platform, and the release notes
+  # repeat it rather than letting a green matrix imply otherwise.
+  #
+  # The host C suites are matrixed too, not only the TypeScript: `check.sh app`
+  # regenerates the conformance vectors by compiling and running the C, so the
+  # app leg needs a working compiler on every OS anyway. Matrixing the suites
+  # as well costs one job and tells us which half broke.
   sim:
-    name: Host suites
-    runs-on: ubuntu-latest
+    name: Host suites (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One OS failing must not cancel the other two: which platforms broke is
+      # the entire information this matrix exists to produce.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - run: ./scripts/check.sh sim
+      # The Windows image ships gcc (mingw-w64) but not GNU make, and the sim
+      # harness is a Makefile. Installed rather than worked around, because a
+      # hand-rolled compile command here would be a second definition of how
+      # the suites are built.
+      - if: runner.os == 'Windows'
+        run: choco install make --no-progress -y
+      # The scripts are bash; the Windows runner defaults to pwsh, which would
+      # not run them. Git Bash is on the image. This combination has never been
+      # exercised - see the note at the bottom of docs/RELEASE.md.
+      - shell: bash
+        run: ./scripts/check.sh sim
 
   app:
-    name: App
-    runs-on: ubuntu-latest
+    name: App (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -35,9 +67,24 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: app/pnpm-lock.yaml
+      - if: runner.os == 'Windows'
+        run: choco install make --no-progress -y
       - run: pnpm --dir app install --frozen-lockfile
-      - run: ./scripts/check.sh app
+      # `check.sh app` first regenerates the conformance vectors from the C
+      # source, so this stage needs a compiler as well as Node - that is why
+      # the make install above is not only in the sim job.
+      - shell: bash
+        run: ./scripts/check.sh app
 
+  # Firmware stays Linux-only on purpose. Both targets cross-compile, so a
+  # Windows and a macOS runner would each spend ten minutes downloading the
+  # same toolchain to answer a question Linux has already answered.
+  #
+  # Both targets: `check.sh firmware` builds esp32s3 and pixie. The C3 image is
+  # built on every commit whether or not it ships, because a second target that
+  # is only built at release time is a second target that is broken at release
+  # time - and it lives in check.sh rather than as an extra step here so that a
+  # developer running check.sh locally learns the same thing CI does.
   firmware:
     name: Firmware build
     runs-on: ubuntu-latest

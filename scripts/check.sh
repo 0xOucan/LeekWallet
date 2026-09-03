@@ -9,7 +9,7 @@
 #   ./scripts/check.sh            everything
 #   ./scripts/check.sh sim        just the C suites
 #   ./scripts/check.sh app        just the TypeScript
-#   ./scripts/check.sh firmware   just the ESP-IDF build
+#   ./scripts/check.sh firmware   just the ESP-IDF builds, both boards
 #   ./scripts/check.sh repro      byte-for-byte reproducibility, firmware + app (slow, opt-in)
 #   ./scripts/check.sh rpc        are the registry's RPC endpoints alive (needs network)
 #
@@ -76,9 +76,20 @@ fi
 
 # Last because it is slow and needs the ESP-IDF toolchain. Note this only proves
 # the firmware compiles; whether it behaves is what the host suites are for.
+# Two targets, both built. The Pixie (ESP32-C3) is experimental and may not
+# ship in a given release, but a target that is only built when a tag is cut is
+# a target that is discovered broken while cutting the tag. Building it here
+# rather than only in CI keeps this script and .github/workflows/ci.yml
+# answering the same question.
+#
+# One visible side effect: `dependencies.lock` is tracked and records the
+# target of whichever environment was built last, so after this stage it says
+# esp32c3 and shows up as a modified file. It is a build artefact of the second
+# build, not a change; `git checkout -- dependencies.lock` puts it back.
 if [[ "$WHAT" == "all" || "$WHAT" == "firmware" ]]; then
     if command -v pio >/dev/null 2>&1; then
-        run "firmware build" pio run -e esp32s3
+        run "firmware build (esp32s3)" pio run -e esp32s3
+        run "firmware build (pixie)" pio run -e pixie
     else
         printf '\n\033[33m== firmware: skipped, pio not installed\033[0m\n'
     fi

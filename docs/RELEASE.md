@@ -210,8 +210,38 @@ definitions of "the key is safe to use" would drift.
 | `*-signed.bin` (secure env only) | the same, with secure boot v2 signatures |
 | `SHA256SUMS` | hashes of every `.bin` above |
 | `SHA256SUMS.asc` | detached GPG signature over `SHA256SUMS`, made by hand |
+| `leekwallet-<board>-<version>.bin` | the same three, merged into one image flashed at offset `0x0` |
+| `manifest-fragment.json` | the entry the website's flasher manifest expects, hash included |
 | `BUILDINFO` | tag, commit, environment, platform pin, rebuild instructions |
 | `secure_boot_signing_key.pub` + its digest | the *public* half only (secure releases) |
+
+The **merged image** is a repackaging and not a fourth artefact to be trusted
+on its own: `esptool.py merge_bin` pads the three binaries into their flash
+offsets and adds nothing else, so it is reproducible for the same reason they
+are, and it is listed in `SHA256SUMS` beside them so a verifier can check
+either form. It exists because the three parts go to three different offsets
+and a user who transposes two of them gets a board that no longer boots and no
+error message saying why. The web flasher writes one file for that reason.
+
+The **manifest fragment** is emitted so that publishing the website is a copy
+rather than a transcription. `../leekwalletwebsite/assets/firmware/manifest.json`
+carries a `releases` array; the fragment is written as a whole manifest holding
+one element of it, so merging is inserting an array element rather than
+reshaping anything:
+
+```json
+{"releases": [{"id": "s3-0.1.0", "board": "s3", "version": "0.1.0",
+               "file": "leekwallet-s3-0.1.0.bin", "sha256": "...", "size": 1234}]}
+```
+
+It is written into the release output directory and merged, by hand, in the
+website repository —
+`release.sh` deliberately never writes outside `release/`, because a script
+that edits a sibling checkout is convenient once and inexplicable later. The
+reason it is generated at all is the hash: the flasher re-checks the SHA-256
+after downloading, so a digit mistyped into the manifest fails loudly on a
+perfectly good binary, which is precisely how users learn to click past
+warnings.
 
 Sign the manifest, not each binary. `SHA256SUMS` covers the binaries and the
 signature covers `SHA256SUMS`, so one signature is enough and there is one
@@ -278,6 +308,145 @@ picture:
   board, so a *future* batch can move to a new key — but boards already burned
   cannot revoke the old one, and pretending otherwise would be the dishonest
   version of this paragraph.
+
+---
+
+## Keys, and where they are not
+
+Four different keys could plausibly touch a release. This project holds two of
+them, deliberately does not hold the other two, and the distinctions matter
+more than the mechanics.
+
+| Key | Held? | Signs | Says |
+|---|---|---|---|
+| Secure boot (RSA-3072) | offline, once burned | firmware images | which firmware a *board* will boot |
+| GPG release key | maintainer, off build machines | `SHA256SUMS` | who published a file |
+| Android release keystore | maintainer + one CI secret | the APK | this update came from the same author as the last one |
+| macOS / Windows code-signing | **no** | — | an identity paid a certificate authority |
+
+Nothing in this repository generates any of them, and no script or workflow
+prints, exports or copies key material. The only values that cross into
+automation are a GPG key *id*, which is public by construction, and an Android
+keystore that a human created elsewhere and stored as an encrypted secret.
+
+### The Android release keystore
+
+Android refuses to install an unsigned APK, and it refuses to install an update
+signed by a different key than the one already on the phone. That second rule
+is the one that makes the keystore load-bearing: **lose it and existing users
+cannot update.** They must uninstall — which deletes the app's data — and
+install a new package under a new signing identity, which is indistinguishable
+from an attacker's package as far as the phone is concerned. Treat it with the
+care the secure boot key gets, minus the eFuse finality.
+
+Creating it is a human act performed once, off any build machine, and this
+document deliberately does not do it for you:
+
+```bash
+keytool -genkeypair -v -keystore leekwallet-release.keystore \
+        -alias leekwallet -keyalg RSA -keysize 4096 -validity 10000
+```
+
+Then, and only then, put it where CI can read it:
+
+```bash
+base64 -w0 leekwallet-release.keystore    # paste into the secret, then clear the terminal
+```
+
+Four repository secrets, under Settings → Secrets and variables → Actions:
+
+| Secret | Contents |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | the base64 of the keystore file |
+| `ANDROID_KEYSTORE_PASSWORD` | the store password |
+| `ANDROID_KEY_ALIAS` | `leekwallet`, or whatever alias was used |
+| `ANDROID_KEY_PASSWORD` | the key password |
+
+The signing configuration itself lives in `app/src-tauri/gen/android`, which is
+**generated and not tracked** — `tauri android init` writes it, and it is
+regenerated on every release run for the reason app/ANDROID.md gives: a
+committed copy becomes the truth and silently ignores `tauri.conf.json`. A
+generated tree cannot carry a hand-made signing block, so
+`scripts/android-release-signing.sh` re-applies one: it writes
+`keystore.properties` from four environment variables and adds a `release`
+signingConfig to the generated `build.gradle.kts`, unless the template already
+has one. It never creates a keystore and never prints one.
+
+That the build files *say* "signed" is not the claim worth making, so the
+workflow ends the job with `apksigner verify --print-certs` on the finished
+APK. An APK that was not signed installs nowhere, and learning that here is
+much cheaper than learning it from the first user who tries. The certificate
+digest it prints is public by construction, and is the value to compare across
+releases to see that the signing identity has not changed.
+
+`.github/workflows/release.yml` decodes the keystore into `$RUNNER_TEMP`,
+never into the workspace — a keystore inside the checkout is one `git add -A`
+away from being in the repository forever — and deletes it in an `if: always()`
+step so a failed build does not leave it on a runner's disk. If the secret is
+absent the Android job **fails** rather than producing an unsigned APK, because
+an unsigned APK in a release is a download that cannot be installed and a user
+who meets one concludes the project is broken.
+
+Keep the original offline. A GitHub secret is a copy that GitHub can read, not
+a backup: it is write-only through the UI, and a repository that is deleted or
+transferred takes it with it.
+
+**The repository refuses to track key material by filename as well as by
+discipline.** `.gitignore` carries `*.pem`, `*.keystore`, `*.jks` and `*.p12`.
+That is the cheap half and it is worth saying so: ignoring a file only stops
+the accident, and `preflight-secure.sh` treats a key git is *already tracking*
+as compromised rather than merely ignored. That is the check that counts, and
+a pattern list is not a substitute for it.
+
+### GPG signing of `SHA256SUMS`
+
+Covered above under "Cutting a release": `LEEK_SIGNING_KEY=<key-id>` makes
+`scripts/release.sh` sign the manifest with `--local-user` and verify what it
+wrote before reporting success. It is opt-in because a script that signs by
+default signs a build nobody has read yet.
+
+The release workflow deliberately does **not** sign. Putting this key in a
+repository secret would place it on every runner the workflow ever schedules,
+which is the opposite of the arrangement the rest of this section describes.
+CI publishes a *draft* release; the maintainer downloads `SHA256SUMS`, checks
+it against a local build, signs it, and uploads `SHA256SUMS.asc` before making
+the release public. That is slower on purpose — it is the step where a human
+looks at what is about to be published.
+
+### macOS and Windows code signing: not done, and why
+
+The `.dmg` and the `.msi` are unsigned, and will stay that way for now. Apple
+notarisation requires a Developer account at $99/year; an EV code-signing
+certificate for Windows runs into several hundred dollars a year and is tied to
+a legal identity. For a project that has not funded a security audit, neither is
+a good use of the first money.
+
+This is a trade, not an oversight, so be precise about what is lost. A code
+signature attests that a named identity paid a certificate authority and
+published the file. It says nothing about what the file does. What replaces it
+here is a stronger claim about the code and a weaker one about the author:
+**reproducible builds plus published checksums**, so that any reader can rebuild
+the tag and confirm the binary came from the source they can read. See
+"Verifying a release" below. A user who wants to know *what they are running*
+gets a better answer here than a signature would give them; a user who wants to
+know *who wrote it* gets a worse one.
+
+The visible cost is a scary dialog, and users deserve to be told about it in
+advance rather than meeting it alone:
+
+- **macOS** — Gatekeeper reports the app "cannot be opened because the
+  developer cannot be verified". Right-click (or Control-click) the app and
+  choose **Open**, then **Open** again in the dialog; the choice is remembered.
+  Equivalently, `xattr -dr com.apple.quarantine /Applications/LeekWallet.app`.
+- **Windows** — SmartScreen shows "Windows protected your PC". Click **More
+  info**, then **Run anyway**.
+
+Both of those are, in the abstract, instructions for how to ignore a security
+warning, which is an uncomfortable thing to publish for a wallet. That is why
+they appear next to the checksum commands and not on their own: the warning is
+telling the truth — nobody has vouched for this binary's *author* — and the
+answer is to verify the *binary*, which is a check the reader can actually
+perform.
 
 ---
 
@@ -430,7 +599,26 @@ more than once — see the header of `scripts/preflight-secure.sh`.
 
 ## CI
 
-`.github/workflows/ci.yml` has two reproducibility jobs — `repro` for the
+`.github/workflows/ci.yml` runs the host suites and the app checks on
+`ubuntu-latest`, `windows-latest` and `macos-latest`, because the companion is
+published for three operating systems and "it builds on Linux" is not evidence
+about the other two. It is not evidence about devices either: no runner has a
+board or a Bluetooth radio, so USB enumeration, pairing and every signing flow
+stay unverified on Windows and macOS until a person with that OS and a board
+runs them. [RELEASE-0.1.md](RELEASE-0.1.md) carries that per-platform status,
+and the release notes repeat it rather than letting a green matrix imply
+otherwise.
+
+The firmware job stays Linux-only — both targets cross-compile, so a second and
+third runner would download the same toolchain to answer a question already
+answered — and it builds **both** of them: `./scripts/check.sh firmware` now
+runs `esp32s3` and `pixie`. The C3 image is built on every commit whether or
+not it ships, because a target that is only built when a tag is cut is a target
+that is discovered broken while cutting the tag. It lives in `check.sh` rather
+than as an extra workflow step so that a developer running the script locally
+learns exactly what CI learns.
+
+`.github/workflows/ci.yml` also has two reproducibility jobs — `repro` for the
 firmware and `repro-app` for the companion — both running on every push.
 They are separate because they need entirely different toolchains, and because
 two red crosses that name which half broke are worth more than one that does
@@ -444,7 +632,17 @@ as its own job rather than inside `check.sh` so that the fast host suites still
 report in seconds, and so that `./scripts/check.sh` stays the thing a developer
 runs before a commit rather than a five-minute wait.
 
-**This workflow has never executed.** The repository has no remote, so it is
+`.github/workflows/release.yml` is the other half: a tag matching `v*` builds
+the firmware for both boards, merges each into a single flashable image, builds
+the companion on all three desktop platforms, builds the Android APK, hashes
+everything into one `SHA256SUMS` and attaches the lot to a **draft** release.
+Draft rather than published, because two things still have to be done by a
+person: the release notes must carry the per-platform test status from
+[RELEASE-0.1.md](RELEASE-0.1.md), and `SHA256SUMS` still needs a signature made
+off the build machine.
+
+**Neither workflow has ever executed.** The repository has no remote, so they are
 written to be correct on inspection rather than iterated against a runner.
-Expect the first real run to need adjusting, and do not treat a green badge as
+The YAML parses and the shell in them is syntax-checked; nothing beyond that
+has been demonstrated. Expect the first real run to need adjusting, and do not treat a green badge as
 having been demonstrated until one has actually gone green.
