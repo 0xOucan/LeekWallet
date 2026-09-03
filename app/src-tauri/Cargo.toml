@@ -21,6 +21,12 @@ tauri-build = { version = "2", features = [] }
 default = ["rpc-proxy"]
 rpc-proxy = ["dep:reqwest", "dep:rustls", "dep:webpki-roots"]
 
+# The USB firmware flasher (T65). Behind a feature because espflash pulls in a
+# sizeable dependency tree for something most builds do not need, and because a
+# build that CANNOT flash is a meaningful thing to ship: until secure boot is
+# burned, a flasher is a one-click way to install firmware that reads the PIN.
+flasher = ["dep:espflash", "dep:serialport"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
@@ -30,6 +36,20 @@ serde_json = "1"
 # Already in the tree via tauri; named here because src/rpc.rs uses it
 # directly and a dependency you rely on should be one you declared.
 url = "2"
+
+# The image digest shown before flashing and re-checked before writing
+# (src/flash.rs).
+#
+# Unconditional rather than behind the `flasher` feature, because the *checking*
+# is not the part that needs a serial port: a build with no flasher can still
+# tell a user what they have downloaded, and the refusal logic is the part worth
+# having tests for on every platform.
+#
+# Both are already in the tree via other dependencies; named here because
+# src/flash.rs calls them directly and a dependency you rely on should be one
+# you declared.
+sha2 = "0.10"
+hex = "0.4"
 
 # The proxy's HTTP client. Default features are off to keep http2 (and its own
 # C-ish dependency tail) out of a client that only ever makes one POST at a
@@ -76,6 +96,12 @@ tokio = { version = "1", features = ["macros", "rt"] }
 # on a phone — so the platform difference is a feature flag here rather than a
 # transport that is simply missing there.
 [target.'cfg(not(target_os = "android"))'.dependencies]
+# espflash as a library, not the CLI: `default-features = false` drops clap,
+# indicatif and the rest of the terminal front end, leaving the esptool
+# protocol. Desktop only for now -- Android needs the USB Host API and the
+# second serial backend transport-serial already models.
+espflash = { version = "4.5", default-features = false, features = ["serialport"], optional = true }
+serialport = { version = "4", optional = true }
 leek-transport-serial = { path = "../transport-serial" }
 leek-transport-ble = { path = "../transport-ble" }
 tokio = { version = "1", features = ["sync", "rt"] }

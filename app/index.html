@@ -241,6 +241,56 @@
           </section>
         </section>
 
+        <!-- Firmware flashing (T65). Present but inert in shipped builds: the
+             backend is compiled without the `flasher` feature, so
+             flash_capability() reports false and the button stays disabled with
+             the reason on screen. That is deliberate rather than unfinished --
+             until secure boot is burned, a device runs whatever it is given, so
+             a one-click flasher in a wallet is a way to install firmware that
+             reads the PIN. See app/src/flasher.ts and src-tauri/src/flash.rs. -->
+        <div class="panel" id="flashpanel" hidden>
+          <h2>Flash firmware</h2>
+          <!-- Two dangers, said separately because they have different
+               remedies: the write destroys the seed on the device (write the
+               phrase down first), and an unlocked device runs whatever it is
+               given (nothing fixes that until secure boot is burned, T11). Both
+               sentences come from the backend so the capability and its warning
+               cannot drift apart. -->
+          <p class="notice notice--danger" id="flasherase"></p>
+          <p class="notice notice--danger" id="flashwarning" data-secure="false"></p>
+          <label class="field">
+            <span>Device</span>
+            <select id="flashport" class="addr"></select>
+          </label>
+          <div class="row">
+            <button id="flashconnect" type="button" class="secondary">Connect</button>
+            <span class="muted" id="flashdevice">Not connected.</span>
+          </div>
+          <label class="field">
+            <span>Firmware image (merged .bin, written at offset 0x0)</span>
+            <input id="flashfile" type="file" accept=".bin,application/octet-stream" />
+          </label>
+          <p class="muted addr" id="flashdigest"></p>
+          <label class="field">
+            <span>Expected SHA-256 (paste it from the release notes)</span>
+            <input id="flashexpected" type="text" class="addr" spellcheck="false"
+                   autocomplete="off" placeholder="64 hex characters" />
+          </label>
+          <label class="row">
+            <input id="flashack" type="checkbox" />
+            <span class="muted">
+              I have written down my recovery phrase. I understand that flashing
+              erases this device including every seed stored on it, and that the
+              firmware I install will have full access to my PIN and my seed.
+            </span>
+          </label>
+          <div class="row">
+            <button id="flashgo" type="button" class="secondary" disabled>Flash</button>
+          </div>
+          <progress id="flashbar" value="0" max="1" hidden></progress>
+          <p class="muted" id="flashstatus" aria-live="polite"></p>
+        </div>
+
         <section class="panel" id="signpanel" aria-labelledby="signhead" hidden>
           <h2 id="signhead">Sign a transaction</h2>
           <p>

@@ -38,6 +38,21 @@ mod serial;
 #[cfg_attr(not(feature = "rpc-proxy"), allow(dead_code))]
 mod rpc;
 
+/* Firmware flashing (T65). Compiled unconditionally so the capability query and
+ * the image checks -- the reviewable part, and the part with tests -- always
+ * exist; only the espflash-backed half is behind the `flasher` feature. Same
+ * shape as rpc.rs and for the same reason.
+ *
+ * The allow follows from that split: without the feature, the digest and chip
+ * checks are reached only from the tests, so the compiler is right that nothing
+ * calls them and wrong that they are dead. It silences "you have not called
+ * this yet", not a real absence. */
+#[cfg_attr(
+    not(all(feature = "flasher", not(target_os = "android"))),
+    allow(dead_code)
+)]
+mod flash;
+
 /// Which transports this build actually has behind it.
 ///
 /// A real capability query, replacing the frontend's old habit of sniffing the
@@ -169,7 +184,11 @@ pub fn run() {
             ble::ble_disconnect,
             ble::ble_request,
             rpc::rpc_proxy_available,
-            rpc::rpc_call
+            rpc::rpc_call,
+            flash::flash_capability,
+            flash::flash_ports,
+            flash::flash_detect,
+            flash::flash_write
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the LeekWallet companion");
