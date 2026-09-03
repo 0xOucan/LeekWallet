@@ -91,6 +91,36 @@ attests to an identity and not to the code.
 `docs/RELEASE.md` already covers the part that matters more: the builds are
 reproducible, so a reader can rebuild and compare rather than trust.
 
+## A merged image at 0x0 destroys the wallet
+
+Found the hard way, on a board holding a real wallet.
+
+`nvs` sits at **0x9000**, before the app at 0x10000 — deliberately, because it
+means `ota_0`/`ota_1` can be added later without moving the vault. But
+`esptool merge_bin` fills the gap between the partition table and the app with
+**0xFF**, so a merged image is not three regions with holes between them: it is
+one continuous span from 0x0 that happens to contain an erased NVS. Writing it
+at 0x0 erases the vault — mnemonics, IVs, KDF salt, PIN counter.
+
+Verified rather than reasoned: bytes 0x9000..0x9010 of a merged image are
+`ffffffff…`, and a board flashed that way came up with no wallets while a board
+flashed with three separate writes at 0x0/0x8000/0x10000 kept `password_set=1`.
+
+**So the offset is not a detail, it is the whole question:**
+
+| Write | Offset | Effect |
+|---|---|---|
+| Merged image | `0x0` | **Erases every wallet.** Correct for a new or recovered board, and only then |
+| Application only | `0x10000` | Updates the firmware, vault untouched |
+
+Both flashers must therefore ask which of those two things the user is doing,
+and must not treat "flash" as one operation. A first install and an update
+differ by whether the person loses their money, and that cannot be inferred from
+the file.
+
+The releases publish both — the merged image for provisioning, the application
+image for updating — and the checksums cover each separately.
+
 ## Flashing from the companion — the actual answer
 
 Asked directly: **can the desktop or Android app flash a board over USB or
