@@ -273,6 +273,42 @@ You want to see `OK` beside the file you downloaded. If you see `FAILED`, or the
 Windows hash does not match, **delete the file and download it again** — and if
 it fails a second time, open an issue rather than running it.
 
+### Who signed it
+
+The hash tells you the file arrived intact. The signature tells you it came from
+us. Two keys are used, and their fingerprints are published here so they can be
+compared against a source that is not the download itself:
+
+| What | Fingerprint |
+|---|---|
+| **GPG key** over `SHA256SUMS` | `2E7D83AF39ACD8A9493A2372E5D8C3021D03039E` |
+| **Android APK** signing certificate (SHA-256) | `73:31:6B:9C:C1:0C:D0:55:2D:EF:1F:B6:FF:1B:6B:2E:65:7D:C9:96:A1:89:79:42:9D:34:56:9E:58:CA:39:7B` |
+
+```bash
+gpg --import leekwallet-signing-key.asc          # in this repository
+gpg --verify SHA256SUMS.asc SHA256SUMS
+```
+
+`Good signature` is what you want. A line saying the key *is not certified with a
+trusted signature* is expected and is not a failure — it only means you have not
+told GPG you trust the key, which is your decision to make, not ours.
+
+For the Android APK:
+
+```bash
+apksigner verify --print-certs --verbose leekwallet.apk
+```
+
+The printed SHA-256 must equal the row above. **A different fingerprint on a
+later release is not an upgrade** — it is a different author, or a compromise.
+Do not install it; open an issue and ask.
+
+A caution about what this proves. The public key sits in the same repository as
+the code it signs, so on its own it proves nothing against someone who controls
+the repository. It becomes real evidence when you compare the fingerprint to
+somewhere with a separate history — the release announcement, or a maintainer's
+public account. That is worth doing before you put anything of value behind it.
+
 **Be clear about what this proves.** It proves the bytes you have are the bytes
 that were published. It does *not* prove those bytes are trustworthy: the hash
 list sits on the same page as the download, so anyone who could replace one could

@@ -63,6 +63,13 @@ keytool -list -v -keystore ~/keys/leekwallet-release.keystore -alias leekwallet 
 Put that SHA-256 fingerprint in the README. It is public, and it is what lets
 somebody check that release 0.4 came from whoever made release 0.1.
 
+The key in use for this project:
+
+```
+APK signing certificate (SHA-256)
+73:31:6B:9C:C1:0C:D0:55:2D:EF:1F:B6:FF:1B:6B:2E:65:7D:C9:96:A1:89:79:42:9D:34:56:9E:58:CA:39:7B
+```
+
 ### 1.2 Back it up, now, before you use it
 
 Losing this key means every existing install must be uninstalled before anyone
@@ -83,7 +90,14 @@ after every `init`. That is what `scripts/android-release-signing.sh` is for —
 it writes `keystore.properties` and adds a `release` signingConfig, and it
 refuses to create or print a keystore.
 
+**Run these from the repository root.** `pnpm --dir app` resolves `app/`
+relative to the current directory, and `./scripts/...` likewise — running them
+from the directory where you keep your keys, or from inside `gen/android`,
+fails with `ENOENT` or `ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND` rather than
+anything that names the real problem.
+
 ```bash
+cd /path/to/leekwallet                 # the repository root, not ~/keys
 pnpm --dir app tauri android init      # regenerates gen/android
 
 export ANDROID_KEYSTORE_PATH=~/keys/leekwallet-release.keystore
@@ -156,7 +170,21 @@ gpg --list-secret-keys --keyid-format=long
 ```
 
 The **full 40-character fingerprint** is what you publish. Short key ids are
-forgeable and should not be used to identify a key.
+forgeable and should not be used to identify a key — and note the trap: the
+placeholder `A1B2C3D4E5F6A7B8` in an example is not your key. `gpg
+--export-secret-keys` against a key id that does not exist prints a warning and
+exports *nothing*, but the shell has already created the redirect target, so
+you get an empty file that encrypts happily into a plausible-looking 85-byte
+"backup". Always check the size of a backup before you trust it; a real armored
+ed25519 secret key is several hundred bytes.
+
+The key in use for this project:
+
+```
+GPG signing key (fingerprint)
+2E7D83AF39ACD8A9493A2372E5D8C3021D03039E
+0xoucan (LeekWalletDIY) <0xoucanxxx@gmail.com>
+```
 
 ### 2.2 Back it up and make a revocation certificate
 
