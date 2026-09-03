@@ -168,7 +168,25 @@ async function refresh(): Promise<void> {
  * reported: closing a picker is a decision, not an error, and a red banner
  * after it would be the extension arguing with the user.
  */
-async function grantPort(): Promise<void> {
+/*
+ * Ask with no filter at all.
+ *
+ * A filtered chooser that comes back empty and an unfiltered one that comes
+ * back empty mean completely different things — the first says the four vendor
+ * IDs are wrong for this board, the second says the browser cannot see any
+ * serial device at all and the fault is below us. There is no way to tell them
+ * apart from the outside, because both look like a dialog that offered nothing.
+ *
+ * So it is offered as its own action rather than inferred. It is also
+ * genuinely useful: a board behind a bridge nobody listed still deserves to be
+ * pickable, and the handshake is what decides whether the thing on the other
+ * end is a wallet.
+ */
+async function grantAnyPort(): Promise<void> {
+  await grantPort({ unfiltered: true });
+}
+
+async function grantPort(opts: { unfiltered?: boolean } = {}): Promise<void> {
   lastError = null;
 
   /* From the toolbar popup, hand the job to a window that will still exist
@@ -199,11 +217,20 @@ async function grantPort(): Promise<void> {
   note(`context: ${inOwnWindow ? "window (chooser allowed)" : "toolbar popup"}`);
 
   if (!inOwnWindow) {
-    await chrome.windows.create({
+    /*
+     * A tab, not a popup window.
+     *
+     * Chrome anchors the serial chooser to a tab. A `type: "popup"` window has
+     * none, so requestPort() there resolves as NotFoundError with no dialog
+     * ever drawn -- indistinguishable from a user closing an empty chooser, and
+     * it cost several rounds to tell the two apart. The website's own flasher
+     * working from an ordinary page is what pointed at the difference.
+     *
+     * The approval flow keeps its popup window: it shows a passkey and takes a
+     * click, and never opens a chooser.
+     */
+    await chrome.tabs.create({
       url: chrome.runtime.getURL("popup.html?view=connect"),
-      type: "popup",
-      width: 400,
-      height: 620,
     });
     /* Closing explicitly rather than letting focus do it: the window opening
        is the answer to the click, and leaving both on screen invites someone
@@ -212,9 +239,11 @@ async function grantPort(): Promise<void> {
     return;
   }
 
-  note("calling requestPort()…");
+  note(`calling requestPort(${opts.unfiltered ? "no filter" : "filtered"})…`);
   try {
-    await navigator.serial.requestPort({ filters: DEVICE_FILTERS });
+    await navigator.serial.requestPort(
+      opts.unfiltered ? {} : { filters: DEVICE_FILTERS },
+    );
     note("a port was chosen");
   } catch (e) {
     /*
@@ -356,6 +385,7 @@ function connectionSection(s: WalletState): HTMLElement {
           ? button("Connect", () => void act("Connecting…", { pop: "connect" }), "primary")
           : button("Choose device…", () => void grantPort(), "primary"),
         s.portGranted && button("Choose a different device…", () => void grantPort(), "link"),
+        button("Show every serial device", () => void grantAnyPort(), "link"),
       ),
     );
     return box;
