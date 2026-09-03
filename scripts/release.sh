@@ -178,7 +178,7 @@ elif [[ -z "${ESPTOOL}" ]]; then
 elif [[ ! -f "${OUT}/${MERGE_APP}" || ! -f "${OUT}/${MERGE_BOOT}" || ! -f "${OUT}/${MERGE_PART}" ]]; then
     echo "-- no merged image: the build did not produce all three parts" >&2
 else
-    MERGED="leekwallet-${BOARD}-${TAG#v}.bin"
+    MERGED="leekwallet-${BOARD}-${TAG#v}-provision.bin"
     echo "-- merging into ${MERGED} (${CHIP})"
     if ! (cd "${OUT}" && "${ESPTOOL}" --chip "${CHIP}" merge_bin \
             -o "${MERGED}" \
@@ -219,20 +219,62 @@ if [[ -n "${MERGED}" ]]; then
     # merging is inserting one array element into another array of the same
     # kind, and a maintainer can also drop this file in unchanged for a
     # single-board release without editing its structure.
+    # -----------------------------------------------------------------------
+    # Two images per board, because flashing is two different operations.
+    #
+    # `nvs` sits at 0x9000, BEFORE the app at 0x10000, and merge_bin fills the
+    # gap between the partition table and the app with 0xFF. A merged image is
+    # therefore not three regions with holes between them: it is one continuous
+    # span from 0x0 that contains an erased NVS. Writing it at 0x0 destroys the
+    # vault -- mnemonics, IVs, KDF salt, PIN counter.
+    #
+    # Found by doing exactly that to a board holding a wallet. Verified rather
+    # than reasoned: bytes 0x9000..0x9010 of a merged image are 0xFF, and a
+    # board flashed that way came up with no wallets while one flashed with
+    # three separate writes kept its.
+    #
+    # So the release publishes both, and they are named for what they DO rather
+    # than for how they were built. `provision` is correct for a new or bricked
+    # board and only then; `update` is the application alone, and leaves a
+    # wallet where it is. A flasher that offers one button called "flash" is a
+    # flasher that eventually erases somebody's money.
+    # -----------------------------------------------------------------------
+    UPDATE="leekwallet-${BOARD}-${TAG#v}-update.bin"
+    cp "${OUT}/${MERGE_APP}" "${OUT}/${UPDATE}"
+    UPDATE_SHA=$(cd "${OUT}" && sha256sum "${UPDATE}" | cut -d' ' -f1)
+    UPDATE_SIZE=$(wc -c < "${OUT}/${UPDATE}" | tr -d ' ')
+    # Re-hash: SHA256SUMS was written before this file existed.
+    (cd "${OUT}" && sha256sum -- *.bin > SHA256SUMS)
+
     cat > "${OUT}/manifest-fragment.json" <<EOF
 {
   "releases": [
     {
-      "id": "${BOARD}-${TAG#v}",
+      "id": "${BOARD}-${TAG#v}-provision",
       "board": "${BOARD}",
       "version": "${TAG#v}",
+      "kind": "provision",
+      "offset": 0,
+      "wipesWallets": true,
       "file": "${MERGED}",
       "sha256": "${MERGED_SHA}",
       "size": ${MERGED_SIZE}
+    },
+    {
+      "id": "${BOARD}-${TAG#v}-update",
+      "board": "${BOARD}",
+      "version": "${TAG#v}",
+      "kind": "update",
+      "offset": 65536,
+      "wipesWallets": false,
+      "file": "${UPDATE}",
+      "sha256": "${UPDATE_SHA}",
+      "size": ${UPDATE_SIZE}
     }
   ]
 }
 EOF
+    echo "-- ${UPDATE} (application only, 0x10000, keeps the wallet)"
     echo "-- manifest-fragment.json (paste into the website's releases[])"
 fi
 

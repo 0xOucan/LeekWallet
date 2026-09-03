@@ -210,18 +210,32 @@ definitions of "the key is safe to use" would drift.
 | `*-signed.bin` (secure env only) | the same, with secure boot v2 signatures |
 | `SHA256SUMS` | hashes of every `.bin` above |
 | `SHA256SUMS.asc` | detached GPG signature over `SHA256SUMS`, made by hand |
-| `leekwallet-<board>-<version>.bin` | the same three, merged into one image flashed at offset `0x0` |
+| `leekwallet-<board>-<version>-provision.bin` | the same three merged into one image, written at `0x0` — **erases every wallet** |
+| `leekwallet-<board>-<version>-update.bin` | the application alone, written at `0x10000` — keeps the wallet |
 | `manifest-fragment.json` | the entry the website's flasher manifest expects, hash included |
 | `BUILDINFO` | tag, commit, environment, platform pin, rebuild instructions |
 | `secure_boot_signing_key.pub` + its digest | the *public* half only (secure releases) |
 
-The **merged image** is a repackaging and not a fourth artefact to be trusted
-on its own: `esptool.py merge_bin` pads the three binaries into their flash
-offsets and adds nothing else, so it is reproducible for the same reason they
-are, and it is listed in `SHA256SUMS` beside them so a verifier can check
-either form. It exists because the three parts go to three different offsets
-and a user who transposes two of them gets a board that no longer boots and no
-error message saying why. The web flasher writes one file for that reason.
+Both are repackagings rather than artefacts to be trusted on their own:
+`esptool.py merge_bin` pads the three binaries into their flash offsets and
+adds nothing else, and the update image is a byte-for-byte copy of
+`firmware.bin`. Both are reproducible for the same reason the parts are, and
+both are listed in `SHA256SUMS` beside them, so a verifier can check either
+form.
+
+**They are two operations, not two formats of one.** The vault lives in `nvs`
+at `0x9000`, which is *before* the application at `0x10000`, so the merged
+image spans it and the 0xFF padding erases it. Writing the provision image to
+a board that holds a seed destroys the seed — that is not a theoretical
+hazard, it happened to a development board and is written up in
+[RELEASE-0.1.md](RELEASE-0.1.md#a-merged-image-at-0x0-destroys-the-wallet).
+
+The merged image still exists because the three parts go to three different
+offsets and a user who transposes two of them gets a board that no longer
+boots and no message saying why. But no flasher may present "flash" as a
+single button: the website, the desktop companion and the Android companion
+each ask which of the two things the user is doing, and the Rust backend
+refuses a write that does not name an offset rather than defaulting to one.
 
 The **manifest fragment** is emitted so that publishing the website is a copy
 rather than a transcription. `../leekwalletwebsite/assets/firmware/manifest.json`

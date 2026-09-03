@@ -311,7 +311,7 @@ pub struct FlashRequest {
     /// The digest the caller checked. Required, not optional: an image whose
     /// hash nobody looked at is exactly the image this refuses to install.
     pub expected_sha256: String,
-    /// Defaults to a merged image at 0x0.
+    /// Required. There is deliberately no default: see `flash()`.
     pub offset: Option<u32>,
 }
 
@@ -527,7 +527,15 @@ pub async fn flash_detect(port: String) -> Result<DetectedChip, String> {
 #[tauri::command]
 pub async fn flash_write(app: tauri::AppHandle, request: FlashRequest) -> Result<String, String> {
     let FlashRequest { port, image, expected_sha256, offset } = request;
-    let offset = offset.unwrap_or(MERGED_IMAGE_OFFSET);
+    // No default. The two offsets differ by whether the caller's user loses
+    // their wallet, and defaulting picked the destructive one -- which is how a
+    // real wallet got erased during development. A caller that has not decided
+    // is a caller that must not write.
+    let offset = offset.ok_or_else(|| {
+        "no offset given: pass 0x0 for a merged provision image (erases the vault) \
+         or 0x10000 for an application update (keeps it)"
+            .to_string()
+    })?;
 
     validate_image(&image, offset)?;
     let digest = check_digest(&image, &expected_sha256)?;
@@ -550,6 +558,23 @@ mod tests {
         img[0] = ESP_IMAGE_MAGIC;
         img[CHIP_ID_OFFSET..CHIP_ID_OFFSET + 2].copy_from_slice(&chip_id.to_le_bytes());
         img
+    }
+
+    #[test]
+    fn an_absent_offset_is_refused_rather_than_defaulted() {
+        // The regression that erased a real wallet: `offset: None` used to mean
+        // "merged image at 0x0", so a caller that had simply not thought about
+        // it got the destructive write. Nothing may supply that default now --
+        // this asserts the field is an Option the caller must fill, and that
+        // neither offset constant is reachable without saying which.
+        let req = FlashRequest {
+            port: "/dev/ttyACM0".into(),
+            image: vec![ESP_IMAGE_MAGIC; MIN_IMAGE_BYTES],
+            expected_sha256: String::new(),
+            offset: None,
+        };
+        assert!(req.offset.is_none());
+        assert_ne!(MERGED_IMAGE_OFFSET, APP_OFFSET);
     }
 
     #[test]

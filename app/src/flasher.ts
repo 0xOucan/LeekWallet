@@ -2,8 +2,19 @@
  * The firmware flasher panel (T65).
  *
  * Deliberately hard to use by accident. Flashing installs the code that holds
- * the keys, and the image this writes is a merged one at offset 0, which
- * **erases the whole device including the vault**. So there are two different
+ * the keys. There are two ways to do it and they are not interchangeable:
+ *
+ * * **provision** — the merged image at offset 0. The vault lives in `nvs` at
+ *   0x9000, which is *before* the app at 0x10000, so a merged image spans it
+ *   and **erases every wallet**. Correct for a new or bricked board only.
+ * * **update** — the application alone at 0x10000. The vault is untouched.
+ *
+ * Both images begin with the same ESP-IDF magic byte, so the file cannot say
+ * which one it is; the user is asked, and the answer is sent explicitly rather
+ * than defaulted. Defaulting picked the destructive one, and did erase a real
+ * wallet during development.
+ *
+ * Within provisioning there are two further
  * dangers on this screen and they are stated separately, because they have
  * different remedies:
  *
@@ -68,7 +79,13 @@ export interface FlashBridge {
   capability(): Promise<FlashCapability>;
   ports(): Promise<FlashPort[]>;
   detect(port: string): Promise<DetectedChip>;
-  write(port: string, image: Uint8Array, expectedSha256: string): Promise<string>;
+  write(
+    port: string,
+    image: Uint8Array,
+    expectedSha256: string,
+    /** 0 for a merged provision image, 0x10000 for an application update. */
+    offset: number,
+  ): Promise<string>;
   onProgress(handler: (p: FlashProgress) => void): void;
   log(line: string): void;
 }
@@ -211,13 +228,13 @@ export function tauriFlashBridge(log: (line: string) => void): FlashBridge | nul
     capability: () => invoke<FlashCapability>("flash_capability"),
     ports: () => invoke<FlashPort[]>("flash_ports"),
     detect: (port) => invoke<DetectedChip>("flash_detect", { port }),
-    write: (port, image, expectedSha256) =>
+    write: (port, image, expectedSha256, offset) =>
       // Bytes, not a path: the only place a file is read is the file input
       // below, so this command cannot be aimed at an arbitrary path on disk.
       // The digest travels with them and the backend re-checks it over the
       // buffer it is actually about to write.
       invoke<string>("flash_write", {
-        request: { port, image: Array.from(image), expectedSha256 },
+        request: { port, image: Array.from(image), expectedSha256, offset },
       }),
     onProgress: (handler) => {
       const w = window as unknown as {
@@ -239,6 +256,41 @@ export function initFlasher(bridge: FlashBridge | null): void {
   const warning = $("flashwarning");
   const erase = $("flasherase");
   const ack = $("flashack") as HTMLInputElement;
+  const mode = $("flashmode") as HTMLSelectElement;
+  const ackText = $("flashacktext");
+  const fileLabel = $("flashfilelabel");
+
+  /** Offsets from partitions.csv: nvs 0x9000, phy_init 0xf000, app 0x10000. */
+  const PROVISION_OFFSET = 0x0;
+  const UPDATE_OFFSET = 0x10000;
+  const provisioning = () => mode.value === "provision";
+  const offsetForMode = () => (provisioning() ? PROVISION_OFFSET : UPDATE_OFFSET);
+
+  /* The acknowledgement is not boilerplate to click past — it is the sentence
+     that has to be true. So it says what THIS write does, and re-arms itself
+     when the mode changes: a box ticked against "keeps my wallet" is not
+     consent to erase one. */
+  const describeMode = (): void => {
+    if (provisioning()) {
+      fileLabel.textContent = "Firmware image (-provision.bin, written at 0x0)";
+      ackText.textContent =
+        "I have written down my recovery phrase. I understand that this erases " +
+        "the device including every seed stored on it, and that the firmware I " +
+        "install will have full access to my PIN and my seed.";
+    } else {
+      fileLabel.textContent = "Firmware image (-update.bin, written at 0x10000)";
+      ackText.textContent =
+        "I understand that the firmware I install will have full access to my " +
+        "PIN and my seed. My wallet stays on the device.";
+    }
+  };
+  mode.addEventListener("change", () => {
+    ack.checked = false;
+    describeMode();
+    erase.hidden = !provisioning();
+    refresh();
+  });
+  describeMode();
   const portSelect = $("flashport") as HTMLSelectElement;
   const file = $("flashfile") as HTMLInputElement;
   const digestOut = $("flashdigest");
@@ -352,7 +404,7 @@ export function initFlasher(bridge: FlashBridge | null): void {
     refresh();
     bridge.log(`flasher: writing ${image.length} bytes (${digest}) to ${portSelect.value}`);
     void bridge
-      .write(portSelect.value, image, digest)
+      .write(portSelect.value, image, digest, offsetForMode())
       .then(() => {
         status.textContent = describeProgress({
           stage: "done",
@@ -377,7 +429,11 @@ export function initFlasher(bridge: FlashBridge | null): void {
     .then(async (cap) => {
       capability = cap;
       warning.textContent = cap.warning;
+      /* Only where it is true. A standing "this erases your device" banner over
+         an update that does not erase anything is how a warning stops being
+         read by the time it matters. */
       erase.textContent = cap.erases;
+      erase.hidden = !provisioning();
       /* Never say "protected" unless the backend says so. Today it never does:
        * no fuse has been burned, and "unknown" must read the same as "not
        * protected" for as long as that is true. */

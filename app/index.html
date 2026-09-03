@@ -266,8 +266,19 @@
             <button id="flashconnect" type="button" class="secondary">Connect</button>
             <span class="muted" id="flashdevice">Not connected.</span>
           </div>
+          <!-- Two operations, not one. They differ by whether the person loses
+               their money, and that cannot be inferred from the file: both
+               images start with the same ESP-IDF magic byte. So it is asked,
+               and the backend refuses to guess. -->
           <label class="field">
-            <span>Firmware image (merged .bin, written at offset 0x0)</span>
+            <span>What are you doing?</span>
+            <select id="flashmode" class="addr">
+              <option value="update" selected>Updating firmware — keeps my wallet</option>
+              <option value="provision">Setting up a new or reset board — erases every wallet</option>
+            </select>
+          </label>
+          <label class="field">
+            <span id="flashfilelabel">Firmware image (-update.bin, written at 0x10000)</span>
             <input id="flashfile" type="file" accept=".bin,application/octet-stream" />
           </label>
           <p class="muted addr" id="flashdigest"></p>
@@ -278,11 +289,7 @@
           </label>
           <label class="row">
             <input id="flashack" type="checkbox" />
-            <span class="muted">
-              I have written down my recovery phrase. I understand that flashing
-              erases this device including every seed stored on it, and that the
-              firmware I install will have full access to my PIN and my seed.
-            </span>
+            <span class="muted" id="flashacktext"></span>
           </label>
           <div class="row">
             <button id="flashgo" type="button" class="secondary" disabled>Flash</button>
