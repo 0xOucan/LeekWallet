@@ -59,4 +59,23 @@ export function serialSupport(scope: {
  * the ESP32-S3 exposes. Both are shared with every other ESP32-S3 board in
  * existence, which is precisely why nothing downstream trusts them.
  */
-export const DEVICE_FILTERS = [{ usbVendorId: 0x303a }];
+/*
+ * Which USB vendors may be a LeekWallet.
+ *
+ * Espressif alone was the obvious answer and it was wrong on real hardware: an
+ * ESP32-S3 board plugged in and the chooser was empty, because only the boards
+ * with *native* USB enumerate as Espressif. The reference board routes its
+ * serial through a QinHeng CH343 and appears as 1a86:55d3, so a 0x303a filter
+ * hides the very device this extension was written for.
+ *
+ * The four here cover essentially every ESP32 board in circulation. They are a
+ * convenience, not a security boundary — a filter decides what a human is shown
+ * in a picker, and the device on the other end proves what it is through the
+ * handshake, which is where that question actually gets answered.
+ */
+export const DEVICE_FILTERS = [
+  { usbVendorId: 0x303a },  /* Espressif native USB-Serial-JTAG (Firefly Pixie) */
+  { usbVendorId: 0x1a86 },  /* QinHeng CH340/CH343 (the ESP32-S3 reference board) */
+  { usbVendorId: 0x10c4 },  /* Silicon Labs CP210x */
+  { usbVendorId: 0x0403 },  /* FTDI */
+];
