@@ -180,3 +180,8 @@ label.check {
 }
 
 .notice.bad { border-left-color: var(--danger); }
+
+/* The connect trace is written one step per line and is worth reading as
+   such: without this the whole thing collapses into a paragraph and the step
+   that failed stops being obvious. Monospace because it is machine output. */
+.notice p { white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; }

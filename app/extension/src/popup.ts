@@ -173,6 +173,31 @@ async function grantPort(): Promise<void> {
 
   /* From the toolbar popup, hand the job to a window that will still exist
      when the chooser closes. See `inOwnWindow`. */
+  /*
+   * A visible trace, because the failures here are all silent.
+   *
+   * Every way this can go wrong -- no API, a chooser that opens empty, a
+   * chooser that never opens, a click that arrived without user activation --
+   * produces the same nothing on screen, and asking someone to open devtools on
+   * the right one of four extension contexts has already cost two rounds. So
+   * the window says what it did, in order, where the person clicking can read
+   * it.
+   */
+  const trace: string[] = [];
+  const note = (line: string) => {
+    trace.push(line);
+    lastError = trace.join("\n");
+    render();
+  };
+
+  note(`serial API: ${navigator.serial ? "present" : "MISSING"}`);
+  try {
+    note(`already granted: ${(await navigator.serial.getPorts()).length} port(s)`);
+  } catch (e) {
+    note(`getPorts threw: ${(e as Error)?.message ?? e}`);
+  }
+  note(`context: ${inOwnWindow ? "window (chooser allowed)" : "toolbar popup"}`);
+
   if (!inOwnWindow) {
     await chrome.windows.create({
       url: chrome.runtime.getURL("popup.html?view=connect"),
@@ -187,8 +212,10 @@ async function grantPort(): Promise<void> {
     return;
   }
 
+  note("calling requestPort()…");
   try {
     await navigator.serial.requestPort({ filters: DEVICE_FILTERS });
+    note("a port was chosen");
   } catch (e) {
     /*
      * Cancelling the chooser and failing to open it are different events, and
@@ -207,14 +234,14 @@ async function grantPort(): Promise<void> {
     if (err?.name === "NotFoundError") {
       const ports = await navigator.serial.getPorts();
       if (ports.length === 0) {
-        lastError =
+        lastError = trace.join("\n") + "\n\n" +
           "No serial device was chosen. If the list was empty, the browser " +
           "cannot see the board: check the cable carries data, and that this " +
           "browser is allowed to reach it — a Flatpak or Snap browser often " +
           "cannot without extra permission.";
       }
     } else {
-      lastError = `${err?.name ?? "Error"}: ${err?.message ?? String(e)}`;
+      lastError = trace.join("\n") + `\n\n${err?.name ?? "Error"}: ${err?.message ?? String(e)}`;
     }
     await refresh();
     return;
