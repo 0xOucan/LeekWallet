@@ -1,29 +1,62 @@
 # Running LeekWallet on the Firefly Pixie
 
-**Status: phase 0 done, the rest planned.** The firmware **compiles and links
-for the ESP32-C3** — first attempt, with no source changes at all — and phases 1
-onward are still a design rather than a report.
+**Status: phases 1 and 2 done on real hardware. The display is what remains.**
+
+LeekWallet **boots and runs on a Firefly Pixie**. Verified on a board, not in
+emulation:
 
 ```
-$ pio run -e pixie
-RAM:   [==        ]  15.6% (used 51212 bytes from 327680 bytes)
-Flash: [===       ]  29.4% (used 1233874 bytes from 4194304 bytes)
-[SUCCESS] Took 83.55 seconds
-
-$ file .pio/build/pixie/firmware.elf
-ELF 32-bit LSB executable, UCB RISC-V, RVC, soft-float ABI
+I (250) leekwallet: LeekWallet - Firefly Pixie
+I (258) wallet: Wallet initialized, password_set=0, wallets=0, vault=v1
+W (682) vault-kdf: KDF benchmark: 2250 iterations in 423 ms (target ~500)
+W (682) leekwallet: Firefly Pixie: no panel driver yet — running headless
+I (683) button: Buttons initialized (polling): K1=3, K2=2, K3=10, K4=8
+I (684) protocol: Protocol endpoint listening on USB-Serial-JTAG
+I (684) leekwallet: Initialization complete
 ```
 
-That answered the only question that could have killed the idea. The build is
-`board = esp32-c3-devkitm-1` and four inherited lines; every other setting,
-including the whole of `sdkconfig.defaults`, carried over untouched because none
-of it was ever target-specific.
+And the protocol answers over USB:
 
-Two things worth noting from it. **The C3 build uses less RAM than the S3 one**
-— 51 KB against 57 KB, single-core FreeRTOS being cheaper — so the 400 KB budget
-was never the constraint. And **`src/oled.c` compiled too**: the C3 has I²C, so a
-C3 wired to an SSD1306 would run this firmware today. The Pixie work is
-specifically about its 240×240 SPI panel, not about the C3.
+```
+ping           -> RESPONSE   {result:{pong:1}}
+getFeatures    -> RESPONSE   {blindSigning:0, firmware:"0.1.0", model:"LeekWallet-Pixie"}
+getStatus      -> RESPONSE   {account:0, activeWallet:0, temporary:0, passphrase:0, unlocked:0, walletCount:0}
+getMnemonic    -> ERROR      unknown or not yet implemented
+```
+
+The wallet, the vault, NVS, the button layer, the transport, the session layer
+and the protocol all work on the C3. What a Pixie cannot yet do is *show* you
+anything: `src/pixie/oled-pixie.c.wip` is written but not built, and the sixteen
+`oled_*` entry points still need implementing against `firefly-display`.
+
+Everything above came from `board.h` plus three small fixes, none of which
+needed a source change to the wallet itself.
+
+## The performance prediction was wrong
+
+An earlier version of this document argued that the S3 should be "modestly ahead
+on SHA-512's 64-bit operations, because Xtensa LX7 handles them better than
+RV32IMC" — and flagged it as an expectation rather than a measurement. Measured
+now, on both boards, at the same 2250 iterations:
+
+| | vault KDF |
+|---|---|
+| ESP32-C3 (Pixie) | **423 ms** |
+| ESP32-S3 (reference) | 508 ms |
+
+**The C3 is 17% faster.** Whatever RV32IMC gives up on 64-bit arithmetic, it
+apparently makes back elsewhere, and the guess was simply wrong.
+
+What does *not* change is the headroom argument, because that rests on silicon
+rather than on this measurement: the S3 can run at 240 MHz where the C3 cannot,
+and the S3's SHA accelerator does SHA-512 where the C3's stops at SHA-256. So
+the planned KDF speedup is available on one board and impossible on the other.
+The boards are close today — closer than predicted, and in the other direction —
+and they will not stay close.
+
+Note also that **the iteration count does not need to change**, which keeps a
+vault portable between the two boards. That was the open question in the
+"format decision" section below, and the measurement closes it.
 
 ---
 
@@ -320,7 +353,7 @@ Fill the empty cells from measurements on both boards; do not estimate them.
 
 | | Pixie (C3) | LeekWallet (S3) |
 |---|---|---|
-| Unlock (vault KDF) | — | 508 ms |
+| Unlock (vault KDF) | **423 ms** | 508 ms |
 | Seed derivation (PBKDF2 BIP-39) | — | ~460 ms |
 | BIP-32 derivation | — | — |
 | secp256k1 sign | — | — |

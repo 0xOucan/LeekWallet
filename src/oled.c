@@ -4,6 +4,7 @@
  */
 
 #include "oled.h"
+#include "board.h"
 #include <string.h>
 #include "driver/i2c.h"
 #include "driver/gpio.h"
@@ -12,8 +13,10 @@
 static const char *TAG = "oled";
 
 /* I2C Configuration */
-#define PIN_SDA             GPIO_NUM_8
-#define PIN_SCL             GPIO_NUM_9
+/* See board.h. On a board with no I2C panel these are not merely unused, they
+   belong to something else, so nothing here may initialise them. */
+#define PIN_SDA             PIN_I2C_SDA
+#define PIN_SCL             PIN_I2C_SCL
 #define I2C_PORT            I2C_NUM_0
 #define I2C_FREQ_HZ         400000
 
@@ -123,8 +126,25 @@ static const uint8_t font_5x7[][5] = {
  * Low-level I2C/SSD1306 functions
  * ============================================================================ */
 
+/*
+ * Whether the panel is actually there.
+ *
+ * `ui_init()` runs whether or not a display was found — the UI task is what
+ * drives the auto-lock timer, the hold-to-lock poll and the sign-expiry
+ * service, none of which need a screen — so every redraw reaches this file
+ * regardless. On a board with no I2C panel that produced two
+ * `i2c driver not installed` errors per frame, which is a log nobody can read
+ * and, worse, a log in which a real fault would be invisible.
+ *
+ * Guarded here rather than at the call sites because this is the one place
+ * every byte to the panel passes through. Drawing into the framebuffer stays
+ * legal and free; only talking to hardware that is not there is refused.
+ */
+static bool panel_ready = false;
+
 static esp_err_t ssd1306_send_cmd(uint8_t cmd)
 {
+    if (!panel_ready) { return ESP_ERR_INVALID_STATE; }
     uint8_t buf[2] = {0x00, cmd};  /* Co=0, D/C#=0 (command) */
     return i2c_master_write_to_device(I2C_PORT, OLED_ADDR, buf, sizeof(buf),
                                       pdMS_TO_TICKS(100));
@@ -132,6 +152,7 @@ static esp_err_t ssd1306_send_cmd(uint8_t cmd)
 
 static esp_err_t ssd1306_send_data(const uint8_t *data, size_t len)
 {
+    if (!panel_ready) { return ESP_ERR_INVALID_STATE; }
     uint8_t buf[129];  /* 1 control byte + up to 128 data bytes */
     buf[0] = 0x40;     /* Co=0, D/C#=1 (data) */
 
@@ -183,6 +204,11 @@ esp_err_t oled_i2c_init(void)
 
 esp_err_t oled_init(void)
 {
+    /* Opened before the sequence below, because that sequence goes through the
+       same guarded path. Closed again on any failure, so a panel that did not
+       answer cannot leave the driver believing it is there. */
+    panel_ready = true;
+
     /* SSD1306 initialization sequence for 128x64 */
     const uint8_t init_cmds[] = {
         0xAE,       /* Display OFF */
@@ -207,6 +233,7 @@ esp_err_t oled_init(void)
         esp_err_t err = ssd1306_send_cmd(init_cmds[i]);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "SSD1306 init cmd %02X failed", init_cmds[i]);
+            panel_ready = false;
             return err;
         }
     }

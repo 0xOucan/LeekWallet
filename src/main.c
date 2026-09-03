@@ -35,6 +35,7 @@
 #include "vault-kdf.h"
 
 #include "oled.h"
+#include "board.h"
 #include "button.h"
 #include "ui.h"
 #include "device-wipe.h"
@@ -46,7 +47,7 @@ static const char *TAG = "leekwallet";
 void app_main(void)
 {
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "LeekWallet - ESP32-S3");
+    ESP_LOGI(TAG, "LeekWallet - %s", BOARD_NAME);
     ESP_LOGI(TAG, "Hardware wallet with HD support");
     ESP_LOGI(TAG, "========================================");
 
@@ -89,11 +90,32 @@ void app_main(void)
      * without a panel, so carry on and say so. Nothing that needs user
      * confirmation can be approved blind, because those confirmations are
      * button presses against rendered text that simply will not appear. */
+    /*
+     * The panel is board-specific and may not exist yet.
+     *
+     * On the reference board this is an SSD1306 over I2C. On a Firefly Pixie
+     * those pins are a button and the LED data line, and the ST7789 shim is not
+     * written — so the C3 build brings up everything except the screen, which is
+     * enough to prove the wallet, the protocol and the session layer run on that
+     * silicon. `have_display` is already the flag the rest of main() checks, so
+     * a headless board takes a path that was written years before this port.
+     */
+#if BOARD_HAS_I2C_PANEL
     bool have_display = (oled_i2c_init() == ESP_OK) && (oled_init() == ESP_OK);
+#else
+    bool have_display = false;
+    ESP_LOGW(TAG, "%s: no panel driver yet — running headless", BOARD_NAME);
+#endif
+#if BOARD_HAS_I2C_PANEL
     if (!have_display) {
+        /* Only worth saying where a panel was expected. On a board with no I2C
+           screen this used to print an error naming pins that belong to the LED
+           string, which is a false lead rather than a diagnostic. */
         ESP_LOGE(TAG, "No display found - continuing headless");
-        ESP_LOGE(TAG, "Check SDA=GPIO8, SCL=GPIO9 and that the panel is at 0x3C");
+        ESP_LOGE(TAG, "Check SDA=GPIO%d, SCL=GPIO%d and that the panel is at 0x3C",
+                 PIN_I2C_SDA, PIN_I2C_SCL);
     }
+#endif
 
     /* Initialize buttons */
     if (button_init() != ESP_OK) {

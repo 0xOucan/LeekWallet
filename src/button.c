@@ -4,6 +4,7 @@
  */
 
 #include "button.h"
+#include "board.h"
 #include <string.h>
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -15,10 +16,13 @@ static const char *TAG = "button";
 /* Button GPIO pins
  * K1 rewired from GPIO4 (stuck LOW) to GPIO10
  */
-#define PIN_K1              GPIO_NUM_10
-#define PIN_K2              GPIO_NUM_5
-#define PIN_K3              GPIO_NUM_6
-#define PIN_K4              GPIO_NUM_7
+/* Pins come from board.h, which picks them by target. They were literals here
+   until there were two boards: the reference map drives I2C on GPIO 8 and 9,
+   which on a Firefly Pixie are a button and the LED data line. */
+#define PIN_K1              PIN_BUTTON_UP
+#define PIN_K2              PIN_BUTTON_DOWN
+#define PIN_K3              PIN_BUTTON_CANCEL
+#define PIN_K4              PIN_BUTTON_ACCEPT
 
 /* Debounce timing */
 #define DEBOUNCE_TIME_US    100000  /* 100ms debounce */

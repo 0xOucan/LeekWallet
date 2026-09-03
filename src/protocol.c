@@ -22,6 +22,7 @@
  */
 
 #include "protocol.h"
+#include "board.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -674,7 +675,11 @@ static void dispatch(const uint8_t *payload, size_t len)
         cbor_write_text(&w, "firmware");
         cbor_write_text(&w, "0.1.0");
         cbor_write_text(&w, "model");
-        cbor_write_text(&w, "LeekWallet-S3");
+        /* From board.h, not a literal. A host that cannot tell which board it
+           is talking to cannot warn about a capability the board lacks -- the
+           Pixie has no camera, so airgapped signing will never be offered
+           there, and the model string is how the app knows without guessing. */
+        cbor_write_text(&w, BOARD_MODEL);
 
     } else if (strcmp(method, "getStatus") == 0) {
         WalletStatus status = wallet_get_status();
