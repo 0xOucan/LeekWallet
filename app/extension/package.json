@@ -1,0 +1,25 @@
+{
+  "name": "@leekwallet/extension",
+  "version": "0.1.0",
+  "description": "LeekWallet companion as a Chromium MV3 extension: EIP-6963 provider over Web Serial",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@leekwallet/core": "workspace:*",
+    "@noble/ciphers": "1.3.0",
+    "@noble/curves": "1.9.1",
+    "@noble/hashes": "1.8.0",
+    "viem": "^2.55.13"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "@types/w3c-web-serial": "^1.0.7",
+    "typescript": "^5.7.2",
+    "vite": "^8.2.1"
+  }
+}

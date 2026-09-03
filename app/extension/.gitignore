@@ -1,0 +1,4 @@
+# The built, unpacked extension. Regenerate with `pnpm build`. A checked-in
+# build is a build nobody can tell apart from the source it claims to be, and
+# for a wallet that is the one artefact people most need to be able to check.
+dist/

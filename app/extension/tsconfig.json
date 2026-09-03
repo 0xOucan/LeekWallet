@@ -1,0 +1,22 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    /* `chrome` and `w3c-web-serial` are ambient global declarations, so they
+     * have to be named here: nothing in the source `import`s them, and without
+     * this every `chrome.*` and every `SerialPort` is an error. `node` comes
+     * along for build.mjs's neighbours and for `__dirname` in the Vite config.
+     *
+     * WebWorker is in `lib` for the service worker, which is not a DOM
+     * context. The popup and the offscreen document ARE documents, so DOM is
+     * there too, and TypeScript cannot separate the two within one program —
+     * which means it will not catch "you used `document` in the worker". That
+     * is a real gap and the reason background.ts is written to touch no DOM at
+     * all, and says so at the top. */
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "types": ["node", "chrome", "w3c-web-serial"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "../packages/core/src/**/*.ts"
+  ]
+}

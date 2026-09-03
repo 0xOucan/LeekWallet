@@ -1,0 +1,18 @@
+<!doctype html>
+<!--
+  The hidden document that owns the serial port.
+
+  Nobody ever sees this. It has no styling and no content on purpose: it is a
+  process, not a page, and the only reason it is a document at all is that
+  `navigator.serial` is exposed to documents and not to service workers. See
+  the header of src/offscreen.ts for the full argument.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>LeekWallet device link</title>
+  </head>
+  <body>
+    <script type="module" src="./src/offscreen.ts"></script>
+  </body>
+</html>
