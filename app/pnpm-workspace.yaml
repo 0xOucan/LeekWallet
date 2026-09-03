@@ -1,2 +1,8 @@
 packages:
   - 'packages/*'
+  # The browser extension. Listed explicitly rather than moved under packages/
+  # because it is a deliverable, not a library: nothing imports it, it imports
+  # packages/core. Keeping it a workspace member is what lets it depend on
+  # @leekwallet/core by name instead of by a relative path that only works from
+  # one directory.
+  - 'extension'

@@ -1,0 +1,31 @@
+<!doctype html>
+<!--
+  The popup, and the approval window, are the same document.
+
+  Two HTML files would be two places to keep the connection controls correct,
+  and they would drift: the approval window needs everything the popup needs
+  (the device may be locked, the port may not be granted) plus one extra
+  question. So the view is chosen from the query string and the shell is
+  shared. `popup.html?view=approve` is what the service worker opens in a
+  small window when a site asks to connect.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LeekWallet</title>
+  </head>
+  <body>
+    <!--
+      Everything below is rendered by popup.ts rather than written here. The
+      popup is destroyed and rebuilt on every open, so there is no incremental
+      state for markup to hold, and a shell that shows "disconnected" for a
+      frame before the real answer arrives is a shell that lies briefly on
+      every single open.
+    -->
+    <main id="root" aria-live="polite">
+      <p class="muted">Loading…</p>
+    </main>
+    <script type="module" src="./src/popup.ts"></script>
+  </body>
+</html>

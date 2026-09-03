@@ -1,0 +1,182 @@
+/* The popup's own layout. Every colour, space and size comes from the app's
+ * tokens (../../src/tokens.css) — the same file the desktop and Android builds
+ * use — so the extension is recognisably the same product and the light/dark
+ * pair stays in contrast without a second palette to maintain.
+ *
+ * A browser popup is not a window. It is roughly 360px wide, it is destroyed
+ * the moment it loses focus, and it has no scroll chrome of its own worth
+ * relying on. So: one column, no modals, no tabs, and the most important thing
+ * — what the device is doing right now — always at the top.
+ */
+
+body {
+  margin: 0;
+  width: 360px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+/* The approval window is a real OS window and gets the width it was opened
+ * with, rather than the toolbar popup's fixed column. */
+body.view-approve {
+  width: auto;
+}
+
+main {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+h1 {
+  font-size: var(--text-base);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+h2 {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0 0 var(--space-2);
+  font-weight: 600;
+}
+
+p { margin: 0 0 var(--space-2); }
+p:last-child { margin-bottom: 0; }
+
+.muted { color: var(--muted); }
+.danger { color: var(--danger); }
+.warn { color: var(--warn); }
+
+section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+}
+
+/* Controls carry --control-border rather than --border: a button here is
+ * surface-on-surface and the boundary is the only thing that says it is a
+ * button at all. See the note in tokens.css. */
+button, select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--muted);
+  text-decoration: underline;
+}
+
+.row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.grow { flex: 1 1 auto; }
+
+/* The status dot. A shape and a word, never a colour alone — about one man in
+ * twelve cannot tell the green from the red. */
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 auto;
+}
+.dot.on { background: var(--ok); }
+.dot.off { background: var(--danger); }
+
+/* Addresses, hashes and the passkey. Monospace is not decoration here: it is
+ * what makes two hex strings comparable character by character, which is the
+ * whole job the user is being asked to do. */
+code, .mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  word-break: break-all;
+}
+
+.passkey {
+  font-family: var(--font-mono);
+  font-size: var(--text-xl);
+  letter-spacing: 0.25em;
+  text-align: center;
+  padding: var(--space-3) 0;
+  color: var(--accent);
+}
+
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+li.account {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+li.site {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+label.check {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.log {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+  max-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.notice {
+  border-left: 2px solid var(--warn);
+  padding-left: var(--space-3);
+  color: var(--muted);
+}
+
+.notice.bad { border-left-color: var(--danger); }
