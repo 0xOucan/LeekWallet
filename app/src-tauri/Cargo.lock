@@ -2289,6 +2289,7 @@ name = "leekwallet-companion"
 version = "0.1.0"
 dependencies = [
  "espflash",
+ "hex",
  "leek-transport-ble",
  "leek-transport-serial",
  "reqwest",
@@ -2296,6 +2297,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
  "tauri-plugin-blec",
