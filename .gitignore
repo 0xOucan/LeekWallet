@@ -47,3 +47,17 @@ docs/internal/
 # anyone from the tag, which is the point of T37, so committing them would only
 # add a second copy that could disagree with the first.
 release/
+
+# MicroPython bring-up leftovers and a stray screenshot.
+#
+# main.py and ssd1306.py were how the very first board was made to draw
+# anything, before there was firmware. They import `machine`, which does not
+# exist in this project, and nothing references them. image.png was 1.4 MB of
+# the largest file in the repository and is linked from nowhere.
+#
+# Kept out of the tree rather than deleted from disk: they are history, and
+# git already has them if anyone wants to look.
+main.py
+ssd1306.py
+image.png
+ESP32_GENERIC_S3-*.bin

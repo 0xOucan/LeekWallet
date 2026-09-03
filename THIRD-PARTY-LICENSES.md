@@ -69,6 +69,35 @@ auditable source, and `'wasm-unsafe-eval'` added to `script-src` so the module
 can be instantiated at all. Both are real, and both are the price of a scanner
 that works.
 
+## firefly-display
+
+`components/firefly-display/` — the ST7789 driver used by the Firefly Pixie
+build, vendored from [firefly/component-display](https://github.com/firefly/component-display).
+
+**MIT**, Copyright (c) 2024 Richard Moore. The licence travels with the source in
+`components/firefly-display/LICENSE.md`.
+
+Two local changes, both in `CMakeLists.txt` and neither in the driver itself:
+the component is registered only for the ESP32-C3, since the reference board has
+no ST7789 and compiling one in would be a driver for a panel that is not there;
+and `esp_driver_spi` is added to `REQUIRES`, because ESP-IDF 5 split the SPI
+master out of the monolithic `driver` component and the upstream file still
+asks only for `driver`.
+
+The rest of the Firefly ecosystem is deliberately **not** vendored.
+`firefly-hollows` is an application framework that would replace this project's
+UI task, button layer and transport; `firefly-scene` is a scene graph for a
+display that is 21 characters wide. See `docs/PIXIE-PORT.md` for why taking the
+driver alone was the whole of the decision.
+
+## esptool-js — website only
+
+Not in this repository. The web flasher in the sibling website project vendors
+[esptool-js](https://github.com/espressif/esptool-js) 0.6.1, **Apache-2.0**,
+whose bundle inlines [pako](https://github.com/nodeca/pako), **MIT AND Zlib**.
+Recorded here because a reader auditing what this project ships should not have
+to know that the flasher lives elsewhere to find out what it depends on.
+
 ## Colibri — inspiration, not code
 
 The HD wallet core was previously named `colibri-wallet`, after the
