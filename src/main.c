@@ -91,31 +91,29 @@ void app_main(void)
      * confirmation can be approved blind, because those confirmations are
      * button presses against rendered text that simply will not appear. */
     /*
-     * The panel is board-specific and may not exist yet.
+     * One call, both boards.
      *
-     * On the reference board this is an SSD1306 over I2C. On a Firefly Pixie
-     * those pins are a button and the LED data line, and the ST7789 shim is not
-     * written — so the C3 build brings up everything except the screen, which is
-     * enough to prove the wallet, the protocol and the session layer run on that
-     * silicon. `have_display` is already the flag the rest of main() checks, so
-     * a headless board takes a path that was written years before this port.
+     * This was briefly a target-specific branch, while the C3 had no display
+     * driver and had to come up headless. It does not need to be one any more:
+     * `oled.c` and `oled-pixie.c` implement the same seven transport entry
+     * points, and `oled_i2c_init()` on the Pixie succeeds without touching
+     * anything — there is no I2C panel there, and its pins belong to a button
+     * and the LED string.
+     *
+     * `have_display` stays, because a panel can still fail to answer, and the
+     * headless path it selects was written long before this port.
      */
-#if BOARD_HAS_I2C_PANEL
     bool have_display = (oled_i2c_init() == ESP_OK) && (oled_init() == ESP_OK);
-#else
-    bool have_display = false;
-    ESP_LOGW(TAG, "%s: no panel driver yet — running headless", BOARD_NAME);
-#endif
-#if BOARD_HAS_I2C_PANEL
     if (!have_display) {
         /* Only worth saying where a panel was expected. On a board with no I2C
            screen this used to print an error naming pins that belong to the LED
            string, which is a false lead rather than a diagnostic. */
         ESP_LOGE(TAG, "No display found - continuing headless");
+#if BOARD_HAS_I2C_PANEL
         ESP_LOGE(TAG, "Check SDA=GPIO%d, SCL=GPIO%d and that the panel is at 0x3C",
                  PIN_I2C_SDA, PIN_I2C_SCL);
-    }
 #endif
+    }
 
     /* Initialize buttons */
     if (button_init() != ESP_OK) {
