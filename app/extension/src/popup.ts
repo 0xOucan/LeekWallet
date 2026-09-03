@@ -46,7 +46,25 @@ const root = document.getElementById("root") as HTMLElement;
  * files would be two copies of the connection flow, and the copy nobody looks
  * at is the one that rots.
  */
-const isApprovalView = new URLSearchParams(location.search).get("view") === "approve";
+const view = new URLSearchParams(location.search).get("view");
+const isApprovalView = view === "approve";
+
+/*
+ * Is this document a real window, or the toolbar popup?
+ *
+ * It decides where `navigator.serial.requestPort()` may be called, and getting
+ * it wrong looks exactly like a dead button. A toolbar popup is destroyed the
+ * instant it loses focus, and opening the browser's serial chooser takes focus
+ * — so the popup closes, this script's context is torn down with it, and the
+ * promise nobody is left to await simply vanishes. The chooser may not even
+ * paint. Reported as "I click choose device and nothing happens", which is
+ * precisely what it looks like from outside.
+ *
+ * A `chrome.windows.create` popup is an ordinary window and survives. The
+ * service worker already opens one for connection approvals; the port chooser
+ * uses the same door.
+ */
+const inOwnWindow = view !== null;
 if (isApprovalView) document.body.classList.add("view-approve");
 
 /* ------------------------------------------------------------ DOM helpers */
@@ -152,6 +170,23 @@ async function refresh(): Promise<void> {
  */
 async function grantPort(): Promise<void> {
   lastError = null;
+
+  /* From the toolbar popup, hand the job to a window that will still exist
+     when the chooser closes. See `inOwnWindow`. */
+  if (!inOwnWindow) {
+    await chrome.windows.create({
+      url: chrome.runtime.getURL("popup.html?view=connect"),
+      type: "popup",
+      width: 400,
+      height: 620,
+    });
+    /* Closing explicitly rather than letting focus do it: the window opening
+       is the answer to the click, and leaving both on screen invites someone
+       to press Choose device twice. */
+    window.close();
+    return;
+  }
+
   try {
     await navigator.serial.requestPort({ filters: DEVICE_FILTERS });
   } catch {
