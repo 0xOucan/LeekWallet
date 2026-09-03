@@ -61,3 +61,13 @@ main.py
 ssd1306.py
 image.png
 ESP32_GENERIC_S3-*.bin
+
+# Never commit these
+.env
+.env.*
+!.env.example
+dist/
+*.keystore
+*.jks
+*.p12
+keystore.properties
