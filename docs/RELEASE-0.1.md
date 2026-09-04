@@ -31,16 +31,21 @@ timeout, hold-to-lock, and the companion with WalletConnect.
 | Artefact | Target | Built by | Device-tested? |
 |---|---|---|---|
 | `leekwallet-s3-0.1.0.bin` | ESP32-S3-N16R8 | CI, Linux | **yes** |
-| `leekwallet-pixie-0.1.0.bin` | Firefly Pixie (C3) | CI, Linux | **not yet** |
+| `leekwallet-pixie-0.1.0.bin` | Firefly Pixie (C3) | CI, Linux | **yes** |
 | `LeekWallet-0.1.0.AppImage` | Linux x86-64 | CI, ubuntu | **yes** |
 | `LeekWallet-0.1.0.msi` | Windows x86-64 | CI, windows | **no — see below** |
 | `LeekWallet-0.1.0.dmg` | macOS | CI, macos | **no — see below** |
 | `leekwallet-0.1.0.apk` | Android arm64 | CI, ubuntu | **yes** |
 | `SHA256SUMS` | — | CI | — |
 
-The Pixie firmware ships in 0.1 only if phase 3 of
-[PIXIE-PORT.md](PIXIE-PORT.md) lands. If it does not, it is simply absent
-rather than shipped untested.
+The Pixie firmware **did** ship in 0.1: phase 3 of
+[PIXIE-PORT.md](PIXIE-PORT.md) landed, and the board boots, displays, signs and
+answers `getFeatures` with `model: LeekWallet-Pixie`.
+
+It must be flashed **from a terminal**. Browser flashing is blocked for the C3
+because esptool-js corrupts writes to it — the firmware and the release are
+fine, the browser tooling is not. See
+[PIXIE-PORT.md](PIXIE-PORT.md#browser-flashing-is-blocked).
 
 ## Can Windows and macOS be tested?
 
@@ -190,6 +195,9 @@ a human act by construction.
 4. **Release notes carry the per-platform test status table above**, verbatim.
 
 ## The one thing to decide first
+
+*(Resolved: it did not wait, and the Pixie landed anyway — both boards shipped
+in `v0.1.0-chaak-pool`. The reasoning below is kept as it stood.)*
 
 Whether **0.1 waits for the Pixie**. It should not. The S3 firmware, the
 companion and the APK are tested today; the Pixie port is phases 1–3 away and

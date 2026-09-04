@@ -1,18 +1,21 @@
 # Running LeekWallet on the Firefly Pixie
 
-**Status: phases 1 and 2 done on real hardware. The display is what remains.**
+**Status: complete and working on hardware. The display is done.** Flashing a
+Pixie from the website is blocked — see "Browser flashing is blocked" below.
 
 LeekWallet **boots and runs on a Firefly Pixie**. Verified on a board, not in
-emulation:
+emulation, captured from `/dev/ttyACM0` after a fresh provision of
+`v0.1.0-chaak-pool`:
 
 ```
-I (250) leekwallet: LeekWallet - Firefly Pixie
-I (258) wallet: Wallet initialized, password_set=0, wallets=0, vault=v1
-W (682) vault-kdf: KDF benchmark: 2250 iterations in 423 ms (target ~500)
-W (682) leekwallet: Firefly Pixie: no panel driver yet — running headless
-I (683) button: Buttons initialized (polling): K1=3, K2=2, K3=10, K4=8
-I (684) protocol: Protocol endpoint listening on USB-Serial-JTAG
-I (684) leekwallet: Initialization complete
+I (254) leekwallet: LeekWallet - Firefly Pixie
+I (262) wallet: Wallet initialized, password_set=0, wallets=0, active=0, vault=v1
+W (687) vault-kdf: KDF benchmark: 2250 iterations in 424 ms (target ~500)
+I (702) oled-pixie: ST7789 240x240, frame 128x64 drawn at 240x120
+I (702) button: Buttons initialized (polling): K1=10, K2=8, K3=3, K4=2
+I (703) ui: UI initialized (auto-lock 5 min, brightness High)
+I (703) protocol: Protocol endpoint listening on USB-Serial-JTAG
+I (705) leekwallet: Initialization complete
 ```
 
 And the protocol answers over USB:
@@ -24,10 +27,52 @@ getStatus      -> RESPONSE   {account:0, activeWallet:0, temporary:0, passphrase
 getMnemonic    -> ERROR      unknown or not yet implemented
 ```
 
-The wallet, the vault, NVS, the button layer, the transport, the session layer
-and the protocol all work on the C3. What a Pixie cannot yet do is *show* you
-anything: `src/pixie/oled-pixie.c.wip` is written but not built, and the sixteen
-`oled_*` entry points still need implementing against `firefly-display`.
+The wallet, the vault, NVS, the button layer, the transport, the session layer,
+the protocol **and the display** all work on the C3. `src/oled-pixie.c` drives
+the ST7789 through `firefly-display`, drawing the same 128x64 frame the S3 uses,
+upscaled x1.875 into a 240x120 band centred on the 240x240 panel.
+
+> **An earlier version of this page said "the display is what remains" and
+> quoted a log line reading `no panel driver yet — running headless`, naming a
+> file `src/pixie/oled-pixie.c.wip`.** All three were true mid-port and none is
+> true now: the driver is `src/oled-pixie.c`, `CMakeLists.txt` links it for
+> `esp32c3`, and that log line no longer exists in the source. The stale text
+> was read as a current diagnosis and sent a debugging session after a display
+> bug that had been fixed months earlier — which is the cost of leaving a status
+> line to rot at the top of a document people trust.
+
+## Browser flashing is blocked
+
+**Use the terminal to flash a Pixie.** The website deliberately withholds C3
+images, because both esptool-js settings damage the board:
+
+| esptool-js `writeFlash` | Result on an ESP32-C3 |
+|---|---|
+| `compress: true` | fails at ~74%, `status 201,0`, board left unbootable |
+| `compress: false` | reports success, writes `0x00` across the image |
+
+The second was measured by reading the flash back: 94.6% of bytes differed from
+the intended image and 97.6% of those differences were zero. Erased flash reads
+`0xFF`, so zeros were actively written while the page said it had worked. It
+matches [espressif/esptool-js#233](https://github.com/espressif/esptool-js/issues/233).
+
+**None of this is a firmware, release or hardware problem.** The same image,
+written by the esptool CLI over the same USB transport, succeeds every time —
+compressed or not — and the board then boots and answers `getFeatures` with
+`model: LeekWallet-Pixie`. Baud rate is irrelevant: the Pixie speaks
+USB-Serial-JTAG, which is USB CDC and ignores the rate (`--baud 115200`
+measured 1134 kbit/s).
+
+```bash
+esptool --chip esp32c3 --port /dev/ttyACM0 write-flash \
+  0x0 leekwallet-pixie-<version>-provision.bin
+```
+
+If the port reports `Device or resource busy`, the browser still holds it —
+esptool-js does not release the serial port after a failed write. Close the tab.
+
+The block lifts when a Pixie has been flashed from the page and booted, not
+before.
 
 Everything above came from `board.h` plus three small fixes, none of which
 needed a source change to the wallet itself.
@@ -112,6 +157,11 @@ The companion needs **no protocol changes at all**: the wire format is produced
 by files that port untouched.
 
 ## The one real job: a display HAL
+
+> **Done.** This section is the design record for work that shipped in
+> `src/oled-pixie.c`; it is kept because the reasoning still explains why the
+> shim looks the way it does, not because anything here is outstanding. Read it
+> in the past tense.
 
 `src/ui.c` is 5,989 lines written for an 8×21 monochrome grid — and it never
 learned anything else about the panel. It reaches the display through six
@@ -244,17 +294,23 @@ build systems for one codebase forever — is not needed.
 Still open within this: whether PlatformIO will consume `firefly-display` as an
 IDF component cleanly, which is phase 1's first task rather than a blocker.
 
-**1 — It boots and shows a PIN screen.**
+> **All three phases are complete and verified on hardware.** Kept as the plan
+> that was actually followed. The one open question below — whether PlatformIO
+> would consume `firefly-display` cleanly as an IDF component — was answered
+> yes; the component is vendored under `components/firefly-display/` and guarded
+> on `IDF_TARGET`.
+
+**1 — It boots and shows a PIN screen.** *(done)*
 `board-pixie.h` with the rev.5 pin map, `sdkconfig.pixie`, the six-function
 shim over `firefly-display`. Done when the PIN screen renders and a button moves
 the cursor.
 
-**2 — It is a wallet.**
+**2 — It is a wallet.** *(done)*
 Unlock, create a seed, view an address, sign over USB. Everything above the
 shim is already written. Done when `app/scripts/test-dapp.mjs personal` returns
 a signature that recovers to the displayed address.
 
-**3 — It is the same wallet.**
+**3 — It is the same wallet.** *(done)*
 BLE, session handshake, the passkey comparison, temporary seed, hold-to-lock.
 Re-run the hardware tests that only real scheduling can exercise — see the
 single-core note below.

@@ -46,20 +46,27 @@ refuses to sign.
 | **QR codes** | Display addresses as scannable QR codes |
 | **Companion app** | Tauri v2 on Linux/macOS/Windows and an Android APK, with WalletConnect v2 for real dapps |
 
-### Also running on the Firefly Pixie
+### Also runs on the Firefly Pixie
 
-**Researching, developing and testing a build for the
-[Firefly Pixie](https://github.com/firefly/pixie-device)** — a second target,
-not a fork. The Pixie is an ESP32-C3 with a 240×240 colour display, four
+**Running on the [Firefly Pixie](https://github.com/firefly/pixie-device)** — a
+second target, not a fork. The Pixie is an ESP32-C3 with a 240×240 colour display, four
 buttons and four RGB LEDs, and it is **already in the hands of Ethereum
 developers**, which makes it the cheapest distribution this project could ask
 for: a working hardware wallet for people who do not have to buy anything.
 
-The firmware **already compiles and links for the C3** — first attempt, no
-source changes, `pio run -e pixie`. What remains is a display shim: `src/ui.c`
-is 5,989 lines written for an 8×21 monochrome grid and reaches the panel through
-exactly six functions, 298 of its 332 calls being two of them, so the port is a
-shim rather than a rewrite and every screen and refusal survives it.
+**It works on hardware.** A Pixie boots, sets a PIN, creates and imports
+wallets, and signs — the same firmware source as the S3, built with
+`pio run -e pixie`. The display went in as a shim rather than a rewrite:
+`src/ui.c` is 5,989 lines written for an 8×21 monochrome grid and reaches the
+panel through exactly six functions, so `src/oled-pixie.c` implements those six
+against Firefly's MIT `firefly-display`, drawing the same 128×64 frame upscaled
+×1.875 into a 240×120 band on the 240×240 panel. Every screen and every refusal
+survived unchanged.
+
+**Flash a Pixie from a terminal, not from the website.** Browser flashing is
+blocked for the C3 pending a fix in esptool-js, which corrupts writes to it —
+see [PIXIE-PORT.md](docs/PIXIE-PORT.md#browser-flashing-is-blocked). The
+firmware, the release and the board are fine; the browser tooling is not.
 
 **The companion needs no changes at all** — desktop or Android. The wire format
 comes out of files that port untouched.
@@ -915,7 +922,8 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
 - [ ] Firmware flasher in the companion app (ROADMAP T65, gated on secure boot)
 - [ ] Generate a temporary seed, with dice — the two stateless halves currently
       meet only if you write the phrase down in between
-- [ ] Firefly Pixie as a second target — **in progress**, see below
+- [x] Firefly Pixie as a second target — **working on hardware**, see below
+      (flash it from a terminal; browser flashing is blocked, see PIXIE-PORT.md)
 - [ ] Airgapped QR signing (needs a camera)
 - [ ] Secure element integration (ATECC608B as a PIN gatekeeper)
 
