@@ -39,6 +39,14 @@ const ROOT = resolve(HERE, "..");
 const CHAINS_TS = resolve(ROOT, "app/packages/core/src/chains.ts");
 const CONF = resolve(ROOT, "app/src-tauri/tauri.conf.json");
 
+/* Chains where only one RPC operator exists, so "one working operator" is the
+ * designed state rather than an outage. Mirrors the set of the same name in
+ * app/packages/core/test/chains.test.ts; both are named lists rather than a
+ * relaxed rule so that adding a chain to either is a visible diff.
+ *
+ * 5042002 (Arc Testnet): Circle publishes one endpoint. */
+const SINGLE_OPERATOR = new Set([5042002]);
+
 if (!process.features.typescript) {
   const r = spawnSync(
     process.execPath,
@@ -188,8 +196,14 @@ for (const chain of CHAINS) {
 
   if (!anyAlive) {
     problems.push(`${chain.name} (${chain.id}) has no live endpoint — the chain may be shut down`);
-  } else if (operators.size < 2) {
+  } else if (operators.size < 2 && !SINGLE_OPERATOR.has(chain.id)) {
     problems.push(`${chain.name} (${chain.id}) is down to ${operators.size} working operator; the two-operator rule is not actually met`);
+  } else if (operators.size < 2) {
+    /* Known to have one operator by construction, so this is not news. Still
+     * said out loud every run: the chain goes away entirely when that operator
+     * does, and the difference between "expected" and "fine" is worth keeping
+     * visible. */
+    warnings.push(`${chain.name} (${chain.id}) has one operator by design — no failover exists`);
   }
 }
 
@@ -209,7 +223,7 @@ for (const chain of CHAINS) {
 console.log("\n" + "-".repeat(60));
 for (const w of warnings) console.log(`warning: ${w}`);
 if (problems.length === 0) {
-  console.log("All chains have at least two working operators and are producing blocks.");
+  console.log("All chains are producing blocks, with two working operators except where noted.");
   process.exit(0);
 }
 for (const p of problems) console.log(`PROBLEM: ${p}`);

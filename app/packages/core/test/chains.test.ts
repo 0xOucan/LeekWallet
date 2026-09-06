@@ -29,6 +29,21 @@ const check = (cond: boolean, msg: string) => {
 };
 const group = (n: string) => console.log(`== ${n}`);
 
+/**
+ * Chains for which only one RPC operator exists, named one at a time.
+ *
+ * The two-operator rule is not weakened for these; the exception is recorded
+ * so that adding one is a visible diff and a decision, the same shape as
+ * NON_RPC_ALLOWED below. A chain here is a chain that goes away entirely when
+ * its single operator does, and the UI has no way to soften that.
+ *
+ * 5042002 (Arc Testnet): Circle publishes one endpoint for the testnet. The
+ * alternative to the exception was either not listing a chain people are being
+ * asked to take payments on, or inventing a mirror. Remove this entry the day
+ * a second operator exists.
+ */
+const SINGLE_OPERATOR = new Set([5042002]);
+
 group("the table is internally consistent");
 {
   const ids = CHAINS.map((c) => c.id);
@@ -64,10 +79,30 @@ group("the table is internally consistent");
     // Two operators minimum, so one of them being down does not remove the
     // chain from the app entirely.
     check(
-      new Set(c.rpcUrls.map((u) => new URL(u).origin)).size >= 2,
+      new Set(c.rpcUrls.map((u) => new URL(u).origin)).size >= 2 || SINGLE_OPERATOR.has(c.id),
       `${at}: fewer than two independent RPC operators`,
     );
   }
+}
+
+group("Arc's two decimal scales, and its single operator");
+{
+  /* Arc is the one curated chain where the gas token and an ERC-20 are the
+   * same asset at different scales: the native unit has 18 decimals, the
+   * ERC-20 interface at 0x3600…0000 has 6. Both were read off the chain. This
+   * pins the pair together, because the failure mode is not a wrong name — it
+   * is a payment rendered 10^12 out, which nobody reading the screen can
+   * catch. */
+  const arc = getChain(5042002);
+  check(arc?.name === "Arc Testnet", `arc name: ${arc?.name}`);
+  check(arc?.testnet === true, "Arc is not marked testnet");
+  check(arc?.nativeCurrency.symbol === "USDC", `arc gas token: ${arc?.nativeCurrency.symbol}`);
+  check(arc?.nativeCurrency.decimals === 18, `arc native decimals: ${arc?.nativeCurrency.decimals}`);
+  const erc20 = tokenHint(5042002, "0x3600000000000000000000000000000000000000");
+  check(erc20?.symbol === "USDC", "Arc's USDC predeploy is not hinted");
+  check(erc20?.decimals === 6, `arc erc-20 decimals: ${erc20?.decimals}`);
+  check(erc20?.decimals !== arc?.nativeCurrency.decimals,
+    "the two Arc scales collapsed into one, which is the 10^12 bug");
 }
 
 group("the chains the task asks for are present");
