@@ -133,6 +133,49 @@ holds. Staff can read it; nobody but the admin can drain it.
 API returns nothing for Arc as a *source* domain — an open issue whose only
 workaround is a community relay. We never depend on that.
 
+## 4b. The relayer really is simple — keep it that way
+
+To be clear, because the section above reads heavier than the thing it
+describes: **the relayer is a private key, some gas, and a loop.** No
+encryption, no consensus, no infrastructure. It watches for work, signs, pays
+gas, and moves on. Deploying one is an afternoon.
+
+```
+loop:
+  take a signed authorization from the terminal queue
+  submit it on the source chain          (pay gas)
+  poll Iris for the attestation
+  submit receiveMessage on Arc           (pay gas, in USDC)
+```
+
+There is exactly **one property worth protecting**, and it costs nothing to
+keep:
+
+> **The customer's signature names the destination. The relayer only pays gas.**
+
+That single line is the difference between two designs that take identical
+effort to run:
+
+| | Custodial | Courier |
+|---|---|---|
+| Customer sends to | the relayer's address | the till, directly |
+| Relayer holds funds | yes, in flight | **never** |
+| Leaked key costs | every payment in flight | the ability to submit already-signed transfers |
+| Crash mid-flow | funds stranded on a hot key | funds are where the customer sent them |
+| Effort to operate | key + gas + loop | key + gas + loop |
+
+EIP-3009 gives us the courier version for free: `to`, `value`, `validAfter`,
+`validBefore` and `nonce` are all **inside the signed payload**. The relayer
+cannot change the recipient, the amount, or the deadline — it can only choose
+whether to submit. So "just relay, route, send" is exactly right; we simply let
+the signature carry the routing instead of the relayer's own logic.
+
+Two reasons this matters beyond good practice. A hot key that custodies customer
+payments is the precise thing this project argues against everywhere else — a
+judge will notice. And a courier relayer needs no monitoring, no balance
+reconciliation, and no incident plan for a key compromise, which is *less* work
+to run, not more.
+
 ## 5. Who pays, and how the relayer is repaid
 
 The relayer fronts gas on the source chain and on Arc, and is repaid in USDC out
