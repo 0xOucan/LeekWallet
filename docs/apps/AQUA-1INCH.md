@@ -47,8 +47,29 @@ really is rather than as an "edit".
 ## 3. Build, step by step
 
 ### Step 1 — Read-only portfolio
-`AQUA.safeBalances(maker, app, strategyHash, tokenA, tokenB)` per known strategy.
+`AQUA.rawBalances(maker, app, strategyHash, token) -> (uint248, uint8)` per leg.
 Show app, pair, virtual balances, strategy hash, and the **current allowance**.
+
+> **Not `safeBalances`.** An earlier draft of this plan said to use it. It
+> **reverts** — `require(tokensCount > 0 && tokensCount != _DOCKED,
+> SafeBalancesForTokenNotInActiveStrategy(...))` — so a docked strategy, a
+> token that was never in one, and an unreachable node all arrive as the same
+> failed call inside a multicall. That collapses precisely the states this
+> milestone exists to keep apart. `rawBalances` answers every state without
+> reverting, which leaves a revert meaning "nobody answered".
+
+Three further corrections found by reading the deployed contract, each of which
+shapes the app:
+
+- **Aqua indexes no event parameter, not even `maker`.** `eth_getLogs` cannot
+  filter by maker, so discovery is topic-filtered and matched client-side, and
+  is a claim about a **block range** rather than about all history. Positions
+  are a floor, never a census, and the UI must say so.
+- **`strategyHash = keccak256(strategy)` is not per-user.** The registry keys by
+  `msg.sender` separately. So Q2's refusal to sign a strategy naming another
+  maker must **decode the app's struct**; it cannot be derived from the hash.
+- **`Shipped` does not carry the token list.** Tokens come from the per-token
+  `Pushed` events that `ship()` emits in the same transaction.
 
 Read-only first, deliberately: prove the data model is understood before asking
 anyone to sign into it.
