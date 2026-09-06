@@ -1,5 +1,11 @@
 packages:
   - 'packages/*'
+  # Mini-apps, one directory each. Listed as their own glob rather than left to
+  # packages/* so that "an app" is a visible category in the workspace: each one
+  # must be removable from a release by deleting its directory and one line of
+  # src/apps/registry.ts, and nothing outside it may import anything inside it.
+  # See packages/apps/aqua/src/index.ts for the rules that keep that true.
+  - 'packages/apps/*'
   # The browser extension. Listed explicitly rather than moved under packages/
   # because it is a deliverable, not a library: nothing imports it, it imports
   # packages/core. Keeping it a workspace member is what lets it depend on
