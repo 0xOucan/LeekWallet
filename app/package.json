@@ -28,6 +28,7 @@
     "vite": "^8.2.1"
   },
   "dependencies": {
+    "@leekwallet/app-aqua": "workspace:*",
     "@leekwallet/core": "workspace:*",
     "@walletconnect/sign-client": "2.23.10",
     "qrcode-generator": "2.0.4",
