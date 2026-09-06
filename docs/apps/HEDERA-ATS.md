@@ -60,6 +60,40 @@ Two reasons, both concrete:
 `Snapshots` is what makes revenue distribution reconcilable rather than
 approximate, and the plan leans on it.
 
+## 2b. The Hedera trap that is not in any EVM playbook
+
+**An HTS system contract answers an unknown selector with `success` and
+non-conforming data instead of reverting.**
+
+On every other EVM chain, "does this contract implement `getSnapshotCount()`?"
+is answered by calling it and seeing whether it reverts. On Hedera that test
+returns *true for everything*. Run against real testnet USDC, a first
+implementation of this app reported a plain ERC-20 as a security with 64
+snapshots.
+
+This is a live-network finding, not a hypothesis — it was reproduced against
+`testnet.hashio.io` with the real USDC contract at `0x…1549`.
+
+**The rule that follows:** a feature probe must require a value that **decodes**,
+not merely a call that returned. Anything that treats `success == true` as
+evidence of an interface is wrong on this chain.
+
+Two consequences worth carrying into E3–E4:
+
+- Role ids are **not derivable**. The contracts annotate them
+  `@custom:hash role Cap`, but no plausible preimage reproduces the constant.
+  Extract all 37 mechanically from the compiled artifacts. A wrong id reads as
+  a role with no members, which is indistinguishable from an unheld role.
+- **`getKycStatusFor` returns a uint8 enum**, not a bool. Keep it a number, so a
+  future third member surfaces as an unknown code rather than silently reading
+  as "not granted".
+
+Snapshots have no `currentSnapshotId()` view — the id is only returned by
+`takeSnapshot()`, a transaction — and no enumeration of *taken* snapshots. So
+the list must be probed upward until `SnapshotIdDoesNotExists(uint256)`
+(selector `0x8e81eb83`), bounded, and reported as "at least N" whenever the
+bound stops the walk rather than the chain.
+
 ## 3. Build, step by step
 
 ### Step 1 — Chain and issuance
