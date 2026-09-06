@@ -67,6 +67,75 @@ Consequences, all good:
 > call `sweep()`, poll Iris, call `receiveMessage` on Arc. No encryption, no
 > consensus. The contract is what makes that simplicity safe.
 
+It lives on the VPS and belongs in **its own repository** — it is an operational
+service with a hot key and a deploy cadence, and none of that should share a
+release process with wallet firmware. It needs no access to the companion, the
+device, or the vault; it reads chains and calls `sweep()`. Two jobs:
+
+1. **Confirm** — watch `Transfer` logs to each `CajaInbox` and report a payment
+   as received, so the waiter can tell the customer it went through. This is the
+   latency the customer feels, and it is seconds.
+2. **Settle** — call `sweep()`, poll Iris, call `receiveMessage` on Arc. This is
+   background work nobody waits for.
+
+Keeping those two jobs separate matters: **the customer is never waiting on
+CCTP.** Confirmation is a log read.
+
+### Two roles, two devices, one signed chain of custody
+
+The admin issues the amount; the waiter adds the tip; the customer pays. Both
+staff run the companion, in different modes.
+
+```
+  ADMIN (has LeekWallet)      MESERO (companion only)      CUSTOMER
+  ──────────────────────      ───────────────────────      ────────────
+  opens the shift             scans admin QR
+  signs a SHIFT GRANT     →   receives base amount     →   scans final QR
+  issues base check       →   adds tip 10/15/custom        pays from any chain
+  (no tip, no key given)      shows PAID to client     ←   relayer confirms
+```
+
+**The question this design has to answer: what stops a waiter inventing an
+order, or pocketing the difference?** A QR containing only numbers stops
+nothing. So the amounts are signed.
+
+**Shift grant.** At shift open the admin's device signs one EIP-712 grant:
+
+```
+  OPEN SHIFT · Tacos del Parque
+  Date      6 Sep, 14:00–23:00
+  Staff     4 terminals
+  Max order      2,000.00 USDC
+  Max tip              25%
+  [ REJECT ]              [ APPROVE ]
+```
+
+One physical press per **shift**, not per order — a press per table is not a
+product. The grant names the staff terminals, caps the order value and caps the
+tip percentage.
+
+**Each order** is then signed by the waiter's terminal key, which the grant
+names. The QR the customer scans carries `{merchant, orderId, base, tip,
+staffId}` plus that chain of signatures.
+
+What this buys, and it is the whole point of a hardware wallet being present:
+
+- A waiter **cannot invent revenue** — an order outside a valid grant never
+  settles as legitimate takings, so the books do not silently absorb it.
+- A waiter **cannot exceed the tip cap** the admin signed.
+- Every peso is attributable to a `staffId`, which is what makes tip splitting
+  at shift close arithmetic rather than an argument.
+- The admin **never hands out a key**. The grant is a capability with an expiry.
+
+For the demo, per-order admin signing is also supported and is more visually
+obvious. The shift grant is the version that would survive a real Friday night.
+
+### Chain choice is the customer's, and it is shown
+
+The final QR lists every accepted chain with its logo, **cheapest first**.
+Mainnet or testnet is a configuration flag, not a code path. The customer taps
+the chain they already hold USDC on.
+
 ### Direction is fixed: into Arc, never out
 
 The public Iris API returns **nothing for Arc as a source domain (26)** —
