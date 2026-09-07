@@ -1,0 +1,18 @@
+{
+  "name": "@leekwallet/app-ats",
+  "version": "0.1.0",
+  "description": "Read-only issuer console for a Hedera Asset Tokenization Studio security",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/abi.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/register.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/snapshots.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/app.test.ts"
+  },
+  "dependencies": {
+    "@leekwallet/core": "workspace:*",
+    "@noble/hashes": "1.8.0"
+  }
+}
