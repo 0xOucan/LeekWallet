@@ -23,6 +23,7 @@ import { keccak_256 } from "@noble/hashes/sha3";
 import { chainName as lookupChainName } from "./chains.ts";
 import { CallKind, decodeCall, describeCall, isDecodable } from "./eth-decode.ts";
 import { BUNDLED_DESCRIPTORS } from "./erc7730-bundled.ts";
+import { CIRCLE_DESCRIPTORS } from "./erc7730-circle.ts";
 import { matchDescriptor, type Descriptor, type DescriptorMatch } from "./erc7730.ts";
 
 /** The subset of a signing request that changes what the user is agreeing to. */
@@ -106,9 +107,23 @@ export interface TxInterpretation {
   descriptor?: DescriptorMatch;
 }
 
+/**
+ * Every descriptor the app ships, registry-sourced first.
+ *
+ * Order is the trust order and matchDescriptor takes the first hit, so a
+ * reviewed registry file wins over one we wrote ourselves for the same
+ * contract — the same rule chains.ts applies to curated versus custom chains.
+ * The two sets stay separate exports so provenance is legible; they are joined
+ * only here, at the point of use.
+ */
+export const DEFAULT_DESCRIPTORS: readonly Descriptor[] = [
+  ...BUNDLED_DESCRIPTORS,
+  ...CIRCLE_DESCRIPTORS,
+];
+
 /** Everything that is not the transaction itself. */
 export interface InterpretOptions {
-  /** Defaults to the bundled registry subset. Pass `[]` to switch it off. */
+  /** Defaults to DEFAULT_DESCRIPTORS. Pass `[]` to switch it off. */
   descriptors?: readonly Descriptor[];
   /** Gas-token ticker for descriptor `amount` fields. From chains.ts only. */
   nativeSymbol?: string;
@@ -254,7 +269,7 @@ export function interpretTransaction(
    * `deviceWillRefuse`. A registry descriptor is unsigned host-supplied data;
    * it may make a call readable, never acceptable.
    */
-  const descriptor = matchDescriptor(options.descriptors ?? BUNDLED_DESCRIPTORS, {
+  const descriptor = matchDescriptor(options.descriptors ?? DEFAULT_DESCRIPTORS, {
     chainId,
     ...(tx.to !== undefined ? { to: tx.to } : {}),
     ...(tx.data !== undefined ? { data: tx.data } : {}),

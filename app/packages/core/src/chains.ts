@@ -362,6 +362,34 @@ const CURATED: readonly CuratedEntry[] = [
     explorerUrl: "https://hoodi.etherscan.io",
     testnet: true,
   },
+  /* Arc Testnet. Two things about this entry are unlike every other one, and
+   * both are properties of the chain rather than shortcuts taken here.
+   *
+   * 1. The gas token is USDC, not ether — and the NATIVE unit has 18 decimals
+   *    while the ERC-20 interface at 0x3600…0000 has 6. Both figures were read
+   *    off the chain on 2026-09-06: eth_chainId returned 0x4cef52 (5042002),
+   *    decimals() at 0x3600…0000 returned 6, and eth_gasPrice returned 21.2e9,
+   *    which is only a sane gas price if the native unit is 18 decimals. So a
+   *    native-value transfer of one dollar is 1e18 and a token transfer of one
+   *    dollar is 1e6, on the same chain, in the same wallet. Getting the two
+   *    the wrong way round misprices a payment by 10^12 in either direction.
+   *    `nativeCurrency.decimals` below covers the native path; TOKEN_HINTS
+   *    covers the ERC-20 path. Neither is derived from the other on purpose.
+   * 2. One RPC operator, where the table's rule is two. Circle publishes no
+   *    second endpoint for the testnet. The rule exists so one operator being
+   *    down does not remove the chain, and that cost is accepted here rather
+   *    than met by inventing a mirror; the alternative is not listing a chain
+   *    people are being asked to take payments on. If a second operator
+   *    appears, it belongs here and in the CSP.
+   */
+  {
+    id: 5042002,
+    name: "Arc Testnet",
+    nativeCurrency: { name: "USD Coin", symbol: "USDC", decimals: 18 },
+    rpcUrls: ["https://rpc.testnet.arc.io"],
+    explorerUrl: "https://testnet.arcscan.app",
+    testnet: true,
+  },
   {
     id: 11155111,
     name: "Sepolia",
@@ -744,6 +772,36 @@ const TOKEN_HINTS: readonly TokenHint[] = [
   { chainId: 137, address: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", symbol: "USDC", decimals: 6, verified: false },
   { chainId: 8453, address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", symbol: "USDC", decimals: 6, verified: false },
   { chainId: 42161, address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831", symbol: "USDC", decimals: 6, verified: false },
+
+  /* Circle's testnet USDC and EURC, on the nine chains CCTP V2 testnet covers.
+   *
+   * These are in core rather than in an app directory because knowing that a
+   * contract is USDC and that its decimals are 6 is wallet capability: any
+   * preview of any ERC-20 transfer wants it, and a build with no mini-apps
+   * still renders these transfers. What is app-specific is the *choice* of
+   * these nine chains as payment rails, and that choice lives with the app.
+   *
+   * Every address, symbol and decimals value below was read off the chain on
+   * 2026-09-06 with decimals() and symbol() over each listed RPC, not copied
+   * from a document. That matters most for Arc: 0x3600…0000 is the ERC-20
+   * interface to the native gas token and it answers 6, while the native unit
+   * the same chain prices gas in has 18. The device renders raw units because
+   * it cannot call decimals() (src/ui.c, sign_draw_amount) — this table is the
+   * only thing standing between a $1 payment and a $1,000,000,000,000 preview,
+   * and it is still advisory: `verified` is false here as everywhere. */
+  { chainId: 1301, address: "0x31d0220469e10c4e71834a79b1f276d740d3768f", symbol: "USDC", decimals: 6, verified: false },
+  { chainId: 43113, address: "0x5425890298aed601595a70ab815c96711a31bc65", symbol: "USDC", decimals: 6, verified: false },
+  { chainId: 43113, address: "0x5e44db7996c682e92a960b65ac713a54ad815c6b", symbol: "EURC", decimals: 6, verified: false },
+  { chainId: 59141, address: "0xfece4462d57bd51a6a552365a011b95f0e16d9b7", symbol: "USDC", decimals: 6, verified: false },
+  { chainId: 80002, address: "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582", symbol: "USDC", decimals: 6, verified: false },
+  { chainId: 84532, address: "0x036cbd53842c5426634e7929541ec2318f3dcf7e", symbol: "USDC", decimals: 6, verified: false },
+  { chainId: 84532, address: "0x808456652fdb597867f38412077a9182bf77359f", symbol: "EURC", decimals: 6, verified: false },
+  { chainId: 421614, address: "0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d", symbol: "USDC", decimals: 6, verified: false },
+  { chainId: 5042002, address: "0x3600000000000000000000000000000000000000", symbol: "USDC", decimals: 6, verified: false },
+  { chainId: 5042002, address: "0x89b50855aa3be2f677cd6303cec089b5f319d72a", symbol: "EURC", decimals: 6, verified: false },
+  { chainId: 11155111, address: "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238", symbol: "USDC", decimals: 6, verified: false },
+  { chainId: 11155111, address: "0x08210f9170f89ab7658f0b5e3ff39b0e03c594d4", symbol: "EURC", decimals: 6, verified: false },
+  { chainId: 11155420, address: "0x5fd84259d66cd46123540766be93dfe6d43130d7", symbol: "USDC", decimals: 6, verified: false },
 ] as const;
 
 /**

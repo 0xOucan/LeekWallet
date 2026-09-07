@@ -19,12 +19,14 @@
  */
 
 import { encodeCbor } from "../src/cbor.ts";
+import { formatUnits, getChain, tokenHint } from "../src/chains.ts";
 import { BUNDLED_DESCRIPTORS } from "../src/erc7730-bundled.ts";
+import { CIRCLE_DESCRIPTORS } from "../src/erc7730-circle.ts";
 import {
   DESCRIPTOR_NOTICE, matchDescriptor, parseDescriptor, parseSignature, selectorOf,
   type Descriptor,
 } from "../src/erc7730.ts";
-import { interpretTransaction, WarningCode } from "../src/tx-interpret.ts";
+import { DEFAULT_DESCRIPTORS, interpretTransaction, WarningCode } from "../src/tx-interpret.ts";
 
 let failures = 0;
 const check = (cond: boolean, msg: string) => {
@@ -447,6 +449,154 @@ group("no descriptor-derived string can reach anything device-bound");
   check(DESCRIPTOR_NOTICE.includes("device never sees them"),
     "the descriptor notice does not say the device never sees them");
   check(!/\bverified\b/.test(DESCRIPTOR_NOTICE), "the descriptor notice uses the word verified");
+}
+
+/* ------------------------------------------------------------------------
+ * Circle's testnet USDC and EURC, and the Arc decimals trap.
+ *
+ * On Arc (5042002) the same dollar is 1e18 as a native value and 1e6 through
+ * the ERC-20 interface at 0x3600…0000. The device shows raw units either way,
+ * because it cannot call decimals(); the host preview is where a human sees a
+ * scaled figure, so the host is where getting it wrong costs 10^12.
+ *
+ * The last block is the one that matters most. Without a descriptor the answer
+ * must be a refusal, not the nearest plausible guess.
+ */
+group("Circle stablecoins render, and Arc's two decimal scales stay separate");
+{
+  const ARC = 5042002;
+  const ARC_USDC = "0x3600000000000000000000000000000000000000";
+  const ARC_EURC = "0x89b50855aa3be2f677cd6303cec089b5f319d72a";
+  const BASE_SEPOLIA_USDC = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
+  const BASE_SEPOLIA_EURC = "0x808456652fdb597867f38412077a9182bf77359f";
+
+  // $1.50, as the ERC-20 interface counts: 6 decimals.
+  const transfer = (v: bigint) => "0x" + "a9059cbb" + addrWord(VITALIK) + word(v);
+  const amountOf = (m: ReturnType<typeof matchDescriptor>) =>
+    m?.fields.find((f) => f.format === "tokenAmount")?.value ?? "(none)";
+
+  const arc = matchDescriptor(CIRCLE_DESCRIPTORS, {
+    chainId: ARC, to: ARC_USDC, data: transfer(1_500_000n),
+  });
+  check(arc !== undefined, "no descriptor matched an Arc USDC transfer");
+  check(arc?.intent === "Send", `Arc USDC intent: ${arc?.intent}`);
+  check(amountOf(arc).startsWith("1.5 USDC"), `Arc USDC scaled wrong: ${amountOf(arc)}`);
+  // The raw figure rides along with every scaled one; it is the only number
+  // that came out of the calldata.
+  check(amountOf(arc).includes("1500000 raw units"), `Arc USDC hid the raw units: ${amountOf(arc)}`);
+  // The 10^12 error, named. 1.5e6 raw scaled by the NATIVE decimals would be
+  // 0.0000000000015 — which is what a descriptor that assumed 18 would print.
+  check(!amountOf(arc).includes("0.0000000000015"),
+    `Arc USDC was scaled with the native 18 decimals: ${amountOf(arc)}`);
+
+  // The same chain's native scale, which really is 18, and is reached by a
+  // different path on purpose: chains.ts, never the descriptor.
+  const arcChain = getChain(ARC);
+  check(arcChain?.nativeCurrency.decimals === 18,
+    `Arc native decimals: ${arcChain?.nativeCurrency.decimals}`);
+  check(arcChain?.nativeCurrency.symbol === "USDC", "Arc's gas token is USDC");
+  check(formatUnits(1_500_000_000_000_000_000n, arcChain?.nativeCurrency.decimals ?? 0) === "1.5",
+    "Arc native 1.5 did not scale");
+  // And the two scales are not the same number of decimals, which is the whole
+  // hazard: a single "USDC decimals" constant would be wrong on one path.
+  check(tokenHint(ARC, ARC_USDC)?.decimals === 6, "Arc ERC-20 USDC decimals are not 6");
+
+  const arcEurc = matchDescriptor(CIRCLE_DESCRIPTORS, {
+    chainId: ARC, to: ARC_EURC, data: transfer(2_000_000n),
+  });
+  check(amountOf(arcEurc).startsWith("2 EURC"), `Arc EURC: ${amountOf(arcEurc)}`);
+
+  const base = matchDescriptor(CIRCLE_DESCRIPTORS, {
+    chainId: 84532, to: BASE_SEPOLIA_USDC, data: transfer(284_531_700n),
+  });
+  check(amountOf(base).startsWith("284.5317 USDC"), `Base Sepolia USDC: ${amountOf(base)}`);
+  const baseEurc = matchDescriptor(CIRCLE_DESCRIPTORS, {
+    chainId: 84532, to: BASE_SEPOLIA_EURC, data: transfer(1n),
+  });
+  check(amountOf(baseEurc).startsWith("0.000001 EURC"), `Base Sepolia EURC: ${amountOf(baseEurc)}`);
+
+  // Same address, different chain, is a different contract.
+  check(
+    matchDescriptor(CIRCLE_DESCRIPTORS, { chainId: 1, to: BASE_SEPOLIA_USDC, data: transfer(1n) }) === undefined,
+    "a Base Sepolia descriptor matched on Ethereum mainnet",
+  );
+
+  // An unlimited approval reads as a sentence rather than 78 digits.
+  const inf = (1n << 256n) - 1n;
+  const approve = matchDescriptor(CIRCLE_DESCRIPTORS, {
+    chainId: 84532, to: BASE_SEPOLIA_USDC,
+    data: "0x" + "095ea7b3" + addrWord(VITALIK) + word(inf),
+  });
+  check(amountOf(approve).startsWith("UNLIMITED"), `unlimited approval: ${amountOf(approve)}`);
+
+  // Provenance is legible in both directions: nothing we wrote can pass for a
+  // reviewed registry file, and the registry set did not silently grow.
+  for (const d of CIRCLE_DESCRIPTORS) {
+    check(d.source.startsWith("local/"), `a local descriptor claims registry provenance: ${d.source}`);
+  }
+  for (const d of BUNDLED_DESCRIPTORS) {
+    check(d.source.startsWith("registry/"), `a local descriptor reached the registry set: ${d.source}`);
+  }
+  check(DEFAULT_DESCRIPTORS.length === BUNDLED_DESCRIPTORS.length + CIRCLE_DESCRIPTORS.length,
+    "the default set is not the two sets joined");
+  // Registry first, so a reviewed file wins over one we wrote for the same
+  // contract — the trust order chains.ts uses for curated versus custom.
+  check(DEFAULT_DESCRIPTORS[0]?.source.startsWith("registry/") === true,
+    "the local set sorts above the registry set");
+}
+
+group("a token with no descriptor refuses to guess");
+{
+  const ARC = 5042002;
+  const ARC_USDC = "0x3600000000000000000000000000000000000000";
+  const transfer = (v: bigint) => "0x" + "a9059cbb" + addrWord(VITALIK) + word(v);
+
+  /* Remove the one descriptor that makes Arc USDC readable. Everything below
+   * asserts what is left, because "what is left" is what any token we have not
+   * described looks like — and there will always be more of those than of
+   * these. A wallet that fills the gap with a plausible number is worse than
+   * one that says it does not know: 1.5e6 raw units is $1.50 at 6 decimals and
+   * $0.0000000000015 at 18, and nothing in the calldata says which. */
+  const without = CIRCLE_DESCRIPTORS.filter(
+    (d) => !d.deployments.some((dep) => dep.chainId === ARC && dep.address === ARC_USDC),
+  );
+  check(without.length === CIRCLE_DESCRIPTORS.length - 1, "the removal removed the wrong count");
+
+  const gone = matchDescriptor(without, { chainId: ARC, to: ARC_USDC, data: transfer(1_500_000n) });
+  check(gone === undefined, "a descriptor matched after the only matching one was removed");
+
+  /* The interpretation still has to be safe with no descriptor at all, since
+   * that is the state of every contract nobody has described. Raw units, the
+   * contract address, and no scaled figure anywhere. */
+  const i = interpretTransaction(
+    { chainId: ARC, to: ARC_USDC, data: transfer(1_500_000n), value: 0n },
+    { descriptors: without },
+  );
+  check(i.descriptor === undefined, "an interpretation invented a descriptor");
+  check(i.tokenAmountRaw === 1_500_000n, `raw amount lost: ${i.tokenAmountRaw}`);
+  check(i.summary.includes("raw token units"), `summary hides rawness: ${i.summary}`);
+  check(!i.summary.includes("1.5"), `summary scaled an undescribed token: ${i.summary}`);
+  check(!/\bUSDC\b/.test(i.summary), `summary named an undescribed token: ${i.summary}`);
+
+  /* And the second refusal, one layer down: a descriptor that DOES match but
+   * whose token nothing in TOKEN_HINTS knows. Decimals never come from the
+   * descriptor, so this is the case where the labels are right and the scale is
+   * unknown — it must print raw units and say so, not fall back to 18. */
+  const unknownToken = "0x00000000000000000000000000000000deadbe01";
+  const d = parseDescriptor(
+    {
+      context: { contract: { deployments: [{ chainId: ARC, address: unknownToken }] } },
+      metadata: { contractName: "Mystery" },
+      display: { formats: { "transfer(address to, uint256 amount)": { intent: "Send", fields: [
+        { path: "#.amount", format: "tokenAmount", label: "Amount", params: { token: unknownToken } },
+      ] } } },
+    },
+    "test",
+  );
+  const m = matchDescriptor(d ? [d] : [], { chainId: ARC, to: unknownToken, data: transfer(1_500_000n) });
+  const v = m?.fields[0]?.value ?? "";
+  check(v === "1500000 raw units (decimals unknown)", `unhinted token was scaled: ${v}`);
+  check(!v.includes("0.0000000000015") && !v.includes("1.5 "), `a decimals value was assumed: ${v}`);
 }
 
 if (failures) {
