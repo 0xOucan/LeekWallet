@@ -36,6 +36,7 @@ import qrcodegen from "qrcode-generator";
 import { initFlasher, tauriFlashBridge } from "./flasher.ts";
 import { parsePaymentUri } from "../packages/core/src/payment-uri.ts";
 import { mountApps } from "./apps/mount.ts";
+import { appProposer } from "./apps/propose.ts";
 import { fetchTokenBalancesBatched } from "../packages/core/src/multicall.ts";
 import {
   buildTokenIndex, parseTokenList, refreshTokenList, TOKEN_LIST_NOTICE, TOKEN_LIST_URLS,
@@ -1322,12 +1323,23 @@ function applyChain(info: ChainInfo): void {
    * from a chain nobody has selected. See src/apps/registry.ts -- this and
    * that file are the shell's entire knowledge that apps exist. */
   const { request, host } = balanceRequest(info);
-  mountApps($("apps"), {
-    chainId: info.id,
-    address: addresses[selectedIndex] ?? "",
-    request,
-    endpointHost: host,
-  });
+  const address = addresses[selectedIndex] ?? "";
+  mountApps(
+    $("apps"),
+    { chainId: info.id, address, request, endpointHost: host },
+    /* How an app asks for a signature, and the whole of it. Bound per app so
+     * the review card can name which one asked, and built here rather than
+     * inside mount.ts so the shell's live chain, address and review queue stay
+     * in the one file that owns them. `walletConnect` is declared further down;
+     * the reference is inside the closure and is not read until a proposal
+     * happens, which is long after initialisation. */
+    (app) => appProposer(app, { chainId: info.id, address }, {
+      chainId: () => chainId,
+      address: () => addresses[selectedIndex] ?? "",
+      review: (local) => walletConnect.review(local),
+      log,
+    }),
+  );
 }
 
 /** Rebuild the chain list: curated first, then custom. The order is the trust order. */

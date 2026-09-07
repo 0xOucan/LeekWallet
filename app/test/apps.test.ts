@@ -121,16 +121,97 @@ group("the contract lives in core, where no app owns it");
   check(/@leekwallet\/core\/mini-app\.ts/.test(registry),
     "the registry takes its MiniApp type from somewhere other than core");
 
-  // No signer among AppContext's FIELDS. A read-only app should be
-  // structurally unable to sign, and the moment that changes should be a diff
-  // on this line. Comments are excluded from the search on purpose: this file's
-  // prose is largely about why signing is absent, and matching it would make
-  // the assertion fire on the explanation rather than on the thing.
+  /* What AppContext's FIELDS are, exactly. Comments are excluded from the
+   * search on purpose: this file's prose is largely about the boundary, and
+   * matching it would make the assertion fire on the explanation rather than on
+   * the thing.
+   *
+   * This assertion used to read "no field may mention signing at all", which
+   * was right while every app was read-only and became wrong the moment one
+   * had to ask for a signature. It was not weakened to let a feature through:
+   * it was replaced with the narrower statement that is actually the boundary.
+   * An app may PROPOSE — hand over an intent and receive an outcome — and may
+   * not hold anything that produces a signature by itself. So the field list is
+   * an allowlist, which keeps what the old assertion bought us (a new field is
+   * a deliberate diff on this line), and the forbidden words are the
+   * capabilities: a key, a transport, a device client, a session.
+   *
+   * If someone later hands an app raw signing power, it arrives as a field, and
+   * a field that is not one of these fails here. */
   const body = /export interface AppContext \{([\s\S]*?)\n\}/.exec(contract)?.[1] ?? "";
   check(body.length > 0, "AppContext's declaration could not be found");
   const fields = body.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*/g, "");
-  check(!/signer|sign|device|transport|key/i.test(fields),
-    `AppContext has grown a signing capability: ${fields.trim()}`);
+
+  const ALLOWED_FIELDS = ["chainId", "address", "request", "endpointHost", "propose"];
+  const declared = [...fields.matchAll(/^\s{2}(\w+)\??[:(]/gm)].map((m) => m[1] as string);
+  check(declared.length > 0, "no AppContext fields were found to check");
+  for (const field of declared) {
+    check(ALLOWED_FIELDS.includes(field),
+      `AppContext has grown a field this test has never considered: ${field}`);
+  }
+
+  check(!/signer|device|transport|\bkey\b|privateKey|mnemonic|seed|client|session/i.test(fields),
+    `AppContext has grown a capability rather than a proposal: ${fields.trim()}`);
+
+  /* And `propose` must be the proposal seam rather than a signer wearing its
+   * name. It takes an AppProposal and returns a ProposalOutcome — the types in
+   * app-proposal.ts, where the payload is screened against the descriptor rule.
+   * A `propose` that took raw bytes, or returned a signature over whatever it
+   * was given, would be the design this replaced. */
+  check(/propose\?:\s*\(proposal: AppProposal\) => Promise<ProposalOutcome>/.test(fields),
+    "AppContext.propose is not the (AppProposal) => ProposalOutcome seam");
+}
+
+group("an app cannot reach a key, a transport or the device");
+{
+  /* The other half of the boundary. AppContext could be spotless and an app
+   * could still import the device client itself. These are the core modules
+   * that touch hardware, keys or the wire, and no app may name one. */
+  const FORBIDDEN_MODULES = [
+    "transport.ts", "framing.ts", "device-state.ts", "mock-device.ts",
+    "viem-account.ts", "session.ts",
+  ];
+  /* Call shapes that mean "I found a route to the device anyway". `client.call`
+   * is the device RPC, and the four names are what it would be asked for. */
+  const FORBIDDEN_CALLS = [
+    /\bclient\.call\b/, /\bDeviceClient\b/, /\bnavigator\.bluetooth\b/,
+    /["']signTransaction["']/, /["']signTypedData["']/,
+    /["']signMessage["']/, /["']signHash["']/,
+  ];
+  for (const app of apps) {
+    for (const file of sourcesOf(join(appsDir, app, "src"))) {
+      const source = readFileSync(file, "utf8");
+      for (const mod of FORBIDDEN_MODULES) {
+        check(!source.includes(`core/${mod}`), `${file} imports ${mod}, which reaches the device`);
+      }
+      for (const shape of FORBIDDEN_CALLS) {
+        check(!shape.test(source), `${file} matches ${shape}, which is a route to a signature`);
+      }
+    }
+  }
+
+  /* The shell side of the same rule: an app is handed `propose` in exactly one
+   * place. A second attachment would be a second seam, and an unscreened one. */
+  const named = sourcesOf(join(appRoot, "src"))
+    .filter((f) => /\bpropose\s*[,:}]/.test(readFileSync(f, "utf8")))
+    .map((f) => f.slice(appRoot.length + 1))
+    .sort();
+  for (const file of named) {
+    check(["src/apps/mount.ts", "src/apps/propose.ts", "src/main.ts"].includes(file),
+      `propose is attached in ${file}, which is not one of the three files that may`);
+  }
+
+  /* And the gate is not optional. The shell's proposer must go through
+   * screenProposal; a path that built a plan without it would be a payload the
+   * descriptor rule never saw. */
+  const proposer = readFileSync(join(appRoot, "src", "apps", "propose.ts"), "utf8");
+  check(/screenProposal\(/.test(proposer), "the shell's proposer does not screen proposals");
+  /* Comments stripped, as in the AppContext check above: that file's prose is
+   * about what it must not touch, and matching it would fire on the promise
+   * rather than on a breach of it. */
+  const proposerCode = proposer.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*/g, "");
+  check(!/client\.call|signPlanned|transport/.test(proposerCode),
+    "the shell's proposer reaches the device directly instead of using the review path");
 }
 
 group("each app carries its own CSS, prefixed with its id");

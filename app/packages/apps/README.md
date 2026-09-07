@@ -32,6 +32,7 @@ export interface AppContext {
   chainId: number;
   address: string;
   request: EthRequest;         // the shell's failover RPC. Do not build your own.
+  propose?: (p: AppProposal) => Promise<ProposalOutcome>;  // see "Signing", below
 }
 ```
 
@@ -44,11 +45,78 @@ the shared shape.
 
 ### What an app is not given
 
-No signer, no device client, no transport. A read-only app should be
-structurally incapable of producing a signature, not merely disinclined to. An
-app that needs a transaction returns an unsigned one for the shell to put
-through the ordinary device path, the same rule `core/src/allowances.ts` states
-for its revoke transactions.
+No signer, no device client, no transport, no key, no session. An app should be
+structurally incapable of producing a signature, not merely disinclined to.
+`app/test/apps.test.ts` asserts both halves of that: the fields `AppContext` may
+carry, and the fact that no app source imports a core module that touches
+hardware, keys or the wire, or names a device signing method.
+
+## Signing: propose, never sign
+
+> **If the device cannot render it, we do not sign it.**
+
+An app that needs a signature calls `context.propose(...)`. It hands over an
+*intent* and gets back an *outcome*. It never holds a function that turns bytes
+it chose into a signature — that is a capability, and holding one means a
+compromised dependency can sign at a time of its choosing. Proposing means every
+signature costs a screening pass, a card the user reads, a device screen, and a
+press.
+
+`@leekwallet/core/app-proposal.ts` is the contract and carries the full
+reasoning. In short:
+
+```ts
+const outcome = await context.propose?.({
+  kind: "call",              // or "typed-data", with a `document`
+  to: POOL,                  // the contract
+  data: encoded,             // ABI-encoded calldata
+  reason: "ship the order",  // one line, logged as the app's words
+});
+if (!outcome?.ok) return;    // one no, whatever the reason was
+```
+
+**What an app may set:** `to`, `data`, `value`, `reason` — and for typed data,
+the `document`. That is the whole list, and the other fields are absent from the
+type rather than ignored at runtime.
+
+**What only the shell may set:** the signer (`from`), the chain, the nonce, the
+gas, the fees, and whether the result is broadcast. An app that could pick
+`from` could ask the user to sign as an account they are not looking at; an app
+that could pick the chain could get a signature valid on a network the screen is
+not about. The signer is always the address the shell is currently showing, and
+the chain is always the one it is on.
+
+**The descriptor rule.** A `call` proposal is refused unless a bundled ERC-7730
+descriptor matches the chain, the contract *and* the selector, renders every
+argument, and agrees with the firmware-mirroring decoder about what the calldata
+says. A typed-data proposal is refused unless the device's own mirror
+(`inspectTypedData`) can show every field — including when the device owner has
+blind signing switched on, because that hatch is for dapps the owner chose to
+connect to, not for code we shipped inside the wallet. So **an app that wants to
+sign a new call ships the descriptor for it**, and until it does, the call
+cannot be proposed. Refusal happens in `screenProposal`, in core, before
+anything reaches the device.
+
+**Every no looks the same.** `{ ok: false }` covers a missing descriptor, an
+undescribable document, a device refusal and a user pressing reject, and an app
+cannot tell which it got. An app that could would be able to walk selectors
+until one is describable, or detect a rejection and immediately re-ask. The
+*user* sees the real reason, in words, in the shell log, every time. That
+asymmetry is deliberate.
+
+**Not simulated.** A proposal is not run through `core/src/simulate.ts` before
+it is shown. Making describability depend on a simulation would make it depend
+on an RPC operator's uptime, would disclose the payload before the user had
+decided anything, and would put a green tick next to a call the descriptor may
+still be describing wrongly.
+
+`propose` is optional, and its absence is a real state — no device, or a test
+harness. An app must say so rather than pretend, and an app that never signs
+never calls it.
+
+The shell side is `app/src/apps/propose.ts`: it stamps in the shell-owned facts
+and hands the screened proposal to the same review card a WalletConnect request
+goes through. There is one review-and-sign path, and it was not duplicated.
 
 ## The dependency graph
 

@@ -13,7 +13,7 @@
  * but its code is still in the bundle. Excluding an app is deleting it.
  */
 
-import type { AppContext } from "@leekwallet/core/mini-app.ts";
+import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 import { miniAppsForChain, mountMiniApp } from "./registry.ts";
 
 /**
@@ -24,8 +24,19 @@ import { miniAppsForChain, mountMiniApp } from "./registry.ts";
  * rendering figures from a chain nobody selected. `MiniApp.mount` returns no
  * disposer by design — the app owns its root and the shell clears it — so
  * teardown is dropping the roots.
+ *
+ * `proposerFor` is optional and is how an app gets a `propose` at all. It is a
+ * per-app factory rather than one function in `context` because a proposal is
+ * attributed: the review card names the app that asked, and a shared closure
+ * could only name the shell. Omitting it mounts every app without a `propose`,
+ * which is the honest shape for a build with no signing path — an app must cope
+ * with its absence, and that is stated in mini-app.ts.
  */
-export function mountApps(container: HTMLElement, context: AppContext): void {
+export function mountApps(
+  container: HTMLElement,
+  context: AppContext,
+  proposerFor?: (app: MiniApp) => AppContext["propose"],
+): void {
   container.replaceChildren();
   const apps = miniAppsForChain(context.chainId);
   container.hidden = apps.length === 0;
@@ -45,7 +56,12 @@ export function mountApps(container: HTMLElement, context: AppContext): void {
     /* An app that throws while mounting must not take the shell down with it,
      * and must not leave an empty panel that reads as "nothing to show". The
      * failure is rendered where the app would have been. */
-    void mountMiniApp(app, root, context).catch((e: unknown) => {
+    const propose = proposerFor?.(app);
+    /* A fresh object per app: two apps sharing one context would share a
+     * `propose` bound to whichever name was built last. */
+    const appContext: AppContext = { ...context, ...(propose ? { propose } : {}) };
+
+    void mountMiniApp(app, root, appContext).catch((e: unknown) => {
       root.replaceChildren();
       const p = document.createElement("p");
       p.className = "notice notice--danger";

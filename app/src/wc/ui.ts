@@ -127,6 +127,29 @@ export interface WalletBridge {
   ): Promise<string>;
 }
 
+/**
+ * A request that did not come off the relay — today, a mini-app's screened
+ * proposal (src/apps/propose.ts).
+ *
+ * It arrives already planned. That is the asymmetry with a dapp request, and it
+ * is deliberate: a dapp sends JSON that `planRequest` has to distrust and
+ * transcribe, while a proposal was built and screened by our own code against
+ * the ERC-7730 gate before it got here. Re-planning it from JSON would throw
+ * that screening away and re-derive the payload a second time, which is a
+ * second chance to disagree with what was checked.
+ *
+ * What it does NOT get to skip is the card, the device, and the button. Those
+ * are below this line and there is no path around them.
+ */
+export interface LocalRequest {
+  /** Whose request this is, for the card. The app's name, from the registry. */
+  name: string;
+  /** What the card's method line says, e.g. "app proposal: transaction". */
+  method: string;
+  /** Already screened and planned by the caller. */
+  plan: RequestPlan;
+}
+
 /* The fallback named when this webview cannot scan. Specific to this panel:
  * the generic message in qr.ts has to serve the send form too, where the
  * workaround is typing an address rather than pasting a link. */
@@ -142,6 +165,19 @@ const $ = <T extends HTMLElement>(id: string): T => {
 interface Queued {
   request: WcRequest;
   plan: RequestPlan;
+  /**
+   * Where the answer goes.
+   *
+   * Carried by the queue entry rather than reached for on `connection`, because
+   * not every request on this card came off the relay: a mini-app's proposal is
+   * reviewed here too (src/apps/propose.ts), and its answer belongs to a
+   * promise rather than to a WalletConnect topic. Making the destination part
+   * of the entry is what let apps reuse this path instead of growing a second
+   * one — and a second review-and-sign path is the thing that must not exist,
+   * because it would be the one nobody remembers to fix.
+   */
+  respond(result: unknown): Promise<void>;
+  fail(error: JsonRpcErrorBody): Promise<void>;
   /**
    * The approval the user is allowed to cap, and the edit if they made one.
    *
@@ -184,6 +220,15 @@ export function initWalletConnect(bridge: WalletBridge): {
   chainChanged(chainId: number): void;
   /** Called when the address list changes, so new sessions get the right ones. */
   accountsChanged(): void;
+  /**
+   * Put a locally-built request through this same card.
+   *
+   * Resolves with whatever the plan's branch produces — a tx hash, a raw
+   * transaction, a signature — and rejects if the user declines or the device
+   * refuses. The caller does not learn which; see app-proposal.ts on why the
+   * two are one outcome by the time an app sees them.
+   */
+  review(request: LocalRequest): Promise<unknown>;
 } {
   const queue: Queued[] = [];
   let proposal: WcProposal | null = null;
@@ -200,6 +245,10 @@ export function initWalletConnect(bridge: WalletBridge): {
    * which reads as a failure directly underneath a line saying the pairing
    * succeeded. The state is what makes the difference sayable. */
   let pairedAwaitingProposal = false;
+  /* Ids for locally-originated requests. Negative so that one can never be
+   * confused with a relay request id in a log line, and so a bug that sent one
+   * to `connection.respond` would name an id no session has. */
+  let localId = 0;
 
   const connection = new WalletConnectConnection({
     onProposal: (p) => { proposal = p; drawProposal(); },
@@ -436,7 +485,23 @@ export function initWalletConnect(bridge: WalletBridge): {
       return;
     }
 
-    const queued: Queued = { request, plan };
+    enqueue({
+      request,
+      plan,
+      respond: (result) => connection.respond(request.topic, request.id, result),
+      fail: (error) => connection.respondError(request.topic, request.id, error),
+    });
+  }
+
+  /**
+   * Show a planned request and wait for the user.
+   *
+   * One function for relay requests and local ones, so a proposal cannot reach
+   * the device by a route that skips the card, the approval editor or the
+   * announce.
+   */
+  function enqueue(queued: Queued): void {
+    const plan = queued.plan;
     /* An `approve` the app could decode is the one request shape where the
      * user has a third answer available: not "sign this unlimited allowance"
      * or "go without the dapp", but "approve this much". Attached before the
@@ -773,7 +838,7 @@ export function initWalletConnect(bridge: WalletBridge): {
 
     if (!approve) {
       done();
-      await connection.respondError(request.topic, request.id, {
+      await head.fail({
         code: 4001,
         message: "The user rejected the request in the wallet.",
       });
@@ -800,35 +865,35 @@ export function initWalletConnect(bridge: WalletBridge): {
         /* The dapp gets the answer for the approval it asked for — the last
          * step — and is not told the amount changed. It will find out the way
          * any allowance is found out: by reading it. */
-        await connection.respond(request.topic, request.id, result);
+        await head.respond(result);
         bridge.log(
           `${request.name}: approval capped and ${plan.broadcast ? `sent ${result}` : "signed"}`,
         );
       } else if (plan.kind === "transaction") {
         bridge.deviceAttention(`${request.name}: check every page on the device, then approve`);
         const result = await bridge.signTransaction(plan.tx, plan.broadcast);
-        await connection.respond(request.topic, request.id, result);
+        await head.respond(result);
         bridge.log(`${request.name}: ${plan.broadcast ? `sent ${result}` : "signed"}`);
       } else if (plan.kind === "message") {
         bridge.deviceAttention(`${request.name}: confirm the message on the device`);
         const signature = await bridge.signMessage(plan.address, plan.message);
-        await connection.respond(request.topic, request.id, signature);
+        await head.respond(signature);
         bridge.log(`${request.name}: message signed`);
       } else if (plan.kind === "typed-data") {
         bridge.log(`${request.name}: check every page on the device, then approve`);
         const signature = await bridge.signTypedData(plan.address, plan.request);
-        await connection.respond(request.topic, request.id, signature);
+        await head.respond(signature);
         bridge.log(`${request.name}: typed data signed`);
       } else if (plan.kind === "switch-chain") {
         bridge.setChainId(plan.chainId);
         // null is the EIP-3326 success value; a dapp checks for its absence.
-        await connection.respond(request.topic, request.id, null);
+        await head.respond(null);
         await connection.emitChainChanged(plan.chainId);
         bridge.log(`${request.name}: switched to chain ${plan.chainId}`);
       }
     } catch (e) {
       const error = toJsonRpcError(e);
-      await connection.respondError(request.topic, request.id, error);
+      await head.fail(error);
       bridge.log(`${request.name}: ${request.method} failed — ${error.message}`);
     } finally {
       for (const button of ["wcapprove", "wcreject"]) {
@@ -903,6 +968,30 @@ export function initWalletConnect(bridge: WalletBridge): {
     accountsChanged(): void {
       connection.setAccounts(bridge.accounts());
       drawProposal();
+    },
+    review(local: LocalRequest): Promise<unknown> {
+      return new Promise<unknown>((resolve, reject) => {
+        enqueue({
+          /* A synthetic WcRequest so the card, the log lines and the announce
+           * need no idea where this came from. Its topic is not a session topic
+           * and is never handed to the relay: the two responders below are the
+           * only destination this entry has. */
+          request: {
+            id: --localId,
+            topic: `local:${local.name}`,
+            method: local.method,
+            params: null,
+            chainId: bridge.chainId(),
+            name: local.name,
+          },
+          plan: local.plan,
+          respond: (result) => { resolve(result); return Promise.resolve(); },
+          /* The JSON-RPC body is written for a dapp; the caller here is a
+           * mini-app, which gets one undifferentiated no (app-proposal.ts).
+           * The message is kept for the shell's own log and goes no further. */
+          fail: (error) => { reject(new Error(error.message)); return Promise.resolve(); },
+        });
+      });
     },
   };
 }

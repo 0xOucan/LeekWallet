@@ -26,17 +26,28 @@
  * ---------------------------------------------------------------------------
  * What an app is NOT given
  *
- * `AppContext` carries an `EthRequest` and an address. It does not carry a
- * device client, a signer, or a transport, and that is a security boundary
- * rather than an oversight: a read-only app should be structurally incapable of
- * producing a signature, not merely disinclined to. An app that needs to sign
- * returns an unsigned transaction for the shell to put through the ordinary
- * device path — the same rule allowances.ts states for its remedies, for the
- * same reason: a code path in the companion that produces signatures without a
- * device confirmation is precisely the property this project exists not to
- * have.
+ * `AppContext` carries an `EthRequest`, an address, and a way to *propose*. It
+ * does not carry a device client, a signer, a transport or a key, and that is a
+ * security boundary rather than an oversight: an app should be structurally
+ * incapable of producing a signature, not merely disinclined to.
+ *
+ * `propose` is not a hole in that. It hands the shell an intent and returns an
+ * outcome; the shell decides the signer, the chain, the fees and whether
+ * anything is broadcast, and the device draws and confirms the payload before a
+ * signature exists. An app holds the ability to ask, never the ability to sign
+ * — the difference between the two is set out at length in app-proposal.ts, and
+ * the rule it enforces is that a payload nothing can describe in words is
+ * refused before it reaches the device.
+ *
+ * The earlier version of this file said an app gets no signing path at all and
+ * should hand back an unsigned transaction for the shell to route. That was the
+ * right instinct with no seam to express it: every app that needed a signature
+ * would have grown its own arrangement with the shell, and one of them would
+ * have been sloppier than the others. One reviewed seam beats three
+ * improvisations.
  */
 
+import type { AppProposal, ProposalOutcome } from "./app-proposal.ts";
 import type { EthRequest } from "./balances.ts";
 
 /** Everything the shell hands an app when it mounts one. */
@@ -70,6 +81,21 @@ export interface AppContext {
    * arriving beside it.
    */
   endpointHost?: () => string | undefined;
+  /**
+   * Ask the shell to put a payload in front of the user and, if they agree,
+   * through the device.
+   *
+   * Optional, and absence is a real state rather than a legacy allowance: a
+   * shell with no device connected, or a test harness, supplies no `propose`,
+   * and an app must say so rather than pretend. An app that never signs simply
+   * never calls it.
+   *
+   * Everything about what may be proposed, what the shell fills in, and why the
+   * refusal an app sees is indistinguishable from a user's rejection is in
+   * app-proposal.ts. The one line worth repeating here: this returns a result,
+   * not a signing capability, and every call costs one press on the hardware.
+   */
+  propose?: (proposal: AppProposal) => Promise<ProposalOutcome>;
 }
 
 /**
