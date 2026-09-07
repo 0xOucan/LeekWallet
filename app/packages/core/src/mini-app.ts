@@ -96,6 +96,30 @@ export interface AppContext {
    * not a signing capability, and every call costs one press on the hardware.
    */
   propose?: (proposal: AppProposal) => Promise<ProposalOutcome>;
+
+  /**
+   * A read path to a chain other than the one the shell is on, or undefined
+   * for a chain the shell cannot reach.
+   *
+   * Optional, and the honest answer is allowed to be "no". An app must not
+   * construct its own client — doing so routes around the user's chosen
+   * endpoint, the failover policy and the CSP allowlist — so this is the only
+   * way an app can read a second chain, and the shell decides which ones it
+   * will offer.
+   *
+   * Added for La Caja, which takes payment on nine chains at once: the
+   * customer pays from whichever chain they already hold USDC on, and the
+   * terminal has to watch all of them. An app given `undefined` for a chain
+   * must render that chain as *not looked at*, never as *nothing there* — the
+   * two are different facts and only one of them is safe to tell a customer.
+   */
+  requestOn?: (chainId: number) => ChainChannel | undefined;
+}
+
+/** A read path to one chain, and whoever most recently answered on it. */
+export interface ChainChannel {
+  request: EthRequest;
+  endpointHost?: () => string | undefined;
 }
 
 /**

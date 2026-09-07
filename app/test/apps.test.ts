@@ -142,7 +142,19 @@ group("the contract lives in core, where no app owns it");
   check(body.length > 0, "AppContext's declaration could not be found");
   const fields = body.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*/g, "");
 
-  const ALLOWED_FIELDS = ["chainId", "address", "request", "endpointHost", "propose"];
+  /* Each name here is a decision that a capability is safe to hand an app, and
+     the failure message is deliberately phrased as "never considered" rather
+     than "not allowed": the point is to force the judgement, not to be quieted.
+ 
+     `requestOn` was added for La Caja, which watches nine chains at once. It
+     returns { request, endpointHost } -- the same shape and the same power as
+     `request`, pointed at another chain. It cannot sign: what backs it is a
+     FailoverRpc to a public node, and a public node holds no keys, so
+     eth_sendTransaction and eth_sign have nothing to sign with there. An app
+     could broadcast an already-signed transaction through it, which is not a
+     new capability, because obtaining that signature still requires `propose`
+     and a press on the device. */
+  const ALLOWED_FIELDS = ["chainId", "address", "request", "endpointHost", "propose", "requestOn"];
   const declared = [...fields.matchAll(/^\s{2}(\w+)\??[:(]/gm)].map((m) => m[1] as string);
   check(declared.length > 0, "no AppContext fields were found to check");
   for (const field of declared) {

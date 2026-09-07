@@ -33,8 +33,15 @@ export interface AppContext {
   address: string;
   request: EthRequest;         // the shell's failover RPC. Do not build your own.
   propose?: (p: AppProposal) => Promise<ProposalOutcome>;  // see "Signing", below
+  endpointHost?: () => string | undefined;      // who answered, at render time
+  requestOn?: (id: number) => ChainChannel | undefined;  // a read path to another chain
 }
 ```
+
+`requestOn` may return `undefined`, and an app must render that chain as **not
+looked at**, never as **nothing there** — La Caja watches nine chains for a
+payment, and "we could not ask" told to a customer as "you have not paid"
+invites them to pay twice.
 
 An app exports one such object as a named const and as its default export, and
 `app/src/apps/registry.ts` lists it.

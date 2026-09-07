@@ -60,6 +60,15 @@ export interface Rail {
    * chain-id test so a second such chain is data, not a code change.
    */
   flatFee: boolean;
+  /**
+   * Blocks of depth before a `Transfer` to the merchant is shown as PAID
+   * rather than as seen. Per rail because two blocks on an L2 and two blocks
+   * on Ethereum L1 are not the same claim about permanence: the L2 testnets
+   * here reorg at depth 1 if at all, while a 2-block reorg on an Ethereum
+   * chain is an ordinary Tuesday. See watch.ts for what the terminal does
+   * after this depth, which is: never retract.
+   */
+  confirmations: number;
 }
 
 /**
@@ -77,15 +86,15 @@ export const CARD_RATE_BPS = 406;
  * all. Everything else is a source domain.
  */
 const RAILS: readonly Rail[] = [
-  { chainId: 5042002, name: chainLabel(5042002), feeCents: 1, flatFee: false },   // Arc; gas is USDC
-  { chainId: 84532, name: chainLabel(84532), feeCents: 1, flatFee: false },       // Base Sepolia
-  { chainId: 11155420, name: chainLabel(11155420), feeCents: 1, flatFee: false }, // OP Sepolia
-  { chainId: 421614, name: chainLabel(421614), feeCents: 1, flatFee: false },     // Arbitrum Sepolia
-  { chainId: 1301, name: chainLabel(1301), feeCents: 1, flatFee: false },         // Unichain Sepolia
-  { chainId: 80002, name: chainLabel(80002), feeCents: 1, flatFee: false },       // Polygon Amoy
-  { chainId: 59141, name: chainLabel(59141), feeCents: 2, flatFee: false },       // Linea Sepolia
-  { chainId: 43113, name: chainLabel(43113), feeCents: 3, flatFee: false },       // Avalanche Fuji
-  { chainId: 11155111, name: chainLabel(11155111), feeCents: 200, flatFee: true }, // Ethereum L1 (Sepolia)
+  { chainId: 5042002, name: chainLabel(5042002), feeCents: 1, flatFee: false, confirmations: 2 },   // Arc; gas is USDC
+  { chainId: 84532, name: chainLabel(84532), feeCents: 1, flatFee: false, confirmations: 2 },       // Base Sepolia
+  { chainId: 11155420, name: chainLabel(11155420), feeCents: 1, flatFee: false, confirmations: 2 }, // OP Sepolia
+  { chainId: 421614, name: chainLabel(421614), feeCents: 1, flatFee: false, confirmations: 2 },     // Arbitrum Sepolia
+  { chainId: 1301, name: chainLabel(1301), feeCents: 1, flatFee: false, confirmations: 2 },         // Unichain Sepolia
+  { chainId: 80002, name: chainLabel(80002), feeCents: 1, flatFee: false, confirmations: 5 },       // Polygon Amoy; reorgs deeper than its L2 peers
+  { chainId: 59141, name: chainLabel(59141), feeCents: 2, flatFee: false, confirmations: 2 },       // Linea Sepolia
+  { chainId: 43113, name: chainLabel(43113), feeCents: 3, flatFee: false, confirmations: 2 },       // Avalanche Fuji
+  { chainId: 11155111, name: chainLabel(11155111), feeCents: 200, flatFee: true, confirmations: 12 }, // Ethereum L1 (Sepolia)
 ] as const;
 
 /**
@@ -122,6 +131,15 @@ export const TILL_CHAIN_IDS: readonly number[] = RAILS.map((r) => r.chainId);
 
 /** The rails, cheapest first. Already in that order; stated so callers rely on it. */
 export const railsCheapestFirst = (): readonly Rail[] => RAILS;
+
+/**
+ * How deep a payment must be on this chain before the terminal says PAID.
+ * An unknown chain gets the most cautious figure any rail asks for, not the
+ * least: guessing low here is guessing in the direction of telling a customer
+ * their money arrived when it may not have.
+ */
+export const confirmationsFor = (chainId: number): number =>
+  railFor(chainId)?.confirmations ?? Math.max(...RAILS.map((r) => r.confirmations));
 
 export const railFor = (chainId: number): Rail | undefined =>
   RAILS.find((r) => r.chainId === chainId);
