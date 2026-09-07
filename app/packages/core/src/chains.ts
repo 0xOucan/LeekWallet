@@ -271,6 +271,22 @@ const CURATED: readonly CuratedEntry[] = [
     testnet: true,
   },
   {
+    id: 296,
+    name: "Hedera Testnet",
+    /* 18, not 8. Hedera's own unit is the tinybar (8 decimals), but the
+     * JSON-RPC relay presents balances and msg.value in weibars so that
+     * ordinary EIP-155 tooling works unmodified — 1 tinybar = 10^10 weibar.
+     * Quoting 8 here would misread every balance by ten orders of magnitude,
+     * and the number this field scales is the one the relay returns. */
+    nativeCurrency: { name: "Test HBAR", symbol: "HBAR", decimals: 18 },
+    /* Two operators, per the selection rule above: Hashio is run by the
+     * Hedera-adjacent Swirlds Labs, thirdweb's is independent of it. Neither
+     * needs an API key, which is what makes them usable from a shipped app. */
+    rpcUrls: ["https://testnet.hashio.io/api", "https://296.rpc.thirdweb.com"],
+    explorerUrl: "https://hashscan.io/testnet",
+    testnet: true,
+  },
+  {
     id: 1301,
     name: "Unichain Sepolia",
     nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
