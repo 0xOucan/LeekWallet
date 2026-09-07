@@ -51,6 +51,25 @@ export interface AppContext {
    * route around the user's chosen endpoint and the CSP allowlist with it.
    */
   request: EthRequest;
+  /**
+   * Host of the endpoint that most recently answered, or undefined before any
+   * has. Optional: an app that never dates its figures does not need it.
+   *
+   * A function rather than a string, and that is the whole point of it. Which
+   * operator answers is not knowable at mount — no request has been made yet —
+   * and it can change mid-session, because `FailoverRpc` moves to the next
+   * endpoint when one goes quiet (rpc.ts, limit 2: whoever answers learns which
+   * addresses you asked about, so which one it was has to be visible rather
+   * than implicit). A string captured at mount would be either empty or, worse,
+   * stale: a provenance line naming an operator that stopped answering three
+   * requests ago is a false statement about who saw your data.
+   *
+   * So it is a getter, called when a figure is rendered rather than when the
+   * app starts. Added for the ATS issuer console, whose whole discipline is
+   * that no number reaches a screen without the block, the age and the operator
+   * arriving beside it.
+   */
+  endpointHost?: () => string | undefined;
 }
 
 /**
