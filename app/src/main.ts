@@ -36,6 +36,7 @@ import qrcodegen from "qrcode-generator";
 import { initFlasher, tauriFlashBridge } from "./flasher.ts";
 import { parsePaymentUri } from "../packages/core/src/payment-uri.ts";
 import { mountApps } from "./apps/mount.ts";
+import type { ChainChannel } from "../packages/core/src/mini-app.ts";
 import { fetchTokenBalancesBatched } from "../packages/core/src/multicall.ts";
 import {
   buildTokenIndex, parseTokenList, refreshTokenList, TOKEN_LIST_NOTICE, TOKEN_LIST_URLS,
@@ -1327,6 +1328,7 @@ function applyChain(info: ChainInfo): void {
     address: addresses[selectedIndex] ?? "",
     request,
     endpointHost: host,
+    requestOn: chainChannel,
   });
 }
 
@@ -1552,6 +1554,34 @@ function balanceRequest(info: ChainInfo): { request: EthRequest; host: () => str
     request: (args) => failover.request(args),
     host: () => (failover.lastUrl ? new URL(failover.lastUrl).host : undefined),
   };
+}
+
+/**
+ * A read path to a chain the shell is *not* on, for an app that needs several.
+ *
+ * Its own `FailoverRpc` per chain, cached, and deliberately without the
+ * `onEndpoint`/`onFailover` callbacks `rpcFor` installs: those write into the
+ * status line, which names the endpoint serving the chain the user selected. A
+ * background poll on a different chain overwriting that line would make the
+ * shell claim it is talking to a network it is not.
+ *
+ * A chain the wallet has no entry for gets `undefined`, and the app is
+ * required to render that as a chain nobody asked rather than as a chain with
+ * nothing on it. See AppContext.requestOn.
+ */
+const chainChannels = new Map<number, ChainChannel>();
+function chainChannel(chainId: number): ChainChannel | undefined {
+  const cached = chainChannels.get(chainId);
+  if (cached) return cached;
+  const info = allChains().find((c) => c.id === chainId);
+  if (!info || info.rpcUrls.length === 0) return undefined;
+  const failover = new FailoverRpc({ chainId: info.id, rpcUrls: info.rpcUrls, send: rpcSend });
+  const channel: ChainChannel = {
+    request: (args) => failover.request(args),
+    endpointHost: () => (failover.lastUrl ? new URL(failover.lastUrl).host : undefined),
+  };
+  chainChannels.set(chainId, channel);
+  return channel;
 }
 
 /**

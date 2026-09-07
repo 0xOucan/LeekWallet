@@ -25,12 +25,20 @@
  *
  * (3) is the one that would catch a signing path built out of core primitives
  * with no suspicious import and no suspicious string in it.
+ *
+ *  4. **Every RPC method the app can issue is a read.** C3 gave the terminal a
+ *     payment watcher, so "makes no request at all" stopped being true and a
+ *     weaker-sounding property replaced it: the only methods named anywhere in
+ *     the sources, and the only ones a running watcher issues, are
+ *     `eth_blockNumber` and `eth_getLogs`. That is the property worth having
+ *     anyway — a till that could not read would not know it had been paid, and
+ *     a till that could write would not be a till.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TILL_APP } from "../src/index.ts";
+import { TILL_APP, PaymentWatcher } from "../src/index.ts";
 
 let failures = 0;
 const check = (cond: boolean, msg: string) => {
@@ -157,6 +165,51 @@ group("the app declares only what the shell can supply");
   const source = readFileSync(join(srcDir, "index.ts"), "utf8");
   check(!/interface \w*Context extends AppContext/.test(source),
     "the till widens AppContext, which deserves a look at what it added");
+}
+
+group("every RPC method the app can name is a read");
+{
+  /* An allow-list of two. Adding a third method to the app means adding it
+   * here, which is the review this file exists to force. */
+  const READS = ["eth_blockNumber", "eth_getLogs"];
+  for (const file of sources) {
+    const code = readFileSync(join(srcDir, file), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*/g, "");
+    for (const m of code.matchAll(/method:\s*["']([a-zA-Z_]+)["']/g)) {
+      check(READS.includes(m[1] as string), `${file} issues ${m[1]}, which is not a read`);
+    }
+  }
+}
+
+group("a running watcher issues nothing but those reads");
+{
+  /* The source scan above cannot see a method assembled at runtime. This can:
+   * the watcher is driven with a channel that records what it was asked, over
+   * a chain that pays and a chain that fails. */
+  const asked: string[] = [];
+  const watcher = new PaymentWatcher({
+    chains: [84532, 80002],
+    channelFor: (chainId: number) => ({
+      request: async ({ method }: { method: string }) => {
+        asked.push(method);
+        if (chainId === 80002) throw new Error("this endpoint is down");
+        return method === "eth_blockNumber" ? "0xc8" : [];
+      },
+    }),
+    target: {
+      recipient: "0x7a3f1b2c4d5e6f708192a3b4c5d6e7f809a1b2c3",
+      token: "USDC" as const, total: 32721n, marker: 17,
+    },
+    onUpdate: () => {},
+    setTimer: () => 0,
+    clearTimer: () => {},
+  });
+  await watcher.poll();
+  watcher.stop();
+  check(asked.length > 0, "the watcher must actually have asked something");
+  for (const method of asked) {
+    check(["eth_blockNumber", "eth_getLogs"].includes(method), `the watcher issued ${method}`);
+  }
 }
 
 console.log(failures === 0 ? "\nall ok" : `\n${failures} failure(s)`);
