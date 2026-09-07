@@ -252,11 +252,11 @@ invariants including rounding-favours-maker and swap additivity.
 | Round | What is tested | Funds needed |
 |---|---|---|
 | **A1** Read-only | Positions match a direct RPC query; RPC failure shows *unavailable*, never zero | none (read-only, fork or public RPC) |
-| **A2** Approval cap | Unlimited approval is **refused by default**; capped approval renders the cap | Gnosis or Polygon testnet gas + two ERC-20s |
-| **A3** Ship | Position shipped from the device appears in A1's view and on-chain | as A2 |
-| **A4** Wrong maker | A strategy naming another address **refuses on the device** | as A2 |
-| **A5** Dock | Full withdrawal returns virtual balances to zero; approval is then revoked or reduced | as A2 |
-| **A6** Half-failure | `approve` succeeds, `ship` fails: app reports a **capped approval outstanding**, does not silently retry | as A2 |
+| **A2** Approval cap | Unlimited approval is **refused by default**; capped approval renders the cap | Foundry fork of Polygon or Gnosis **mainnet** — no funds |
+| **A3** Ship | Position shipped from the device appears in A1's view and on-chain | as A2 (same fork) |
+| **A4** Wrong maker | A strategy naming another address **refuses on the device** | as A2 (same fork) |
+| **A5** Dock | Full withdrawal returns virtual balances to zero; approval is then revoked or reduced | as A2 (same fork) |
+| **A6** Half-failure | `approve` succeeds, `ship` fails: app reports a **capped approval outstanding**, does not silently retry | as A2 (same fork) |
 | **A7** SwapVM decode | Three programs decode correctly against `forge` fixtures; an unknown opcode refuses | local fork only |
 
 A mainnet fork (Foundry `--fork-url`) is acceptable per the sponsor's rules and
@@ -356,7 +356,7 @@ summary, and a refusal if `total ≠ per-share × snapshot supply`.
 | **EURC** on Base Sepolia, Ethereum Sepolia, Avalanche Fuji | `faucet.circle.com` | the EURC path and its asymmetry |
 | Native gas: Sepolia ETH, Base Sepolia ETH, POL (Amoy), AVAX (Fuji) | public faucets | source-chain transactions and burns |
 | **HBAR** testnet | `portal.hedera.com` | every Hedera round |
-| Gnosis/Polygon testnet gas + two ERC-20s | public faucets | Aqua ship/dock |
+| *(none — Aqua is mainnet-only; fork it)* | `anvil --fork-url` | Aqua ship/dock |
 | *(no funds)* | Foundry fork | Aqua read-only and SwapVM decoding |
 
 **Get Arc USDC first.** It is both the gas and the settlement asset, so nothing

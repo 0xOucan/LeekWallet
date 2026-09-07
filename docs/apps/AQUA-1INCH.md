@@ -125,16 +125,29 @@ Tested against the repo's `CoreInvariants`, which already asserts seven
 invariants including exact-in/out symmetry, additivity, price monotonicity and
 rounding-favours-maker. We add ours to that harness rather than inventing one.
 
+> **Aqua has no testnet deployment.** Verified by `eth_getCode` against the
+> registry `0x1111113ccf1426a8e30e2bff5e005d929bf6a90a`: 5620 bytes on Polygon
+> and Gnosis **mainnet**, nothing on Polygon Amoy or Gnosis Chiado. So there is
+> no faucet route to testing `ship()`/`dock()`, and none is needed — the sponsor
+> states plainly that **"local forks are ok"**. Test against
+> `anvil --fork-url <polygon or gnosis mainnet>`, which gives real contracts,
+> real liquidity and no funds to acquire.
+>
+> Beware the endpoint: `polygon-rpc.com` answered `eth_getCode` with `0x` for a
+> contract that is demonstrably there. Two independent endpoints agreed it
+> exists. A single RPC disagreeing with reality is exactly the failure this app
+> renders as *unavailable* rather than *zero*.
+
 ## 4. Testing rounds
 
 | # | What is tested | Funds |
 |---|---|---|
 | **A1** | Positions match a direct RPC query; RPC failure shows **unavailable, never zero** | none — public RPC or fork |
-| **A2** | Unlimited approval **refused by default**; a capped approval renders its cap | testnet gas + 2 ERC-20s |
-| **A3** | Position shipped from the device appears in A1's view and on-chain | as A2 |
-| **A4** | A strategy naming another `maker` **refuses on the device** | as A2 |
-| **A5** | `dock()` returns virtual balances to zero; app offers to zero the approval | as A2 |
-| **A6** | `approve` succeeds and `ship` fails → app reports a **capped approval outstanding**, does not silently retry | as A2 |
+| **A2** | Unlimited approval **refused by default**; a capped approval renders its cap | Foundry fork of Polygon or Gnosis **mainnet** — no funds |
+| **A3** | Position shipped from the device appears in A1's view and on-chain | as A2 (same fork) |
+| **A4** | A strategy naming another `maker` **refuses on the device** | as A2 (same fork) |
+| **A5** | `dock()` returns virtual balances to zero; app offers to zero the approval | as A2 (same fork) |
+| **A6** | `approve` succeeds and `ship` fails → app reports a **capped approval outstanding**, does not silently retry | as A2 (same fork) |
 | **A7** | Three programs decode against `forge` fixtures; an **unknown opcode refuses** | local fork |
 | **A8** *(stretch)* | Custom opcode passes `CoreInvariants` | local fork |
 
