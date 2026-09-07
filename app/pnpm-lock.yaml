@@ -14,6 +14,9 @@ importers:
       '@leekwallet/app-ats':
         specifier: workspace:*
         version: link:packages/apps/ats
+      '@leekwallet/app-till':
+        specifier: workspace:*
+        version: link:packages/apps/till
       '@leekwallet/core':
         specifier: workspace:*
         version: link:packages/core
@@ -91,6 +94,15 @@ importers:
       '@noble/hashes':
         specifier: 1.8.0
         version: 1.8.0
+
+  packages/apps/till:
+    dependencies:
+      '@leekwallet/core':
+        specifier: workspace:*
+        version: link:../../core
+      qrcode-generator:
+        specifier: 2.0.4
+        version: 2.0.4
 
   packages/core:
     dependencies:

@@ -1,0 +1,18 @@
+{
+  "name": "@leekwallet/app-till",
+  "version": "0.1.0",
+  "description": "La Caja terminal: a bill, a tip, and a QR the customer pays from any chain",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/order.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/rails.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/uri.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/no-signing.test.ts"
+  },
+  "dependencies": {
+    "@leekwallet/core": "workspace:*",
+    "qrcode-generator": "2.0.4"
+  }
+}

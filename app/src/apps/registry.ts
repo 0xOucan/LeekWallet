@@ -23,11 +23,12 @@
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 import { AQUA_APP } from "@leekwallet/app-aqua";
 import { ATS_APP } from "@leekwallet/app-ats";
+import { TILL_APP } from "@leekwallet/app-till";
 
 export type { AppContext, MiniApp };
 
 /** Every app in this build. Delete a line to drop one. */
-export const MINI_APPS: readonly MiniApp[] = [AQUA_APP, ATS_APP];
+export const MINI_APPS: readonly MiniApp[] = [AQUA_APP, ATS_APP, TILL_APP];
 
 export const findMiniApp = (id: string): MiniApp | undefined =>
   MINI_APPS.find((app) => app.id === id);
