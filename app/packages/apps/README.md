@@ -5,8 +5,9 @@ the address the shell is showing, using the chain and nothing else.
 
 The rule that shapes everything here:
 
-> **Any app must be removable from a release by deleting its directory and one
-> line of `app/src/apps/registry.ts`, at build time.**
+> **Any app must be removable from a release by deleting its directory, its two
+> lines of `app/src/apps/registry.ts`, and its line of `app/package.json` — at
+> build time.**
 
 Not hidden by a runtime flag. A flag leaves the code — and its RPC endpoints,
 and its CSS — shipped to everyone, which is the opposite of what "excludable
@@ -55,7 +56,7 @@ for its revoke transactions.
 app/src/apps/registry.ts  ->  each app  ->  @leekwallet/core
 ```
 
-Two rules, and they are what make removal a two-deletion procedure:
+Two rules, and they are what make removal a three-deletion procedure:
 
 1. **Nothing outside an app's directory imports anything inside it, except the
    registry.** One edge, in one file.
