@@ -125,25 +125,48 @@ Tested against the repo's `CoreInvariants`, which already asserts seven
 invariants including exact-in/out symmetry, additivity, price monotonicity and
 rounding-favours-maker. We add ours to that harness rather than inventing one.
 
-> **Aqua has no testnet deployment.** Verified by `eth_getCode` against the
-> registry `0x1111113ccf1426a8e30e2bff5e005d929bf6a90a`: 5620 bytes on Polygon
-> and Gnosis **mainnet**, nothing on Polygon Amoy or Gnosis Chiado. So there is
-> no faucet route to testing `ship()`/`dock()`, and none is needed — the sponsor
-> states plainly that **"local forks are ok"**. Test against
-> `anvil --fork-url <polygon or gnosis mainnet>`, which gives real contracts,
-> real liquidity and no funds to acquire.
+> ### Where Aqua actually is
 >
-> Beware the endpoint: `polygon-rpc.com` answered `eth_getCode` with `0x` for a
-> contract that is demonstrably there. Two independent endpoints agreed it
-> exists. A single RPC disagreeing with reality is exactly the failure this app
+> The README lists sixteen networks and every one is a mainnet; the SDK contains
+> **no testnet reference at all** — no sepolia, goerli, amoy, chiado, fuji or
+> mumbai. But the README is not the whole story, and `eth_getCode` disagrees
+> with it in one useful way:
+>
+> | Chain | Aqua registry | SwapVM router |
+> |---|---|---|
+> | Polygon, Gnosis (mainnet) | ✅ 5620 B | ✅ |
+> | **Ethereum Sepolia** | ✅ **5620 B** | ❌ none |
+> | Base / Arbitrum / OP Sepolia, Fuji, Amoy, Chiado | ❌ | ❌ |
+>
+> The Sepolia deployment is real and current, not a leftover: its runtime
+> bytecode hashes **identical** to Polygon's and Gnosis's (`4c886bff…`), which
+> follows from the deterministic deployment the README describes, and it emitted
+> **25 events in the last 9000 blocks**.
+>
+> **What that means for testing.** Q2 is `approve` + `ship()` + `dock()` — the
+> registry alone — so it can run on **Sepolia with faucet ETH**. Q3's SwapVM
+> decoding cannot: the router is not there, so that needs a **fork**. The
+> sponsor states plainly that *"local forks are ok"*, and
+> `anvil --fork-url <mainnet>` gives real contracts and real liquidity with
+> nothing to acquire.
+>
+> **A caution about single endpoints.** `polygon-rpc.com` answered `eth_getCode`
+> with `0x` for a contract that is demonstrably there, and two other endpoints
+> disagreed with it. One RPC is not evidence. That is the same failure this app
 > renders as *unavailable* rather than *zero*.
+>
+> **Licence.** Aqua is `LicenseRef-Degensoft-Aqua-Source-1.1` — source-available,
+> **not** open source, and not compatible with this project's Apache-2.0.
+> Calling the deployed contracts is unaffected. **Copying or modifying SwapVM
+> source** — which the hackathon rules permit — would be governed by that
+> licence, so read it before B4 rather than after.
 
 ## 4. Testing rounds
 
 | # | What is tested | Funds |
 |---|---|---|
 | **A1** | Positions match a direct RPC query; RPC failure shows **unavailable, never zero** | none — public RPC or fork |
-| **A2** | Unlimited approval **refused by default**; a capped approval renders its cap | Foundry fork of Polygon or Gnosis **mainnet** — no funds |
+| **A2** | Unlimited approval **refused by default**; a capped approval renders its cap | Sepolia ETH + 2 ERC-20s, **or** a mainnet fork |
 | **A3** | Position shipped from the device appears in A1's view and on-chain | as A2 (same fork) |
 | **A4** | A strategy naming another `maker` **refuses on the device** | as A2 (same fork) |
 | **A5** | `dock()` returns virtual balances to zero; app offers to zero the approval | as A2 (same fork) |
