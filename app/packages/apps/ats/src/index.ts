@@ -43,10 +43,15 @@
  *
  * Read-only (milestones E1–E2 of docs/apps/HEDERA-ATS.md). It renders the
  * register; it signs nothing, and `AppContext` gives it nothing it could sign
- * with. `grantRole`, `grantKyc`, `pause` and dividends are E3–E4 and are
- * deliberately absent — a privileged call has to arrive with an ERC-7730
- * descriptor and a device screen, and shipping the button before the screen is
- * the exact failure that plan is written to avoid.
+ * with.
+ *
+ * `descriptors.ts` and `action.ts` add E3's half of the privileged surface:
+ * what a `grantRole`, `pause` or `revokeKyc` screen SAYS, and — more to the
+ * point — when there is no honest screen and the call must refuse. They are
+ * pure functions over calldata. There is still no button and no signing seam,
+ * on purpose: shipping the button before the screen is the exact failure the
+ * plan is written to avoid, and the screen had to exist first to be reviewed
+ * on its own. Dividends are E4 and remain absent.
  */
 
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
@@ -60,6 +65,8 @@ export * from "./roles.ts";
 export * from "./register.ts";
 export * from "./view.ts";
 export * from "./fixtures.ts";
+export * from "./descriptors.ts";
+export * from "./action.ts";
 
 /** The chain this app is about. Hedera testnet; see chains.ts for the entry. */
 export const ATS_CHAIN_ID = 296;
