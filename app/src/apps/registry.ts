@@ -10,8 +10,9 @@
  * The rules that keep removal to those two deletions are stated at the top of
  * `packages/apps/aqua/src/index.ts`, and the one worth repeating here is that
  * nothing in the shell may import an app module directly. This file is the
- * single edge. `grep -rn "apps/aqua" app/src app/packages --include=*.ts` should
- * find exactly one line outside the app's own directory: the import below.
+ * single edge. `grep -rn "app-aqua" app/src app/packages --include=*.ts` should
+ * find exactly one line outside the app's own directory: the import below. The
+ * same holds for every other app in the array.
  *
  * Apps are excluded from the *bundle*, not hidden by a flag. A runtime toggle
  * would leave the code — and its RPC endpoints, and its CSS — shipped to
@@ -21,11 +22,12 @@
 
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 import { AQUA_APP } from "@leekwallet/app-aqua";
+import { ATS_APP } from "@leekwallet/app-ats";
 
 export type { AppContext, MiniApp };
 
 /** Every app in this build. Delete a line to drop one. */
-export const MINI_APPS: readonly MiniApp[] = [AQUA_APP];
+export const MINI_APPS: readonly MiniApp[] = [AQUA_APP, ATS_APP];
 
 export const findMiniApp = (id: string): MiniApp | undefined =>
   MINI_APPS.find((app) => app.id === id);

@@ -11,6 +11,9 @@ importers:
       '@leekwallet/app-aqua':
         specifier: workspace:*
         version: link:packages/apps/aqua
+      '@leekwallet/app-ats':
+        specifier: workspace:*
+        version: link:packages/apps/ats
       '@leekwallet/core':
         specifier: workspace:*
         version: link:packages/core
@@ -72,6 +75,15 @@ importers:
         version: 8.2.1(@types/node@26.2.0)
 
   packages/apps/aqua:
+    dependencies:
+      '@leekwallet/core':
+        specifier: workspace:*
+        version: link:../../core
+      '@noble/hashes':
+        specifier: 1.8.0
+        version: 1.8.0
+
+  packages/apps/ats:
     dependencies:
       '@leekwallet/core':
         specifier: workspace:*

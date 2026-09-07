@@ -570,6 +570,11 @@
                aria-labelledby="wcsessionshead"></div>
         </section>
 
+        <!-- Mini-apps mount here, one panel each. Empty and hidden unless the
+             active chain has one registered - see src/apps/registry.ts, which
+             is the single line a release build removes to exclude one. -->
+        <div id="apps" hidden></div>
+
         <section class="panel" id="logpanel" aria-labelledby="loghead">
           <h2 id="loghead">Device log</h2>
           <!-- Selecting text on a phone is painful and this log is what every

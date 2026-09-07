@@ -35,6 +35,7 @@ import {
 import qrcodegen from "qrcode-generator";
 import { initFlasher, tauriFlashBridge } from "./flasher.ts";
 import { parsePaymentUri } from "../packages/core/src/payment-uri.ts";
+import { mountApps } from "./apps/mount.ts";
 import { fetchTokenBalancesBatched } from "../packages/core/src/multicall.ts";
 import {
   buildTokenIndex, parseTokenList, refreshTokenList, TOKEN_LIST_NOTICE, TOKEN_LIST_URLS,
@@ -1316,6 +1317,17 @@ function applyChain(info: ChainInfo): void {
   populateAssets();
   void refreshBalances("chain changed");
   renderPreview();
+  /* Mini-apps are per chain and are remounted, not merely re-shown: an app
+   * left running against the previous network would keep rendering figures
+   * from a chain nobody has selected. See src/apps/registry.ts -- this and
+   * that file are the shell's entire knowledge that apps exist. */
+  const { request, host } = balanceRequest(info);
+  mountApps($("apps"), {
+    chainId: info.id,
+    address: addresses[selectedIndex] ?? "",
+    request,
+    endpointHost: host,
+  });
 }
 
 /** Rebuild the chain list: curated first, then custom. The order is the trust order. */
