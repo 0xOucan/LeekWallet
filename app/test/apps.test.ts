@@ -237,5 +237,41 @@ group("each app carries its own CSS, prefixed with its id");
   }
 }
 
+
+/*
+ * The set of calls a mini-app may propose without an ERC-7730 descriptor.
+ *
+ * `app-proposal.ts` says this list is pinned by the suite so it cannot grow by
+ * accident. It said so before anything asserted it; this is that assertion.
+ *
+ * Membership is not a style choice. Each kind here bypasses the rule that a
+ * payload must have a descriptor before it can be signed, on the grounds that
+ * the DEVICE decodes and draws it instead — a bespoke decoder in
+ * src/eth-decode.c, a mirror in eth-decode.ts, and a page in src/ui.c drawing
+ * every argument. A kind added here without all three is a call the device
+ * will sign and cannot describe, which is the one thing the seam exists to
+ * prevent.
+ *
+ * Read from source rather than imported, like every other rule in this file:
+ * the point is that the literal list is reviewable in a diff.
+ */
+group("device-drawn kinds are a closed set");
+{
+  const src = readFileSync(join(appRoot, "packages/core/src/app-proposal.ts"), "utf8");
+  const block = /DEVICE_DRAWN_KINDS[^=]*=\s*new Set<string>\(\[([^\]]*)\]/.exec(src);
+  check(block !== null, "DEVICE_DRAWN_KINDS is no longer a literal Set this test can read");
+  const members = (block?.[1] ?? "")
+    .split(",")
+    .map((m) => m.trim())
+    .filter((m) => m.length > 0 && !m.startsWith("//"));
+  const expected = ["CallKind.AquaShip", "CallKind.AquaDock"];
+  check(
+    members.length === expected.length && expected.every((e) => members.includes(e)),
+    `DEVICE_DRAWN_KINDS has changed: ${JSON.stringify(members)}. Every member needs a ` +
+      `firmware decoder, a host mirror and a device page. If you added one and all ` +
+      `three exist, update this test and say why.`,
+  );
+}
+
 console.log(failures === 0 ? "\nall ok" : `\n${failures} failure(s)`);
 process.exit(failures === 0 ? 0 : 1);
