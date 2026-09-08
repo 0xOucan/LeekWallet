@@ -747,6 +747,11 @@ main {
   border: 1px solid var(--line, #333);
   border-radius: 6px;
 }
+/* Small label directly above the path it names — type carries the hierarchy
+ * (UI-SPEC-V2.md §2e), so no border or box is needed to tie the two together. */
+.addr-path-label { margin: 0.5rem 0 0.15rem; }
+.addr-path { margin: 0 0 0.25rem; }
+
 .addr-qr {
   display: flex;
   justify-content: center;

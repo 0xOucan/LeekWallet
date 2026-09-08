@@ -585,6 +585,7 @@ function invalidateDerived(reason: string): void {
   derivedAccount = -1;
   $("addrs").textContent = "";
   $("addrdetail").hidden = true;
+  $("addrpath").textContent = "";
   $("addrpanel").hidden = true;
   $("signpanel").hidden = true;
   setShellVisible(false);
@@ -2104,6 +2105,10 @@ function drawSelectedAddress(): void {
 
   detail.hidden = false;
   $("addrfull").textContent = chunk(checksumAddress(address.slice(2)));
+  /* derivedAccount, not effectiveAccount() — same reason as the sfrom line
+   * below: this path must name the account the address above it actually
+   * came from, not whatever the selector has moved on to since. */
+  $("addrpath").textContent = addressPath(derivedAccount, selectedIndex);
 
   const holder = $("addrqr");
   if (!holder.hidden) {

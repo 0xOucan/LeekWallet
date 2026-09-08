@@ -182,10 +182,12 @@
         </nav>
 
         <section class="panel" id="addrpanel" aria-labelledby="addrhead" data-tab="receive" hidden>
-          <h2 id="addrhead">Addresses</h2>
+          <h2 id="addrhead">Receive</h2>
           <p>
-            Pick the address to sign with. The device signs whichever path is
-            requested — what it shows on its own screen is the authority.
+            Pick the account, then the address to receive into — the wrong
+            account is a real mistake and this list is what prevents it.
+            Confirm the address on the device's own screen before you use it;
+            it is the authority, not this app.
           </p>
           <!-- Account (T45a). The device browses one BIP-44 account on its own
                screens and reports which; the app can ask for a different one.
@@ -213,6 +215,11 @@
                role="group" aria-labelledby="addrfulllabel">
             <span class="visually-hidden" id="addrfulllabel">Selected address, in full</span>
             <div class="addr" id="addrfull"></div>
+            <!-- Small label, big-enough mono value: the path is what tells you
+                 *which* key this address is, and truncating it would hide the
+                 one digit that distinguishes two accounts. -->
+            <p class="addr-path-label muted" id="addrpathlabel">Derivation path</p>
+            <div class="addr addr-path" id="addrpath" aria-labelledby="addrpathlabel"></div>
             <!-- Copy is always here because it always works. The QR is behind a
                  button: it is only wanted when somebody is pointing a camera at
                  this screen, and drawing it unasked pushes the address itself
