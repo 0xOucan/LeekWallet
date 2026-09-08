@@ -1482,7 +1482,15 @@ static void test_an_aqua_ship_shows_its_maker_and_every_leg(void)
         if (fake_oled_contains(maker_head))       saw_maker = true;
         if (fake_oled_contains("Must match From")) saw_must_match = true;
         if (fake_oled_contains(token_head))       saw_token = true;
-        if (fake_oled_contains("100"))            saw_amount = true;
+        /* The amount has a page of its own, headed and labelled: a token
+         * address and a 78-digit uint256 cannot share a screen, and this
+         * device wraps rather than truncates. Matching the heading and the
+         * unit as well as the figure stops a stray "100" inside an address
+         * passing for the amount. */
+        if (fake_oled_contains("Provide, token 1") && fake_oled_contains("raw units")
+            && fake_oled_contains("100")) {
+            saw_amount = true;
+        }
         if (fake_oled_contains("0x0100aaaaaaaabb")) saw_from = true;
         if (fake_oled_contains("Strategy hash")) {
             char joined[65] = "";

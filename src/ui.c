@@ -4352,18 +4352,22 @@ typedef enum {
     SIGN_PAGE_AQUA_MAKER,   /* Aqua ship: the maker named inside the strategy */
     SIGN_PAGE_AQUA_APP,     /* Aqua: the app the strategy is shipped to */
     SIGN_PAGE_AQUA_HASH,    /* Aqua: keccak256(strategy), or dock's argument */
-    SIGN_PAGE_AQUA_LEG,     /* Aqua: one token, and its amount for a ship */
+    SIGN_PAGE_AQUA_LEG,     /* Aqua: one token of the strategy */
+    SIGN_PAGE_AQUA_AMOUNT,  /* Aqua ship: what that token is credited with */
     SIGN_PAGE_FROM          /* the address that will sign (T47) */
 } SignPageKind;
 
 /* The longest plan is a generic call: its name, one page for each of its six
  * possible arguments, the contract and the source. Typed data wants the domain,
  * one page per struct leaf and the source; a transaction, blind or not, needs
- * at most five. An Aqua ship wants action, maker, app, hash, one page per leg,
- * contract and source. */
+ * at most five. An Aqua ship wants action, maker, app, hash, TWO pages per leg,
+ * contract and source -- the token and its amount are separate pages because a
+ * uint256 in decimal is 78 digits and this device wraps rather than truncates
+ * (see sign_draw_amount): a token address and a full amount do not fit on one
+ * screen together, and a shortened amount is a different amount. */
 #define SIGN_TYPED_PAGES   (EIP712_MAX_RENDER_FIELDS + 2)
 #define SIGN_GENERIC_PAGES (ETH_MAX_ARGS + 3)
-#define SIGN_AQUA_PAGES    (ETH_AQUA_MAX_LEGS + 6)
+#define SIGN_AQUA_PAGES    (2 * ETH_AQUA_MAX_LEGS + 6)
 #define SIGN_MAX2(a, b) ((a) > (b) ? (a) : (b))
 #define SIGN_MAX_PAGES \
     SIGN_MAX2(SIGN_AQUA_PAGES, SIGN_MAX2(SIGN_TYPED_PAGES, SIGN_GENERIC_PAGES))
@@ -4604,9 +4608,11 @@ void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
             sign_page_kind[n++] = SIGN_PAGE_AQUA_APP;
             sign_page_kind[n++] = SIGN_PAGE_AQUA_HASH;
             for (int leg = 0; leg < sign_call.aqua_legs &&
-                              n < SIGN_MAX_PAGES - 2; leg++) {
+                              n < SIGN_MAX_PAGES - 3; leg++) {
                 sign_page_field[n] = leg;
                 sign_page_kind[n++] = SIGN_PAGE_AQUA_LEG;
+                sign_page_field[n] = leg;
+                sign_page_kind[n++] = SIGN_PAGE_AQUA_AMOUNT;
             }
             sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
             break;
@@ -5401,10 +5407,10 @@ static void screen_sign_confirm_render(void)
             break;
         }
         case SIGN_PAGE_AQUA_LEG: {
-            /* One token per page, with its amount for a ship and nothing but
-             * the token for a dock -- docking takes back whatever is there, so
-             * there is no figure to print and inventing a zero would read as
-             * "this leg is empty". */
+            /* One token per page. The address owns three rows and is never
+             * truncated, which leaves no room for a full amount beside it --
+             * hence the separate page below for a ship, and, for a dock, the
+             * one true sentence about what happens to this token. */
             int leg = sign_page_field[sign_page];
             uint8_t token[20];
             char addr[43];
@@ -5423,23 +5429,49 @@ static void screen_sign_confirm_render(void)
             } else {
                 oled_draw_string(2, 0, "(unavailable)");
             }
+            if (!sign_call.has_aqua_amounts) {
+                /* Docking takes back whatever is there, so there is no figure
+                 * to print. Inventing a zero would read as "this leg is
+                 * empty", which is a claim about the position rather than
+                 * about the call. */
+                oled_draw_string(6, 0, "Returned in full");
+            }
+            break;
+        }
+        case SIGN_PAGE_AQUA_AMOUNT: {
+            /* What this leg is credited with, in raw units and wrapped over
+             * four rows -- the same treatment SIGN_PAGE_CALL_ARG gives an
+             * integer, and for the same two reasons: decimals() is not
+             * callable from here, so scaling would mean inventing the scale,
+             * and a uint256 in decimal is 78 characters, so a single row would
+             * silently show a different number.
+             *
+             * The sentence under the heading is the one thing that stops this
+             * page being read as "this is what leaves your wallet". It is not:
+             * it is what the strategy is credited with, and what can actually
+             * be taken is bounded by the ERC-20 allowance, which this device
+             * has no way to see. */
+            int leg = sign_page_field[sign_page];
+            char heading[32];
+            snprintf(heading, sizeof(heading), "Provide, token %d", leg + 1);
+            oled_draw_string(1, 0, heading);
 
             EthQuantity q;
-            if (eth_aqua_amount(&sign_call, sign_tx.data, sign_tx.data_length,
-                                leg, &q)) {
-                char amount[80];
-                if (!eth_format_integer(&q, amount, sizeof(amount))) {
-                    snprintf(amount, sizeof(amount), "?");
-                }
-                /* Raw units, for the reason sign_draw_amount() gives: the
-                 * device cannot call decimals(), so scaling would mean
-                 * inventing the scale. Two rows, wrapped, never cut. */
-                oled_draw_string(5, 0, "Provide, raw:");
+            char amount[80];
+            if (!eth_aqua_amount(&sign_call, sign_tx.data, sign_tx.data_length,
+                                 leg, &q) ||
+                !eth_format_integer(&q, amount, sizeof(amount))) {
+                oled_draw_string(2, 0, "(unavailable)");
+                break;
+            }
+            oled_draw_string(2, 0, "raw units");
+            size_t alen = strlen(amount);
+            for (int row = 0; row < 4; row++) {
+                size_t off = (size_t)row * 21;
+                if (off >= alen) break;
                 char part[22];
-                snprintf(part, sizeof(part), "%.21s", amount);
-                oled_draw_string(6, 0, part);
-            } else {
-                oled_draw_string(6, 0, "Returned in full");
+                snprintf(part, sizeof(part), "%.21s", amount + off);
+                oled_draw_string(3 + row, 0, part);
             }
             break;
         }
