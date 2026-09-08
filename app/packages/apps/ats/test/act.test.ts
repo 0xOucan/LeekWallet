@@ -85,6 +85,9 @@ group("calldata is built from the same table the descriptors are built from");
     { action: "revokeKyc", account: ALICE },
     { action: "pause" },
     { action: "unpause" },
+    { action: "freezePartialTokens", account: ALICE, amount: 1n },
+    { action: "unfreezePartialTokens", account: ALICE, amount: 1n },
+    { action: "setAddressFrozen", account: ALICE, frozen: true },
     { action: "lock", account: ALICE, amount: 1n, until: 2n },
     { action: "setMaxSupply", cap: 1000n },
     { action: "mint", to: ALICE, amount: 5n },
@@ -204,6 +207,38 @@ group("a control list whose direction was never read refuses both edits");
     check(rendering.state === "refused",
       `${action} rendered a screen without knowing whether the list permits or bars`);
   }
+}
+
+group("the frozen flag is rendered as a state, and read from the bytes");
+{
+  /* The brief's own example screen is a freeze, and this is the call where a
+   * single bit inverts the sentence. Both directions are asserted, because a
+   * screen that said "FROZEN" for an unfreeze would be the worst failure this
+   * app can have: an approve button under a sentence describing the opposite
+   * act. */
+  const frozen = previewPrivileged(FACTS,
+    { action: "setAddressFrozen", account: ALICE, frozen: true });
+  check(frozen.state === "screen" && frozen.effect.includes("blocks every transfer"),
+    `freezing must say what it blocks: ${frozen.state === "screen" ? frozen.effect : frozen.why}`);
+  check(frozen.state === "screen" &&
+    frozen.fields.some((f) => f.label === "Set to" && f.value === "FROZEN"),
+    "the frozen flag is not rendered as a named state");
+
+  const thawed = previewPrivileged(FACTS,
+    { action: "setAddressFrozen", account: ALICE, frozen: false });
+  check(thawed.state === "screen" && thawed.effect.includes("transfer again"),
+    "unfreezing must say the holder can move again: " +
+    `${thawed.state === "screen" ? thawed.effect : thawed.why}`);
+  check(thawed.state === "screen" &&
+    thawed.fields.some((f) => f.label === "Set to" && f.value === "not frozen"),
+    "the unfrozen state is not named");
+
+  /* A word that is neither 0 nor 1 is not a bool. Reachable only from calldata
+   * this console did not build, which is exactly when it matters. */
+  const junk = describePrivilegedCall(FACTS,
+    `0x${selectorOf("setAddressFrozen(address,bool)")}` +
+    ALICE.slice(2).padStart(64, "0") + "2".padStart(64, "0"));
+  check(junk.state === "refused", "a frozen flag of 2 was rendered as a bool");
 }
 
 /* ------------------------------------------------- the other side of the seam */

@@ -155,8 +155,15 @@ Read-heavy, so it is useful before any signing is wired — and it demos on its
 own.
 
 ### Step 3 — The privileged surface, rendered
-ERC-7730 descriptors for every dangerous call: `grantRole`, `revokeRole`,
-`grantKyc`, `revokeKyc`, `pause`, `lock`, `setSupplyCap`, control-list edits.
+ERC-7730 descriptors for every dangerous call. Thirteen shipped at E3:
+`grantRole`, `revokeRole`, `revokeKyc`, `pause`, `unpause`, `lock`,
+`freezePartialTokens`, `unfreezePartialTokens`, `setAddressFrozen`,
+`setMaxSupply`, `mint`, `addToControlList`, `removeFromControlList`.
+
+`grantKyc` is **not** among them and refuses, because the real
+`IKyc.grantKyc` carries a credential id as a `string` and the descriptor
+engine will not follow calldata offsets it cannot bounds-check. Revoking KYC
+is static, and is the dangerous direction anyway.
 
 ```
   GRANT ROLE · ACME Equity          FREEZE HOLDER · ACME Equity

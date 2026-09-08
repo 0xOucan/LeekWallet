@@ -71,8 +71,18 @@ const typeOf = (i: { type: string; components?: unknown[] }): string =>
     ? `(${(i.components as Array<{ type: string }>).map(typeOf).join(",")})${i.type.slice(5)}`
     : i.type;
 
-/** canonical signature -> the parameter names the contracts gave it. */
-const declared = new Map<string, string[]>();
+/**
+ * canonical signature -> every parameter-name tuple any contract gave it.
+ *
+ * A set of tuples rather than one, because the same function is declared by an
+ * interface and by its implementation and they do not always agree:
+ * `setAddressFrozen` is `_freeze` on IToken, `_freezeStatus` on IAsset and
+ * `_freezStatus` (sic) on Freeze. Names do not affect the selector, so all
+ * three are the same function — but a check that compared against whichever
+ * artifact the directory walk happened to reach first would pass or fail by
+ * file order, which is not a test.
+ */
+const declared = new Map<string, Set<string>>();
 
 function walk(dir: string): void {
   for (const entry of readdirSync(dir)) {
@@ -88,7 +98,9 @@ function walk(dir: string): void {
       if (f["type"] !== "function") continue;
       const inputs = f["inputs"] as Array<{ type: string; name: string; components?: unknown[] }>;
       const sig = `${String(f["name"])}(${inputs.map(typeOf).join(",")})`;
-      if (!declared.has(sig)) declared.set(sig, inputs.map((i) => i.name));
+      let names = declared.get(sig);
+      if (names === undefined) { names = new Set(); declared.set(sig, names); }
+      names.add(inputs.map((i) => i.name).join(","));
     }
   }
 }
@@ -122,10 +134,10 @@ group("every action's signature is a function these contracts declare");
      * the right types and a renamed parameter renders nothing and reports
      * `omittedFields`, which action.ts refuses. Copying the contracts' names
      * verbatim is what makes that impossible. */
-    const ours = parsed.params.map((p) => p.name ?? "");
-    check(ours.length === names.length && ours.every((n, i) => n === names[i]),
-      `${spec.key}: parameter names differ from the ABI, which declares ` +
-      `(${names.join(", ")})`);
+    const ours = parsed.params.map((p) => p.name ?? "").join(",");
+    check(names.has(ours),
+      `${spec.key}: parameter names match no declaration of this function. ` +
+      `The contracts declare: ${[...names].map((n) => `(${n})`).join(" or ")}`);
 
     check(spec.confidence === "artifact",
       `${spec.key}: every surviving action is artifact-verified; ${spec.confidence} is stale`);

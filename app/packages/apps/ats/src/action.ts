@@ -241,6 +241,31 @@ export function describePrivilegedCall(
       effect = "allows transfers by every holder again";
       break;
 
+    case "freezePartialTokens":
+      effect = "these shares stay in the holder's balance and cannot be moved by them";
+      fields = withShares(fields, "Amount", facts.decimals);
+      break;
+
+    case "unfreezePartialTokens":
+      effect = "the holder can move these shares again";
+      fields = withShares(fields, "Amount", facts.decimals);
+      break;
+
+    case "setAddressFrozen": {
+      /* Read from the calldata, not from the label: the effect line and the
+       * rendered field must come from the same bytes, and the two sentences
+       * here are opposites. Anything other than a clean 0 or 1 in the word is
+       * not a bool this console will describe. */
+      const flag = argWord(data, 1);
+      if (flag !== 0n && flag !== 1n) {
+        return refuse("the frozen flag is neither true nor false", selector);
+      }
+      effect = flag === 1n
+        ? "blocks every transfer by this holder, of their whole balance, until they are unfrozen"
+        : "lets this holder transfer again";
+      break;
+    }
+
     case "lock":
       effect = "this holder cannot move the locked shares until the time shown";
       fields = withShares(fields, "Amount", facts.decimals);

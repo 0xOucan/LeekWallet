@@ -96,6 +96,9 @@ const NEEDS: Readonly<Record<string, readonly string[]>> = {
   revokeKyc: ["account"],
   pause: [],
   unpause: [],
+  freezePartialTokens: ["account", "amount"],
+  unfreezePartialTokens: ["account", "amount"],
+  setAddressFrozen: ["account", "frozen"],
   lock: ["account", "amount", "until"],
   setMaxSupply: ["cap"],
   mint: ["account", "amount"],
@@ -110,10 +113,12 @@ const LABEL: Readonly<Record<string, string>> = {
   amount: "Amount (raw units)",
   until: "Locked until (unix seconds)",
   cap: "New cap (raw units)",
+  frozen: "Set to",
 };
 
 interface Fields {
   role?: HTMLSelectElement;
+  frozen?: HTMLSelectElement;
   account?: HTMLInputElement;
   amount?: HTMLInputElement;
   until?: HTMLInputElement;
@@ -147,6 +152,8 @@ export function intentFrom(action: string, f: Fields): PrivilegedIntent | string
       if (!/^0x[0-9a-f]{64}$/.test(f.role?.value ?? "")) return "Choose a role.";
     } else if (key === "account") {
       if (address(f.account) === undefined) return "That is not a 20-byte address.";
+    } else if (key === "frozen") {
+      if (f.frozen?.value !== "0" && f.frozen?.value !== "1") return "Choose frozen or not frozen.";
     } else if (key === "amount" && uint(f.amount) === undefined) {
       return "The amount must be a whole number of raw units.";
     } else if (key === "until" && uint(f.until) === undefined) {
@@ -163,6 +170,12 @@ export function intentFrom(action: string, f: Fields): PrivilegedIntent | string
     case "revokeKyc": return { action: "revokeKyc", account };
     case "pause": return { action: "pause" };
     case "unpause": return { action: "unpause" };
+    case "freezePartialTokens":
+      return { action: "freezePartialTokens", account, amount: uint(f.amount) as bigint };
+    case "unfreezePartialTokens":
+      return { action: "unfreezePartialTokens", account, amount: uint(f.amount) as bigint };
+    case "setAddressFrozen":
+      return { action: "setAddressFrozen", account, frozen: f.frozen?.value === "1" };
     case "lock":
       return { action: "lock", account, amount: uint(f.amount) as bigint, until: uint(f.until) as bigint };
     case "setMaxSupply": return { action: "setMaxSupply", cap: uint(f.cap) as bigint };
@@ -242,7 +255,18 @@ export function renderPrivilegedPanel(
     for (const key of NEEDS[action] ?? []) {
       const line = el("div", "ats-row");
       line.appendChild(el("span", "ats-label", LABEL[key] ?? key));
-      if (key === "role") {
+      if (key === "frozen") {
+        const frozenSelect = el("select");
+        for (const [value, label] of [["1", "frozen"], ["0", "not frozen"]] as const) {
+          const opt = document.createElement("option");
+          opt.value = value;
+          opt.textContent = label;
+          frozenSelect.appendChild(opt);
+        }
+        frozenSelect.addEventListener("change", invalidate);
+        fields.frozen = frozenSelect;
+        line.appendChild(frozenSelect);
+      } else if (key === "role") {
         const roleSelect = el("select");
         for (const r of ROLES) {
           const opt = document.createElement("option");

@@ -171,6 +171,19 @@ export const ROLE_POWER: Readonly<Record<string, string>> = {
  * here rather than retyped in a second notation. A retyped 32-byte constant
  * is the mistake `roles.ts` exists to avoid.
  */
+/**
+ * The one bit `setAddressFrozen` turns, as words.
+ *
+ * Keyed by the decimal the engine reads out of the word, the same way
+ * `ROLE_ENUM` is. A bool has no `raw` rendering worth putting on an approval
+ * screen: "0" and "1" are exact and tell a reader nothing, and this call's
+ * whole consequence is which of the two it is.
+ */
+const FROZEN_ENUM: Readonly<Record<string, string>> = {
+  "0": "not frozen",
+  "1": "FROZEN",
+};
+
 const ROLE_ENUM: Readonly<Record<string, string>> = Object.fromEntries(
   ROLES.map((r) => [BigInt(r.id).toString(), r.name]),
 );
@@ -278,6 +291,40 @@ export const ACTIONS: readonly ActionSpec[] = [
     ],
   },
   {
+    key: "freezePartialTokens(address _userAddress, uint256 _amount)",
+    title: "Freeze holder shares",
+    intent: "Freeze part of a holder's balance",
+    confidence: "artifact",
+    fields: [
+      { label: "Holder", path: "#._userAddress", format: "addressName" },
+      { label: "Amount", path: "#._amount", format: "raw" },
+    ],
+  },
+  {
+    key: "unfreezePartialTokens(address _userAddress, uint256 _amount)",
+    title: "Unfreeze holder shares",
+    intent: "Unfreeze part of a holder's balance",
+    confidence: "artifact",
+    fields: [
+      { label: "Holder", path: "#._userAddress", format: "addressName" },
+      { label: "Amount", path: "#._amount", format: "raw" },
+    ],
+  },
+  {
+    /* The bool is rendered as a named state, not as 0 or 1. The entire meaning
+     * of this call is in that one bit — it is the difference between barring a
+     * holder from their own shares and releasing them — and a screen that puts
+     * "1" next to an approve button has described nothing. */
+    key: "setAddressFrozen(address _userAddress, bool _freeze)",
+    title: "Freeze holder address",
+    intent: "Freeze or unfreeze a holder entirely",
+    confidence: "artifact",
+    fields: [
+      { label: "Holder", path: "#._userAddress", format: "addressName" },
+      { label: "Set to", path: "#._freeze", format: "enum", params: { $ref: "$.metadata.enums.frozen" } },
+    ],
+  },
+  {
     key: "addToControlList(address _account)",
     title: "Add to control list",
     intent: "Add an address to the control list",
@@ -373,7 +420,7 @@ export function atsDescriptorJson(chainId: number, address: string): unknown {
     metadata: {
       owner: "Hedera Asset Tokenization Studio security",
       contractName: "ATS security",
-      enums: { roles: ROLE_ENUM },
+      enums: { roles: ROLE_ENUM, frozen: FROZEN_ENUM },
     },
     display: {
       formats: Object.fromEntries(

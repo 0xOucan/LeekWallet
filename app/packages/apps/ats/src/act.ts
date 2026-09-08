@@ -77,6 +77,9 @@ export type PrivilegedIntent =
   | { action: "revokeKyc"; account: string }
   | { action: "pause" }
   | { action: "unpause" }
+  | { action: "freezePartialTokens"; account: string; amount: bigint }
+  | { action: "unfreezePartialTokens"; account: string; amount: bigint }
+  | { action: "setAddressFrozen"; account: string; frozen: boolean }
   | { action: "lock"; account: string; amount: bigint; until: bigint }
   | { action: "setMaxSupply"; cap: bigint }
   | { action: "mint"; to: string; amount: bigint }
@@ -133,6 +136,11 @@ export function encodePrivileged(intent: PrivilegedIntent): string {
     case "pause":
     case "unpause":
       return head;
+    case "freezePartialTokens":
+    case "unfreezePartialTokens":
+      return head + addressWord(intent.account) + word(intent.amount);
+    case "setAddressFrozen":
+      return head + addressWord(intent.account) + word(intent.frozen ? 1n : 0n);
     case "lock":
       // Amount, then holder, then expiry. The contracts' order.
       return head + word(intent.amount) + addressWord(intent.account) + word(intent.until);
