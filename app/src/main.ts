@@ -587,6 +587,7 @@ function invalidateDerived(reason: string): void {
   $("addrdetail").hidden = true;
   $("addrpanel").hidden = true;
   $("signpanel").hidden = true;
+  setShellVisible(false);
   $("sfrom").textContent = "—";
   clearBalances();
   log(`derived addresses cleared: ${reason}`);
@@ -665,6 +666,7 @@ async function poll(): Promise<void> {
         await loadAddresses();
         $("addrpanel").hidden = false;
         $("signpanel").hidden = false;
+        setShellVisible(true);
       }
     }
   } catch {
@@ -702,6 +704,84 @@ const busy = (on: boolean): void => {
     ($(id) as HTMLButtonElement).disabled = on;
   }
 };
+
+/**
+ * Shell tab bar (M2, UI-REDESIGN-PLAN.md §2b).
+ *
+ * The tabs and the panels they show are shell wiring, not panel content:
+ * every element named here already existed and keeps its own internal markup
+ * and its own main.ts logic untouched. This block only ever toggles [hidden]
+ * on whole panels.
+ */
+const TAB_PANEL_IDS: Record<string, string> = {
+  send: "signpanel",
+  receive: "addrpanel",
+  activity: "activitypanel",
+  apps: "apps",
+  connect: "wcpanel",
+};
+
+let activeTab = "send";
+
+/** Show the panel for `tab`, hide the other four. Apps keeps its own rule:
+ * mountApps() already decides whether it has anything to show for the
+ * current chain, so this only ever hides it further, never forces it open. */
+function applyTabVisibility(): void {
+  for (const [tab, id] of Object.entries(TAB_PANEL_IDS)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (tab === "apps") {
+      el.hidden = activeTab !== "apps" || el.childElementCount === 0;
+    } else {
+      el.hidden = activeTab !== tab;
+    }
+  }
+}
+
+function selectTab(tab: string): void {
+  if (!(tab in TAB_PANEL_IDS)) return;
+  activeTab = tab;
+  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#tabbar .tab"))) {
+    btn.setAttribute("aria-selected", String(btn.dataset["tab"] === tab));
+  }
+  applyTabVisibility();
+}
+
+/**
+ * Whether the tab bar (and therefore Send/Receive/Activity/Apps/Connect) is
+ * offered at all.
+ *
+ * Called from exactly the places that already show/hide addrpanel and
+ * signpanel — connect's derivation success, unlock, a host-side passphrase
+ * apply, invalidateDerived, and disconnect — so the tab bar tracks "there is
+ * a derived address to act on" the same way those two panels already do.
+ * Pre-connect, this stays hidden: only the Device panel, Flash firmware, and
+ * whatever mini-apps apply with no chain selected (M3) are on screen.
+ */
+function setShellVisible(visible: boolean): void {
+  $("tabbar").hidden = !visible;
+  if (visible) {
+    selectTab(activeTab);
+  } else {
+    // Force every tab-owned panel shut; apps keeps deciding for itself.
+    for (const [tab, id] of Object.entries(TAB_PANEL_IDS)) {
+      if (tab === "apps") continue;
+      const el = document.getElementById(id);
+      if (el) el.hidden = true;
+    }
+  }
+}
+
+function initTabbar(): void {
+  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#tabbar .tab"))) {
+    btn.addEventListener("click", () => selectTab(btn.dataset["tab"] ?? "send"));
+  }
+  // remountApps() runs before this on init and may already have populated
+  // #apps; re-apply the rule once so an unlocked-on-load state (a saved
+  // session) does not show a stale hidden/visible apps panel under a tab
+  // nobody selected yet.
+  applyTabVisibility();
+}
 
 /* ----------------------------------------------------------------- actions */
 
@@ -973,6 +1053,7 @@ async function unlock(): Promise<void> {
     await loadAddresses();
     $("addrpanel").hidden = false;
     $("signpanel").hidden = false;
+    setShellVisible(true);
     $("passpanel").hidden = !lastStatus.unlocked;
     if (!lastStatus.unlocked) {
       log("device is locked — press Unlock, then enter your PIN on the device");
@@ -1146,6 +1227,7 @@ function initPassphrase(): void {
         await loadAddresses();
         $("addrpanel").hidden = false;
         $("signpanel").hidden = false;
+        setShellVisible(true);
       }
     } catch (e) {
       const msg = e instanceof DeviceError ? e.message
@@ -1361,6 +1443,10 @@ function remountApps(info: ChainInfo): void {
       log,
     }),
   );
+  // mountApps() just wrote #apps's own [hidden] based on chain content; when
+  // the tab bar is showing, the tab-switch rule (only visible on the Apps
+  // tab) still applies on top of that.
+  if (!$("tabbar").hidden) applyTabVisibility();
 }
 
 /** Rebuild the chain list: curated first, then custom. The order is the trust order. */
@@ -3403,6 +3489,7 @@ async function disconnect(): Promise<void> {
   $("signpanel").hidden = true;
   $("passpanel").hidden = true;
   $("pairing").hidden = true;
+  setShellVisible(false);
   /* The field holds nothing between calls, but a disconnect is exactly when a
    * half-typed one would otherwise be left sitting in the DOM. */
   ($("passinput") as HTMLInputElement).value = "";
@@ -3531,6 +3618,7 @@ initTokenDiscovery();
 initFlasher(tauriFlashBridge(log));
 initToScanner();
 initMaxAmount();
+initTabbar();
 populateAssets();
 void initRpcTransport();
 

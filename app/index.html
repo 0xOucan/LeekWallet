@@ -135,7 +135,26 @@
           </details>
         </section>
 
-        <section class="panel" id="addrpanel" aria-labelledby="addrhead" hidden>
+        <!--
+          Tab bar (M2). Hidden until the device is unlocked -
+          setShellVisible() in main.ts, called from the same places that
+          already show/hide addrpanel and signpanel. Each panel below carries
+          the data-tab it belongs to; switching tabs only ever toggles
+          [hidden] on whole panels, so no panel's own markup changes here.
+          M5-M7 have not been built, so Send and Receive currently point at
+          the existing "Sign a transaction" and "Addresses" panels rather
+          than the review-first forms the plan describes for those tabs, and
+          Activity is a placeholder - see docs/UI-REDESIGN-PLAN.md milestones.
+        -->
+        <nav class="tabbar" id="tabbar" role="tablist" aria-label="Sections" hidden>
+          <button type="button" class="tab" role="tab" data-tab="send" aria-selected="true">Send</button>
+          <button type="button" class="tab" role="tab" data-tab="receive" aria-selected="false">Receive</button>
+          <button type="button" class="tab" role="tab" data-tab="activity" aria-selected="false">Activity</button>
+          <button type="button" class="tab" role="tab" data-tab="apps" aria-selected="false">Apps</button>
+          <button type="button" class="tab" role="tab" data-tab="connect" aria-selected="false">Connect</button>
+        </nav>
+
+        <section class="panel" id="addrpanel" aria-labelledby="addrhead" data-tab="receive" hidden>
           <h2 id="addrhead">Addresses</h2>
           <p>
             Pick the address to sign with. The device signs whichever path is
@@ -298,7 +317,21 @@
           <p class="muted" id="flashstatus" aria-live="polite"></p>
         </div>
 
-        <section class="panel" id="signpanel" aria-labelledby="signhead" hidden>
+        <!-- Activity (M7, not built). A stub rather than nothing: the tab
+             exists per the shell's M2 deliverable, and unavailable must never
+             read as zero (rule 4) - so this says plainly that no history is
+             being shown, rather than showing an empty list that looks like a
+             wallet with no transactions. -->
+        <section class="panel" id="activitypanel" aria-labelledby="activityhead" data-tab="activity" hidden>
+          <h2 id="activityhead">Activity</h2>
+          <p class="muted">
+            Not built yet. When it is, this will show transactions signed on
+            this wallet and transfers of tokens you watch - not a full
+            history, and it will say so here rather than imply completeness.
+          </p>
+        </section>
+
+        <section class="panel" id="signpanel" aria-labelledby="signhead" data-tab="send" hidden>
           <h2 id="signhead">Sign a transaction</h2>
           <p>
             This preview is drawn by this app and cannot be trusted. Verify the
@@ -449,7 +482,7 @@
           see docs/PROTOCOL.md section 6b for why rendering untrusted web
           content next to a signing device is the thing we are not doing.
         -->
-        <section class="panel" id="wcpanel" aria-labelledby="wchead">
+        <section class="panel" id="wcpanel" aria-labelledby="wchead" data-tab="connect" hidden>
           <h2 id="wchead">Dapps (WalletConnect)</h2>
           <p id="wcstatus" class="muted" role="status"></p>
 
@@ -573,13 +606,18 @@
         <!-- Mini-apps mount here, one panel each. Empty and hidden unless the
              active chain has one registered - see src/apps/registry.ts, which
              is the single line a release build removes to exclude one. -->
-        <div id="apps" hidden></div>
+        <div id="apps" data-tab="apps" hidden></div>
         <!-- One camera surface for every mini-app, owned by the shell.
              An app never gets a MediaStream; it calls AppContext.scanQr and
              receives whatever its own accept() matched. -->
         <video id="appvideo" class="wc-video" hidden muted playsinline
                aria-label="Camera, scanning for a QR code"></video>
 
+        <!-- Collapsed by default (M2, UI-REDESIGN-PLAN.md §2b): one click
+             away, never removed. Everything inside is untouched - only the
+             <details> wrapper is new. -->
+        <details class="diagnostics">
+          <summary>Diagnostics</summary>
         <section class="panel" id="logpanel" aria-labelledby="loghead">
           <h2 id="loghead">Device log</h2>
           <!-- Selecting text on a phone is painful and this log is what every
@@ -603,6 +641,7 @@
           <div class="log" id="log" role="log" tabindex="0"
                aria-label="Device log, newest first">Nothing yet.</div>
         </section>
+        </details>
       </main>
     </div>
     <script type="module" src="/src/main.ts"></script>
