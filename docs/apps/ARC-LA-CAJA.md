@@ -267,6 +267,33 @@ by the device's address.
 
 ---
 
+## 4b. Verified on hardware and on-chain — 2026-09-08
+
+The first real payment through the terminal, end to end, with nothing mocked.
+
+| | |
+|---|---|
+| Wallet | Rabby, scanning the terminal's QR |
+| Chain | Base Sepolia (84532) |
+| Token | USDC `0x036cbd53842c5426634e7929541ec2318f3dcf7e` |
+| Amount | `2429700` raw = **2.4297 USDC** — the marker matched exactly |
+| Tx | `0xe7c7423692c6f6cb91272a2a4cc94021951be424a074f1cc74c096085d0a6f15` |
+| Block | 46533335, status success |
+| Detected | by the watcher, on the right chain, with confirmations counted |
+
+Independently confirmed by `eth_getTransactionReceipt`: the `Transfer` log's
+`to` is the merchant address and the value is the exact payable amount,
+sub-cent marker included. **T2 and T3 are met against a live chain**, and the
+unique-amount matching works in practice and not only in a test.
+
+Eight other chains simultaneously reported *checked and nothing has arrived*,
+each naming its block range and the operator that answered — so the watcher
+distinguished the paying chain from eight quiet ones rather than guessing.
+
+**Still untested:** the unreachable-RPC path against a real outage. The wording
+is in place (*"A chain that could not be reached is shown as unknown, never as
+unpaid"*) but every chain answered during this run, so nothing exercised it.
+
 ## 5. Testing rounds
 
 | # | What is tested | Testnet funds |
