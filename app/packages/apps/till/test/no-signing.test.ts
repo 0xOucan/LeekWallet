@@ -38,7 +38,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TILL_APP, PaymentWatcher } from "../src/index.ts";
+import { TILL_APP, TILL_WAITER_APP, PaymentWatcher } from "../src/index.ts";
 
 let failures = 0;
 const check = (cond: boolean, msg: string) => {
@@ -50,8 +50,30 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 const srcDir = join(here, "..", "src");
 const sources = readdirSync(srcDir).filter((f) => f.endsWith(".ts"));
 
-/** Imports an app may have. Anything else is a new capability, reviewed here. */
-const ALLOWED_IMPORTS = [/^@leekwallet\/core\//, /^\.\/[a-z-]+\.ts$/, /^qrcode-generator$/];
+/**
+ * Imports an app may have. Anything else is a new capability, reviewed here.
+ *
+ * Two of the four are worth the sentence each:
+ *
+ * `@circle-fin/app-kit/chains` is the sponsor SDK's DATA module — chain ids,
+ * USDC and EURC addresses, CCTP domains — and the subpath is load-bearing.
+ * The package root (`@circle-fin/app-kit`) exports `Adapter`, `spend`,
+ * `bridge` and the rest of the wallet layer, and importing it would put an
+ * object with a `.spend()` on it inside a terminal whose whole claim is that
+ * it cannot move money. The regex below therefore matches the one subpath and
+ * NOT the root, deliberately.
+ *
+ * `@noble/hashes/sha256` is a hash and cannot sign. It backs the integrity
+ * digest on an issued request (request.ts), which is explicitly not a
+ * signature — there is no key here to make one with.
+ */
+const ALLOWED_IMPORTS = [
+  /^@leekwallet\/core\//,
+  /^\.\/[a-z-]+\.ts$/,
+  /^qrcode-generator$/,
+  /^@circle-fin\/app-kit\/chains$/,
+  /^@noble\/hashes\/sha256$/,
+];
 
 group("no import could bring a signing capability in");
 {
@@ -137,6 +159,9 @@ group("the mounted app makes no request and offers no signing action");
 
   const root = makeNode("div");
   await TILL_APP.mount(root as unknown as HTMLElement, context as never);
+  // Both halves of La Caja, on one harness: the waiter's terminal is the one
+  // handed to a stranger, so it is the one that must not surprise us.
+  await TILL_WAITER_APP.mount(makeNode("div") as unknown as HTMLElement, context as never);
 
   // Drive it: type an amount, press every tip, switch token, pick every rail.
   const clickable = nodes.flatMap((n) => n.listeners.map(([event, fn]) => [n, event, fn] as const));

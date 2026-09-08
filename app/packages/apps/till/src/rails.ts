@@ -36,6 +36,10 @@
  * telling a lie that costs a real customer real money.
  */
 
+import {
+  ArbitrumSepolia, ArcTestnet, AvalancheFuji, BaseSepolia, EthereumSepolia,
+  LineaSepolia, OptimismSepolia, PolygonAmoy, UnichainSepolia,
+} from "@circle-fin/app-kit/chains";
 import { chainLabel, tokenHint } from "@leekwallet/core/chains.ts";
 
 /** The two Circle stablecoins this terminal takes. */
@@ -79,6 +83,36 @@ export interface Rail {
 export const CARD_RATE_BPS = 406;
 
 /**
+ * Token contracts per rail, taken from Circle's own chain definitions.
+ *
+ * ---------------------------------------------------------------------------
+ * Why these addresses come from the SDK and not from this file
+ *
+ * They used to be a hand-copied table transcribed out of Circle's docs. Every
+ * entry was right, and that is exactly the problem with it: it was right on the
+ * day it was typed, and nothing in this repository would notice the day it
+ * stopped being. A wrong USDC address on a QR is money sent to a contract that
+ * cannot give it back.
+ *
+ * `@circle-fin/app-kit/chains` is the data half of the sponsor SDK — chain ids,
+ * USDC and EURC addresses, CCTP domains, Gateway contracts — and it is a plain
+ * frozen object with no client, no adapter and no key in it. That is precisely
+ * the split docs/SDK-POLICY.md asks for: the SDK supplies the addresses, and
+ * nothing in this app hands it a signer, because this app has none to hand.
+ *
+ * `EURC` being `null` on five of the nine is now Circle's statement rather than
+ * ours, which is the part worth having: a chain that gains EURC gains it here
+ * on the next SDK bump instead of on the next time somebody remembers.
+ *
+ * The decimals still come from core's token table (`tokenHint`), never from
+ * the SDK and never from a constant here — see `deploymentFor` below.
+ */
+const CIRCLE_CHAINS = [
+  ArcTestnet, BaseSepolia, OptimismSepolia, ArbitrumSepolia, UnichainSepolia,
+  PolygonAmoy, LineaSepolia, AvalancheFuji, EthereumSepolia,
+] as const;
+
+/**
  * The nine CCTP V2 testnet chains, listed cheapest first.
  *
  * Order in this array is the tie-break for equal fees, and Arc leads on
@@ -86,44 +120,31 @@ export const CARD_RATE_BPS = 406;
  * all. Everything else is a source domain.
  */
 const RAILS: readonly Rail[] = [
-  { chainId: 5042002, name: chainLabel(5042002), feeCents: 1, flatFee: false, confirmations: 2 },   // Arc; gas is USDC
-  { chainId: 84532, name: chainLabel(84532), feeCents: 1, flatFee: false, confirmations: 2 },       // Base Sepolia
-  { chainId: 11155420, name: chainLabel(11155420), feeCents: 1, flatFee: false, confirmations: 2 }, // OP Sepolia
-  { chainId: 421614, name: chainLabel(421614), feeCents: 1, flatFee: false, confirmations: 2 },     // Arbitrum Sepolia
-  { chainId: 1301, name: chainLabel(1301), feeCents: 1, flatFee: false, confirmations: 2 },         // Unichain Sepolia
-  { chainId: 80002, name: chainLabel(80002), feeCents: 1, flatFee: false, confirmations: 5 },       // Polygon Amoy; reorgs deeper than its L2 peers
-  { chainId: 59141, name: chainLabel(59141), feeCents: 2, flatFee: false, confirmations: 2 },       // Linea Sepolia
-  { chainId: 43113, name: chainLabel(43113), feeCents: 3, flatFee: false, confirmations: 2 },       // Avalanche Fuji
-  { chainId: 11155111, name: chainLabel(11155111), feeCents: 200, flatFee: true, confirmations: 12 }, // Ethereum L1 (Sepolia)
+  { chainId: ArcTestnet.chainId, name: chainLabel(ArcTestnet.chainId), feeCents: 1, flatFee: false, confirmations: 2 },   // Arc; gas is USDC
+  { chainId: BaseSepolia.chainId, name: chainLabel(BaseSepolia.chainId), feeCents: 1, flatFee: false, confirmations: 2 },       // Base Sepolia
+  { chainId: OptimismSepolia.chainId, name: chainLabel(OptimismSepolia.chainId), feeCents: 1, flatFee: false, confirmations: 2 }, // OP Sepolia
+  { chainId: ArbitrumSepolia.chainId, name: chainLabel(ArbitrumSepolia.chainId), feeCents: 1, flatFee: false, confirmations: 2 },     // Arbitrum Sepolia
+  { chainId: UnichainSepolia.chainId, name: chainLabel(UnichainSepolia.chainId), feeCents: 1, flatFee: false, confirmations: 2 },         // Unichain Sepolia
+  { chainId: PolygonAmoy.chainId, name: chainLabel(PolygonAmoy.chainId), feeCents: 1, flatFee: false, confirmations: 5 },       // Polygon Amoy; reorgs deeper than its L2 peers
+  { chainId: LineaSepolia.chainId, name: chainLabel(LineaSepolia.chainId), feeCents: 2, flatFee: false, confirmations: 2 },       // Linea Sepolia
+  { chainId: AvalancheFuji.chainId, name: chainLabel(AvalancheFuji.chainId), feeCents: 3, flatFee: false, confirmations: 2 },       // Avalanche Fuji
+  { chainId: EthereumSepolia.chainId, name: chainLabel(EthereumSepolia.chainId), feeCents: 200, flatFee: true, confirmations: 12 }, // Ethereum L1 (Sepolia)
 ] as const;
 
 /**
- * Token contracts per rail. Lower case, as core stores them.
- *
- * EURC's absence on five of the nine is the load-bearing part: a chain missing
- * from the EURC map has no EURC anybody checked, and the terminal must offer
- * nothing there rather than an address assumed by analogy with USDC. Offering
- * a combination and then failing on it is the same bug as offering it and
- * succeeding at sending money nowhere.
+ * Circle writes addresses checksummed; core stores them lower-case, and the
+ * watcher compares log topics as lower-case hex. One normalisation, here, so
+ * no caller has to remember which form it is holding.
  */
 const CONTRACTS: Record<TillToken, Readonly<Record<number, string>>> = {
-  USDC: {
-    5042002: "0x3600000000000000000000000000000000000000",
-    84532: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-    11155420: "0x5fd84259d66cd46123540766be93dfe6d43130d7",
-    421614: "0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d",
-    1301: "0x31d0220469e10c4e71834a79b1f276d740d3768f",
-    80002: "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582",
-    59141: "0xfece4462d57bd51a6a552365a011b95f0e16d9b7",
-    43113: "0x5425890298aed601595a70ab815c96711a31bc65",
-    11155111: "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
-  },
-  EURC: {
-    5042002: "0x89b50855aa3be2f677cd6303cec089b5f319d72a",
-    84532: "0x808456652fdb597867f38412077a9182bf77359f",
-    43113: "0x5e44db7996c682e92a960b65ac713a54ad815c6b",
-    11155111: "0x08210f9170f89ab7658f0b5e3ff39b0e03c594d4",
-  },
+  USDC: Object.fromEntries(
+    CIRCLE_CHAINS.map((c) => [c.chainId, c.usdcAddress.toLowerCase()]),
+  ),
+  EURC: Object.fromEntries(
+    CIRCLE_CHAINS.flatMap((c) =>
+      c.eurcAddress === null ? [] : [[c.chainId, c.eurcAddress.toLowerCase()] as const],
+    ),
+  ),
 };
 
 /** Every chain the terminal is willing to be opened on, cheapest first. */

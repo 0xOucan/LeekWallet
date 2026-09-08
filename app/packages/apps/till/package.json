@@ -9,10 +9,12 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/order.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/rails.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/uri.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/watch.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/watch-view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/no-signing.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/order.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/request.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/waiter.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/rails.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/uri.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/watch.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/watch-view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/no-signing.test.ts"
   },
   "dependencies": {
+    "@circle-fin/app-kit": "1.14.0",
     "@leekwallet/core": "workspace:*",
+    "@noble/hashes": "1.8.0",
     "qrcode-generator": "2.0.4"
   }
 }
