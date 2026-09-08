@@ -1,5 +1,5 @@
 /**
- * The Aqua registry, as calldata and as logs. No transactions, no signing.
+ * The Aqua registry, as calldata and as logs.
  *
  * Aqua is a shared liquidity layer in which the maker's tokens never move into
  * a pool. The registry holds *virtual* balances keyed
@@ -116,6 +116,99 @@ export function encodeRawBalances(
   return `0x${SELECTOR_RAW_BALANCES}${addressWord(maker, "maker")}` +
     `${addressWord(app, "app")}${bytes32Word(strategyHash, "strategyHash")}` +
     `${addressWord(token, "token")}`;
+}
+
+/* ------------------------------------------------------------- the writes
+ *
+ * `ship` and `dock`, encoded canonically -- the exact layout solc emits, which
+ * is the only one the device's decoder accepts (src/eth-decode.c). Producing
+ * anything else here would produce calldata this wallet refuses to sign, which
+ * is a better failure than the alternative but still a failure, so the encoder
+ * and the decoder are written from the same description of the layout.
+ *
+ * Selectors are derived by hashing, like every other one in this file. Note
+ * that neither of these was in the SDK's documented surface at the time: they
+ * were read off the deployed dispatcher on Sepolia and confirmed against the
+ * `Shipped` topic the contract emits, which is why they are derived rather
+ * than pinned.
+ */
+
+/** `ship(address app, bytes strategy, address[] tokens, uint256[] amounts)`. */
+export const SELECTOR_SHIP = selectorOf("ship(address,bytes,address[],uint256[])");
+
+/** `dock(address app, bytes32 strategyHash, address[] tokens)`. */
+export const SELECTOR_DOCK = selectorOf("dock(address,bytes32,address[])");
+
+/**
+ * The most legs this wallet will ship or dock in one call.
+ *
+ * `ETH_AQUA_MAX_LEGS` on the device, where it is one confirmation page per leg
+ * and a strategy with more is refused rather than summarised. Repeated here as
+ * a named constant so the app refuses first, with a sentence, instead of
+ * building calldata the device will reject without explaining why.
+ */
+export const AQUA_MAX_LEGS = 4;
+
+const HEX_BYTES = /^0x([0-9a-fA-F]{2})*$/;
+
+function legWords(tokens: readonly string[]): string {
+  return tokens.map((t, i) => addressWord(t, `tokens[${i}]`)).join("");
+}
+
+function uintWord(value: bigint, what: string): string {
+  if (value < 0n) throw new AbiError(`${what} is negative`);
+  if (value > (1n << 256n) - 1n) throw new AbiError(`${what} does not fit a uint256`);
+  return value.toString(16).padStart(64, "0");
+}
+
+export interface ShipLeg {
+  token: string;
+  /** Raw units. What the strategy is credited with, not what can be pulled. */
+  amount: bigint;
+}
+
+export function encodeShip(
+  app: string, strategy: string, legs: readonly ShipLeg[],
+): string {
+  if (!HEX_BYTES.test(strategy)) throw new AbiError("strategy is not whole-byte hex");
+  if (legs.length === 0) throw new AbiError("a ship with no legs provides nothing");
+  if (legs.length > AQUA_MAX_LEGS) {
+    throw new AbiError(`the device draws at most ${AQUA_MAX_LEGS} legs per strategy`);
+  }
+
+  const body = strategy.slice(2).toLowerCase();
+  const length = body.length / 2;
+  const padded = body.padEnd(Math.ceil(length / 32) * 64, "0");
+
+  const offS = 4 * 32;
+  const offT = offS + 32 + padded.length / 2;
+  const offA = offT + 32 + legs.length * 32;
+
+  return `0x${SELECTOR_SHIP}` +
+    addressWord(app, "app") +
+    uintWord(BigInt(offS), "strategy offset") +
+    uintWord(BigInt(offT), "tokens offset") +
+    uintWord(BigInt(offA), "amounts offset") +
+    uintWord(BigInt(length), "strategy length") + padded +
+    uintWord(BigInt(legs.length), "tokens length") +
+    legWords(legs.map((l) => l.token)) +
+    uintWord(BigInt(legs.length), "amounts length") +
+    legs.map((l, i) => uintWord(l.amount, `amounts[${i}]`)).join("");
+}
+
+export function encodeDock(
+  app: string, hash: string, tokens: readonly string[],
+): string {
+  if (tokens.length === 0) throw new AbiError("a dock with no tokens returns nothing");
+  if (tokens.length > AQUA_MAX_LEGS) {
+    throw new AbiError(`the device draws at most ${AQUA_MAX_LEGS} legs per strategy`);
+  }
+  return `0x${SELECTOR_DOCK}` +
+    addressWord(app, "app") +
+    bytes32Word(hash, "strategyHash") +
+    uintWord(BigInt(3 * 32), "tokens offset") +
+    uintWord(BigInt(tokens.length), "tokens length") +
+    legWords(tokens);
 }
 
 /** `tokensCount` sentinel: the maker docked this strategy. */

@@ -33,12 +33,18 @@ import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 import { fetchPortfolio } from "./portfolio.ts";
 import { isAquaChain, AQUA_CHAIN_IDS } from "./registry.ts";
 import { portfolioView, renderPortfolio } from "./view.ts";
+import { renderManage } from "./manage.ts";
 import type { ScanOptions } from "./positions.ts";
 
 export * from "./registry.ts";
 export * from "./positions.ts";
 export * from "./portfolio.ts";
 export * from "./view.ts";
+export * from "./strategy.ts";
+export * from "./deploy.ts";
+export * from "./withdraw.ts";
+export * from "./run.ts";
+export * from "./manage.ts";
 
 /**
  * This app's context: the shared one, plus a scan window.
@@ -48,9 +54,11 @@ export * from "./view.ts";
  * free to widen `AppContext` this way; it must not narrow it, because the shell
  * only knows how to supply the shared shape.
  *
- * Note what is still absent: no signer, no device client. This milestone is
- * read-only and is structurally incapable of producing a signature. Q2 adding a
- * signing path is the reviewable moment at which that stops being true.
+ * Note what is still absent even now that this app signs: no signer, no device
+ * client, no key. Q2 added `propose` -- the ability to ASK, screened in core,
+ * drawn on the user's screen and again on the device's, and costing a press
+ * every time. That is a result, never a capability; app-proposal.ts sets out
+ * the difference and test/apps.test.ts asserts this app holds nothing else.
  */
 export interface AquaContext extends AppContext {
   scan?: ScanOptions;
@@ -81,6 +89,26 @@ const CSS = `
   border-bottom: 2px dotted currentColor;
 }
 .aqua-tone-danger .aqua-value { color: var(--danger, #dc322f); font-weight: 700; }
+
+/* The write half. Same four tones, applied to whole paragraphs rather than to
+   a value: a notice about a standing allowance is not a figure, but it is the
+   same claim about how certain the app is, so it gets the same vocabulary. */
+.aqua-deploy, .aqua-dock { display: flex; flex-direction: column; gap: 0.5rem; }
+.aqua-input { display: flex; gap: 0.5rem; align-items: baseline; }
+.aqua-input input { flex: 1; min-width: 0; font-family: monospace; }
+.aqua-leg { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.aqua-steps { margin: 0.25rem 0; padding-left: 1.2rem; }
+.aqua-steps li { margin-bottom: 0.3rem; }
+.aqua-notice { font-size: 0.85em; margin: 0.2rem 0; }
+.aqua-notice.aqua-tone-unavailable { color: var(--warn, #b58900); font-style: italic; }
+/* The half-failure. Loud, boxed, and not the same weight as anything else on
+   the screen: an approval standing with no position behind it is the one state
+   in this app that still costs money after the user has walked away. */
+.aqua-notice.aqua-tone-danger {
+  color: var(--danger, #dc322f); font-weight: 600;
+  border-left: 3px solid currentColor; padding-left: 0.5rem;
+}
+.aqua-report { display: flex; flex-direction: column; gap: 0.3rem; }
 `;
 
 export const AQUA_APP: MiniApp = {
@@ -105,6 +133,20 @@ export const AQUA_APP: MiniApp = {
       (context as AquaContext).scan ?? {},
     );
     renderPortfolio(root, portfolioView(portfolio));
+    /* The write half, appended to the read. Deliberately after: the approval
+     * and the positions are what a deployment has to be decided against, and a
+     * form above them would be a form filled in without reading them. */
+    renderManage(root, {
+      chainId: context.chainId,
+      maker: context.address,
+      context,
+      portfolio,
+      /* Re-mount rather than patch. Everything on screen is derived from one
+       * read, and after a transaction lands that read is stale in ways this
+       * app cannot enumerate -- a partial repaint would leave some figures
+       * from before the signature and some from after. */
+      refresh: () => { void AQUA_APP.mount(root, context); },
+    });
   },
 };
 
