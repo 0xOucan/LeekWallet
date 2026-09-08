@@ -2,10 +2,12 @@
 
 Standalone plan. One document per sponsor app; this is the Arc one.
 
-**What it is.** A point of sale for small merchants. A waiter builds a bill,
-adds a tip, and shares it. The customer pays in USDC or EURC from whatever
-chain they already use. Takings sweep to the merchant's Arc treasury. Only the
-LeekWallet device can withdraw.
+**What it is.** A point of sale for small merchants, on two devices. The
+cashier builds the bill and the tip and issues a payment request; the waiter
+carries a phone to the table, scans that request, and shows the customer what to
+pay. The customer pays in USDC or EURC from whatever chain they already use, to
+the restaurant's own address. Neither staff device holds the LeekWallet, and
+neither can move money.
 
 ---
 
@@ -27,108 +29,134 @@ This was not the first design. It is better than the alternatives:
 Gas on an L2 is a fraction of a cent. Making the customer pay it removes an
 entire subsystem.
 
-### The receiving address is a contract, not an EOA
+### The relayer is gone — 2026-09-08
 
-This is the one non-obvious decision, and it is what keeps the relayer honest.
+An earlier draft of this document put a `CajaInbox` contract on every chain, gave
+it an immutable Arc destination, and ran a relayer on a VPS that called
+`sweep()`, polled Iris and called `receiveMessage` on Arc. All of that has been
+**dropped**, and this section is kept as the record of why rather than deleted.
 
-If the customer pays into the merchant's **EOA**, then bridging those funds to
-Arc requires a key that controls that address. Two bad options follow: the
-merchant signs every sweep by hand, or the relayer holds a hot key that controls
-customer money. The second is custody, and it is exactly what this project
-argues against everywhere else.
+The owner's reasoning, and it is better than what it replaced: **it does not
+matter which chain the money lands on.** A restaurant that is paid in USDC on
+Base is paid. Consolidating those takings onto Arc is a treasury preference, not
+a requirement of taking payment, and it was paying for itself with:
 
-So the address printed on the QR is a **`CajaInbox`** — a small contract, one per
-chain, with an **immutable destination** set at deployment:
+| What the relayer cost | |
+|---|---|
+| A contract per chain | nine deployments, CREATE2, an audit surface |
+| A hot key | on a VPS, holding gas, running unattended |
+| A second repository | its own deploy cadence, its own on-call |
+| A failure mode | crash between `sweep()` and `receiveMessage` |
 
-```solidity
-contract CajaInbox {
-    address public immutable token;        // USDC or EURC on this chain
-    bytes32 public immutable destination;  // merchant's Arc address
-    uint32  public constant DOMAIN = 26;   // Arc, fixed
+So the design says which chains are accepted, shows all of them, and lets the
+customer choose. **No bridging, no hot key, no contract, no service.** The
+address on the QR is the restaurant's own address, and what arrives has arrived.
 
-    /// Anyone may call. Bridges the whole balance to `destination` on Arc.
-    function sweep() external { ... depositForBurn(...) ... }
-}
-```
+What is genuinely lost: takings sit on nine chains instead of one, and somebody
+has to consolidate them eventually. That is a periodic treasury operation the
+merchant does with the LeekWallet in hand — one press, at a time of their
+choosing — not a service that must be running while a customer stands at a
+table. Trading an always-on hot key for an occasional hardware-signed transfer
+is the right direction for this project specifically.
 
-Consequences, all good:
+The CCTP reference data in §3 stays. It is correct, it costs nothing to keep,
+and a merchant who does want to consolidate onto Arc will need it.
 
-- **Anyone can call `sweep()`.** The relayer is a caller who pays gas, not a
-  custodian. It has no key over the funds.
-- **A rogue or compromised relayer can only send the money where the merchant
-  already said.** The destination is immutable.
-- **No EIP-3009 needed.** The user's instinct — "just relay, route, send" — is
-  preserved exactly, and made safe by the contract rather than by trusting the
-  relayer.
-- Deploy with **CREATE2** so the same address appears on every chain. The
-  customer sees one address regardless of where they pay.
-
-> **The relayer is a private key, some gas, and a loop.** Watch the inboxes,
-> call `sweep()`, poll Iris, call `receiveMessage` on Arc. No encryption, no
-> consensus. The contract is what makes that simplicity safe.
-
-It lives on the VPS and belongs in **its own repository** — it is an operational
-service with a hot key and a deploy cadence, and none of that should share a
-release process with wallet firmware. It needs no access to the companion, the
-device, or the vault; it reads chains and calls `sweep()`. Two jobs:
-
-1. **Confirm** — watch `Transfer` logs to each `CajaInbox` and report a payment
-   as received, so the waiter can tell the customer it went through. This is the
-   latency the customer feels, and it is seconds.
-2. **Settle** — call `sweep()`, poll Iris, call `receiveMessage` on Arc. This is
-   background work nobody waits for.
-
-Keeping those two jobs separate matters: **the customer is never waiting on
-CCTP.** Confirmation is a log read.
-
-### Two roles, two devices, one signed chain of custody
-
-The admin issues the amount; the waiter adds the tip; the customer pays. Both
-staff run the companion, in different modes.
+### Two roles, two devices, no relayer
 
 ```
-  ADMIN (has LeekWallet)      MESERO (companion only)      CUSTOMER
-  ──────────────────────      ───────────────────────      ────────────
-  opens the shift             scans admin QR
-  signs a SHIFT GRANT     →   receives base amount     →   scans final QR
-  issues base check       →   adds tip 10/15/custom        pays from any chain
-  (no tip, no key given)      shows PAID to client     ←   relayer confirms
+CASHIER / ADMIN (companion)        WAITER (companion, phone or tablet)
+──────────────────────────         ──────────────────────────────────
+enters the bill + tip          →   scans the cashier's QR
+issues a payment-request QR        shows the client the address QR
+                                   watches every accepted chain
+                                   sees the payment land
 ```
 
-**The question this design has to answer: what stops a waiter inventing an
-order, or pocketing the difference?** A QR containing only numbers stops
-nothing. So the amounts are signed.
+Neither role holds the restaurant's LeekWallet. The restaurant address is a
+fixed recipient; the customer pays it on any accepted chain, and the waiter sees
+it arrive. They are two separate mini-apps — `till` and `till-waiter` — mounted
+on two devices, and that separation is what makes the next section true.
 
-**Shift grant.** At shift open the admin's device signs one EIP-712 grant:
+**A waiter cannot modify the request.** This is the whole point of splitting the
+roles, so it is structural rather than a disabled input:
 
-```
-  OPEN SHIFT · Tacos del Parque
-  Date      6 Sep, 14:00–23:00
-  Staff     4 terminals
-  Max order      2,000.00 USDC
-  Max tip              25%
-  [ REJECT ]              [ APPROVE ]
-```
+- The request is a **frozen value**, not a form. The cashier seals
+  `{merchant, recipient, token, total, marker, chains, issuedAt}` into one
+  canonical byte string; the waiter's app *parses* that string and holds the
+  result frozen (`Object.freeze`, `readonly` throughout). Writing to it throws.
+- The waiter's module **contains no constructor**. `waiter.ts` does not import
+  `sealRequest`, `buildOrder`, `parseCents`, `tipCents` or `newMarker`, and a
+  test reads the file and fails if it ever does. An amount it did not receive is
+  an amount it has no code to produce.
+- The waiter's screen has **one input**, and it takes a request, never a number.
+  A test mounts the app, fills every input it can find with hostile values,
+  fires every listener, and asserts the payable units and the recipient in the
+  rendered URI are byte-identical to the ones the cashier sealed.
+- Choosing which chain's QR is displayed is not a modification: the recipient
+  and the figure are the same on all of them, and the other eight stay on
+  screen with their own amounts.
 
-One physical press per **shift**, not per order — a press per table is not a
-product. The grant names the staff terminals, caps the order value and caps the
-tip percentage.
+### What the request does and does not prove
 
-**Each order** is then signed by the waiter's terminal key, which the grant
-names. The QR the customer scans carries `{merchant, orderId, base, tip,
-staffId}` plus that chain of signatures.
+The QR carries a **checksum**, a truncated sha256 over the canonical bytes. It
+detects a request that was mis-scanned or edited after issue, and the waiter's
+app refuses a mismatch outright rather than showing it with a warning.
 
-What this buys, and it is the whole point of a hardware wallet being present:
+It is **not a signature**, and this document is not going to imply otherwise.
+There is no signing key in the cashier's app: `AppContext.propose` needs the
+device, and the cashier does not hold it — the device is the treasury, in a
+safe. So:
 
-- A waiter **cannot invent revenue** — an order outside a valid grant never
-  settles as legitimate takings, so the books do not silently absorb it.
-- A waiter **cannot exceed the tip cap** the admin signed.
-- Every peso is attributable to a `staffId`, which is what makes tip splitting
-  at shift close arithmetic rather than an argument.
-- The admin **never hands out a key**. The grant is a capability with an expiry.
+> **Anyone who can display a QR can forge a payment request.** A waiter with a
+> phone and this source code can seal a request for any amount they like, and no
+> terminal can tell it from a genuine one.
 
-For the demo, per-order admin signing is also supported and is more visually
-obvious. The shift grant is the version that would survive a real Friday night.
+What stops that being theft is not cryptography, it is the recipient:
+
+1. The waiter's app **refuses any request that does not pay the address the
+   terminal was configured with**. A forged request therefore pays the
+   restaurant. The forger's gain is zero.
+2. What a forger *can* do is overcharge a customer — bill $400 for a $40 meal —
+   and the restaurant keeps the money. That is a dispute at the counter, not an
+   exfiltration, and it is exactly the exposure a paper bill pad already has.
+3. Rewriting the recipient to the waiter's own address is the attack that would
+   actually cost the restaurant money, and it is the one (1) refuses.
+4. What no unsigned request can prevent: a waiter quietly issuing bills the
+   cashier never approved, into the restaurant's account. Reconciling those is
+   accounting, not cryptography.
+
+The upgrade is obvious and needs one thing this milestone does not have: a key
+on the cashier's device. When the cashier is an admin holding the LeekWallet,
+`propose` can sign an EIP-712 request and the waiter can verify it against the
+merchant's published address. Until then the checksum is integrity, and the
+words in the UI say integrity.
+
+### The SDK: what Circle's App Kit is used for, and what it is not
+
+`@circle-fin/app-kit/chains` supplies the USDC and EURC addresses, the chain
+ids, the CCTP domains and the Gateway contracts for all nine rails. They used to
+be a hand-copied table in `rails.ts`: right on the day it was typed, and nothing
+in the repository would have noticed the day it stopped being. A wrong USDC
+address on a QR is money sent to a contract that cannot return it.
+
+The subpath is load-bearing. The package **root** exports `Adapter`, `spend`,
+`bridge` and the rest of the wallet layer, and the terminal's import allow-list
+matches `@circle-fin/app-kit/chains` and not the root — an object with a
+`.spend()` on it has no business inside an app whose claim is that it cannot
+move money. That is docs/SDK-POLICY.md's rule applied literally: the SDK
+supplies the data, and nothing here hands it a signer, because there is none to
+hand.
+
+Not used, with reasons rather than omissions:
+
+| App Kit capability | Why not |
+|---|---|
+| **Send** | The terminal never sends. The customer's own wallet does, from their own device. |
+| **Swap**, **Bridge** | Both need a signer, and both existed to serve the relayer that no longer exists. Nine accepted chains is the replacement for bridging. |
+| **Earn** | A restaurant's float is not a yield position, and it would need the key. |
+| **Unified Balance** | The one that nearly fitted. `getBalances` takes a plain address and no signer, so a keyless terminal *can* call it — but Gateway balances only show USDC that has been **deposited into Gateway**, and depositing requires a signature the terminal cannot make. A merchant taking ordinary ERC-20 transfers to their address has a unified balance of zero, so the figure would be a confident, wrong answer to "what have I taken today". It belongs on an admin screen where the device is present, not on a point of sale. |
+| **`@circle-fin/adapter-viem-v2`** | Its entire job is to give a kit a wallet client. This app has no key and no longer bridges, so installing it would add an unused dependency to a security-critical import allow-list. |
 
 ### Chain choice is the customer's, and it is shown
 
@@ -223,9 +251,10 @@ The Arc descriptor is the one that matters: native USDC is 18 decimals, the
 ERC-20 interface is 6, and the device renders **raw units** by design
 (`src/ui.c:4834`). Without the descriptor the screen is wrong by 10¹².
 
-### Step 2 — Terminal mode
-A companion mode with **no key and no reachable signing path**. Waiter enters a
-total, picks **10% / 15% / custom** tip, sees the grand total, and produces:
+### Step 2 — Cashier mode
+A companion mode with **no key and no reachable signing path**. The cashier
+enters a total, picks **10% / 15% / custom** tip, sees the grand total, and
+produces:
 
 - a **QR** with an EIP-681 URI, and
 - a **share link** — because in Latin America a bill gets sent over WhatsApp
@@ -234,7 +263,7 @@ Chains are listed **cheapest first**, with L1 marked as expensive for small
 tickets.
 
 ### Step 3 — The watcher
-Poll `Transfer` logs to each `CajaInbox` across all nine chains.
+Poll `Transfer` logs to the merchant's address across all nine chains.
 
 **A chain whose RPC is unreachable shows as *unknown*, never *unpaid*.** Telling
 a customer their payment did not arrive when our RPC is down is this app's worst
@@ -245,27 +274,21 @@ becomes `$284.5317`, so two open orders never collide. (Upgrade later: derive a
 per-order address from the merchant's public xpub, watch-only, no key on the
 terminal.)
 
-### Step 4 — Roles and shifts
-**Admin** (device), **cashier**, **waiter** (staff id on every request). Tips
-accrue per staff id. Shift close produces one settlement the admin approves.
+### Step 4 — Two roles, two devices
+**Cashier** issues; **waiter** displays and watches. Two mini-apps, `till` and
+`till-waiter`, sharing a package and a stylesheet. The waiter's app parses a
+sealed request and has no code that builds one; see §1.
 
-### Step 5 — The relayer and the sweep
-A loop: watch inboxes → `sweep()` → poll Iris → `receiveMessage` on Arc.
+### Step 5 — ~~The relayer and the sweep~~ *dropped*
+Replaced by "say which chains are accepted and let the customer choose". The
+reasoning is in §1; nothing in this app bridges, and no service runs unattended.
 
-### Step 6 — `CajaTill` on Arc
-Receives the mint, records orders and tip splits, and permits withdrawal **only**
-by the device's address.
-
-```
-  WITHDRAW FROM TILL
-  Merchant  Tacos del Parque
-  Sales     1,284.50 USDC
-  Tips        96.00 USDC (4 staff)
-  To        admin · 0x7a3f…91c2
-  [ REJECT ]              [ APPROVE ]
-```
-
----
+### Step 6 — ~~`CajaTill` on Arc~~ *deferred*
+A treasury contract on Arc that only the device may withdraw from is still the
+right end state, and it is no longer on this app's critical path: with the
+relayer gone, takings arrive directly in the merchant's address on whichever
+chain the customer used. Consolidating them is a hardware-signed transfer the
+merchant makes when they choose.
 
 ## 4b. Verified on hardware and on-chain — 2026-09-08
 
@@ -294,6 +317,24 @@ distinguished the paying chain from eight quiet ones rather than guessing.
 is in place (*"A chain that could not be reached is shown as unknown, never as
 unpaid"*) but every chain answered during this run, so nothing exercised it.
 
+## 4c. C4 as built — 2026-09-08
+
+The milestone as delivered, which is not the C4 in the table below as originally
+written; the table has been updated to match.
+
+| | |
+|---|---|
+| Roles | two mini-apps, `till` (cashier) and `till-waiter` |
+| Request | canonical `caja1\|…` byte string, frozen on decode, sha256 checksum |
+| Unmodifiability | structural — no constructor in `waiter.ts`, one input on screen, proven by `test/waiter.test.ts` |
+| Anti-forgery | recipient pinned to the terminal's own merchant address |
+| Chains | all nine shown on the client-facing view, each with its own payable figure |
+| SDK | `@circle-fin/app-kit/chains` supplies every USDC and EURC address |
+| Not built | shift grants, staff ids, tip accounting — those were C4's other half and remain open |
+
+The exact payable figure, sub-cent marker included, is the prominent number on
+both screens, under the words **Total to pay**.
+
 ## 5. Testing rounds
 
 | # | What is tested | Testnet funds |
@@ -302,15 +343,20 @@ unpaid"*) but every chain answered during this run, so nothing exercised it.
 | **T2** | QR paid from a phone wallet on Base Sepolia; terminal confirms; **terminal has no signing path** | Base Sepolia USDC + ETH |
 | **T3** | Pay from 3 chains, all detected; **kill one RPC → shows *unknown*, not *unpaid*** | USDC + gas on Base Sepolia, Polygon Amoy, Avalanche Fuji |
 | **T4** | EURC accepted on Base Sepolia, correctly **unavailable** on Polygon Amoy | Base Sepolia EURC |
-| **T5** | Tip presets compute correctly; batch settlement reconciles; a **mismatched recipient list refuses** | Arc USDC |
-| **T6** | `CajaInbox.sweep()` callable **by anyone**; funds can only reach the immutable destination | Base Sepolia USDC + ETH |
-| **T7** | Full sweep Base Sepolia → Arc; **measure the real Fast Transfer time** | Base Sepolia USDC + ETH; Arc USDC |
-| **T8** | Crash between `sweep()` and `receiveMessage`; **resumes from the attestation, no double-burn** | as T7 |
-| **T9** | `CajaTill` withdrawal by a non-admin **refuses**; by the device, succeeds and renders | Arc USDC |
+| **T5** | Tip presets compute correctly; the sealed request round-trips to identical bytes | none |
+| **T6** | **A waiter cannot modify the request**: every input attacked, every listener fired, the payable units and recipient unchanged | none |
+| **T7** | An **edited** request QR is refused by its checksum, field by field | none |
+| **T8** | A request paying **any address but the restaurant's** is refused before it reaches a customer | none |
+| **T9** *(deferred)* | `CajaTill` withdrawal by a non-admin refuses; by the device, succeeds and renders | Arc USDC |
 
-**T6 and T8 are the ones that matter.** T6 proves the relayer cannot redirect
-funds. T8 proves a crash does not lose money that has already been burned on the
-source chain.
+**T6 and T8 are the ones that matter**, and they are the ones automated. T6 is
+the property the two-role split exists for; T8 is the only thing standing
+between an unsigned request and a waiter redirecting a bill, because there is no
+signature to check (§1).
+
+T6–T8 are unit tests and need no funds — which is the point: a security property
+that only holds when a testnet faucet is up is not a property anyone should rely
+on.
 
 ### Funds to obtain
 
@@ -332,21 +378,30 @@ Every gate answers: **works / refuses / renders / recovers / written down.**
 | **C1** | Chains + descriptors (T1) | Arc support, correct rendering |
 | **C2** | **Terminal + single-chain payment (T2)** | **Working POS** ✅ |
 | **C3** | Watcher + EURC matrix (T3–T4) | + multi-chain acceptance |
-| **C4** | Tips, roles, shift close (T5) | + accountability |
-| **C5** | `CajaInbox` + relayer + sweep (T6–T8) | + auto-settlement to Arc |
-| **C6** | `CajaTill` (T9) | + hardware-gated treasury |
-| **C7** *(stretch)* | EIP-3009 gasless path | + zero-gas customers |
+| **C4** | **Two roles, unmodifiable request, App Kit chain data (T5–T8)** | **+ a bill a waiter cannot alter** ✅ |
+| **C5** | ~~`CajaInbox` + relayer + sweep~~ | dropped — §1 |
+| **C6** | `CajaTill` on Arc (T9) | + hardware-gated treasury, deferred |
+| **C7** *(stretch)* | Signed requests once the cashier holds the device | + a forged bill becomes detectable |
+| **C8** *(stretch)* | EIP-3009 gasless path | + zero-gas customers |
 
 **Record the demo at C2.** A working POS on video is a submission; an
-unrecorded C5 is not.
+unrecorded C6 is not.
 
 ---
 
 ## 7. What we will not claim
 
-- The relayer is trusted for **liveness**, not custody. If it stops, sweeps
-  stop; it can never redirect or take funds. That distinction goes in the
-  README, not in the small print.
+- **The payment request is not authenticated.** It carries a checksum, not a
+  signature, and anyone who can display a QR can forge one. We claim only what
+  is true: a forged request pays the restaurant's own address, because the
+  waiter's app refuses any other recipient. That sentence goes in the README, in
+  those words.
+- A waiter **cannot alter** an issued request, and that one is structural and
+  tested. It is a different claim from the one above and must not be blurred
+  into it.
+- There is **no relayer and no bridging**. We do not claim automatic settlement
+  onto Arc; takings sit where the customer paid until the merchant moves them
+  with the device.
 - "Cheaper than card" is true on L2s and Arc, **not on Ethereum L1 below ~$49**.
 - Arc is **testnet only**; we submit as deployment-ready and say so.
 - Secure boot is not burned. ATECC608B and airgapped comms are bench work about
