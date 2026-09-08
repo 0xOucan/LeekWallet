@@ -163,6 +163,30 @@
         </section>
 
         <!--
+          Wallet menu headline (L3, docs/UI-L3-SPEC.md). Account and its
+          money, across every tracked testnet chain at once, per
+          UI-SPEC-V2.md §2a/§2e. Shown and hidden by setShellVisible() in
+          main.ts, same as the tab bar below it. No polling: fetched on
+          entering (setShellVisible(true)) and on the Refresh button, and
+          nothing here refreshes while the window is hidden.
+        -->
+        <section class="walletmenu" id="walletmenu" aria-labelledby="walletmenuhead" hidden>
+          <h2 id="walletmenuhead" class="visually-hidden">Wallet</h2>
+          <div class="walletmenu__account">
+            <div class="walletmenu__accountline" id="wmaccount"></div>
+            <div class="addr walletmenu__address" id="wmaddress"></div>
+          </div>
+          <div class="row">
+            <button type="button" class="secondary" id="wmrefresh">Refresh</button>
+          </div>
+          <p class="muted" id="wmnote">
+            Balances are fetched by this app from a public RPC operator per
+            chain. The device neither reports nor confirms them.
+          </p>
+          <ul class="walletmenu__chains" id="wmchains" aria-label="Balances across every chain"></ul>
+        </section>
+
+        <!--
           Tab bar (M2). Hidden until the device is unlocked -
           setShellVisible() in main.ts, called from the same places that
           already show/hide addrpanel and signpanel. Each panel below carries
