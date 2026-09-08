@@ -163,6 +163,22 @@ export interface MiniApp {
    * would be a second copy of that knowledge, free to drift.
    */
   chainIds: readonly number[];
+
+  /**
+   * True if this app is useful before a device is connected.
+   *
+   * The shell shows a small set of things pre-connect — connecting, flashing,
+   * and any app that does not need a wallet. It must decide that by asking the
+   * app, not by knowing its name: a shell that tests `id === "till-waiter"`
+   * still compiles after that app is deleted, matches nothing, and shows an
+   * empty pre-connect screen with no error. Removability is only real if the
+   * shell has no app-specific knowledge to leave behind.
+   *
+   * Defaults to false. An app claiming this must genuinely work with no
+   * address and no `propose` — La Caja's waiter does, because it only reads
+   * chains and displays a request the cashier signed nothing with.
+   */
+  worksWithoutDevice?: boolean;
   /**
    * The app's stylesheet, as a string.
    *

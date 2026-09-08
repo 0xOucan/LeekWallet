@@ -84,6 +84,48 @@ group("no app imports another app");
   }
 }
 
+/*
+ * The shell must not know an app's ID either.
+ *
+ * The import check below was not enough: `app.id === "till-waiter"` reached
+ * main.ts and passed, because the app list there is directory names and that ID
+ * belongs to a second app inside the `till` package. A shell that names an app
+ * still compiles once the app is deleted, matches nothing, and shows an empty
+ * screen with no error -- so removability becomes a claim rather than a
+ * property. Ask through the MiniApp contract instead; `worksWithoutDevice` is
+ * the field that exists for exactly this.
+ *
+ * IDs are read from the packages, not from folder names, which is the mistake
+ * that let it through the first time.
+ */
+group("the shell does not name an app by ID");
+{
+  const ids = new Set<string>();
+  for (const app of apps) {
+    for (const file of sourcesOf(join(appsDir, app, "src"))) {
+      for (const m of readFileSync(file, "utf8").matchAll(/\bid:\s*"([a-z0-9-]+)"/g)) {
+        ids.add(m[1] as string);
+      }
+    }
+  }
+  check(ids.size > 0, "no app IDs were found to check");
+  for (const file of sourcesOf(join(appRoot, "src"))) {
+    if (file === join(appRoot, "src", "apps", "registry.ts")) continue;
+    /* Comments stripped first. The fix for this very rule carries a comment
+       explaining why not to name an app, and that comment quotes the ID it is
+       warning about — a check on raw text flags the explanation as the
+       offence. */
+    const source = readFileSync(file, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    for (const id of ids) {
+      check(!source.includes(`"${id}"`),
+        `${file.slice(appRoot.length + 1)} names the app "${id}" as a literal. ` +
+          `Add a field to MiniApp and ask for it instead.`);
+    }
+  }
+}
+
 group("the shell touches apps only through the registry");
 {
   // One edge, in one file, so removal is one deletion. Anything else in
@@ -93,6 +135,14 @@ group("the shell touches apps only through the registry");
     if (file === registry) continue;
     const source = readFileSync(file, "utf8");
     for (const app of apps) {
+      /* An app's ID as a literal, not only its import.
+ 
+         The import check alone let `app.id === "till-waiter"` into main.ts: it
+         compiles after that app is deleted, matches nothing, and shows an empty
+         screen with no error. A shell that knows an app's name has knowledge to
+         leave behind, so removability stops being a property and becomes a
+         claim. Ask the app through the MiniApp contract instead -- that is what
+         `worksWithoutDevice` is for. */
       check(!source.includes(`@leekwallet/app-${app}`),
         `${file} imports app "${app}" directly instead of via the registry`);
     }

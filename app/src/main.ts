@@ -1449,7 +1449,12 @@ function remountApps(info: ChainInfo): void {
      * id, the one place the shell is already allowed to know an app exists.
      * The cashier half of La Caja needs a signer to issue a bill and stays
      * off until a device is connected; the waiter only displays one. */
-    client === null ? (app) => app.id === "till-waiter" : undefined,
+    /* Ask the app whether it works without a device, rather than testing its
+       name. A shell that knows an app's ID still compiles once that app is
+       deleted, matches nothing, and leaves an empty pre-connect screen with no
+       error -- which makes removability a claim instead of a property.
+       app/test/apps.test.ts enforces this. */
+    client === null ? (app) => app.worksWithoutDevice === true : undefined,
   );
   // mountApps() just wrote #apps's own [hidden] based on chain content; when
   // the tab bar is showing, the tab-switch rule (only visible on the Apps

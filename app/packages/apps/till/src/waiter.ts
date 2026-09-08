@@ -246,6 +246,11 @@ export function renderWaiter(
 }
 
 export const TILL_WAITER_APP: MiniApp = {
+  /* This app needs no wallet: it reads a request the cashier issued, shows the
+     client-facing QR, and watches chains. It never derives an address and never
+     proposes anything, which is what makes it safe to hand a waiter and safe to
+     show before a device is connected. */
+  worksWithoutDevice: true,
   id: "till-waiter",
   name: "La Caja — waiter",
   summary:
