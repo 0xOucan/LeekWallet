@@ -635,3 +635,130 @@ export function registerProvenance(view: RegisterView, now: number): string {
   return `${fresh.stale ? "STALE — read " : "Read "}${fresh.text} ${who}, ${at}. ` +
     "Roles, KYC and the paused flag can change in one transaction; refresh before acting on them.";
 }
+
+/* ------------------------------------------------------------- diagnosis */
+
+/**
+ * One sentence about the read as a whole, said once, at the top.
+ *
+ * ---------------------------------------------------------------------------
+ * The bug this fixes
+ *
+ * Pointing "Read register" at an address that is not an ATS security produced
+ * FORTY identical rows of "unavailable — undecodable reply: a uint256 return
+ * must be exactly one word": one per role, plus the globals. Every one of them
+ * was correct. Together they were unreadable, and worse than unreadable — a
+ * wall of the same sentence reads as a broken app, when what actually happened
+ * is the HTS trap being caught exactly as designed. An unknown selector on an
+ * HTS system contract answers `success` with data that does not decode (plan
+ * §2b), so a non-ATS address answers every one of these calls, and every one of
+ * the answers fails to decode for the same reason.
+ *
+ * The refusal is right. Repeating it forty times is what was wrong. So the
+ * repetition is turned into the diagnosis it always was: *this address does not
+ * answer like an ATS security*.
+ *
+ * ---------------------------------------------------------------------------
+ * Why a count, and not a flag set during the read
+ *
+ * A flag would have to be decided at the moment of each failure, by code that
+ * can see one call. Whether a read as a whole failed the same way everywhere is
+ * only knowable once every call is back, which is here. It is also why this is
+ * a pure function of a finished `RegisterView`: a test can build the view and
+ * assert the sentence with no network at all.
+ *
+ * The threshold is deliberately not 1. One field failing to decode is a
+ * security missing a facet, or a relay truncating one response, and saying "not
+ * an ATS security" about that would be the same overreach in the other
+ * direction.
+ */
+export interface RegisterDiagnosis {
+  /** The sentence for the top of the page. */
+  text: string;
+  /** The reason all of them gave, kept so it is said once rather than never. */
+  why: string;
+  /** How many separate fields failed this same way. */
+  count: number;
+}
+
+/**
+ * How many fields must fail identically before it is a fact about the address.
+ *
+ * Six: more than any one facet contributes, well under the thirty-seven roles,
+ * and above the largest group of fields that can plausibly go together for an
+ * innocent reason.
+ */
+export const DIAGNOSIS_THRESHOLD = 6;
+
+/**
+ * The prefix `mapOutcome` puts on a reply that arrived and made no sense.
+ *
+ * This diagnosis fires on that and on nothing else, and the distinction is the
+ * whole of its honesty. A dead endpoint ALSO fails every field identically —
+ * thirty-seven copies of "no RPC endpoint answered" — and saying "this address
+ * does not answer like an ATS security" about that would be a confident wrong
+ * answer with the wrong remedy attached: the user would go looking for a better
+ * address when what they need is a working connection.
+ *
+ * So the two are separated by the one thing that actually distinguishes them:
+ * whether anybody replied. `undecodable` means a reply arrived, which on Hedera
+ * is what an unknown selector produces. A transport failure keeps its own
+ * per-field sentence and gets no banner.
+ */
+const UNDECODABLE_PREFIX = "undecodable reply:";
+
+/** Every qualifying `why` in a finished view, roles and holders included. */
+function unavailableReasons(view: RegisterView): string[] {
+  const out: string[] = [];
+  const add = (o: Outcome<unknown>): void => {
+    if (o.state === "unavailable" && o.why.startsWith(UNDECODABLE_PREFIX)) out.push(o.why);
+  };
+  add(view.name); add(view.symbol); add(view.decimals); add(view.totalSupply);
+  add(view.maxSupply); add(view.paused); add(view.internalKyc);
+  add(view.holderCount); add(view.holders); add(view.controlList);
+  add(view.snapshots); add(view.roles);
+  if (view.roles.state === "ok") {
+    for (const r of view.roles.value) { add(r.memberCount); add(r.members); }
+  }
+  if (view.holders.state === "ok") {
+    for (const h of view.holders.value) {
+      add(h.balance); add(h.kycStatus); add(h.inControlList);
+    }
+  }
+  return out;
+}
+
+/**
+ * The diagnosis, or undefined when the read has no single story.
+ *
+ * Undefined is the common case and the important one: a register that mostly
+ * worked must not acquire a banner claiming it did not. Only a read where one
+ * reason accounts for at least `DIAGNOSIS_THRESHOLD` separate fields gets a
+ * sentence, and the sentence names the count so a reader can judge it.
+ */
+export function registerDiagnosis(view: RegisterView): RegisterDiagnosis | undefined {
+  const counts = new Map<string, number>();
+  for (const why of unavailableReasons(view)) {
+    counts.set(why, (counts.get(why) ?? 0) + 1);
+  }
+  let worst: { why: string; count: number } | undefined;
+  for (const [why, count] of counts) {
+    if (worst === undefined || count > worst.count) worst = { why, count };
+  }
+  if (worst === undefined || worst.count < DIAGNOSIS_THRESHOLD) return undefined;
+
+  /* Named as a property of the ADDRESS, not of the network. "Could not reach
+   * the endpoint" would be a different diagnosis with a different remedy, and
+   * it is not this one: the calls were answered. They were answered with
+   * something that is not what an ATS security returns. */
+  return {
+    text:
+      `This address does not answer like an ATS security: ${worst.count} separate ` +
+      "reads were answered, and every one of the answers failed to decode the " +
+      "same way. On Hedera an unknown function does not revert — an HTS system " +
+      "contract replies successfully with data that means nothing — so this is " +
+      "what a plain token, or a wrong address, looks like from here.",
+    why: worst.why,
+    count: worst.count,
+  };
+}

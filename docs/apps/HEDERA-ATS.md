@@ -37,16 +37,65 @@ The SDK is a ports-and-adapters stack with `reflect-metadata` and its own wallet
 layer. **`METAMASK` appearing in that list is the useful fact**: it confirms
 these are ordinary EIP-155 transactions over Hedera's JSON-RPC relay.
 
-So we use the **contract ABIs with viem and sign ourselves**, taking the SDK for
-encoding and reads where convenient.
+### What we use the SDK for, and what we do not (revised at E3)
 
-Two reasons, both concrete:
+`docs/SDK-POLICY.md` is binding: use the SDK for everything it does well,
+replace only its wallet layer, and say why. Reconsidered at E3 with the package
+actually installed, which changed two of the earlier answers.
 
-1. We never fight the SDK's dependency-injection container inside our build.
-2. **The `METAMASK` path expects an injected EIP-1193 provider — and ours is the
-   Chrome extension, which is currently broken at the offscreen document.**
-   Depending on it would make a known-broken component load-bearing. The desktop
-   companion signs directly instead.
+**Adopted: `@hashgraph/asset-tokenization-contracts` 8.0.0**, the contracts
+package the SDK itself depends on at that exact version, as a devDependency of
+the ATS app. `test/conformance.test.ts` re-derives from its compiled ABI every
+function signature this console encodes and all 37 role ids, and fails if any
+of ours is not something those contracts declare. It caught two bugs on its
+first run that had passed human review:
+
+- `lock` was written `lock(address,uint256,uint256)`. The contracts declare
+  `lock(uint256 _amount, address _tokenHolder, uint256 _expirationTimestamp)` —
+  **amount first**. Wrong order, wrong selector, so every lock would have
+  refused for a reason nobody could have found.
+- `grantKyc(address)` exists only on `MockedExternalKycList`. The real
+  `IKyc.grantKyc` takes five arguments including a `string`.
+
+**Not adopted: the SDK's ports at runtime**, for three reasons, in order of how
+hard they are:
+
+1. **Its write ports execute; they do not build calldata.** `Role.grantRole`
+   returns `{payload, transactionId}` — it goes through the command bus to the
+   connected wallet's transaction adapter. There is no "give me the bytes" call
+   anywhere in `Role`, `Kyc`, `Equity` or `Dividend`. SDK-POLICY rule 1 settles
+   it: a call that wants a signer is not for us.
+2. **Its read ports construct their own transport.** They work with no wallet —
+   after `Network.init` with a mirror node and an RPC relay, `Role.getRoleMemberCount`
+   makes a real call to `testnet.hashio.io` and fails only on decoding — but it
+   is an ethers `JsonRpcProvider` the SDK made, which routes around the user's
+   chosen endpoint, the failover policy and the CSP allowlist that
+   `AppContext.request` exists to enforce (`packages/core/src/mini-app.ts`).
+3. **Its dependency footprint.** 1016 transitive packages, including
+   `@metamask/providers`, three WalletConnect majors, `@reown/appkit` and the
+   full `@hashgraph/sdk`, all of it wallet-adapter code we would not call. That
+   is a large amount of unexecuted third-party surface to ship inside a hardware
+   wallet's renderer.
+
+Two earlier reasons in this document were **wrong** and are corrected here:
+
+- *"We never fight the DI container."* The compiled package loads and its
+  container resolves with no build change at all: `experimentalDecorators` and
+  `emitDecoratorMetadata` are needed to COMPILE the SDK's sources, not to
+  consume its published build. What does not work is its ESM entry, which has
+  extensionless internal imports and dies under Node ESM with
+  `ERR_MODULE_NOT_FOUND … /build/esm/src/port/in/index`; the CJS build loads
+  fine through `createRequire`.
+- *"The `METAMASK` path wants our broken extension."* True but irrelevant to
+  reads: `Network.init` alone returns `["DFNS","Fireblocks","AWSKMS"]` and
+  serves queries without any `connect`. The wallet layer is only in the way of
+  writes — which is where we replace it anyway.
+
+**The sixth wallet.** The SDK supports `METAMASK`, `HWALLETCONNECT`, `DFNS`,
+`FIREBLOCKS` and `AWSKMS` — an injected browser key, or three custody APIs. The
+sixth option should be **a hardware wallet the issuer holds**, where the
+consequence of a freeze or a role grant is drawn on a screen the host cannot
+repaint and confirmed with a physical press. That is what this app is.
 
 ### Real API surface, read from the package
 
@@ -106,8 +155,15 @@ Read-heavy, so it is useful before any signing is wired — and it demos on its
 own.
 
 ### Step 3 — The privileged surface, rendered
-ERC-7730 descriptors for every dangerous call: `grantRole`, `revokeRole`,
-`grantKyc`, `revokeKyc`, `pause`, `lock`, `setSupplyCap`, control-list edits.
+ERC-7730 descriptors for every dangerous call. Thirteen shipped at E3:
+`grantRole`, `revokeRole`, `revokeKyc`, `pause`, `unpause`, `lock`,
+`freezePartialTokens`, `unfreezePartialTokens`, `setAddressFrozen`,
+`setMaxSupply`, `mint`, `addToControlList`, `removeFromControlList`.
+
+`grantKyc` is **not** among them and refuses, because the real
+`IKyc.grantKyc` carries a credential id as a `string` and the descriptor
+engine will not follow calldata offsets it cannot bounds-check. Revoking KYC
+is static, and is the dangerous direction anyway.
 
 ```
   GRANT ROLE · ACME Equity          FREEZE HOLDER · ACME Equity
@@ -169,7 +225,7 @@ compliance controls are real and that the device is not a rubber stamp.
 |---|---|---|
 | **E1** | Chain 296 + equity issued (H1) | Hardware-signed issuance on Hedera |
 | **E2** | Dashboard, read-only (H2 partial) | + a readable register |
-| **E3** | **Privileged surface rendered (H2–H4, H8)** | **Issuer console with hardware-gated controls** ✅ |
+| **E3** | **Privileged surface rendered and wired to `propose()` (H4 ✅; H2–H3, H8 not run)** | **Issuer console with hardware-gated controls** ✅ |
 | **E4** | Snapshot + distribution (H5–H7) | + a lifecycle operation |
 | **E5** *(stretch)* | Secondary market | + the extra-points item |
 
@@ -186,6 +242,25 @@ identity and the heaviest SDK. It is scheduled after Arc and Aqua have reached
 submittable states, because two finished integrations beat three unfinished
 ones — every track requires a working MVP, an architecture diagram **and** a
 demo video, and a half-built app produces none of the three.
+
+## 6b. What is fixture-only, as of E3
+
+No testnet HBAR was available, so **no ATS security has been deployed and
+nothing in this app has been exercised against one.** Stated field by field so
+the gap is not left to inference:
+
+| Claim | Evidence |
+|---|---|
+| The 37 role ids are the contracts' own | **Verified** against `contracts/constants/roles.sol` 8.0.0, by test |
+| Every encoded signature is a real ATS function | **Verified** against the compiled ABI, by test |
+| A privileged call with no descriptor refuses (H4) | **Verified**, by test — the format is deleted and the console refuses without calling `propose` |
+| The register renders holders, roles, KYC, snapshots | **Fixture only.** `fixtures.ts` answers through the same `aggregate3` path |
+| A non-ATS address is diagnosed rather than repeated | **Fixture only**, using `htsLikeRequest()` — which encodes a behaviour observed live on `testnet.hashio.io` at E2 |
+| The device draws these screens and a press signs them | **NOT verified.** The host-side path is tested with a stub `propose`; no transaction has been signed, sent, or seen on HashScan |
+| The descriptors match calldata a deployed security accepts | **NOT verified.** Signatures are right; whether a given diamond has the facet is a live question |
+
+H2, H3, H5–H8 all require HBAR and none of them has been run. The demo at E3
+is a demo of the console and its refusals, not of a settled transaction.
 
 ## 7. What we will not claim
 

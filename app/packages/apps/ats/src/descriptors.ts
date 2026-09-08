@@ -25,21 +25,38 @@
  * ---------------------------------------------------------------------------
  * Where the signatures came from, and what that is worth
  *
- * `abi.ts` extracted its read signatures from the compiled artifacts of
- * `@hashgraph/asset-tokenization-contracts` 8.0.0. **These write signatures
- * were not.** That package is not installed in this workspace and no equity
- * has been deployed, so the entries below carry a `confidence` field that says
- * plainly which are standard OpenZeppelin AccessControl/Pausable shapes and
- * which are our reading of the SDK's method names. Nothing here has been
- * matched against calldata from a live ATS contract.
+ * Every key below is now copied from the compiled ABI of
+ * `@hashgraph/asset-tokenization-contracts` 8.0.0 — the contracts package the
+ * Studio's own SDK depends on at that exact version — including the parameter
+ * names, so a reviewer can diff a key against the artifact and see the same
+ * string. `test/conformance.test.ts` re-extracts them from the installed
+ * package and fails if any key here is not a function those contracts declare.
+ * That test is the SDK doing the work: nothing in this file is a guess about
+ * an argument list any more.
  *
- * The failure mode of a wrong signature is the reason that admission is
- * survivable rather than fatal: a selector is derived from the signature by
- * keccak, so a signature that is wrong produces a selector that matches
- * nothing, the descriptor never fires, and `describePrivilegedCall` refuses.
- * A wrong signature costs a working screen. It cannot produce a wrong one —
- * unless it happens to collide with another real function, which is the one
- * thing to check before pointing this at mainnet.
+ * An earlier version of this file WAS a guess, and the artifacts caught two
+ * mistakes that are worth recording because both were invisible:
+ *
+ *  - `lock` was written `lock(address, uint256, uint256)`. The contracts
+ *    declare `lock(uint256 _amount, address _tokenHolder, uint256
+ *    _expirationTimestamp)` — amount FIRST. The wrong order hashes to a
+ *    selector no ATS contract has, so the descriptor would never have fired
+ *    and every lock would have refused, for a reason nobody could have found.
+ *  - `grantKyc(address)` matched only `MockedExternalKycList`. The real
+ *    `IKyc.grantKyc` takes five arguments including a `string`, which is why
+ *    it is in UNRENDERABLE below rather than here.
+ *
+ * The failure mode of a wrong signature is why that was survivable rather than
+ * fatal: a selector is derived from the signature by keccak, so a wrong
+ * signature produces a selector that matches nothing, the descriptor never
+ * fires, and `describePrivilegedCall` refuses. A wrong signature costs a
+ * working screen. It cannot produce a wrong one — unless it collides with
+ * another real function, which is the one thing to check before mainnet.
+ *
+ * What is still NOT verified: nothing here has been matched against calldata
+ * from a deployed ATS security, because no testnet HBAR was available to
+ * deploy one. The signatures are right; whether a given diamond has the facet
+ * installed is a question only a live read answers.
  *
  * ---------------------------------------------------------------------------
  * Why the consequence text is not in the descriptor's `intent`
@@ -74,12 +91,20 @@ export const ATS_DESCRIPTOR_SOURCE = "local/hedera-ats-privileged";
  * have to know which paragraph applies to which line.
  */
 export type SignatureConfidence =
-  /** OpenZeppelin AccessControl / Pausable. The same four bytes everywhere. */
-  | "standard"
-  /** Named by `@hashgraph/asset-tokenization-sdk`; argument order unconfirmed. */
-  | "sdk-named"
-  /** Our reading of the module list. Unconfirmed in both name and arguments. */
-  | "inferred";
+  /**
+   * Name and argument list both re-extracted from the compiled ABI of
+   * `@hashgraph/asset-tokenization-contracts` 8.0.0 by `conformance.test.ts`.
+   *
+   * The only remaining variant. The three it replaced — "standard",
+   * "sdk-named" and "inferred" — were degrees of guessing, and keeping a
+   * spectrum of confidence around after the authority was installed would
+   * invite a new entry to be added at the bottom of it. An action either
+   * matches the artifacts or it does not belong in ACTIONS.
+   *
+   * It is deliberately NOT called "verified": the signature is verified, the
+   * *consequence wording* beside it is ours and is verified by nobody.
+   */
+  "artifact";
 
 /* --------------------------------------------------------- role consequences */
 
@@ -146,6 +171,19 @@ export const ROLE_POWER: Readonly<Record<string, string>> = {
  * here rather than retyped in a second notation. A retyped 32-byte constant
  * is the mistake `roles.ts` exists to avoid.
  */
+/**
+ * The one bit `setAddressFrozen` turns, as words.
+ *
+ * Keyed by the decimal the engine reads out of the word, the same way
+ * `ROLE_ENUM` is. A bool has no `raw` rendering worth putting on an approval
+ * screen: "0" and "1" are exact and tell a reader nothing, and this call's
+ * whole consequence is which of the two it is.
+ */
+const FROZEN_ENUM: Readonly<Record<string, string>> = {
+  "0": "not frozen",
+  "1": "FROZEN",
+};
+
 const ROLE_ENUM: Readonly<Record<string, string>> = Object.fromEntries(
   ROLES.map((r) => [BigInt(r.id).toString(), r.name]),
 );
@@ -182,96 +220,176 @@ export interface ActionSpec {
  */
 export const ACTIONS: readonly ActionSpec[] = [
   {
-    key: "grantRole(bytes32 role, address account)",
+    key: "grantRole(bytes32 _role, address _account)",
     title: "Grant role",
     intent: "Grant a role",
-    confidence: "standard",
+    confidence: "artifact",
     fields: [
-      { label: "Role", path: "#.role", format: "enum", params: { $ref: "$.metadata.enums.roles" } },
-      { label: "To", path: "#.account", format: "addressName" },
+      { label: "Role", path: "#._role", format: "enum", params: { $ref: "$.metadata.enums.roles" } },
+      { label: "To", path: "#._account", format: "addressName" },
     ],
   },
   {
-    key: "revokeRole(bytes32 role, address account)",
+    key: "revokeRole(bytes32 _role, address _account)",
     title: "Revoke role",
     intent: "Revoke a role",
-    confidence: "standard",
+    confidence: "artifact",
     fields: [
-      { label: "Role", path: "#.role", format: "enum", params: { $ref: "$.metadata.enums.roles" } },
-      { label: "From", path: "#.account", format: "addressName" },
+      { label: "Role", path: "#._role", format: "enum", params: { $ref: "$.metadata.enums.roles" } },
+      { label: "From", path: "#._account", format: "addressName" },
     ],
   },
   {
-    key: "grantKyc(address account)",
-    title: "Grant KYC",
-    intent: "Grant KYC to a holder",
-    confidence: "sdk-named",
-    fields: [{ label: "Holder", path: "#.account", format: "addressName" }],
-  },
-  {
-    key: "revokeKyc(address account)",
+    key: "revokeKyc(address _account)",
     title: "Revoke KYC",
     intent: "Revoke a holder's KYC",
-    confidence: "sdk-named",
-    fields: [{ label: "Holder", path: "#.account", format: "addressName" }],
+    confidence: "artifact",
+    fields: [{ label: "Holder", path: "#._account", format: "addressName" }],
   },
   {
     key: "pause()",
     title: "Pause register",
     intent: "Pause the security",
-    confidence: "standard",
+    confidence: "artifact",
     fields: [],
   },
   {
     key: "unpause()",
     title: "Unpause register",
     intent: "Unpause the security",
-    confidence: "standard",
+    confidence: "artifact",
     fields: [],
   },
   {
-    key: "lock(address tokenHolder, uint256 amount, uint256 expirationTimestamp)",
+    /* Amount first. That is the contracts' order, not a typo — see the header:
+     * writing it the readable way round produced a selector no ATS has. */
+    key: "lock(uint256 _amount, address _tokenHolder, uint256 _expirationTimestamp)",
     title: "Lock holder balance",
     intent: "Lock part of a holder's balance",
-    confidence: "inferred",
+    confidence: "artifact",
     fields: [
-      { label: "Holder", path: "#.tokenHolder", format: "addressName" },
-      { label: "Amount", path: "#.amount", format: "raw" },
-      { label: "Until", path: "#.expirationTimestamp", format: "date", params: { encoding: "timestamp" } },
+      { label: "Holder", path: "#._tokenHolder", format: "addressName" },
+      { label: "Amount", path: "#._amount", format: "raw" },
+      { label: "Until", path: "#._expirationTimestamp", format: "date", params: { encoding: "timestamp" } },
     ],
   },
   {
-    key: "setMaxSupply(uint256 maxSupply)",
+    key: "setMaxSupply(uint256 _maxSupply)",
     title: "Set supply cap",
     intent: "Set the maximum supply",
-    confidence: "sdk-named",
-    fields: [{ label: "New cap", path: "#.maxSupply", format: "raw" }],
+    confidence: "artifact",
+    fields: [{ label: "New cap", path: "#._maxSupply", format: "raw" }],
   },
   {
-    key: "mint(address to, uint256 amount)",
+    key: "mint(address _to, uint256 _amount)",
     title: "Mint shares",
     intent: "Issue new shares",
-    confidence: "sdk-named",
+    confidence: "artifact",
     fields: [
-      { label: "To", path: "#.to", format: "addressName" },
-      { label: "Amount", path: "#.amount", format: "raw" },
+      { label: "To", path: "#._to", format: "addressName" },
+      { label: "Amount", path: "#._amount", format: "raw" },
     ],
   },
   {
-    key: "addToControlList(address account)",
-    title: "Add to control list",
-    intent: "Add an address to the control list",
-    confidence: "sdk-named",
-    fields: [{ label: "Address", path: "#.account", format: "addressName" }],
+    key: "freezePartialTokens(address _userAddress, uint256 _amount)",
+    title: "Freeze holder shares",
+    intent: "Freeze part of a holder's balance",
+    confidence: "artifact",
+    fields: [
+      { label: "Holder", path: "#._userAddress", format: "addressName" },
+      { label: "Amount", path: "#._amount", format: "raw" },
+    ],
   },
   {
-    key: "removeFromControlList(address account)",
+    key: "unfreezePartialTokens(address _userAddress, uint256 _amount)",
+    title: "Unfreeze holder shares",
+    intent: "Unfreeze part of a holder's balance",
+    confidence: "artifact",
+    fields: [
+      { label: "Holder", path: "#._userAddress", format: "addressName" },
+      { label: "Amount", path: "#._amount", format: "raw" },
+    ],
+  },
+  {
+    /* The bool is rendered as a named state, not as 0 or 1. The entire meaning
+     * of this call is in that one bit — it is the difference between barring a
+     * holder from their own shares and releasing them — and a screen that puts
+     * "1" next to an approve button has described nothing. */
+    key: "setAddressFrozen(address _userAddress, bool _freeze)",
+    title: "Freeze holder address",
+    intent: "Freeze or unfreeze a holder entirely",
+    confidence: "artifact",
+    fields: [
+      { label: "Holder", path: "#._userAddress", format: "addressName" },
+      { label: "Set to", path: "#._freeze", format: "enum", params: { $ref: "$.metadata.enums.frozen" } },
+    ],
+  },
+  {
+    key: "addToControlList(address _account)",
+    title: "Add to control list",
+    intent: "Add an address to the control list",
+    confidence: "artifact",
+    fields: [{ label: "Address", path: "#._account", format: "addressName" }],
+  },
+  {
+    key: "removeFromControlList(address _account)",
     title: "Remove from control list",
     intent: "Remove an address from the control list",
-    confidence: "sdk-named",
-    fields: [{ label: "Address", path: "#.account", format: "addressName" }],
+    confidence: "artifact",
+    fields: [{ label: "Address", path: "#._account", format: "addressName" }],
   },
 ];
+
+/**
+ * Privileged calls the contracts declare that this console CANNOT render, with
+ * the reason, so the refusal is a diagnosis instead of a shrug.
+ *
+ * Every one of these is here because `erc7730.ts` drops any signature with a
+ * dynamic argument rather than following offsets it might misread. That is the
+ * correct behaviour and this list is not a workaround for it: nothing below
+ * gets a screen, and `describePrivilegedCall` refuses each one exactly as it
+ * refuses an unknown selector. The list only changes the SENTENCE — "this call
+ * cannot be described, and here is the specific reason" instead of "no
+ * descriptor describes this call" — because a user who has just been refused
+ * deserves to know whether the fix is to add a descriptor or that no descriptor
+ * is possible.
+ *
+ * `grantKyc` is the one that stings. Granting KYC is exactly the kind of
+ * third-party-affecting action this console exists to put on a screen, and the
+ * real `IKyc.grantKyc` carries a verifiable-credential id as a `string`. Until
+ * either the engine grows checked dynamic decoding or the device draws the call
+ * itself, granting KYC from this console is refused. Revoking is not: it is
+ * `revokeKyc(address)`, entirely static, and it is the dangerous direction.
+ */
+export const UNRENDERABLE: ReadonlyArray<{ signature: string; why: string }> = [
+  {
+    signature: "grantKyc(address,string,uint256,uint256,address)",
+    why:
+      "granting KYC carries a credential id as a variable-length string, and " +
+      "this wallet will not follow calldata offsets it cannot bounds-check",
+  },
+  {
+    signature: "issue(address,uint256,bytes)",
+    why: "the ERC-1400 issuance path carries arbitrary `bytes` of issuance data",
+  },
+  {
+    signature: "issueByPartition((bytes32,address,uint256,bytes))",
+    why: "issuance by partition takes a struct containing arbitrary `bytes`",
+  },
+  {
+    signature: "applyRoles(bytes32[],bool[],address)",
+    why: "batch role changes take arrays, whose length this wallet will not trust",
+  },
+  {
+    signature: "controllerTransfer(address,address,uint256,bytes,bytes)",
+    why: "a forced transfer carries two `bytes` fields of operator data",
+  },
+];
+
+/** Selectors of the calls we know about and know we cannot draw. */
+export const UNRENDERABLE_BY_SELECTOR: ReadonlyMap<string, string> = new Map(
+  UNRENDERABLE.map((u) => [`0x${selectorOf(u.signature)}`, u.why]),
+);
 
 /** The function name of a spec, e.g. `grantRole`. */
 export const actionName = (spec: ActionSpec): string => spec.key.slice(0, spec.key.indexOf("("));
@@ -302,7 +420,7 @@ export function atsDescriptorJson(chainId: number, address: string): unknown {
     metadata: {
       owner: "Hedera Asset Tokenization Studio security",
       contractName: "ATS security",
-      enums: { roles: ROLE_ENUM },
+      enums: { roles: ROLE_ENUM, frozen: FROZEN_ENUM },
     },
     display: {
       formats: Object.fromEntries(
