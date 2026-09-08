@@ -67,11 +67,76 @@ override any generated palette:**
 3. No colour-only meaning. A "danger" action must read as dangerous in
    monochrome — this app refuses transactions for a living.
 4. Reduced-motion honoured; visible keyboard focus everywhere; 375px–1440px.
+5. **§1b binds the skill's output.** It will suggest glassmorphism, shadow
+   stacks and shimmer; take the palette and the typography, decline the
+   expensive surfaces, and record what was declined and why.
 
 **Deliverable:** `docs/DESIGN.md` updated with the chosen system and the
 measurements, `tokens.css` regenerated, everything else unchanged. One commit.
 
 ---
+
+## 1b. Efficiency outranks aesthetics — this is a rule, not a preference
+
+**Where a choice trades resources for looks, take the resources.** Every time.
+
+This is not asceticism, it is the product's own argument. The website already
+ships pre-rendered frames rather than a WebGL scene, and says why in its own
+source: *the page's whole argument is that you should not need expensive
+hardware.* A wallet whose companion needs a fast phone contradicts the wallet.
+
+**The target device is the Android tablet, not the development laptop.** If it
+is smooth there, it is smooth. Measure on the tablet before calling a thing
+done.
+
+### Hard limits
+
+| | Limit | Why |
+|---|---|---|
+| New runtime dependencies | **zero** for UI | no React, no animation library, no icon package. The shell is plain TS and stays that way |
+| JS added by the redesign | **≤ 50 KB** minified | today's bundle is the baseline; measure before and after |
+| Animation | **`transform` and `opacity` only** | anything else lays out or paints on every frame |
+| Animation duration | **≤ 200 ms** | a wallet is a tool; a transition longer than that is in the way |
+| Concurrent RPC calls | **bounded and batched** via existing `multicall.ts` | ten chains × ten tokens is a hundred requests nobody asked for |
+| DOM nodes in a list | **windowed** past ~100 rows | Activity must not render a thousand rows to show ten |
+
+### Specifically banned
+
+- **No framework.** Adding React to a 3,800-line vanilla shell is a rewrite
+  wearing a redesign's clothes.
+- **No icon font or SVG sprite package.** Inline the handful of glyphs used.
+- **No blur, no shadow stacks, no gradients that animate.** `backdrop-filter`
+  is the single most expensive thing a phone GPU can be asked for.
+- **No skeleton shimmer.** A moving gradient burns frames to say "wait". A
+  static "Reading…" says it for free and is honest about *what* is being read.
+- **No polling loops that survive a hidden tab.** Pause on
+  `visibilitychange` — the watcher already has to, and everything else should.
+
+### Where animation is worth its cost
+
+Motion is not banned, it is budgeted. It earns its place when it explains a
+change the user would otherwise have to re-find:
+
+- Tab switch — a 120 ms opacity cross-fade, so the eye keeps its place.
+- Panel expand/collapse — height via `transform: scaleY` or a fixed-height
+  transition, never `height: auto`.
+- A payment landing in Activity — one 200 ms highlight, then still.
+
+Everything else: instant. And all of it inside
+`@media (prefers-reduced-motion: reduce) { animation: none }`.
+
+### The measurement that decides it
+
+Before and after, on the tablet:
+
+```bash
+du -sh app/dist                      # bundle size
+# Chrome DevTools over adb: Performance panel, record a tab switch
+# and a chain change. Report long tasks > 50 ms.
+```
+
+**A milestone that grows the bundle more than 50 KB or introduces a long task
+over 50 ms is not done**, however good it looks.
 
 ## 2. Information architecture
 
