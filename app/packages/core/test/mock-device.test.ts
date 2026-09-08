@@ -391,7 +391,7 @@ async function main(): Promise<void> {
 
   group("oversized calldata is malformed, and is refused before decoding");
   {
-    /* ETH_MAX_DATA is 256 bytes. The bound comes *before* the decodability
+    /* ETH_MAX_DATA is 640 bytes. The bound comes *before* the decodability
      * check because that is the order protocol.c applies them: an oversized
      * blob is 0x0001, not 0x0202, and a host that distinguishes the two has to
      * see the same code the device sends. */
@@ -400,14 +400,14 @@ async function main(): Promise<void> {
     const before = dev.confirmations.length;
 
     const big = await call(dev, "signTransaction", {
-      index: 0, to, chainId: 1, data: new Uint8Array(257).fill(0xcc),
+      index: 0, to, chainId: 1, data: new Uint8Array(641).fill(0xcc),
     });
     check(big.error?.code === ErrorCode.MalformedFrame,
-      `257 bytes of calldata should be 0x0001, got ${JSON.stringify(big)}`);
+      `641 bytes of calldata should be 0x0001, got ${JSON.stringify(big)}`);
 
     // Same length, sent as a hex string: the bound is on bytes, not encoding.
     const bigHex = await call(dev, "signTransaction", {
-      index: 0, to, chainId: 1, data: "0x" + "cc".repeat(257),
+      index: 0, to, chainId: 1, data: "0x" + "cc".repeat(641),
     });
     check(bigHex.error?.code === ErrorCode.MalformedFrame,
       `hex calldata escaped the bound: ${JSON.stringify(bigHex)}`);
