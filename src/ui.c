@@ -4348,17 +4348,25 @@ typedef enum {
     SIGN_PAGE_CALL_NAME,    /* generic call: the function's name, and the limit
                              * of what a name proves */
     SIGN_PAGE_CALL_ARG,     /* generic call: one declared argument, one page */
+    SIGN_PAGE_AQUA_ACTION,  /* Aqua: ship or dock, said in those words */
+    SIGN_PAGE_AQUA_MAKER,   /* Aqua ship: the maker named inside the strategy */
+    SIGN_PAGE_AQUA_APP,     /* Aqua: the app the strategy is shipped to */
+    SIGN_PAGE_AQUA_HASH,    /* Aqua: keccak256(strategy), or dock's argument */
+    SIGN_PAGE_AQUA_LEG,     /* Aqua: one token, and its amount for a ship */
     SIGN_PAGE_FROM          /* the address that will sign (T47) */
 } SignPageKind;
 
 /* The longest plan is a generic call: its name, one page for each of its six
  * possible arguments, the contract and the source. Typed data wants the domain,
  * one page per struct leaf and the source; a transaction, blind or not, needs
- * at most five. */
+ * at most five. An Aqua ship wants action, maker, app, hash, one page per leg,
+ * contract and source. */
 #define SIGN_TYPED_PAGES   (EIP712_MAX_RENDER_FIELDS + 2)
 #define SIGN_GENERIC_PAGES (ETH_MAX_ARGS + 3)
+#define SIGN_AQUA_PAGES    (ETH_AQUA_MAX_LEGS + 6)
+#define SIGN_MAX2(a, b) ((a) > (b) ? (a) : (b))
 #define SIGN_MAX_PAGES \
-    (SIGN_TYPED_PAGES > SIGN_GENERIC_PAGES ? SIGN_TYPED_PAGES : SIGN_GENERIC_PAGES)
+    SIGN_MAX2(SIGN_AQUA_PAGES, SIGN_MAX2(SIGN_TYPED_PAGES, SIGN_GENERIC_PAGES))
 
 static EthTx        sign_tx;
 static EthCall      sign_call;
@@ -4576,6 +4584,43 @@ void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
             for (int a = 0; a < sign_call.arg_count && n < SIGN_MAX_PAGES - 2; a++) {
                 sign_page_field[n] = a;
                 sign_page_kind[n++] = SIGN_PAGE_CALL_ARG;
+            }
+            sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
+            break;
+        case ETH_CALL_AQUA_SHIP:
+            /* Order is the order in which a wrong answer is fatal.
+             *
+             * The maker comes second, straight after what the call is, because
+             * it is the field the user cannot get from anywhere else. Aqua
+             * files the position under msg.sender and hashes the strategy
+             * without it, so the maker written inside the strategy is a
+             * separate claim that nothing on chain reconciles: ship a strategy
+             * naming somebody else and the balance is yours while the app has
+             * been told to act for them. The host refuses that mismatch before
+             * it ever gets here; this page is what makes the refusal checkable
+             * by the person whose key it is. */
+            sign_page_kind[n++] = SIGN_PAGE_AQUA_ACTION;
+            sign_page_kind[n++] = SIGN_PAGE_AQUA_MAKER;
+            sign_page_kind[n++] = SIGN_PAGE_AQUA_APP;
+            sign_page_kind[n++] = SIGN_PAGE_AQUA_HASH;
+            for (int leg = 0; leg < sign_call.aqua_legs &&
+                              n < SIGN_MAX_PAGES - 2; leg++) {
+                sign_page_field[n] = leg;
+                sign_page_kind[n++] = SIGN_PAGE_AQUA_LEG;
+            }
+            sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
+            break;
+        case ETH_CALL_AQUA_DOCK:
+            /* No maker page: a dock names a hash, not a strategy, so there is
+             * nothing in the calldata to read a maker out of. Drawing an empty
+             * field would be worse than not having one. */
+            sign_page_kind[n++] = SIGN_PAGE_AQUA_ACTION;
+            sign_page_kind[n++] = SIGN_PAGE_AQUA_APP;
+            sign_page_kind[n++] = SIGN_PAGE_AQUA_HASH;
+            for (int leg = 0; leg < sign_call.aqua_legs &&
+                              n < SIGN_MAX_PAGES - 2; leg++) {
+                sign_page_field[n] = leg;
+                sign_page_kind[n++] = SIGN_PAGE_AQUA_LEG;
             }
             sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
             break;
@@ -4827,6 +4872,26 @@ static void sign_draw_address(int row, const char *hex42)
     oled_draw_string(row + 1, 0, part);
     snprintf(part, sizeof(part), "%.12s", hex42 + 30);
     oled_draw_string(row + 2, 0, part);
+}
+
+/* All 64 hex characters of a 32-byte digest, four rows of sixteen.
+ *
+ * Never a prefix. A truncated hash is cheap to read and trivially forgeable,
+ * which is why nothing on this device shows one -- and why this is a function
+ * rather than a loop copied into each page that needs it. */
+static void sign_draw_hash32(int row, const uint8_t hash[32])
+{
+    static const char hex[] = "0123456789abcdef";
+    for (int r = 0; r < 4; r++) {
+        char part[17];
+        for (int i = 0; i < 8; i++) {
+            uint8_t b = hash[r * 8 + i];
+            part[i * 2]     = hex[b >> 4];
+            part[i * 2 + 1] = hex[b & 0x0F];
+        }
+        part[16] = '\0';
+        oled_draw_string(row + r, 0, part);
+    }
 }
 
 /* A token amount, wrapped over two rows and labelled for what it is.
@@ -5180,20 +5245,7 @@ static void screen_sign_confirm_render(void)
             oled_draw_string(1, 0, line);
             oled_draw_string(2, 0, "keccak256:");
 
-            /* All 64 hex characters, four rows of sixteen. A prefix would be
-             * cheaper to read and trivially forgeable, which is the reason a
-             * truncated hash is not shown anywhere on this device. */
-            for (int row = 0; row < 4; row++) {
-                char part[17];
-                for (int i = 0; i < 8; i++) {
-                    static const char hex[] = "0123456789abcdef";
-                    uint8_t b = sign_data_hash[row * 8 + i];
-                    part[i * 2]     = hex[b >> 4];
-                    part[i * 2 + 1] = hex[b & 0x0F];
-                }
-                part[16] = '\0';
-                oled_draw_string(3 + row, 0, part);
-            }
+            sign_draw_hash32(3, sign_data_hash);
             break;
         }
         case SIGN_PAGE_CALL_NAME: {
@@ -5277,13 +5329,130 @@ static void screen_sign_confirm_render(void)
             }
             break;
         }
+        case SIGN_PAGE_AQUA_ACTION: {
+            /* What this does, in the words a maker would use, and the one
+             * sentence that makes Aqua different from a pool: the tokens do
+             * not move now. They move later, out of this wallet, when somebody
+             * swaps against the strategy -- so the amounts on the leg pages are
+             * a ceiling the app agreed to, and the ERC-20 allowance is the
+             * ceiling that is actually enforced. Nothing on this device can
+             * show that allowance, which is why the sentence names it. */
+            if (sign_call.kind == ETH_CALL_AQUA_SHIP) {
+                oled_draw_string(1, 0, "SHIP to Aqua");
+                oled_draw_string(3, 0, "Tokens stay here");
+                oled_draw_string(4, 0, "but Aqua may PULL");
+                oled_draw_string(5, 0, "them from this");
+                oled_draw_string(6, 0, "wallet on a swap.");
+            } else {
+                oled_draw_string(1, 0, "DOCK from Aqua");
+                oled_draw_string(3, 0, "Withdraws this");
+                oled_draw_string(4, 0, "strategy. Your");
+                oled_draw_string(5, 0, "approval stays");
+                oled_draw_string(6, 0, "until you revoke.");
+            }
+            break;
+        }
+        case SIGN_PAGE_AQUA_MAKER: {
+            /* The maker the strategy names, and the instruction to compare it
+             * with the source page. The device cannot do that comparison
+             * itself: the address that will sign is derived on the protocol
+             * task and carried in as text, and a screen that claimed "this is
+             * you" from a string comparison it might have got wrong would be
+             * the one claim on this page nobody could check. So both addresses
+             * are drawn in full, three pages apart, and the user is told what
+             * the answer has to be. */
+            char addr[43];
+            oled_draw_string(1, 0, "Strategy maker");
+            if (sign_call.has_aqua_maker &&
+                eth_format_address(sign_call.aqua_maker, addr, sizeof(addr))) {
+                sign_draw_address(2, addr);
+            } else {
+                oled_draw_string(2, 0, "(unavailable)");
+            }
+            oled_draw_string(5, 0, "Must match From");
+            oled_draw_string(6, 0, "or REJECT.");
+            break;
+        }
+        case SIGN_PAGE_AQUA_APP: {
+            /* The Aqua app, which is the contract that will be allowed to pull
+             * against this strategy. Not the registry -- that is the CONTRACT
+             * page -- and the difference is the whole of who ends up holding
+             * the power here. */
+            char addr[43];
+            oled_draw_string(1, 0, "Aqua app");
+            if (eth_format_address(sign_call.aqua_app, addr, sizeof(addr))) {
+                sign_draw_address(2, addr);
+            }
+            oled_draw_string(5, 0, "This app decides");
+            oled_draw_string(6, 0, "your swaps.");
+            break;
+        }
+        case SIGN_PAGE_AQUA_HASH: {
+            /* For a ship this is keccak256 of the strategy bytes in this very
+             * calldata, computed here rather than taken from the host; for a
+             * dock it is the argument, which the device has no strategy to
+             * check against. Either way it is the key the registry files the
+             * position under, and the figure the companion's portfolio view
+             * shows -- so it is the one string that lets the two screens be
+             * compared. */
+            oled_draw_string(1, 0, sign_call.kind == ETH_CALL_AQUA_SHIP
+                                       ? "Strategy hash" : "Docking hash");
+            sign_draw_hash32(3, sign_call.aqua_hash);
+            break;
+        }
+        case SIGN_PAGE_AQUA_LEG: {
+            /* One token per page, with its amount for a ship and nothing but
+             * the token for a dock -- docking takes back whatever is there, so
+             * there is no figure to print and inventing a zero would read as
+             * "this leg is empty". */
+            int leg = sign_page_field[sign_page];
+            uint8_t token[20];
+            char addr[43];
+            /* Its own buffer rather than the shared `line`: both counts are
+             * bounded by ETH_AQUA_MAX_LEGS, but the compiler cannot see that
+             * and a truncation warning on a signing screen is not a warning to
+             * wave through. */
+            char heading[32];
+            snprintf(heading, sizeof(heading), "Token %d of %u", leg + 1,
+                     (unsigned)sign_call.aqua_legs);
+            oled_draw_string(1, 0, heading);
+            if (eth_aqua_token(&sign_call, sign_tx.data, sign_tx.data_length,
+                               leg, token) &&
+                eth_format_address(token, addr, sizeof(addr))) {
+                sign_draw_address(2, addr);
+            } else {
+                oled_draw_string(2, 0, "(unavailable)");
+            }
+
+            EthQuantity q;
+            if (eth_aqua_amount(&sign_call, sign_tx.data, sign_tx.data_length,
+                                leg, &q)) {
+                char amount[80];
+                if (!eth_format_integer(&q, amount, sizeof(amount))) {
+                    snprintf(amount, sizeof(amount), "?");
+                }
+                /* Raw units, for the reason sign_draw_amount() gives: the
+                 * device cannot call decimals(), so scaling would mean
+                 * inventing the scale. Two rows, wrapped, never cut. */
+                oled_draw_string(5, 0, "Provide, raw:");
+                char part[22];
+                snprintf(part, sizeof(part), "%.21s", amount);
+                oled_draw_string(6, 0, part);
+            } else {
+                oled_draw_string(6, 0, "Returned in full");
+            }
+            break;
+        }
         case SIGN_PAGE_CONTRACT: {
             /* Which token. An amount and a spender mean nothing without it:
              * the same approval against a different contract is a different
              * thing to lose. */
             char addr[43];
             oled_draw_string(1, 0,
-                sign_call.kind == ETH_CALL_GENERIC ? "Contract" : "Token contract");
+                (sign_call.kind == ETH_CALL_GENERIC ||
+                 sign_call.kind == ETH_CALL_AQUA_SHIP ||
+                 sign_call.kind == ETH_CALL_AQUA_DOCK) ? "Contract"
+                                                       : "Token contract");
             if (eth_format_address(sign_tx.to, addr, sizeof(addr))) {
                 sign_draw_address(2, addr);
             }

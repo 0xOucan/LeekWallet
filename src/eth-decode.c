@@ -19,7 +19,9 @@ typedef enum {
     ARGS_ADDR_ADDR_UINT,/* transferFrom                                 */
     ARGS_ADDR_BOOL,     /* setApprovalForAll                            */
     ARGS_UINT,          /* withdraw(uint256) / mint(uint256)            */
-    ARGS_FROM_SIGNATURE /* read the types out of `sig` itself           */
+    ARGS_FROM_SIGNATURE,/* read the types out of `sig` itself           */
+    ARGS_AQUA_SHIP,     /* Aqua ship: see aqua_decode_ship()            */
+    ARGS_AQUA_DOCK      /* Aqua dock: see aqua_decode_dock()            */
 } ArgShape;
 
 /* One row of the table.
@@ -89,6 +91,24 @@ static const struct EthAbiEntry KNOWN[] = {
      * the ERC-20 one has no concept of. */
     { "approve(address,address,uint160,uint48)", "token,spender,amount,expiration",
       ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+
+    /* Aqua. Both signatures carry dynamic arguments, which the generic path
+     * refuses on principle, so each gets a hand-written decoder — see
+     * aqua_decode_ship() and aqua_decode_dock(). They are in this table anyway
+     * because the table is what derives selectors by hashing, and a selector
+     * written down anywhere else would be a constant nothing checks.
+     *
+     * Why these two and not "dynamic arguments in general": a general decoder
+     * for `bytes` and arrays would have to lay out an arbitrary tail chosen by
+     * the host, and every offset it followed would be one more place to be
+     * quietly wrong on a screen somebody is about to trust. These two layouts
+     * are fixed, short, and checked against the canonical encoding exactly;
+     * anything that is merely a valid ABI encoding of the same values, but not
+     * the canonical one, is refused rather than normalised. */
+    { "ship(address,bytes,address[],uint256[])", "app,strategy,tokens,amounts",
+      ETH_CALL_AQUA_SHIP, ARGS_AQUA_SHIP },
+    { "dock(address,bytes32,address[])",         "app,strategyHash,tokens",
+      ETH_CALL_AQUA_DOCK, ARGS_AQUA_DOCK },
 };
 #define KNOWN_COUNT (sizeof(KNOWN) / sizeof(KNOWN[0]))
 
@@ -335,6 +355,186 @@ static bool word_matches_type(const EthArg *arg, const uint8_t word[32])
     }
 }
 
+/* ------------------------------------------------------------ Aqua (Q2)
+ *
+ * Aqua's ship() and dock() are the first calls in the decodable set with
+ * dynamic arguments, and they are decoded here by hand rather than by teaching
+ * parse_signature_args() about `bytes` and `T[]`.
+ *
+ * That was the tempting shortcut and it is the wrong one. A general dynamic
+ * decoder has to follow offsets the host chose, into a tail whose shape it
+ * cannot predict, and every offset it follows is another chance to draw one
+ * value while the contract executes another. The two layouts below are fixed
+ * and short, so they are checked against the CANONICAL encoding exactly: each
+ * head offset must be the value solc would have emitted, each element block
+ * must abut the next, and the calldata must end where the last element ends.
+ * An encoding that is merely legal ABI for the same arguments -- a gap between
+ * arrays, a tail in a different order, trailing bytes -- is refused rather than
+ * normalised, because "we read it differently than the contract will" is the
+ * only failure mode that matters here, and equality with one exact layout is
+ * the cheapest way to have none of it.
+ *
+ * Bounds are checked before every read and computed in size_t from words that
+ * have first been proved to fit, so nothing below can wrap.
+ */
+
+/* A 32-byte word as a length or offset, refusing anything that could not be a
+ * real one. `limit` is the argument block's length: an offset past it is not a
+ * large number to clamp, it is a malformed call. */
+static bool word_as_size(const uint8_t word[32], size_t limit, size_t *out)
+{
+    for (int i = 0; i < 28; i++) {
+        if (word[i] != 0) return false;
+    }
+    uint32_t v = ((uint32_t)word[28] << 24) | ((uint32_t)word[29] << 16) |
+                 ((uint32_t)word[30] << 8)  | (uint32_t)word[31];
+    if ((size_t)v > limit) return false;
+    *out = (size_t)v;
+    return true;
+}
+
+/* Bytes a `bytes` body of this length occupies, padded up to a word. */
+static bool padded_length(size_t len, size_t limit, size_t *out)
+{
+    size_t padded = (len + 31u) & ~(size_t)31u;
+    if (padded < len || padded > limit) return false;   /* wrapped, or absurd */
+    *out = padded;
+    return true;
+}
+
+/**
+ * The maker named inside the strategy, and the hash of the whole thing.
+ *
+ * The strategy is opaque to Aqua itself -- the registry hashes it and hands it
+ * to the app -- so there is no ABI here to appeal to. What every deployment
+ * observed on chain has in common is that it is `abi.encode(struct)` for a
+ * struct with at least one dynamic member, which puts a 0x20 head word first
+ * and the struct's own first field, an address, immediately after it.
+ *
+ * Requiring exactly that is a real restriction and the honest one: a strategy
+ * this device cannot locate a maker in is a strategy it cannot tell the user
+ * whose position they are about to create, and that question is the whole
+ * reason this page exists. The registry keys balances by msg.sender and hashes
+ * the strategy WITHOUT the sender, so the maker named in the struct and the
+ * address doing the signing are two different things a screen has to be able to
+ * show side by side. Refusing is what happens when it cannot.
+ */
+static bool aqua_strategy_maker(const uint8_t *body, size_t len, uint8_t out[20])
+{
+    if (len < 64) return false;
+    for (int i = 0; i < 31; i++) {
+        if (body[i] != 0) return false;
+    }
+    if (body[31] != 0x20) return false;          /* not a dynamic tuple head */
+    if (!word_is_address(body + 32)) return false;
+    memcpy(out, body + 32 + 12, 20);
+    return true;
+}
+
+/* ship(address,bytes,address[],uint256[]) -- canonical encoding only. */
+static bool aqua_decode_ship(const uint8_t *data, size_t len, EthCall *out)
+{
+    if (len < 4 + 4 * 32) return false;
+    const uint8_t *args = data + 4;
+    size_t         span = len - 4;
+
+    if (!word_is_address(args)) return false;
+    memcpy(out->aqua_app, args + 12, 20);
+
+    size_t off_s, off_t, off_a;
+    if (!word_as_size(args + 32, span, &off_s) ||
+        !word_as_size(args + 64, span, &off_t) ||
+        !word_as_size(args + 96, span, &off_a)) {
+        return false;
+    }
+    /* Where solc would have put the first tail element, and nowhere else. */
+    if (off_s != 4 * 32) return false;
+
+    /* strategy */
+    if (off_s + 32 > span) return false;
+    size_t len_s, padded_s;
+    if (!word_as_size(args + off_s, span, &len_s)) return false;
+    if (!padded_length(len_s, span, &padded_s)) return false;
+    if (off_s + 32 + padded_s > span) return false;
+    if (off_t != off_s + 32 + padded_s) return false;
+    const uint8_t *strategy = args + off_s + 32;
+    /* The padding a shorter-than-a-word tail carries must be zero. A host that
+     * can put bytes there can change nothing the app reads and nothing the
+     * screen shows, but it changes keccak256(strategy) -- which is the key the
+     * position is filed under, and the figure the portfolio matches on. */
+    for (size_t i = len_s; i < padded_s; i++) {
+        if (strategy[i] != 0) return false;
+    }
+    if (!aqua_strategy_maker(strategy, len_s, out->aqua_maker)) return false;
+    out->has_aqua_maker = true;
+    keccak_256(strategy, len_s, out->aqua_hash);
+
+    /* tokens */
+    if (off_t + 32 > span) return false;
+    size_t legs;
+    if (!word_as_size(args + off_t, span, &legs)) return false;
+    if (legs == 0 || legs > ETH_AQUA_MAX_LEGS) return false;
+    if (off_t + 32 + legs * 32 > span) return false;
+    if (off_a != off_t + 32 + legs * 32) return false;
+
+    /* amounts */
+    if (off_a + 32 > span) return false;
+    size_t amounts;
+    if (!word_as_size(args + off_a, span, &amounts)) return false;
+    /* One amount per token. Aqua reads them pairwise; a mismatch would mean
+     * either a leg with no amount on screen or an amount with no leg. */
+    if (amounts != legs) return false;
+    if (span != off_a + 32 + legs * 32) return false;   /* ends exactly here */
+
+    for (size_t i = 0; i < legs; i++) {
+        const uint8_t *token = args + off_t + 32 + i * 32;
+        if (!word_is_address(token)) return false;
+        out->aqua_token_off[i]  = (uint16_t)(4 + off_t + 32 + i * 32);
+        out->aqua_amount_off[i] = (uint16_t)(4 + off_a + 32 + i * 32);
+    }
+    out->aqua_legs = (uint8_t)legs;
+    out->has_aqua_amounts = true;
+    memcpy(out->address, out->aqua_app, sizeof(out->address));
+    return true;
+}
+
+/* dock(address,bytes32,address[]) -- canonical encoding only. */
+static bool aqua_decode_dock(const uint8_t *data, size_t len, EthCall *out)
+{
+    if (len < 4 + 3 * 32) return false;
+    const uint8_t *args = data + 4;
+    size_t         span = len - 4;
+
+    if (!word_is_address(args)) return false;
+    memcpy(out->aqua_app, args + 12, 20);
+    /* A bytes32 is 32 bytes of anything: no padding rule to check and nothing
+     * to reject. The hash is not verified against a strategy either -- the
+     * device has never seen the strategy it refers to. The screen prints it and
+     * lets the user compare it against the portfolio, which is the only party
+     * in this system that has both halves. */
+    memcpy(out->aqua_hash, args + 32, 32);
+
+    size_t off_t;
+    if (!word_as_size(args + 64, span, &off_t)) return false;
+    if (off_t != 3 * 32) return false;
+    if (off_t + 32 > span) return false;
+
+    size_t legs;
+    if (!word_as_size(args + off_t, span, &legs)) return false;
+    if (legs == 0 || legs > ETH_AQUA_MAX_LEGS) return false;
+    if (span != off_t + 32 + legs * 32) return false;
+
+    for (size_t i = 0; i < legs; i++) {
+        const uint8_t *token = args + off_t + 32 + i * 32;
+        if (!word_is_address(token)) return false;
+        out->aqua_token_off[i] = (uint16_t)(4 + off_t + 32 + i * 32);
+    }
+    out->aqua_legs = (uint8_t)legs;
+    out->has_aqua_amounts = false;
+    memcpy(out->address, out->aqua_app, sizeof(out->address));
+    return true;
+}
+
 /* Treat anything from 2^255 up as unlimited.
  *
  * Not just 2^256-1: the other common max is 2^255-1, and several token UIs
@@ -372,6 +572,22 @@ EthCallKind eth_decode_call(const uint8_t *data, size_t len, EthCall *out)
         }
     }
     if (!known) {
+        goto done;
+    }
+
+    if (known->shape == ARGS_AQUA_SHIP || known->shape == ARGS_AQUA_DOCK) {
+        bool ok = (known->shape == ARGS_AQUA_SHIP)
+                      ? aqua_decode_ship(data, len, &call)
+                      : aqua_decode_dock(data, len, &call);
+        if (!ok) {
+            /* Half a decode is nothing. Clearing it is what stops a screen
+             * reading a field out of a call that was refused. */
+            memzero(&call, sizeof(call));
+            call.kind = ETH_CALL_UNKNOWN;
+            goto done;
+        }
+        call.entry = known;
+        call.kind  = known->kind;
         goto done;
     }
 
@@ -474,6 +690,8 @@ const char *eth_call_name(EthCallKind kind)
         case ETH_CALL_MINT_TOKEN_TO:        return "mint token to";
         case ETH_CALL_MINT:                 return "mint";
         case ETH_CALL_GENERIC:              return "contract call";
+        case ETH_CALL_AQUA_SHIP:            return "Aqua ship";
+        case ETH_CALL_AQUA_DOCK:            return "Aqua dock";
         default:                            return "unknown call";
     }
 }
@@ -589,6 +807,54 @@ bool eth_arg_unlimited(const EthCall *call, const uint8_t *data, size_t len,
      * same warning about. */
     size_t top_byte = 32 - bits / 8;
     return (word[top_byte] & 0x80) != 0;
+}
+
+/* ------------------------------------------------------------ Aqua (Q2) */
+
+static bool aqua_leg_word(const EthCall *call, const uint8_t *data, size_t len,
+                          int i, bool amount, const uint8_t **out)
+{
+    if (!call || !data || i < 0 || i >= call->aqua_legs) {
+        return false;
+    }
+    if (call->kind != ETH_CALL_AQUA_SHIP && call->kind != ETH_CALL_AQUA_DOCK) {
+        return false;
+    }
+    if (amount && !call->has_aqua_amounts) {
+        return false;
+    }
+    size_t off = amount ? call->aqua_amount_off[i] : call->aqua_token_off[i];
+    /* Re-checked against the caller's length, not trusted from the decode:
+     * this runs at render time, from a buffer the renderer owns. */
+    if (off + 32 > len) {
+        return false;
+    }
+    *out = data + off;
+    return true;
+}
+
+bool eth_aqua_token(const EthCall *call, const uint8_t *data, size_t len,
+                    int i, uint8_t out[20])
+{
+    const uint8_t *word;
+    if (!out || !aqua_leg_word(call, data, len, i, false, &word)) {
+        return false;
+    }
+    if (!word_is_address(word)) {
+        return false;
+    }
+    memcpy(out, word + 12, 20);
+    return true;
+}
+
+bool eth_aqua_amount(const EthCall *call, const uint8_t *data, size_t len,
+                     int i, EthQuantity *out)
+{
+    const uint8_t *word;
+    if (!out || !aqua_leg_word(call, data, len, i, true, &word)) {
+        return false;
+    }
+    return eth_quantity_set(out, word, 32);
 }
 
 bool eth_decode_table_entry(size_t i, const char **sig, const char **names)

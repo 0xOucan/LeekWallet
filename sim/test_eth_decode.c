@@ -453,6 +453,327 @@ static void test_tx_level(void)
     CHECK(call.kind == ETH_CALL_MINT, "mint kind wrong at tx level");
 }
 
+/* ------------------------------------------------------------ Aqua (Q2) */
+
+/* Canonical calldata for ship(address,bytes,address[],uint256[]).
+ *
+ * Built the way solc would build it, because that is the only encoding the
+ * decoder accepts and a test that built it any other way would be asserting
+ * about a shape no compiler emits. `selector_sig` is hashed for the four
+ * leading bytes and is a separate argument so the tamper test can point a
+ * wrong selector at a well-formed body.
+ *
+ * `strategy` is the opaque blob Aqua hashes; the tests hand in one that starts
+ * with the 0x20 tuple head and a maker word, which is what the decoder needs to
+ * name a maker at all.
+ */
+static size_t build_aqua_ship(uint8_t *out, size_t cap, const char *selector_sig,
+                              const uint8_t app[20],
+                              const uint8_t *strategy, size_t strategy_len,
+                              const uint8_t tokens[][20], const uint64_t *amounts,
+                              size_t legs)
+{
+    size_t padded = (strategy_len + 31u) & ~(size_t)31u;
+    size_t off_s = 4 * 32;
+    size_t off_t = off_s + 32 + padded;
+    size_t off_a = off_t + 32 + legs * 32;
+    size_t len   = 4 + off_a + 32 + legs * 32;
+    if (len > cap) return 0;
+    memset(out, 0, len);
+
+    uint8_t hash[32];
+    keccak_256((const uint8_t *)selector_sig, strlen(selector_sig), hash);
+    memcpy(out, hash, 4);
+
+    uint8_t *args = out + 4;
+    memcpy(args + 12, app, 20);
+    amount_u64(args + 32, off_s);
+    amount_u64(args + 64, off_t);
+    amount_u64(args + 96, off_a);
+
+    amount_u64(args + off_s, strategy_len);
+    memcpy(args + off_s + 32, strategy, strategy_len);
+
+    amount_u64(args + off_t, legs);
+    amount_u64(args + off_a, legs);
+    for (size_t i = 0; i < legs; i++) {
+        memcpy(args + off_t + 32 + i * 32 + 12, tokens[i], 20);
+        amount_u64(args + off_a + 32 + i * 32, amounts[i]);
+    }
+    return len;
+}
+
+/* Canonical calldata for dock(address,bytes32,address[]). */
+static size_t build_aqua_dock(uint8_t *out, size_t cap, const char *selector_sig,
+                              const uint8_t app[20], const uint8_t hash32[32],
+                              const uint8_t tokens[][20], size_t legs)
+{
+    size_t off_t = 3 * 32;
+    size_t len   = 4 + off_t + 32 + legs * 32;
+    if (len > cap) return 0;
+    memset(out, 0, len);
+
+    uint8_t sel[32];
+    keccak_256((const uint8_t *)selector_sig, strlen(selector_sig), sel);
+    memcpy(out, sel, 4);
+
+    uint8_t *args = out + 4;
+    memcpy(args + 12, app, 20);
+    memcpy(args + 32, hash32, 32);
+    amount_u64(args + 64, off_t);
+    amount_u64(args + off_t, legs);
+    for (size_t i = 0; i < legs; i++) {
+        memcpy(args + off_t + 32 + i * 32 + 12, tokens[i], 20);
+    }
+    return len;
+}
+
+/* A strategy the decoder can find a maker in: the 0x20 head abi.encode puts in
+ * front of a dynamic tuple, then the struct's own first field. */
+static size_t make_strategy(uint8_t *out, const uint8_t maker[20])
+{
+    memset(out, 0, 96);
+    out[31] = 0x20;
+    memcpy(out + 32 + 12, maker, 20);
+    out[95] = 0x07;               /* a config word, so the blob is not all zero */
+    return 96;
+}
+
+static const uint8_t AQUA_APP_ADDR[20] = {
+    0x22, 0x8e, 0x82, 0x83, 0x1a, 0xfa, 0xc5, 0xdd, 0x9e, 0xbd,
+    0xe3, 0x48, 0x9e, 0x9e, 0x18, 0xae, 0x9c, 0x7b, 0xcb, 0xf4,
+};
+
+/* A well-formed body for one of the two Aqua rows, with its selector taken
+ * from `selector_sig` -- which the tamper test points at a mutated signature.
+ * Returns 0 for any other row, which is the caller's cue to fall back to the
+ * all-zero static block. */
+static size_t aqua_probe(uint8_t *out, size_t cap, const char *selector_sig,
+                         const char *row_sig)
+{
+    uint8_t strategy[96];
+    size_t  strategy_len = make_strategy(strategy, OTHER);
+    uint8_t tokens[1][20];
+    memcpy(tokens[0], SPENDER, 20);
+    uint64_t amounts[1] = { 1 };
+    uint8_t hash32[32];
+    memset(hash32, 0x11, sizeof(hash32));
+
+    if (strcmp(row_sig, "ship(address,bytes,address[],uint256[])") == 0) {
+        return build_aqua_ship(out, cap, selector_sig, AQUA_APP_ADDR,
+                               strategy, strategy_len, tokens, amounts, 1);
+    }
+    if (strcmp(row_sig, "dock(address,bytes32,address[])") == 0) {
+        return build_aqua_dock(out, cap, selector_sig, AQUA_APP_ADDR,
+                               hash32, tokens, 1);
+    }
+    return 0;
+}
+
+static void test_aqua_ship_decodes(void)
+{
+    printf("Aqua ship decodes app, maker, strategy hash and every leg\n");
+
+    uint8_t strategy[96];
+    size_t  strategy_len = make_strategy(strategy, OTHER);
+    uint8_t tokens[2][20];
+    memcpy(tokens[0], SPENDER, 20);
+    memcpy(tokens[1], OTHER, 20);
+    uint64_t amounts[2] = { 1000000, 250 };
+
+    uint8_t data[512];
+    size_t  len = build_aqua_ship(data, sizeof(data),
+                                  "ship(address,bytes,address[],uint256[])",
+                                  AQUA_APP_ADDR, strategy, strategy_len,
+                                  tokens, amounts, 2);
+    CHECK(len > 0, "could not build a ship call");
+
+    EthCall call;
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_AQUA_SHIP, "ship refused");
+    CHECK(memcmp(call.aqua_app, AQUA_APP_ADDR, 20) == 0, "wrong app");
+    CHECK(call.has_aqua_maker, "no maker decoded");
+    CHECK(memcmp(call.aqua_maker, OTHER, 20) == 0, "wrong maker");
+    CHECK(call.aqua_legs == 2, "%u legs", call.aqua_legs);
+    CHECK(call.has_aqua_amounts, "ship has no amounts");
+
+    /* The hash is over the strategy bytes alone, which is what the registry
+     * keys the position by and what the portfolio view will match against. */
+    uint8_t expect[32];
+    keccak_256(strategy, strategy_len, expect);
+    CHECK(memcmp(call.aqua_hash, expect, 32) == 0, "strategy hash wrong");
+
+    uint8_t token[20];
+    CHECK(eth_aqua_token(&call, data, len, 1, token), "leg 1 has no token");
+    CHECK(memcmp(token, OTHER, 20) == 0, "leg 1 token wrong");
+
+    EthQuantity q;
+    CHECK(eth_aqua_amount(&call, data, len, 0, &q), "leg 0 has no amount");
+    CHECK(q.length == 3 && q.bytes[0] == 0x0f, "leg 0 amount wrong");
+
+    /* Past the end is a refusal, not a zero: a page that drew an absent leg as
+     * "0" would be inventing one. */
+    CHECK(!eth_aqua_token(&call, data, len, 2, token), "a third leg appeared");
+
+    /* And it survives the transaction-level gate, so signTransaction can
+     * actually reach it. */
+    EthTx tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.has_to = true;
+    memcpy(tx.data, data, len);
+    tx.data_length = len;
+    CHECK(eth_tx_is_decodable(&tx, &call), "ship refused at tx level");
+}
+
+static void test_aqua_dock_decodes(void)
+{
+    printf("Aqua dock decodes its app, its hash and its tokens\n");
+
+    uint8_t hash32[32];
+    memset(hash32, 0xab, sizeof(hash32));
+    uint8_t tokens[1][20];
+    memcpy(tokens[0], SPENDER, 20);
+
+    uint8_t data[256];
+    size_t  len = build_aqua_dock(data, sizeof(data),
+                                  "dock(address,bytes32,address[])",
+                                  AQUA_APP_ADDR, hash32, tokens, 1);
+    CHECK(len > 0, "could not build a dock call");
+
+    EthCall call;
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_AQUA_DOCK, "dock refused");
+    CHECK(memcmp(call.aqua_hash, hash32, 32) == 0, "dock hash wrong");
+    CHECK(call.aqua_legs == 1, "%u legs", call.aqua_legs);
+    /* Docking takes back whatever is there, so there is no amount to show and
+     * the accessor says so rather than returning zero. */
+    CHECK(!call.has_aqua_amounts, "dock claims amounts");
+    EthQuantity q;
+    CHECK(!eth_aqua_amount(&call, data, len, 0, &q), "dock produced an amount");
+    /* A dock names no maker: the strategy it refers to is not in the calldata,
+     * so there is nothing to read one out of. */
+    CHECK(!call.has_aqua_maker, "dock claims a maker it never saw");
+}
+
+/*
+ * The refusals. Each one is an encoding that is legal ABI for the same
+ * arguments, or nearly so, and each is rejected rather than normalised -- see
+ * the header over aqua_decode_ship().
+ */
+static void test_aqua_refuses_non_canonical_encodings(void)
+{
+    printf("Aqua refuses every encoding but the canonical one\n");
+
+    uint8_t strategy[96];
+    size_t  strategy_len = make_strategy(strategy, OTHER);
+    uint8_t tokens[1][20];
+    memcpy(tokens[0], SPENDER, 20);
+    uint64_t amounts[1] = { 5 };
+
+    uint8_t good[512];
+    size_t  good_len = build_aqua_ship(good, sizeof(good),
+                                       "ship(address,bytes,address[],uint256[])",
+                                       AQUA_APP_ADDR, strategy, strategy_len,
+                                       tokens, amounts, 1);
+    CHECK(eth_decode_call(good, good_len, NULL) == ETH_CALL_AQUA_SHIP,
+          "the baseline call does not decode");
+
+    uint8_t data[ETH_MAX_DATA];
+
+    /* Trailing bytes: the classic "it decoded, and there was more". */
+    memcpy(data, good, good_len);
+    data[good_len] = 0x01;
+    CHECK(eth_decode_call(data, good_len + 1, NULL) == ETH_CALL_UNKNOWN,
+          "trailing byte accepted");
+
+    /* Truncated: one byte short of the last amount. */
+    memcpy(data, good, good_len);
+    CHECK(eth_decode_call(data, good_len - 1, NULL) == ETH_CALL_UNKNOWN,
+          "truncated call accepted");
+
+    /* A strategy offset that points somewhere legal but not where solc puts
+     * it. Reading it would work; agreeing with the contract is the point. */
+    memcpy(data, good, good_len);
+    amount_u64(data + 4 + 32, 4 * 32 + 32);
+    CHECK(eth_decode_call(data, good_len, NULL) == ETH_CALL_UNKNOWN,
+          "a moved strategy offset accepted");
+
+    /* More amounts than tokens: a leg with no amount, or the reverse. */
+    memcpy(data, good, good_len);
+    size_t off_a = 4 * 32 + 32 + 96 + 32 + 32;
+    amount_u64(data + 4 + off_a, 2);
+    CHECK(eth_decode_call(data, good_len, NULL) == ETH_CALL_UNKNOWN,
+          "an amounts array of a different length accepted");
+
+    /* Zero legs: nothing is being provided, so there is nothing to draw. */
+    memcpy(data, good, good_len);
+    size_t off_t = 4 * 32 + 32 + 96;
+    amount_u64(data + 4 + off_t, 0);
+    CHECK(eth_decode_call(data, good_len, NULL) == ETH_CALL_UNKNOWN,
+          "a strategy with no legs accepted");
+
+    /* A token word with dirty high bytes is not an address. */
+    memcpy(data, good, good_len);
+    data[4 + off_t + 32] = 0x01;
+    CHECK(eth_decode_call(data, good_len, NULL) == ETH_CALL_UNKNOWN,
+          "a token word with dirty padding accepted");
+
+    /* A strategy the decoder cannot find a maker in. The bytes are perfectly
+     * well-formed ABI; what is missing is the one field the screen exists to
+     * show, and half a page is not an option. */
+    uint8_t headless[96];
+    memset(headless, 0, sizeof(headless));
+    headless[31] = 0x40;                       /* not the 0x20 tuple head */
+    size_t len = build_aqua_ship(data, sizeof(data),
+                                 "ship(address,bytes,address[],uint256[])",
+                                 AQUA_APP_ADDR, headless, sizeof(headless),
+                                 tokens, amounts, 1);
+    CHECK(eth_decode_call(data, len, NULL) == ETH_CALL_UNKNOWN,
+          "a strategy with no readable maker accepted");
+
+    /* A strategy too short to hold one. */
+    uint8_t stub[32];
+    memset(stub, 0, sizeof(stub));
+    stub[31] = 0x20;
+    len = build_aqua_ship(data, sizeof(data),
+                          "ship(address,bytes,address[],uint256[])",
+                          AQUA_APP_ADDR, stub, sizeof(stub), tokens, amounts, 1);
+    CHECK(eth_decode_call(data, len, NULL) == ETH_CALL_UNKNOWN,
+          "a strategy too short for a maker accepted");
+
+    /* Non-zero padding after a strategy that does not fill its last word. It
+     * changes nothing on screen and changes keccak256(strategy), which is the
+     * key the position ends up filed under. */
+    uint8_t odd[97];
+    memset(odd, 0, sizeof(odd));
+    odd[31] = 0x20;
+    memcpy(odd + 32 + 12, OTHER, 20);
+    len = build_aqua_ship(data, sizeof(data),
+                          "ship(address,bytes,address[],uint256[])",
+                          AQUA_APP_ADDR, odd, sizeof(odd), tokens, amounts, 1);
+    CHECK(eth_decode_call(data, len, NULL) == ETH_CALL_AQUA_SHIP,
+          "a strategy with zero padding refused");
+    data[4 + 4 * 32 + 32 + 97] = 0x01;         /* first padding byte */
+    CHECK(eth_decode_call(data, len, NULL) == ETH_CALL_UNKNOWN,
+          "dirty strategy padding accepted");
+
+    /* More legs than the device will draw. Refused, not summarised. */
+    uint8_t many[ETH_AQUA_MAX_LEGS + 1][20];
+    uint64_t many_amounts[ETH_AQUA_MAX_LEGS + 1];
+    for (size_t i = 0; i < ETH_AQUA_MAX_LEGS + 1; i++) {
+        memcpy(many[i], SPENDER, 20);
+        many_amounts[i] = i + 1;
+    }
+    /* The shortest strategy that still names a maker, so five legs stay inside
+     * ETH_MAX_DATA -- otherwise this would be testing the length cap again
+     * rather than the leg cap. */
+    len = build_aqua_ship(data, sizeof(data),
+                          "ship(address,bytes,address[],uint256[])",
+                          AQUA_APP_ADDR, strategy, 64,
+                          many, many_amounts, ETH_AQUA_MAX_LEGS + 1);
+    CHECK(len > 0 && len <= ETH_MAX_DATA, "the five-leg probe did not fit");
+    CHECK(eth_decode_call(data, len, NULL) == ETH_CALL_UNKNOWN,
+          "more legs than the device can draw accepted");
+}
+
 /* ------------------------------------------- the self-verifying table (T12c) */
 
 /* Build a call to `sig` from `nwords` already-encoded 32-byte words.
@@ -550,11 +871,17 @@ static void test_a_tampered_signature_stops_matching(void)
         uint8_t words[ETH_MAX_ARGS][32];
         memset(words, 0, sizeof(words));
 
-        uint8_t data[4 + ETH_MAX_ARGS * 32];
-        size_t len = build_sig_call(data, sizeof(data), sig, words, arity);
+        uint8_t data[600];
+        /* An all-zero argument block is valid for every STATIC type in the
+         * table, but zero is not a legal offset, so the two Aqua rows need a
+         * real body. Keyed on the signature rather than on a hard-coded index
+         * so a row inserted above them does not silently start being probed
+         * with the wrong shape. */
+        size_t len = aqua_probe(data, sizeof(data), sig, sig);
+        if (len == 0) {
+            len = build_sig_call(data, sizeof(data), sig, words, arity);
+        }
         CHECK(len > 0, "%s: could not build a call", sig);
-        /* An all-zero argument block is valid for every type in the table, so
-         * anything but a decode here is the row failing to match itself. */
         CHECK(eth_decode_call(data, len, NULL) != ETH_CALL_UNKNOWN,
               "%s: the row does not match its own hash", sig);
 
@@ -567,7 +894,10 @@ static void test_a_tampered_signature_stops_matching(void)
         CHECK(n > 2, "%s: too short to alter", sig);
         altered[n - 2] = (altered[n - 2] == 'x') ? 'y' : 'x';
 
-        len = build_sig_call(data, sizeof(data), altered, words, arity);
+        len = aqua_probe(data, sizeof(data), altered, sig);
+        if (len == 0) {
+            len = build_sig_call(data, sizeof(data), altered, words, arity);
+        }
         CHECK(eth_decode_call(data, len, NULL) == ETH_CALL_UNKNOWN,
               "%s: altered to %s and still decoded", sig, altered);
     }
@@ -741,6 +1071,9 @@ int main(void)
     test_refusals();
     test_signature_table_is_well_formed();
     test_a_tampered_signature_stops_matching();
+    test_aqua_ship_decodes();
+    test_aqua_dock_decodes();
+    test_aqua_refuses_non_canonical_encodings();
     test_supply_decodes();
     test_generic_arguments_are_validated();
     test_unlimited_follows_the_declared_width();

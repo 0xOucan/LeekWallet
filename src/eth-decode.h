@@ -21,6 +21,8 @@
  *   - a table of further signatures decoded generically from their declared
  *     argument types (ETH_CALL_GENERIC below): Aave's supply/withdraw/borrow/
  *     repay, safeTransferFrom, Permit2's approve
+ *   - Aqua's ship() and dock(), each with its own decoder because each has
+ *     dynamic arguments the generic path refuses on principle
  *
  * Growing it means adding a decoder AND a screen that says what the call does.
  * A selector recognised but not rendered is worse than one refused, because it
@@ -70,8 +72,20 @@ typedef enum {
                                 * own declared argument types. Proves what the
                                 * function is NAMED and what it was PASSED —
                                 * never what it does; see EthCall::entry */
+    ETH_CALL_AQUA_SHIP,        /* Aqua ship(address app, bytes strategy,
+                                * address[] tokens, uint256[] amounts) */
+    ETH_CALL_AQUA_DOCK,        /* Aqua dock(address app, bytes32 strategyHash,
+                                * address[] tokens) */
     ETH_CALL_UNKNOWN           /* not in the decodable set — refuse it */
 } EthCallKind;
+
+/* Aqua legs the device will draw, and therefore the most it will accept.
+ *
+ * One page per leg, and a page the user has to press through: a strategy with
+ * more legs than this is refused rather than summarised, for the same reason a
+ * seventh generic argument is. Four covers every strategy seen on chain, whose
+ * tokensCount the registry itself stores in a uint8 with 0xff reserved. */
+#define ETH_AQUA_MAX_LEGS 4
 
 /* The static ABI types a generic argument may have. Deliberately only the ones
  * that occupy exactly one 32-byte word: a dynamic type (`bytes`, `string`, any
@@ -132,6 +146,36 @@ typedef struct {
     const EthAbiEntry *entry;
     EthArg      args[ETH_MAX_ARGS];
     uint8_t     arg_count;
+
+    /* ---------------------------------------------------- Aqua (ship/dock)
+     *
+     * The two Aqua calls are the only ones in the decodable set whose
+     * arguments are dynamic, so they get a bespoke decoder and these fields
+     * rather than the `args` array — see aqua_decode() in eth-decode.c, and
+     * the paragraph there on why "one more shape" was not the answer.
+     *
+     * Every offset below is a byte offset into the SAME calldata that was
+     * decoded, resolved and bounds-checked once, so a renderer reads the words
+     * back out of the buffer it owns instead of the decoder copying them. */
+    uint8_t     aqua_app[20];      /* the Aqua app the strategy is shipped to */
+    /* The maker named INSIDE the strategy struct, which is not the same thing
+     * as the sender. Aqua keys its balances by msg.sender and hashes the
+     * strategy without it, so a strategy naming somebody else is shipped under
+     * this device's key while instructing the app about another address. The
+     * screen shows both and the host refuses the mismatch; see
+     * packages/apps/aqua/src/strategy.ts. */
+    uint8_t     aqua_maker[20];
+    bool        has_aqua_maker;
+    /* ship: keccak256(strategy), computed here from the same bytes that will
+     * be signed, which is what makes it comparable against the portfolio view.
+     * dock: the strategyHash argument, verbatim. */
+    uint8_t     aqua_hash[32];
+    uint8_t     aqua_legs;
+    uint16_t    aqua_token_off[ETH_AQUA_MAX_LEGS];
+    /* ship only. Meaningless when the kind is ETH_CALL_AQUA_DOCK, which takes
+     * no amounts: docking returns whatever is there. */
+    uint16_t    aqua_amount_off[ETH_AQUA_MAX_LEGS];
+    bool        has_aqua_amounts;
 } EthCall;
 
 /**
@@ -192,6 +236,22 @@ bool eth_arg_quantity(const EthCall *call, const uint8_t *data, size_t len,
  */
 bool eth_arg_unlimited(const EthCall *call, const uint8_t *data, size_t len,
                        int i);
+
+/* ------------------------------------------------------------ Aqua (Q2) */
+
+/**
+ * Argument `i`'s token address for an Aqua call, read back out of `data`.
+ *
+ * Re-bounds-checked against the caller's length for the same reason
+ * eth_arg_word() is: this runs at render time, from a buffer the renderer
+ * owns, and the two have been out of step before.
+ */
+bool eth_aqua_token(const EthCall *call, const uint8_t *data, size_t len,
+                    int i, uint8_t out[20]);
+
+/** Leg `i`'s amount. False for a dock, which has no amounts. */
+bool eth_aqua_amount(const EthCall *call, const uint8_t *data, size_t len,
+                     int i, EthQuantity *out);
 
 /**
  * Enumerate the table: false once `i` is past the end.

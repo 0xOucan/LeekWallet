@@ -26,7 +26,26 @@ typedef struct {
     size_t  length;
 } EthQuantity;
 
-#define ETH_MAX_DATA 256
+/* The longest calldata this device will hold.
+ *
+ * It was 256, which covered every static-argument call the decoder knew: six
+ * words plus a selector is 196 bytes and nothing came close. It is 640 because
+ * Aqua's `ship` does not fit in 256 and cannot be made to — its arguments are
+ * a strategy blob plus two arrays, and the strategy alone is 256 bytes in the
+ * deployments observed on chain. A limit that refuses a call the device can
+ * otherwise read in full and draw is a capacity limit standing in for a
+ * comprehension one, which is the confusion PROTOCOL.md 6bis exists to keep
+ * apart.
+ *
+ * The ceiling above it is PROTOCOL_MAX_FRAME (1024): a signTransaction request
+ * carrying 640 bytes of calldata plus its other fields is about 760 bytes of
+ * CBOR, so the frame still bounds this rather than the other way round. Raising
+ * it further means raising that first, and then the two RLP buffers in
+ * eth-tx.c, which are stack locals on the protocol task.
+ *
+ * Refusing anything longer stays the honest answer: the device never held those
+ * bytes, so it could not hash or display what it would be signing. */
+#define ETH_MAX_DATA 640
 
 typedef struct {
     uint64_t     chain_id;

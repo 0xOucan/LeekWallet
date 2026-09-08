@@ -1187,7 +1187,7 @@ static void test_blind_signing_is_off_until_the_device_says_otherwise(void)
     uint8_t to[20];
     memset(to, 0xC0, sizeof(to));
     uint8_t data[36] = { 0xde, 0xad, 0xbe, 0xef };
-    uint8_t payload[512];
+    uint8_t payload[PROTOCOL_MAX_FRAME];
     size_t len;
 
     CHECK(features_blind_signing() == 0,
@@ -1274,7 +1274,7 @@ static void test_blind_signing_is_off_until_the_device_says_otherwise(void)
 
     /* Oversized calldata. Refused for a different reason again: the device
      * never held those bytes, so it could not hash what it signed. */
-    uint8_t huge[300] = { 0xde, 0xad, 0xbe, 0xef };   /* ETH_MAX_DATA is 256 */
+    uint8_t huge[ETH_MAX_DATA + 1] = { 0xde, 0xad, 0xbe, 0xef };
     len = undecodable_request(payload, sizeof(payload), to, huge, sizeof(huge));
     CHECK(len > 0, "the oversized request did not fit the buffer");
     send_encrypted(payload, len);
@@ -3555,7 +3555,7 @@ static size_t mock_request(MockCase c, uint8_t *buf, size_t cap)
         0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0
     };
     static const uint8_t GARBAGE[36] = { 0xde, 0xad, 0xbe, 0xef };
-    static uint8_t huge[300] = { 0xde, 0xad, 0xbe, 0xef };
+    static uint8_t huge[ETH_MAX_DATA + 1] = { 0xde, 0xad, 0xbe, 0xef };
     /* 1 token, as a 32-byte big-endian quantity - the shape signTypedData
      * wants for a uint256. */
     static uint8_t one_token[32];
