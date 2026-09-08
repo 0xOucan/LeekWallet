@@ -30,7 +30,9 @@
 import { formatUnits } from "@leekwallet/core/chains.ts";
 import { DESCRIPTOR_NOTICE } from "@leekwallet/core/erc7730.ts";
 import type { AppContext } from "@leekwallet/core/mini-app.ts";
-import { proposePrivileged, previewPrivileged, type PrivilegedIntent } from "./act.ts";
+import {
+  PRIVILEGED_ACTIONS, previewPrivileged, proposePrivileged, type PrivilegedIntent,
+} from "./act.ts";
 import { REFUSAL_NOTICE, type PrivilegedScreen, type SecurityFacts } from "./action.ts";
 import { ROLES } from "./roles.ts";
 import type { RegisterView } from "./register.ts";
@@ -89,8 +91,17 @@ export function screenElement(screen: PrivilegedScreen): HTMLElement {
   return box;
 }
 
-/** Which inputs an action needs. One place, so the form and the intent agree. */
-const NEEDS: Readonly<Record<string, readonly string[]>> = {
+/**
+ * Which inputs an action needs.
+ *
+ * The KEYS are not the list of actions — `PRIVILEGED_ACTIONS` is, derived from
+ * the descriptor table. This only says what each one asks for. A second list of
+ * action names here would be free to drift from the table the calldata and the
+ * descriptors both come from, and the form would then offer something the
+ * encoder cannot build (or, worse, quietly stop offering something it can).
+ * `act.test.ts` asserts every action has an entry.
+ */
+export const NEEDS: Readonly<Record<string, readonly string[]>> = {
   grantRole: ["role", "account"],
   revokeRole: ["role", "account"],
   revokeKyc: ["account"],
@@ -218,7 +229,7 @@ export function renderPrivilegedPanel(
   const chooser = el("div", "ats-row");
   chooser.appendChild(el("span", "ats-label", "Action"));
   const select = el("select");
-  for (const name of Object.keys(NEEDS)) {
+  for (const name of PRIVILEGED_ACTIONS) {
     const opt = document.createElement("option");
     opt.value = name;
     opt.textContent = name;

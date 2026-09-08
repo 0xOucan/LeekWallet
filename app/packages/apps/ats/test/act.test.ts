@@ -17,8 +17,9 @@ import type { AppProposal, ProposalOutcome } from "@leekwallet/core/app-proposal
 import { selectorOf } from "@leekwallet/core/erc7730.ts";
 import {
   encodePrivileged, previewPrivileged, proposePrivileged,
-  DECLINED_NOTICE, NO_DEVICE_NOTICE, type PrivilegedIntent,
+  DECLINED_NOTICE, NO_DEVICE_NOTICE, PRIVILEGED_ACTIONS, type PrivilegedIntent,
 } from "../src/act.ts";
+import { NEEDS } from "../src/act-view.ts";
 import { describePrivilegedCall, type SecurityFacts } from "../src/action.ts";
 import { atsDescriptorJson, ACTIONS } from "../src/descriptors.ts";
 import { ATS_APP } from "../src/index.ts";
@@ -102,6 +103,18 @@ group("calldata is built from the same table the descriptors are built from");
       `${intent.action} did not produce a screen: ` +
       `${rendering.state === "refused" ? rendering.why : ""}`);
   }
+}
+
+group("the form offers exactly the actions the table has");
+{
+  /* One list, derived from the descriptor table, so the select cannot offer an
+   * action the encoder does not build or omit one it does. NEEDS says what each
+   * action asks the user for; it does not get to decide which actions exist. */
+  for (const action of PRIVILEGED_ACTIONS) {
+    check(NEEDS[action] !== undefined, `${action} is offered but the form asks for nothing`);
+  }
+  check(Object.keys(NEEDS).length === PRIVILEGED_ACTIONS.length,
+    "the form's input map has entries for actions that are not in the table");
 }
 
 group("a bad address never becomes calldata");
