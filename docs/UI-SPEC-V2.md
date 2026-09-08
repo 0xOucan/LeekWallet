@@ -101,7 +101,13 @@ before anything is on screen. Requirements:
 - pause refreshes when the window is hidden.
 
 ### 2b. Send
-Recipient (`0x…` or scanned), token, chain, amount → review → sign on device.
+Recipient — typed `0x…` **or scanned with the camera** — token, chain, amount →
+review → sign on device.
+
+The scanner is not an extra: pasting an address between devices is where people
+lose money, and the shell already has the camera plumbing (`appScanQr` in
+`main.ts`, and the recipient scanner that predates it). Reuse it; do not write a
+second one.
 **Reuse `tx-interpret.ts` and the ERC-7730 engine.** Do not write a second
 preview: a second preview is a second thing that can disagree with the device,
 and the device is the authority.
@@ -116,6 +122,26 @@ Activity, Apps and WalletConnect remain reachable. Diagnostics stays collapsed
 at the bottom — it has been load-bearing for every bug in this project.
 
 ---
+
+## 2e. The look: mobile-menu minimal
+
+A phone menu, not a dashboard. On every platform, including desktop — one
+column, generous touch targets, few words, one clear action per screen.
+
+- **One thing per screen.** The launcher is three blocks and nothing else. The
+  wallet screen is the balance and a short menu. A screen that needs a
+  scrollbar to show its own controls has too much on it.
+- **Type carries the hierarchy, not boxes.** Big number, small label. Borders
+  and fills are the last resort, not the first.
+- **Touch first.** ≥44px targets everywhere, because the tablet is the target
+  device and a desktop pointer is happy with what a thumb needs.
+- **Few words.** "Send", "Receive", "Update firmware". The long sentences in
+  this app exist to state consequences — those stay, verbatim, and are the one
+  place where more words are correct.
+
+Minimal is a constraint on ornament, never on honesty. Every safety sentence in
+§3 stays at full length: *unavailable* is a word, not a greyed-out zero, and
+*ERASES every wallet* does not become an icon.
 
 ## 3. What must not regress
 
