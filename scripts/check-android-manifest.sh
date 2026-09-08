@@ -27,18 +27,29 @@ fi
 
 missing=()
 grep -q 'android.permission.CAMERA' "$MANIFEST" || missing+=("uses-permission android.permission.CAMERA")
+# USB, the second instance of the same lesson. Without the feature Android can
+# hand back an empty device list; without the filter file the manifest's
+# @xml/device_filter reference dangles and the attach intent cannot fire. Both
+# leave BLE working, which is what makes it read as "USB is broken".
+grep -q 'android.hardware.usb.host' "$MANIFEST" || missing+=("uses-feature android.hardware.usb.host (run scripts/android-usb-host.sh)")
+[[ -f "app/src-tauri/gen/android/app/src/main/res/xml/device_filter.xml" ]] \
+    || missing+=("res/xml/device_filter.xml (run scripts/android-usb-host.sh)")
 grep -q 'android.hardware.camera' "$MANIFEST" || missing+=("uses-feature android.hardware.camera (required=false)")
 
 if (( ${#missing[@]} )); then
     echo "The generated Android manifest is missing hand-added entries:"
     for m in "${missing[@]}"; do echo "  - $m"; done
     echo
-    echo "Add them inside <manifest>, above <application>:"
+    echo "For the camera, add inside <manifest>, above <application>:"
     echo '    <uses-permission android:name="android.permission.CAMERA" />'
     echo '    <uses-feature android:name="android.hardware.camera" android:required="false" />'
     echo
-    echo "See app/ANDROID.md. Without them the camera is denied with no dialog."
+    echo "For USB, run: ./scripts/android-usb-host.sh"
+    echo
+    echo "See app/ANDROID.md. Each failure here is silent at runtime: the"
+    echo "camera is denied with no dialog, and USB comes back empty while BLE"
+    echo "keeps working, which reads as a broken cable rather than a manifest."
     exit 1
 fi
 
-echo "   camera permission present"
+echo "   camera and USB host entries present"
