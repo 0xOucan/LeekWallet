@@ -9,9 +9,17 @@
  *     # drop "@leekwallet/app-ats" from app/package.json dependencies
  *     pnpm --dir app install && pnpm --dir app typecheck && pnpm --dir app build
  *
- * That is the whole procedure, and it was run: typecheck, build and
- * `app/test/apps.test.ts` all pass with this app absent. Not a flag that hides
- * a screen — an actual absence from the bundle.
+ * That is the whole procedure. It was run at E2 — typecheck, build and
+ * `app/test/apps.test.ts` all passed with this app absent. Not a flag that
+ * hides a screen; an actual absence from the bundle.
+ *
+ * E3 added a devDependency on `@hashgraph/asset-tokenization-contracts` for
+ * `test/conformance.test.ts`, and it was put in THIS package's manifest rather
+ * than the workspace's precisely so the count stays at three: it is inside the
+ * directory that gets deleted. That has not been re-verified by deleting the
+ * directory again — what was checked is that nothing outside this package
+ * mentions either `app-ats` or the contracts package, other than the two edits
+ * named above.
  *
  * Three edits rather than the two `packages/apps/README.md` describes, because
  * the shell also names the app as a workspace dependency and `pnpm install`
