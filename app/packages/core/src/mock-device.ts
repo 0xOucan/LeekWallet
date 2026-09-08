@@ -660,8 +660,15 @@ class MockRejection extends Error {
 
 const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 
-/** `ETH_MAX_DATA` in src/eth.h — what the device can hold and describe. */
-const ETH_MAX_DATA = 256;
+/**
+ * `ETH_MAX_DATA` in src/eth-tx.h — what the device can hold and describe.
+ *
+ * 640 since Aqua: a ship() is about 600 bytes and the old 256 refused it for
+ * capacity while the screen could have drawn every field. Must not drift from
+ * the firmware — a mock that accepts more than the device certifies broken
+ * code, and a mock that accepts less refuses requests the device would take.
+ */
+const ETH_MAX_DATA = 640;
 
 /** Longest passphrase protocol.c will accept: 63 bytes plus its terminator. */
 const PASSPHRASE_MAX_BYTES = 63;

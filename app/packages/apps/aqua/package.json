@@ -1,7 +1,7 @@
 {
   "name": "@leekwallet/app-aqua",
   "version": "0.1.0",
-  "description": "Read-only 1inch Aqua portfolio, with the approval that bounds it",
+  "description": "1inch Aqua: portfolio, capped approvals, ship and dock",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/registry.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/positions.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/portfolio.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/view.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/registry.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/positions.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/portfolio.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/deploy.test.ts"
   },
   "dependencies": {
     "@leekwallet/core": "workspace:*",

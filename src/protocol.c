@@ -1409,9 +1409,12 @@ static void dispatch(const uint8_t *payload, size_t len)
  */
 static void warn_on_thin_stack(void)
 {
-    /* Words, not bytes, on ESP-IDF's FreeRTOS. A quarter of the smaller task's
-     * 8 KB is the line: comfortably above the deepest path measured, and low
-     * enough that hitting it means something changed. */
+    /* Words, not bytes, on ESP-IDF's FreeRTOS. 2 KB is the line: comfortably
+     * above the deepest path measured, and low enough that hitting it means
+     * something changed. Deliberately an absolute figure rather than a fraction
+     * of the task size -- when the stack grew to make room for larger calldata,
+     * a proportional line would have moved with it and reported the same
+     * comfort from a thinner margin. */
     const UBaseType_t low_water_words = 2048 / sizeof(StackType_t);
     static UBaseType_t worst = (UBaseType_t)-1;
 
@@ -1608,11 +1611,20 @@ void protocol_start(void)
         return;
     }
 
-    /* 8 KB, not 4. Both request tasks run the same dispatch(), whose frame is
-     * sized by its largest local -- the EIP-712 render struct is 744 bytes on
-     * its own -- and then call into PBKDF2 and BIP32 derivation on top of that.
-     * At 4 KB the BLE task overflowed and rebooted the device during unlock.
+    /* 10 KB, not 4 and no longer 8. Both request tasks run the same
+     * dispatch(), whose frame is sized by its largest local -- the EIP-712
+     * render struct is 744 bytes on its own -- and then call into PBKDF2 and
+     * BIP32 derivation on top of that. At 4 KB the BLE task overflowed and
+     * rebooted the device during unlock.
+     *
+     * The 8 -> 10 KB step paid for ETH_MAX_DATA going 256 -> 640: the deepest
+     * path is signTransaction, where an EthTx local now carries 640 bytes and
+     * then eth_tx_hash nests a 832-byte payload buffer over eth_tx_encode's
+     * 800-byte body. That is roughly 1.1 KB more than before, and the margin
+     * warn_on_thin_stack() watches for is 2 KB -- growing the buffers without
+     * growing the stack would have spent that margin rather than kept it.
+     *
      * Raised together with bleproto in ble.c: they must not drift, since either
      * one can serve any request. */
-    xTaskCreate(protocol_task, "protocol", 8192, NULL, 4, NULL);
+    xTaskCreate(protocol_task, "protocol", 10240, NULL, 4, NULL);
 }

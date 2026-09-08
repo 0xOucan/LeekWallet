@@ -50,11 +50,22 @@
  *
  *   If the device cannot render it, we do not sign it.
  *
- * For a call, "describable" means an ERC-7730 descriptor bundled with this app
- * matches the chain, the contract and the selector, renders every argument, and
- * does not disagree with the firmware-mirroring decoder about what the calldata
- * says. For typed data it means the device's own mirror (`inspectTypedData`)
- * returns `ok`: every field showable, on its screen, in its character set.
+ * For a call, "describable" means one of two things, and the second is the
+ * narrower:
+ *
+ *   1. An ERC-7730 descriptor bundled with this app matches the chain, the
+ *      contract and the selector, renders every argument, and does not
+ *      disagree with the firmware-mirroring decoder about what the calldata
+ *      says.
+ *   2. The FIRMWARE itself decodes the call and draws every argument on its own
+ *      screen — `DEVICE_DRAWN_KINDS` below. A descriptor is only ever the
+ *      host's evidence that a payload is describable; this is the device's own,
+ *      and it is better evidence, not a relaxation. The set is confined to
+ *      calls for which a descriptor is impossible, because erc7730.ts refuses
+ *      any signature with a dynamic argument.
+ *
+ * For typed data it means the device's own mirror (`inspectTypedData`) returns
+ * `ok`: every field showable, on its screen, in its character set.
  *
  * `unrenderable` typed data is refused here even when the device owner has
  * blind signing switched on. That hatch exists for a dapp the owner chose to
@@ -74,6 +85,7 @@ import {
 import {
   DEFAULT_DESCRIPTORS, interpretTransaction, type TxInterpretation,
 } from "./tx-interpret.ts";
+import { CallKind } from "./eth-decode.ts";
 import type { Descriptor, DescriptorMatch } from "./erc7730.ts";
 import type { CborValue } from "./cbor.ts";
 
@@ -139,6 +151,21 @@ export type ProposalOutcome =
 /** The single no. Refusal and user-reject are the same value on purpose. */
 export const declined = (): ProposalOutcome => ({ ok: false, text: PROPOSAL_DECLINED });
 
+/**
+ * Calls the DEVICE decodes and draws itself, field by field, with no
+ * descriptor in the picture.
+ *
+ * Exported so the rule can be read and asserted rather than inferred from a
+ * branch. Every member must have a bespoke decoder in `src/eth-decode.c`, a
+ * mirror in `eth-decode.ts`, and a page in `src/ui.c` that draws every
+ * argument — the three together are what "the device can render it" means
+ * here, and mock-conformance vectors are what prove the first two agree.
+ */
+export const DEVICE_DRAWN_KINDS: ReadonlySet<string> = new Set<string>([
+  CallKind.AquaShip,
+  CallKind.AquaDock,
+]);
+
 /** The shell-owned facts a proposal is screened against. */
 export interface ScreenContext {
   /** The chain the app was mounted on. Not the app's to choose. */
@@ -180,8 +207,16 @@ export type ScreenedProposal =
        * refusal above.
        */
       interpretation: TxInterpretation;
-      /** The same match, named, so a caller cannot reach the card without it. */
-      descriptor: DescriptorMatch;
+      /**
+       * The same match, named, so a caller cannot reach the card without it.
+       *
+       * Absent for the one route that does not go through a descriptor at all:
+       * a call the FIRMWARE's own decoder reads field by field and draws on its
+       * own screen (`DEVICE_DRAWN_KINDS` below). A caller must render the
+       * interpretation either way; what it must not do is treat a missing
+       * descriptor as a missing description.
+       */
+      descriptor?: DescriptorMatch;
     }
   | {
       kind: "typed-data";
@@ -257,6 +292,52 @@ export function screenProposal(
       },
     );
     const descriptor = interpretation.descriptor;
+
+    /* The second route past the gate, and the narrower of the two.
+     *
+     * The rule is "if the device cannot render it, we do not sign it". A
+     * bundled descriptor is a PROXY for that: it is how the host convinces
+     * itself the payload is describable. For the kinds below the device does
+     * not need a proxy, because it decodes the call itself, in C, from the
+     * signature it hashed, and draws every field on its own screen. That is
+     * strictly stronger evidence than an unsigned registry file — the
+     * descriptor is host data the device has never seen, and this is the
+     * device's own reading.
+     *
+     * It is deliberately not "any kind the firmware decodes". Widening it to
+     * ERC-20 transfer and approve would let an app propose those with no
+     * descriptor, which is a policy change and not this one. What is here is
+     * the set for which a descriptor is IMPOSSIBLE: erc7730.ts refuses any
+     * signature with a dynamic argument (see parseSignature), so Aqua's ship
+     * and dock can never have one, and without this route an app could not
+     * propose a call the device is perfectly able to draw. Adding a kind here
+     * is a decision about what a mini-app may ask for, and the test suite
+     * pins the list so it cannot grow by accident.
+     */
+    if (DEVICE_DRAWN_KINDS.has(interpretation.kind)) {
+      /* Still gated on the decoder having actually read it: `interpret`
+       * reports `deviceWillRefuse` from the same mirror the device runs, and a
+       * kind without a decode behind it is not reachable — but the check is
+       * free and the alternative is a route that assumes. */
+      if (interpretation.deviceWillRefuse) {
+        return { kind: "refused", why: "the device's own decoder could not read that call" };
+      }
+      return {
+        kind: "ok",
+        screened: {
+          kind: "call",
+          from: context.from,
+          chainId: context.chainId,
+          to: proposal.to,
+          data: proposal.data,
+          value,
+          reason: proposal.reason,
+          interpretation,
+          ...(descriptor !== undefined ? { descriptor } : {}),
+        },
+      };
+    }
+
     if (!descriptor) {
       return {
         kind: "refused",

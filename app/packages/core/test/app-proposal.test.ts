@@ -53,6 +53,9 @@ test("a described call is screened through", () => {
   const result = screenProposal(TRANSFER, context());
   assert.equal(result.kind, "ok");
   if (result.kind !== "ok" || result.screened.kind !== "call") return;
+  /* Not optional on this route: a descriptor is what got the call past the
+   * gate, so its absence here would mean the wrong branch matched. */
+  assert.ok(result.screened.descriptor);
   assert.equal(result.screened.descriptor.intent, "Transfer stETH");
   /* Advisory and unverified travel with the match rather than being asserted by
    * whoever renders it. A caller that wanted to print the labels as facts would

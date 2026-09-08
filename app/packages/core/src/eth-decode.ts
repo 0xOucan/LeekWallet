@@ -26,6 +26,10 @@ export const CallKind = {
   MintTokenTo: "mint-token-to",
   /** A signature from the table, decoded from its own declared types. */
   Generic: "generic",
+  /** Aqua `ship(address,bytes,address[],uint256[])`. */
+  AquaShip: "aqua-ship",
+  /** Aqua `dock(address,bytes32,address[])`. */
+  AquaDock: "aqua-dock",
   Unknown: "unknown",
 } as const;
 
@@ -52,6 +56,37 @@ export interface DecodedCall {
   functionName?: string;
   /** Generic calls only: one entry per declared argument, in order. */
   args?: DecodedArg[];
+  /** Aqua only: everything the two write calls carry. */
+  aqua?: AquaCall;
+}
+
+/**
+ * An Aqua `ship` or `dock`, decoded — the mirror of the `aqua_*` fields on the
+ * firmware's `EthCall`.
+ *
+ * `maker` is the address named INSIDE the strategy, which is not the sender.
+ * Aqua files balances under `msg.sender` and hashes the strategy without it,
+ * so the two are separate claims and only one of them is on the wire twice.
+ * Refusing a mismatch is what `packages/apps/aqua/src/strategy.ts` does with
+ * this; drawing both is what the device does.
+ */
+export interface AquaCall {
+  /** The Aqua app the strategy is shipped to. Lower-case hex. */
+  app: string;
+  /** ship only. Absent for a dock, which carries no strategy to read. */
+  maker?: string;
+  /** ship: keccak256(strategy), computed here. dock: the argument, verbatim. */
+  strategyHash: string;
+  /** The strategy bytes, verbatim, for a ship. */
+  strategy?: string;
+  /** One entry per leg, in the order the contract will read them. */
+  legs: AquaLeg[];
+}
+
+export interface AquaLeg {
+  token: string;
+  /** ship only: raw units. A dock returns whatever is there. */
+  amount?: bigint;
 }
 
 /** One argument of a generic call, mirroring EthArg in the C decoder. */
@@ -72,10 +107,12 @@ const Shape = {
   AddrBool: 3,
   AddrAddrUint: 4,
   FromSignature: 5,
+  AquaShip: 6,
+  AquaDock: 7,
 } as const;
 type Shape = (typeof Shape)[keyof typeof Shape];
 
-const WORDS: Record<Shape, number> = { 0: 0, 1: 1, 2: 2, 3: 2, 4: 3, 5: 0 };
+const WORDS: Record<Shape, number> = { 0: 0, 1: 1, 2: 2, 3: 2, 4: 3, 5: 0, 6: 0, 7: 0 };
 
 /* The same table as src/eth-decode.c, in the same order, with the same
  * argument shapes and - this is the part that matters - the same signature
@@ -105,6 +142,12 @@ const KNOWN: ReadonlyArray<{
   { sig: "repay(address,uint256,uint256,address)", names: "asset,amount,rateMode,onBehalfOf", kind: CallKind.Generic, shape: Shape.FromSignature },
   { sig: "safeTransferFrom(address,address,uint256)", names: "from,to,tokenId", kind: CallKind.Generic, shape: Shape.FromSignature },
   { sig: "approve(address,address,uint160,uint48)", names: "token,spender,amount,expiration", kind: CallKind.Generic, shape: Shape.FromSignature },
+
+  /* Aqua. Dynamic arguments, so each has a hand-written decoder rather than
+   * teaching the generic path about `bytes` and `T[]` — see the header over
+   * decodeAquaShip() and the same argument, at length, in eth-decode.c. */
+  { sig: "ship(address,bytes,address[],uint256[])", names: "app,strategy,tokens,amounts", kind: CallKind.AquaShip, shape: Shape.AquaShip },
+  { sig: "dock(address,bytes32,address[])", names: "app,strategyHash,tokens", kind: CallKind.AquaDock, shape: Shape.AquaDock },
 ];
 
 /** keccak256(signature)[0:4], lower-case hex. Computed once per row. */
@@ -117,6 +160,15 @@ const SELECTORS: readonly string[] = KNOWN.map((k) => selectorOf(k.sig));
 
 /** Six, as in the C decoder: a longer signature is refused, not truncated. */
 export const MAX_ARGS = 6;
+
+/**
+ * `ETH_AQUA_MAX_LEGS` in eth-decode.h — one device page per leg.
+ *
+ * A strategy with more legs than this is refused rather than summarised, which
+ * is the same rule as a seventh generic argument: a screen that shows four of
+ * five legs is a screen the signature does not match.
+ */
+export const AQUA_MAX_LEGS = 4;
 
 interface ParsedArg {
   type: string;
@@ -197,6 +249,9 @@ export function decodeCall(data: unknown): DecodedCall {
   const index = SELECTORS.indexOf(selector);
   if (index < 0) return { kind: CallKind.Unknown };
   const known = KNOWN[index]!;
+
+  if (known.shape === Shape.AquaShip) return decodeAquaShip(bytes);
+  if (known.shape === Shape.AquaDock) return decodeAquaDock(bytes);
 
   if (known.shape === Shape.FromSignature) return decodeGeneric(known, bytes);
 
@@ -346,6 +401,145 @@ function decodeGeneric(
  * Contract creation is refused for the same reason an unknown selector is:
  * there is nothing the device can name.
  */
+/* ------------------------------------------------------------- Aqua (Q2)
+ *
+ * The mirror of aqua_decode_ship()/aqua_decode_dock() in src/eth-decode.c, and
+ * the reasoning is entirely there: the canonical encoding and nothing else, so
+ * that "we read it differently than the contract will" has no room to happen.
+ * If these two ever disagree with the firmware the mock stops being a lower
+ * bound on what the device accepts, which is the failure this file exists to
+ * prevent.
+ */
+
+const ADDRESS_PAD_OK = (bytes: Uint8Array, off: number): boolean => {
+  for (let i = off; i < off + 12; i++) if (bytes[i] !== 0) return false;
+  return true;
+};
+
+/** A word as an offset or length, or null for anything that cannot be one. */
+function wordAsSize(bytes: Uint8Array, off: number, limit: number): number | null {
+  if (off + 32 > bytes.length) return null;
+  for (let i = off; i < off + 28; i++) if (bytes[i] !== 0) return null;
+  const v =
+    ((bytes[off + 28] as number) << 24) | ((bytes[off + 29] as number) << 16) |
+    ((bytes[off + 30] as number) << 8) | (bytes[off + 31] as number);
+  /* `>>> 0` because the shift above is signed and a 0x80.. offset would come
+   * out negative — which would compare as "in range" against limit. */
+  const n = v >>> 0;
+  return n > limit ? null : n;
+}
+
+const addressFrom = (bytes: Uint8Array, off: number): string | null =>
+  ADDRESS_PAD_OK(bytes, off) ? "0x" + toHex(bytes.subarray(off + 12, off + 32)) : null;
+
+const UNKNOWN: DecodedCall = { kind: CallKind.Unknown };
+
+/**
+ * The maker a strategy names, or null.
+ *
+ * Requires the 0x20 head `abi.encode` puts in front of a dynamic tuple and an
+ * address immediately after it. A strategy shaped any other way is one this
+ * wallet cannot say whose position it creates, and that question is the whole
+ * reason the screen exists — so it is refused rather than shipped unlabelled.
+ */
+function strategyMaker(strategy: Uint8Array): string | null {
+  if (strategy.length < 64) return null;
+  for (let i = 0; i < 31; i++) if (strategy[i] !== 0) return null;
+  if (strategy[31] !== 0x20) return null;
+  return addressFrom(strategy, 32);
+}
+
+function decodeAquaShip(bytes: Uint8Array): DecodedCall {
+  if (bytes.length < 4 + 4 * 32) return UNKNOWN;
+  const span = bytes.length - 4;
+  const at = (off: number) => 4 + off;
+
+  const app = addressFrom(bytes, 4);
+  if (app === null) return UNKNOWN;
+
+  const offS = wordAsSize(bytes, at(32), span);
+  const offT = wordAsSize(bytes, at(64), span);
+  const offA = wordAsSize(bytes, at(96), span);
+  if (offS === null || offT === null || offA === null) return UNKNOWN;
+  if (offS !== 4 * 32) return UNKNOWN;          // where solc puts it, and nowhere else
+
+  const lenS = wordAsSize(bytes, at(offS), span);
+  if (lenS === null) return UNKNOWN;
+  const paddedS = (lenS + 31) & ~31;
+  if (offS + 32 + paddedS > span) return UNKNOWN;
+  if (offT !== offS + 32 + paddedS) return UNKNOWN;
+
+  const strategy = bytes.subarray(at(offS + 32), at(offS + 32 + lenS));
+  /* Padding after a short strategy must be zero. It shows up nowhere and it
+   * changes keccak256(strategy), which is the key the position is filed
+   * under. */
+  for (let i = lenS; i < paddedS; i++) {
+    if (bytes[at(offS + 32 + i)] !== 0) return UNKNOWN;
+  }
+  const maker = strategyMaker(strategy);
+  if (maker === null) return UNKNOWN;
+
+  const legs = wordAsSize(bytes, at(offT), span);
+  if (legs === null || legs === 0 || legs > AQUA_MAX_LEGS) return UNKNOWN;
+  if (offT + 32 + legs * 32 > span) return UNKNOWN;
+  if (offA !== offT + 32 + legs * 32) return UNKNOWN;
+
+  const amounts = wordAsSize(bytes, at(offA), span);
+  if (amounts !== legs) return UNKNOWN;
+  if (span !== offA + 32 + legs * 32) return UNKNOWN;
+
+  const out: AquaLeg[] = [];
+  for (let i = 0; i < legs; i++) {
+    const token = addressFrom(bytes, at(offT + 32 + i * 32));
+    if (token === null) return UNKNOWN;
+    const off = at(offA + 32 + i * 32);
+    out.push({ token, amount: BigInt("0x" + toHex(bytes.subarray(off, off + 32))) });
+  }
+
+  return {
+    kind: CallKind.AquaShip,
+    address: app,
+    aqua: {
+      app,
+      maker,
+      strategy: "0x" + toHex(strategy),
+      strategyHash: "0x" + toHex(keccak_256(strategy)),
+      legs: out,
+    },
+  };
+}
+
+function decodeAquaDock(bytes: Uint8Array): DecodedCall {
+  if (bytes.length < 4 + 3 * 32) return UNKNOWN;
+  const span = bytes.length - 4;
+  const at = (off: number) => 4 + off;
+
+  const app = addressFrom(bytes, 4);
+  if (app === null) return UNKNOWN;
+  /* A bytes32 is 32 bytes of anything: nothing to check, and nothing to check
+   * it against either — the strategy it names is not in this calldata. */
+  const strategyHash = "0x" + toHex(bytes.subarray(at(32), at(64)));
+
+  const offT = wordAsSize(bytes, at(64), span);
+  if (offT === null || offT !== 3 * 32) return UNKNOWN;
+
+  const legs = wordAsSize(bytes, at(offT), span);
+  if (legs === null || legs === 0 || legs > AQUA_MAX_LEGS) return UNKNOWN;
+  if (span !== offT + 32 + legs * 32) return UNKNOWN;
+
+  const out: AquaLeg[] = [];
+  for (let i = 0; i < legs; i++) {
+    const token = addressFrom(bytes, at(offT + 32 + i * 32));
+    if (token === null) return UNKNOWN;
+    out.push({ token });
+  }
+  return {
+    kind: CallKind.AquaDock,
+    address: app,
+    aqua: { app, strategyHash, legs: out },
+  };
+}
+
 export function isDecodable(tx: {
   to?: unknown;
   data?: unknown;
@@ -385,6 +579,10 @@ export function describeCall(call: DecodedCall): string {
      * never what it does. */
     case CallKind.Generic:
       return call.functionName ?? "contract call";
+    case CallKind.AquaShip:
+      return "Aqua ship";
+    case CallKind.AquaDock:
+      return "Aqua dock";
     default:
       return "unknown call";
   }

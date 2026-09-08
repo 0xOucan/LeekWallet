@@ -1374,6 +1374,153 @@ static void test_blind_signing_takes_a_deliberate_act(void)
     press(BUTTON_CANCEL);
 }
 
+/* Aqua's ship, on the device's own screen.
+ *
+ * The one page this test exists for is the maker. The registry files a
+ * position under msg.sender and hashes the strategy without it, so "whose
+ * position is this" is a claim the strategy makes and nothing on chain checks.
+ * The host refuses a mismatch (packages/apps/aqua/src/strategy.ts), but a
+ * refusal that only exists on the host is a refusal a compromised host can
+ * skip, so the address has to be legible here, in full, beside the one the
+ * device will actually sign with.
+ */
+static void test_an_aqua_ship_shows_its_maker_and_every_leg(void)
+{
+    printf("== an Aqua ship draws its maker, its hash and each leg\n");
+    boot_unlocked_with_seed();
+
+    static const uint8_t APP[20] = {
+        0x22, 0x8e, 0x82, 0x83, 0x1a, 0xfa, 0xc5, 0xdd, 0x9e, 0xbd,
+        0xe3, 0x48, 0x9e, 0x9e, 0x18, 0xae, 0x9c, 0x7b, 0xcb, 0xf4,
+    };
+    static const uint8_t MAKER[20] = {
+        0x39, 0xd2, 0xba, 0xe5, 0xea, 0xed, 0xa9, 0x28, 0x35, 0x35,
+        0xdd, 0xc9, 0x8f, 0x19, 0x91, 0xc8, 0x1e, 0xd5, 0xcd, 0x7e,
+    };
+    static const uint8_t TOKEN[20] = {
+        0xd8, 0xdA, 0x6B, 0xF2, 0x69, 0x64, 0xaF, 0x9D, 0x7e, 0xEd,
+        0x9e, 0x03, 0xE5, 0x34, 0x15, 0xD3, 0x7a, 0xA9, 0x60, 0x45,
+    };
+
+    /* The strategy, as abi.encode of a dynamic tuple whose first field is the
+     * maker -- the shape every Aqua deployment observed on chain uses, and the
+     * only one the decoder will accept. */
+    uint8_t strategy[96];
+    memset(strategy, 0, sizeof(strategy));
+    strategy[31] = 0x20;
+    memcpy(strategy + 32 + 12, MAKER, 20);
+    strategy[95] = 0x07;
+
+    EthTx tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.chain_id = 11155111;      /* Sepolia, where Aqua is actually deployed */
+    tx.has_to = true;
+    memset(tx.to, 0x11, sizeof(tx.to));
+    eth_quantity_set_u64(&tx.value, 0);
+
+    /* Canonical calldata, laid out the way solc would. */
+    size_t off_s = 4 * 32;
+    size_t off_t = off_s + 32 + sizeof(strategy);
+    size_t off_a = off_t + 32 + 32;
+    size_t len   = 4 + off_a + 32 + 32;
+    CHECK(len <= ETH_MAX_DATA, "the ship probe does not fit ETH_MAX_DATA");
+    memset(tx.data, 0, len);
+    {
+        uint8_t sel[32];
+        const char *sig = "ship(address,bytes,address[],uint256[])";
+        keccak_256((const uint8_t *)sig, strlen(sig), sel);
+        memcpy(tx.data, sel, 4);
+    }
+    uint8_t *args = tx.data + 4;
+    memcpy(args + 12, APP, 20);
+    /* Two bytes, big-endian: off_t is 256 and a one-byte write would silently
+     * store zero -- which is exactly the kind of encoding the decoder refuses,
+     * so the test would have passed for the wrong reason. */
+    args[62] = (uint8_t)(off_s >> 8);   args[63] = (uint8_t)off_s;
+    args[94] = (uint8_t)(off_t >> 8);   args[95] = (uint8_t)off_t;
+    args[126] = (uint8_t)(off_a >> 8);  args[127] = (uint8_t)off_a;
+    args[off_s + 31] = (uint8_t)sizeof(strategy);
+    memcpy(args + off_s + 32, strategy, sizeof(strategy));
+    args[off_t + 31] = 1;
+    args[off_a + 31] = 1;
+    memcpy(args + off_t + 32 + 12, TOKEN, 20);
+    args[off_a + 32 + 31] = 0x64;             /* 100 raw units */
+    tx.data_length = len;
+
+    char maker_hex[43], token_hex[43];
+    CHECK(eth_format_address(MAKER, maker_hex, sizeof(maker_hex)), "maker format");
+    CHECK(eth_format_address(TOKEN, token_hex, sizeof(token_hex)), "token format");
+    char maker_head[17], token_head[17];
+    snprintf(maker_head, sizeof(maker_head), "%.16s", maker_hex);
+    snprintf(token_head, sizeof(token_head), "%.16s", token_hex);
+
+    char expect_hash[65];
+    {
+        uint8_t digest[32];
+        keccak_256(strategy, sizeof(strategy), digest);
+        for (int i = 0; i < 32; i++) {
+            snprintf(expect_hash + i * 2, 3, "%02x", digest[i]);
+        }
+    }
+
+    HDPath sign_at = HDPATH_ETH_DEFAULT;
+    ui_request_sign(&tx, &sign_at, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_SIGN_CONFIRM);
+
+    /* Not blind: the whole point of the decoder is that this call is read. */
+    CHECK_SCREEN(!fake_oled_row_contains(0, "BLIND"),
+                 "a decoded ship was drawn as a blind signature (\"%s\")",
+                 fake_oled_row(0));
+
+    bool saw_ship = false, saw_pull = false, saw_maker = false;
+    bool saw_token = false, saw_amount = false, saw_hash = false;
+    bool saw_must_match = false, saw_from = false;
+
+    for (int page = 0; page < 9; page++) {
+        if (fake_oled_contains("SHIP to Aqua"))   saw_ship = true;
+        if (fake_oled_contains("PULL"))           saw_pull = true;
+        if (fake_oled_contains(maker_head))       saw_maker = true;
+        if (fake_oled_contains("Must match From")) saw_must_match = true;
+        if (fake_oled_contains(token_head))       saw_token = true;
+        /* The amount has a page of its own, headed and labelled: a token
+         * address and a 78-digit uint256 cannot share a screen, and this
+         * device wraps rather than truncates. Matching the heading and the
+         * unit as well as the figure stops a stray "100" inside an address
+         * passing for the amount. */
+        if (fake_oled_contains("Provide, token 1") && fake_oled_contains("raw units")
+            && fake_oled_contains("100")) {
+            saw_amount = true;
+        }
+        if (fake_oled_contains("0x0100aaaaaaaabb")) saw_from = true;
+        if (fake_oled_contains("Strategy hash")) {
+            char joined[65] = "";
+            for (int row = 0; row < FAKE_OLED_ROWS; row++) {
+                const char *text = fake_oled_row(row);
+                if (strlen(text) == 16 && strspn(text, "0123456789abcdef") == 16) {
+                    strncat(joined, text, sizeof(joined) - strlen(joined) - 1);
+                }
+            }
+            saw_hash = (strcmp(joined, expect_hash) == 0);
+            CHECK_SCREEN(saw_hash, "strategy hash is %s, expected %s",
+                         joined, expect_hash);
+        }
+        press(BUTTON_DOWN);
+    }
+
+    CHECK_SCREEN(saw_ship, "the ship page never named the action");
+    CHECK_SCREEN(saw_pull, "the screen never says Aqua pulls from this wallet");
+    CHECK_SCREEN(saw_maker, "the strategy's maker never appeared");
+    CHECK_SCREEN(saw_must_match, "the maker page does not say it must match From");
+    CHECK_SCREEN(saw_token, "the leg's token never appeared");
+    CHECK_SCREEN(saw_amount, "the leg's amount never appeared");
+    CHECK(saw_hash, "the strategy hash was never shown");
+    CHECK_SCREEN(saw_from, "the signing address never appeared (T47)");
+
+    press(BUTTON_ACCEPT);
+    CHECK(ui_sign_outcome() == SIGN_APPROVED, "a fully paged ship could not be approved");
+    ui_sign_clear();
+}
+
 /* The confirmation for a call the device cannot read: visibly different, and
  * honest about exactly how little it knows. */
 static void test_blind_confirmation_is_marked_and_shows_the_digest(void)
@@ -2667,6 +2814,7 @@ int main(void)
 {
     test_blind_signing_takes_a_deliberate_act();
     test_blind_confirmation_is_marked_and_shows_the_digest();
+    test_an_aqua_ship_shows_its_maker_and_every_leg();
     test_locking_closes_the_channel();
     test_an_expired_approval_leaves_the_screen();
     test_a_decoded_call_is_not_marked_blind();

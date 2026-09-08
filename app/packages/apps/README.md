@@ -104,6 +104,26 @@ sign a new call ships the descriptor for it**, and until it does, the call
 cannot be proposed. Refusal happens in `screenProposal`, in core, before
 anything reaches the device.
 
+**The one exception, and why it is not a loophole.** `erc7730.ts` refuses any
+signature with a dynamic argument — `bytes`, a string, an array, a tuple — for
+the same reason the firmware does: reading one means following offsets the host
+chose, and a misread offset draws a confident wrong number. So a call with a
+dynamic argument can *never* have a bundled descriptor, however well the device
+understands it. Aqua's `ship(address,bytes,address[],uint256[])` is exactly
+that: the firmware decodes it in `src/eth-decode.c`, draws every argument on its
+own screen, and would happily sign it, while the host had no way to let an app
+ask.
+
+`DEVICE_DRAWN_KINDS` in `app-proposal.ts` is the second route, and it is the
+narrower one. A descriptor is only ever the host's *evidence* that a payload is
+describable; a firmware decoder plus a screen is the device's own, and that is
+better evidence rather than less. Membership costs three things — a bespoke
+decoder in the C, a mirror in `eth-decode.ts`, and a page in `src/ui.c` that
+draws every argument — and the mock-conformance vectors are what prove the first
+two agree. It is deliberately **not** "any kind the firmware decodes": widening
+it to ERC-20 `transfer` and `approve` would let apps propose those undescribed,
+which is a separate decision nobody has made.
+
 **Every no looks the same.** `{ ok: false }` covers a missing descriptor, an
 undescribable document, a device refusal and a user pressing reject, and an app
 cannot tell which it got. An app that could would be able to walk selectors

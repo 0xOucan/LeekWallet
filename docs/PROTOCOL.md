@@ -640,6 +640,8 @@ so the mock refuses exactly what the device refuses:
 | `mint(address,uint256)` | "Mint tokens to address below", raw amount, recipient, contract |
 | `mint(uint256)` | "Mint tokens to this account", raw amount, contract |
 | a signature from the table below | the function's name, then one page per declared argument, then the contract |
+| Aqua `ship(address,bytes,address[],uint256[])` | the action, the maker named **inside the strategy**, the Aqua app, `keccak256(strategy)`, one page per token with its amount, then the registry |
+| Aqua `dock(address,bytes32,address[])` | the action, the app, the strategy hash, one page per token, then the registry |
 | anything else | `0x0202`, refused before the confirmation screen — unless blind signing is on (T16 below) |
 
 Contract creation is refused too — there is no recipient to name and no code the
@@ -651,9 +653,43 @@ is broader than an unlimited ERC-20 allowance: it hands over every token in the
 collection, including ones bought after the approval was given. `false` is a
 revocation and reads as one.
 
+#### Two calls with dynamic arguments, and why they are hand-written
+
+Every entry above takes arguments that occupy exactly one 32-byte word. That is
+not a coincidence, it is the rule: a dynamic type — `bytes`, a string, an array,
+a tuple — is an offset into a tail the host chose, and following one means
+laying out a structure the device cannot predict. Half-reading it is how a
+confirmation screen ends up describing something other than what executes, so a
+signature containing one is refused and the generic decoder never grew a case
+for them.
+
+Aqua's `ship` and `dock` are the exception, and each has its own decoder rather
+than the general capability. The reasoning, in `src/eth-decode.c`:
+
+- A **general** dynamic decoder has an unbounded number of layouts to get right.
+  These two have one each, and each is checked against the **canonical**
+  encoding exactly — the head offsets solc would emit, each element block
+  abutting the next, the calldata ending where the last element ends. An
+  encoding that is merely legal ABI for the same arguments is refused, not
+  normalised.
+- A `ship` is about 600 bytes, which is why `ETH_MAX_DATA` went 256 → 640 (still
+  under `PROTOCOL_MAX_FRAME`), and why both request tasks went 8 → 10 KB so the
+  stack margin was kept rather than spent.
+
+The **maker** page is the reason this was worth doing at all.
+`strategyHash = keccak256(strategy)` and the maker is not in it: Aqua files
+balances under `msg.sender`, keyed separately. So the maker written inside the
+strategy struct — which is what the Aqua app acts on — is a claim nothing on
+chain reconciles with the signer, and two strategies, one naming you and one
+naming an attacker, are indistinguishable from the hash. The device therefore
+locates that field itself (a 0x20 tuple head, then an address, or the call is
+refused), draws it in full, and says it must match the From page. The companion
+refuses the mismatch before proposing, but a refusal only the host makes is one
+a compromised host can skip.
+
 #### The signature table, and why it needs no trusted descriptor (T12c)
 
-The nine kinds above each have a bespoke decoder and a screen that says what the
+The nine ERC-20-era kinds above each have a bespoke decoder and a screen that says what the
 call *means*. That does not scale past a handful of functions, and the gap was
 not academic: a real session on Base Sepolia signed two Aave approvals and was
 then refused Aave's actual deposit (`supply`, selector `0x617ba037`), which is
@@ -804,7 +840,7 @@ warning screen cannot repair:
 | still refused | why the hatch does not apply |
 |---|---|
 | contract creation | no recipient to name; a blind confirmation is bearable only because it can still say who is being paid, and here there is nothing true left on the screen |
-| calldata over `ETH_MAX_DATA` | the device never held those bytes, so it could not hash or display what it was signing — this is a capacity limit, not a comprehension one |
+| calldata over `ETH_MAX_DATA` (640) | the device never held those bytes, so it could not hash or display what it was signing — this is a capacity limit, not a comprehension one |
 | a message `eth_message_is_displayable` rejects | the confirmation would show a different string than the one being hashed; blind signing is about *calldata*, not about mangled text |
 
 The signature is still taken over the device's own re-serialisation of the
@@ -914,7 +950,7 @@ deciding which side is right is a protocol question, not a bug fix.
 | 3 | `signTransaction` returns `{index, r, s, yParity}` on the device, `{signature, path}` in the mock | Device. Nothing that parses one parses the other | **Closed** — mock emits `{index, r, s, yParity}`; the host reassembles `r ‖ s ‖ yParity` |
 | 4 | `getAddress` returns `{address, index}` on the device, `{path, address}` in the mock | **Device: `{address, index}`** (see below) | **Closed** |
 | 5 | `chainId` is mandatory on the device (`0x0001` if absent), ignored by the mock | Device. Signing without knowing the chain is a replay waiting to happen | **Closed** — mock requires an unsigned integer `chainId` |
-| 6 | Device refuses calldata longer than `ETH_MAX_DATA` (256) before checking decodability; the mock has no bound | Device | **Closed** — and in that order, so the code is `0x0001` and not `0x0202` |
+| 6 | Device refuses calldata longer than `ETH_MAX_DATA` (640) before checking decodability; the mock has no bound | Device | **Closed** — and in that order, so the code is `0x0001` and not `0x0202` |
 | 7 | Device rejects an address index above `0x7FFFFFFF`; the mock accepts any non-negative integer | Device | **Closed** — on `getAddress` and `signTransaction` alike |
 | 8 | `getFeatures` includes `initialized` in the mock only; `lock` returns `{}` in the mock, `{unlocked:0}` on the device | Cosmetic, but pick one | **Closed** — device's wording in both: no `initialized`, `lock` answers `{unlocked:0}` |
 

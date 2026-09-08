@@ -1187,7 +1187,7 @@ static void test_blind_signing_is_off_until_the_device_says_otherwise(void)
     uint8_t to[20];
     memset(to, 0xC0, sizeof(to));
     uint8_t data[36] = { 0xde, 0xad, 0xbe, 0xef };
-    uint8_t payload[512];
+    uint8_t payload[PROTOCOL_MAX_FRAME];
     size_t len;
 
     CHECK(features_blind_signing() == 0,
@@ -1274,7 +1274,7 @@ static void test_blind_signing_is_off_until_the_device_says_otherwise(void)
 
     /* Oversized calldata. Refused for a different reason again: the device
      * never held those bytes, so it could not hash what it signed. */
-    uint8_t huge[300] = { 0xde, 0xad, 0xbe, 0xef };   /* ETH_MAX_DATA is 256 */
+    uint8_t huge[ETH_MAX_DATA + 1] = { 0xde, 0xad, 0xbe, 0xef };
     len = undecodable_request(payload, sizeof(payload), to, huge, sizeof(huge));
     CHECK(len > 0, "the oversized request did not fit the buffer");
     send_encrypted(payload, len);
@@ -3459,6 +3459,9 @@ typedef enum {
     MC_SIGN_TX_OVERSIZED_DATA_BLIND_ON,
     MC_SIGN_TX_SUPPLY,
     MC_SIGN_TX_SUPPLY_BAD_ARG,
+    MC_SIGN_TX_AQUA_SHIP,
+    MC_SIGN_TX_AQUA_SHIP_NO_MAKER,
+    MC_SIGN_TX_AQUA_DOCK,
     MC_SIGN_TX_REJECTED,
     MC_SIGN_TX_HARDENED_INDEX,
     MC_SIGN_MESSAGE,
@@ -3555,7 +3558,7 @@ static size_t mock_request(MockCase c, uint8_t *buf, size_t cap)
         0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0
     };
     static const uint8_t GARBAGE[36] = { 0xde, 0xad, 0xbe, 0xef };
-    static uint8_t huge[300] = { 0xde, 0xad, 0xbe, 0xef };
+    static uint8_t huge[ETH_MAX_DATA + 1] = { 0xde, 0xad, 0xbe, 0xef };
     /* 1 token, as a 32-byte big-endian quantity - the shape signTypedData
      * wants for a uint256. */
     static uint8_t one_token[32];
@@ -3655,6 +3658,67 @@ static size_t mock_request(MockCase c, uint8_t *buf, size_t cap)
         case MC_SIGN_TX_UNDECODABLE:
         case MC_SIGN_TX_UNDECODABLE_BLIND_ON:
             return undecodable_request(buf, cap, TO, GARBAGE, sizeof(GARBAGE));
+
+        /* Aqua's two write calls, which are the reason ETH_MAX_DATA grew and the
+         * reason the decoder has hand-written cases at all. Both are built to
+         * the canonical layout, because that is the only one either side
+         * accepts; the third case is a well-formed ship whose strategy has no
+         * readable maker, and both implementations must refuse it for that
+         * reason alone. A mock that let it through would be a mock that lets a
+         * position be created without saying whose it is. */
+        case MC_SIGN_TX_AQUA_SHIP:
+        case MC_SIGN_TX_AQUA_SHIP_NO_MAKER: {
+            static const char SHIP[] = "ship(address,bytes,address[],uint256[])";
+            uint8_t strategy[96];
+            memset(strategy, 0, sizeof(strategy));
+            strategy[31] = (c == MC_SIGN_TX_AQUA_SHIP) ? 0x20 : 0x40;
+            memset(strategy + 32 + 12, 0xC3, 20);      /* the maker */
+            strategy[95] = 0x07;
+
+            size_t off_s = 4 * 32;
+            size_t off_t = off_s + 32 + sizeof(strategy);
+            size_t off_a = off_t + 32 + 32;
+            size_t len   = 4 + off_a + 32 + 32;
+            uint8_t data[ETH_MAX_DATA];
+            memset(data, 0, len);
+
+            uint8_t digest[32];
+            keccak_256((const uint8_t *)SHIP, sizeof(SHIP) - 1, digest);
+            memcpy(data, digest, 4);
+
+            uint8_t *args = data + 4;
+            memset(args + 12, 0xA9, 20);               /* the Aqua app */
+            args[62] = (uint8_t)(off_s >> 8); args[63] = (uint8_t)off_s;
+            args[94] = (uint8_t)(off_t >> 8); args[95] = (uint8_t)off_t;
+            args[126] = (uint8_t)(off_a >> 8); args[127] = (uint8_t)off_a;
+            args[off_s + 31] = (uint8_t)sizeof(strategy);
+            memcpy(args + off_s + 32, strategy, sizeof(strategy));
+            args[off_t + 31] = 1;
+            args[off_a + 31] = 1;
+            memset(args + off_t + 32 + 12, 0xD4, 20);  /* the token */
+            args[off_a + 32 + 31] = 0x64;              /* 100 raw units */
+            return undecodable_request(buf, cap, TO, data, len);
+        }
+
+        case MC_SIGN_TX_AQUA_DOCK: {
+            static const char DOCK[] = "dock(address,bytes32,address[])";
+            size_t off_t = 3 * 32;
+            size_t len   = 4 + off_t + 32 + 32;
+            uint8_t data[ETH_MAX_DATA];
+            memset(data, 0, len);
+
+            uint8_t digest[32];
+            keccak_256((const uint8_t *)DOCK, sizeof(DOCK) - 1, digest);
+            memcpy(data, digest, 4);
+
+            uint8_t *args = data + 4;
+            memset(args + 12, 0xA9, 20);               /* the Aqua app */
+            memset(args + 32, 0x5E, 32);               /* the strategy hash */
+            args[95] = (uint8_t)off_t;
+            args[off_t + 31] = 1;
+            memset(args + off_t + 32 + 12, 0xD4, 20);  /* the token */
+            return undecodable_request(buf, cap, TO, data, len);
+        }
 
         /* A call from the signature table (T12c). The selector is hashed here
          * rather than typed, exactly as the firmware derives it: a corpus that
@@ -3824,6 +3888,9 @@ static const char *case_name_mock(int c)
         case MC_SIGN_TX_UNDECODABLE_BLIND_ON:  return "signTransaction, undecodable calldata, blind signing on";
         case MC_SIGN_TX_OVERSIZED_DATA:        return "signTransaction, oversized calldata";
         case MC_SIGN_TX_OVERSIZED_DATA_BLIND_ON: return "signTransaction, oversized calldata, blind signing on";
+        case MC_SIGN_TX_AQUA_SHIP:             return "signTransaction, Aqua ship()";
+        case MC_SIGN_TX_AQUA_SHIP_NO_MAKER:    return "signTransaction, Aqua ship() whose strategy names no maker";
+        case MC_SIGN_TX_AQUA_DOCK:             return "signTransaction, Aqua dock()";
         case MC_SIGN_TX_SUPPLY:                return "signTransaction, supply() from the signature table";
         case MC_SIGN_TX_SUPPLY_BAD_ARG:        return "signTransaction, supply() with an over-wide uint16";
         case MC_SIGN_TX_REJECTED:              return "signTransaction rejected on device";
