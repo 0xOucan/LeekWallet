@@ -22,8 +22,9 @@
 
 import { formatUnits, tokenHint } from "@leekwallet/core/chains.ts";
 import { parseUnits } from "@leekwallet/core/balances.ts";
+import { fetchAllowances } from "@leekwallet/core/allowances.ts";
 import type { AppContext } from "@leekwallet/core/mini-app.ts";
-import { AQUA_MAX_LEGS } from "./registry.ts";
+import { AQUA_MAX_LEGS, AQUA_REGISTRY } from "./registry.ts";
 import { planDeployment, type DeployLeg, type DeployStep } from "./deploy.ts";
 import { encodeStrategy } from "./strategy.ts";
 import { planDock, revokeOffer, type TokenAfterDock } from "./withdraw.ts";
@@ -125,32 +126,54 @@ function deployForm(ctx: ManageContext): HTMLElement {
   build.type = "button";
   section.append(build, out);
 
-  build.addEventListener("click", () => {
+  build.addEventListener("click", () => { void buildPlan(); });
+
+  async function buildPlan() {
     out.replaceChildren();
     let strategy: string;
-    let legList: DeployLeg[];
+    let typed: Array<{ token: string; amount: bigint }>;
     try {
       strategy = encodeStrategy(ctx.maker, config.value.trim(), program.value.trim());
-      legList = legInputs
+      typed = legInputs
         .filter((l) => l.token.value.trim() !== "")
-        .map((l) => {
-          const token = l.token.value.trim();
-          const decimals = decimalsOf(ctx.chainId, token);
-          const hint = tokenHint(ctx.chainId, token);
-          return {
-            token,
-            amount: readAmount(ctx.chainId, token, l.amount.value),
-            ...allowanceOf(ctx.portfolio, token),
-            ...(decimals !== undefined ? { decimals } : {}),
-            ...(hint?.symbol !== undefined ? { symbol: hint.symbol } : {}),
-          };
-        });
+        .map((l) => ({
+          token: l.token.value.trim(),
+          amount: readAmount(ctx.chainId, l.token.value.trim(), l.amount.value),
+        }));
     } catch (e) {
       /* A malformed input is this app's own message, not a refusal: nothing was
        * decided about a strategy, the form could not be read at all. */
       out.append(notice(`That could not be read: ${(e as Error).message}`, "unavailable"));
       return;
     }
+
+    /* Read the allowances the plan will be built against, now, rather than
+     * reusing the portfolio's. The portfolio only knows tokens it found
+     * positions in, so a first deposit in a new token would arrive at planCap
+     * as "nobody could read it" -- which is a true sentence about the wrong
+     * thing, and would put ALLOWANCE_UNREADABLE_NOTICE on a screen where the
+     * honest answer was simply not looked up yet.
+     *
+     * A failure here stays undefined and the plan says so. That is planCap's
+     * rule and the reason it exists: assuming zero is what produces the silent
+     * revert on a USDT-style token. */
+    const readings = await fetchAllowances(
+      ctx.context.request, ctx.chainId, ctx.maker,
+      typed.map((l) => ({ token: l.token, spender: AQUA_REGISTRY, via: "erc20" as const })),
+    ).catch(() => undefined);
+
+    const legList: DeployLeg[] = typed.map((l, i) => {
+      const reading = readings?.[i];
+      const decimals = decimalsOf(ctx.chainId, l.token);
+      const hint = tokenHint(ctx.chainId, l.token);
+      return {
+        token: l.token,
+        amount: l.amount,
+        ...(reading?.ok ? { allowance: reading.amount } : {}),
+        ...(decimals !== undefined ? { decimals } : {}),
+        ...(hint?.symbol !== undefined ? { symbol: hint.symbol } : {}),
+      };
+    });
 
     const plan = planDeployment({
       maker: ctx.maker, app: app.value.trim(), strategy, legs: legList,
@@ -177,12 +200,21 @@ function deployForm(ctx: ManageContext): HTMLElement {
       void run(ctx, plan.steps, out);
     });
     out.append(sign);
-  });
+  }
 
   return section;
 }
 
-/** The allowance this app already read for a token, if it read one. */
+/**
+ * The allowance the PORTFOLIO read for a token, if it read one.
+ *
+ * Used only on the dock side, where the token is one this app already found a
+ * position in and therefore already asked about. The deploy form reads afresh
+ * instead -- see buildPlan -- because a token being deposited for the first
+ * time has no exposure row, and returning "unreadable" for it would put a
+ * warning about USDT-style reverts on a screen where nothing had been looked
+ * up yet.
+ */
 function allowanceOf(portfolio: Portfolio, token: string): { allowance?: bigint } {
   const exposure = portfolio.exposures.find(
     (e) => e.token.toLowerCase() === token.toLowerCase(),
