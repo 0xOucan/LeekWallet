@@ -1,178 +1,120 @@
-# What you can test today, step by step
+# What you can test right now
 
-Written against `main` at the time of the three-way merge. Honest about what is
-built and what is not — three mini-apps exist, but they are at different
-milestones and only one is testable end to end.
+Written against `main` = `9ea8e4d`. Honest about what is verified, what is
+untested, and what cannot work yet.
 
----
-
-## 0. First: you do NOT need to reflash your boards
-
-```
-git diff --stat v0.1.0-chaak-pool..main -- src/ components/ partitions.csv platformio.ini
-   (empty)
-```
-
-**Zero firmware changes since the release.** Every one of the 10,530 changed
-lines is companion-side. Your Firefly Pixie and ESP32-S3 are already running the
-current firmware, and reflashing would only risk your wallets for no gain.
-
-**Do rebuild the companion** — that is where all the new work is.
-
----
-
-## 1. What is actually testable
-
-| App | Milestone | Testable now? |
-|---|---|---|
-| **Arc — La Caja** | C2 + C3 | ✅ **end to end, with your funds** |
-| **Aqua** | Q1 only | ⚠️ read-only view; `ship()`/`dock()` **not built** |
-| **Hedera — ATS** | E2 + descriptors | ⚠️ fixture-backed; no security deployed yet |
-
-**Nothing signs yet.** The `propose()` seam exists but no app calls it. The
-device is not involved in any of these three flows today, which is why the
-firmware did not change.
-
----
-
-## 2. Build the companion
+## Before anything
 
 ```bash
-cd ~/Hardware/FireflyPixie/leekwallet
 git pull
 pnpm --dir app install
-pnpm --dir app typecheck && pnpm --dir app test     # both should pass
+pnpm --dir app tauri dev        # ONE command — cargo run starts half the app
 ```
 
-**Desktop:**
-```bash
-pnpm --dir app tauri dev            # or: pnpm --dir app tauri build
-```
+**Do not reflash the Pixie.** It is already on current firmware with both
+wallets intact. **The ESP32-S3 has not been reflashed** — Aqua Q2 changed the
+firmware, so if you want to test Aqua signing on the S3, flash
+`-update.bin` at **`0x10000`** (never `0x0`).
 
-**Android** — the generated project is not tracked, so it is re-created:
-```bash
-pnpm --dir app tauri android init
-pnpm --dir app tauri android build --apk
-```
-Signing, if you want an installable release APK, is in `docs/SIGNING-KEYS.md`
-(fingerprint `73:31:6B:9C:…:39:7B`). For testing, a debug build is fine and needs
-no keystore.
+Apps appear as **tabs**, and only for the chain they support. If an app is
+missing, you are on the wrong chain — that is deliberate, not a bug.
 
----
-
-## 3. Arc — La Caja  ✅ the one to demo
-
-You have USDC/EURC on Base Sepolia, Ethereum Sepolia and Arc. That is enough.
-
-### 3.1 The terminal
-1. Open the companion, switch the chain to **Arc Testnet (5042002)**.
-2. Open **La Caja** from the apps menu.
-3. Enter a total, e.g. `284.53`. Pick **10%**, **15%**, or a custom percent.
-4. Check the three lines sum: base + tip = total. They are integer cents; a
-   third decimal is refused rather than truncated.
-5. Note the payable amount carries sub-cent entropy — `284.5317`. That marker is
-   how the watcher tells two open orders apart.
-
-### 3.2 The share
-- **QR** — scan with a phone wallet.
-- **Copy link** — an `ethereum:` URI.
-- **WhatsApp** — how a bill actually travels in Latin America.
-
-Chains are listed **cheapest first**. Ethereum L1 is marked expensive: below a
-**$49.27** ticket, L1 gas costs more than a Mexican card fee (Banxico: Clip
-3.59%, Mercado Pago 3.34%, MP Point debit 4.06%).
-
-**EURC exists on only 4 of the 9 chains.** Impossible combinations are struck
-through, not offered and then failed. Verify that: pick EURC, then look at
-Polygon Amoy — it should be unselectable.
-
-### 3.3 Pay it, and watch it arrive
-1. Scan the QR with a wallet holding **Base Sepolia USDC**.
-2. Send the exact amount shown.
-3. The terminal should mark it paid within a poll cycle.
-
-### 3.4 The test that matters most
-**Turn off your network mid-watch**, or point a chain at a dead RPC.
-
-The chain must render as **unknown / not looked at** — never as **unpaid**.
-Telling a customer their payment did not arrive when the RPC is merely down
-invites them to pay twice. If you ever see "unpaid" for an unreachable chain,
-that is a bug and I want to know.
-
----
-
-## 4. Aqua — read-only portfolio  ⚠️
-
-**`ship()` and `dock()` are not built.** Q2 is the next milestone. What exists is
-the portfolio view.
-
-### What you can do now
-Point it at an address that already has Aqua positions. Aqua is deployed on:
-
-| Chain | Registry `0x1111113ccf1426a8e30e2bff5e005d929bf6a90a` |
+| Chain | Apps you will see |
 |---|---|
-| Polygon, Gnosis, Ethereum **mainnet** | ✅ |
-| **Ethereum Sepolia** | ✅ (verified: identical bytecode, 25 events in 9000 blocks) |
-| Base/Arb/OP Sepolia, Amoy, Chiado | ❌ |
-
-So a **Sepolia** address works, and you have Sepolia funds.
-
-Check two things:
-1. An address with no positions shows an **empty state**, not a spinner.
-2. Kill the RPC — it must say **unavailable**, never **0**. An LP who reads "0"
-   and believes their liquidity is gone will do something expensive.
-
-### For Q2 later
-Sepolia has the registry, so `approve`/`ship`/`dock` can run there with faucet
-ETH. SwapVM decoding (Q3) needs a **mainnet fork** — the router is mainnet-only,
-and the sponsor states local forks are acceptable.
-
-**Licence caution:** Aqua is `LicenseRef-Degensoft-Aqua-Source-1.1` —
-source-available, not open source, incompatible with our Apache-2.0. Calling the
-deployed contracts is fine; **copying or modifying SwapVM source is not** without
-reading that licence first.
+| Base Sepolia, Arc, OP/Arb/Unichain/Linea Sepolia, Amoy, Fuji | La Caja, La Caja — waiter |
+| **Ethereum Sepolia** | La Caja, waiter, **Aqua** |
+| **Hedera 296** | **Issuer console** |
 
 ---
 
-## 5. Hedera — issuer console  ⚠️ needs one deployment
+## 1. La Caja — the cashier/waiter split  ✅ best demo
 
-Your HBAR unblocks this, and there is good news: **you do not have to deploy the
-ATS contract suite.** It is already on testnet.
+This is the newest work and the least tested by you. Two apps now.
 
-From `apps/ats/web/.env.example` in the ATS repo:
+### 1a. Cashier issues a bill
+1. Chain → **Base Sepolia**. Open **La Caja**.
+2. Enter a bill, pick 10% / 15% / custom.
+3. **Check the headline says `Total to pay`** and carries the sub-cent marker
+   (`5.6129`, not `5.61`). Only the exact figure settles — that was a real bug
+   and this is the fix.
+4. It produces a **request QR** for the waiter.
 
-| Contract | Hedera ID | EVM address |
-|---|---|---|
-| Business Logic Resolver | `0.0.9212226` | `0x00000000000000000000000000000000008c9142` |
-| Factory | `0.0.9213391` | `0x00000000000000000000000000000000008c95cf` |
+### 1b. Waiter shows it to the customer
+5. Second device (or second window) → **La Caja — waiter**.
+6. Scan the cashier's QR.
+7. It shows **every accepted chain**, and the client-facing address QR.
 
-Chain **296**, RPC `https://testnet.hashio.io/api`, explorer HashScan.
+### 1c. The property worth attacking
+**Try to change the amount as the waiter.** You should find no way to — there is
+one input and it takes a request, never a number. If you find a way to alter the
+amount or the recipient, that is a genuine bug and I want to hear about it.
 
-### What to do
-1. Fund an EVM-compatible account with testnet HBAR (`portal.hedera.com`).
-2. Call the factory's `deployEquity` to issue one security. Easiest route today
-   is the ATS web app pointed at those IDs; the SDK route is `Equity.create`.
-3. Note the resulting token address, and open the console against it.
+### 1d. Pay it
+8. Scan with Rabby, send the exact amount.
+9. Watcher confirms in seconds; eight other chains report *checked and nothing
+   arrived*, each naming its block range.
 
-Until that exists the console renders a **fixture**, labelled `FIXTURE_NOTICE`
-on screen. That label is deliberate — nothing pretends to be live data.
-
-### What to check once it is real
-- Holders, supply, roles, KYC and snapshots read correctly.
-- Kill the RPC: **unavailable ≠ no holders**.
-- The **HTS trap**: an HTS system contract answers an *unknown selector* with
-  `success` and junk instead of reverting. A first implementation reported plain
-  testnet USDC as a security with 64 snapshots. Point the console at a plain
-  ERC-20 and confirm it says **not a security** rather than inventing one.
+### 1e. The test nobody has run yet
+**Kill your network mid-watch.** A chain that cannot be reached must read
+**unknown**, never **unpaid**. This is still unverified against a real outage,
+and it is the failure that could make a customer pay twice.
 
 ---
 
-## 6. Order I would do this in
+## 2. Aqua — now with signing  ⚠️ untested on hardware
 
-1. **Rebuild the companion** — everything else depends on it.
-2. **Arc, all of section 3** — the only end-to-end flow, and your demo. Record it.
-3. **Aqua read-only on Sepolia** — five minutes, confirms the portfolio reads.
-4. **Deploy one Hedera equity** — the single step that turns the console from a
-   fixture into a real thing.
+Chain → **Ethereum Sepolia** (Aqua is deployed there; it is *not* on Base
+Sepolia or Amoy). You need Sepolia ETH and a test ERC-20.
 
-Do not reflash the boards. Do not spend HBAR on anything before step 4.
+- **Q1** portfolio: an address with no positions must show an **empty state**;
+  kill the RPC and it must say **unavailable**, never `0`.
+- **Q2** deploy: `approve` (capped, never unlimited) then `ship()`, both
+  rendered on the device.
+
+**Nobody has ever pressed a button for this.** Q2 was verified against an
+`anvil` fork, not hardware. Specifically unknown: whether the maker address is
+legible on the 128×64 panel, and whether a 640-byte `signTransaction` survives a
+real BLE round-trip. **You would be the first.** If the device shows nothing or
+the frame fails, that is expected-unknown, not a surprise.
+
+Try the refusals: an unlimited approval must be refused, and a strategy naming
+another address must refuse outright.
+
+---
+
+## 3. Issuer console — fixture, plus new action screens  ⚠️
+
+Chain → **Hedera 296**.
+
+- **Load fixture** → the full register. Every figure carries *"no figure on this
+  screen came from Hedera."* This is your Hedera demo today.
+- **Read register** with a non-ATS address → should now say **once**, at the
+  top, that the address does not answer like an ATS security. It used to print
+  40 identical rows.
+- **Privileged actions** (grantRole, pause, revokeKyc, freeze, mint…) now build
+  proposals with consequence text — *"can issue new shares to any address,
+  diluting every holder"*.
+
+**Nothing here has touched a chain.** No HBAR, so no security was deployed and
+nothing was signed or seen on HashScan. To make it real: deploy one equity via
+the pre-deployed factory `0.0.9213391` (EVM `0x…008c95cf`) on chain 296, then
+paste that address into **Read register**.
+
+---
+
+## What I would do, in order
+
+1. **La Caja cashier → waiter → pay with Rabby.** Record it. This is the
+   submittable Arc demo and the split is new.
+2. **Kill the network mid-watch.** Five minutes, closes the one untested
+   failure that could cost a customer money.
+3. **Aqua on Sepolia with the device.** First hardware press for Q2 — expect
+   surprises, that is the point.
+4. **Deploy one Hedera equity** to un-fixture the console.
+
+## Do not expect to work
+
+- Chrome extension — offscreen document never answers.
+- Android USB — fix applied, **never tested**. BLE works.
+- Windows/macOS companions — build, never run.
+- Aqua SwapVM decoding (Q3) — not built; needs a mainnet fork anyway.
