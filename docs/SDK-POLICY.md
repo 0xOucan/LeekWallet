@@ -6,7 +6,7 @@ contracts. That is a fair check, and the current state does not pass it:
 | Sponsor | SDK | Used today? |
 |---|---|---|
 | 1inch | `@1inch/aqua-sdk` **0.3.1** | ❌ hand-rolled encoders |
-| Hedera | `@hashgraph/asset-tokenization-sdk` **8.0.0** | ❌ ABIs + viem |
+| Hedera | `@hashgraph/asset-tokenization-sdk` **8.0.0** | ◐ its contracts package is the authority for every signature and role id (E3); its ports are not used at runtime — see below |
 | Circle | `@circle-fin/app-kit` **1.14.0** | ❌ not at all |
 
 All four packages are published and installable. An earlier note in this repo
@@ -51,10 +51,25 @@ device is that it says what the bytes do, independently of whatever built them.
 and the `Shipped`/`Pushed`/`Docked` event decoders. Our firmware decoder stays:
 it is the device's independent reading of the same bytes, which is exactly rule 2.
 
-**Hedera ATS** — the SDK's `Equity`, `Role`, `Kyc`, `Dividend` ports for reads
-and for building calls. Its wallet layer (`METAMASK`, `HWALLETCONNECT`, `DFNS`,
-`FIREBLOCKS`, `AWSKMS`) is not one of ours, and the reason is worth stating in
-the submission: the sixth option should be a hardware wallet the issuer holds.
+**Hedera ATS** — revised at E3, with the package installed and measured rather
+than reasoned about. `docs/apps/HEDERA-ATS.md` §2 has the detail; the summary:
+
+- **Adopted:** `@hashgraph/asset-tokenization-contracts` 8.0.0, the SDK's own
+  pinned contracts dependency, as the authority for every function signature
+  and all 37 role ids, enforced by `conformance.test.ts`. It caught two bugs
+  that had passed review — `lock` with its arguments in the wrong order, and a
+  `grantKyc` that existed only on a mock.
+- **Not adopted:** the `Role`, `Kyc`, `Equity` and `Dividend` ports at runtime.
+  Their write methods *execute* rather than returning calldata
+  (`Role.grantRole` → `{payload, transactionId}` through the command bus), which
+  rule 1 above settles; their read methods build their own ethers provider,
+  which routes around `AppContext.request` and with it the user's endpoint
+  choice, the failover policy and the CSP allowlist.
+
+Note for the submission: the SDK's wallet layer is `METAMASK`,
+`HWALLETCONNECT`, `DFNS`, `FIREBLOCKS`, `AWSKMS` — a browser key or three
+custody APIs. **The sixth option should be a hardware wallet the issuer holds**,
+and that is what this app demonstrates.
 
 **Circle** — `@circle-fin/app-kit` with `@circle-fin/adapter-viem-v2` for the
 CCTP path. This is the largest gap: the Arc app currently uses no Circle tooling
