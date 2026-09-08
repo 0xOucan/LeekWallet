@@ -95,6 +95,36 @@ Two refusals are non-negotiable:
 - **a strategy whose decoded `maker` is not this device's address is refused
   outright** — it is either a mistake or an attack, and neither should be signed
 
+> ### What Q2 turned out to cost, which this section did not anticipate
+>
+> "Both rendered on the device" was not a matter of writing two screens. The
+> device refused `ship()` twice over, and both refusals had to be answered in
+> firmware before any of the above was reachable:
+>
+> 1. **Dynamic arguments.** `ship(address,bytes,address[],uint256[])` has three
+>    of them, and both the firmware decoder and the host's ERC-7730 layer refuse
+>    any signature with a dynamic argument on principle — an offset the host
+>    chose, followed into a tail nobody can predict, is how a screen ends up
+>    describing something other than what executes. The answer was **two
+>    hand-written decoders**, not dynamic types in general: `ship` and `dock`
+>    each have one fixed layout, compared against the canonical encoding
+>    exactly, so anything that is merely legal ABI for the same arguments is
+>    refused rather than normalised.
+> 2. **`ETH_MAX_DATA`.** It was 256 bytes and a `ship` is about 600 — the
+>    strategy blob alone is 256 in every deployment observed on chain. That is a
+>    capacity limit standing in for a comprehension one, so it went to 640
+>    (still under `PROTOCOL_MAX_FRAME`), and both request tasks went 8 → 10 KB
+>    to keep the stack margin rather than spend it.
+>
+> There was a third, on the host: `screenProposal` required a bundled ERC-7730
+> descriptor, and a call with a dynamic argument can never have one. So
+> `DEVICE_DRAWN_KINDS` was added — a narrow second route for calls the firmware
+> decodes and draws itself, which is *stronger* evidence of describability than
+> an unsigned registry file, not weaker.
+>
+> The upshot for anyone reading this plan before doing Q3: a milestone phrased
+> as "and render it on the device" is a firmware milestone. Budget it as one.
+
 ### Step 3 — Manage
 `dock()` to withdraw. Re-`ship()` to change parameters, shown honestly as
 withdraw-then-redeploy. After a full `dock()`, offer to **reduce the approval to
@@ -177,12 +207,39 @@ rounding-favours-maker. We add ours to that harness rather than inventing one.
 A Foundry mainnet fork (`--fork-url`) is explicitly acceptable to the sponsor
 and avoids needing real liquidity.
 
+**What A2, A3 and A5 were actually run against.** `app/scripts/aqua-fork-check.mjs`
+drives the app's own planner and encoders at the real deployed registry over an
+`anvil --fork-url` of Sepolia. It is not part of `pnpm test` — a suite that goes
+red because a fork is not running is a suite people learn to ignore — so it is
+run by hand:
+
+```
+anvil --fork-url https://ethereum-sepolia-rpc.publicnode.com &
+pnpm --dir app exec node --experimental-strip-types scripts/aqua-fork-check.mjs
+```
+
+It asserts the capped `approve` lands and the **token** reports the cap, the
+`ship` lands and the registry files it under exactly the hash we computed, the
+`Shipped` event returns the strategy bytes verbatim, `rawBalances` reports the
+position, `dock` returns it and leaves `tokensCount == 0xff` (docked, not
+absent), and the revoke sets the allowance to zero.
+
+**Unverified against real hardware.** No device was attached at any point. The
+signing path was exercised against a fake `propose`, and the decoder and screens
+against the host suites — `sim/test_eth_decode.c`, `sim/test_ui.c` (which drives
+the real `ui.c` against a fake OLED and reads the framebuffer), and three
+mock-conformance vectors where the firmware and the host mirror are compared
+byte for byte. What has **not** happened is a human pressing the button on a
+board: no claim is made that the maker page is legible on the physical 128×64
+panel, or that a 640-byte `signTransaction` survives a real BLE or USB
+round-trip at the new frame size.
+
 ## 5. Milestones and gates
 
 | Gate | Deliverable | Submittable if we stop |
 |---|---|---|
 | **Q1** | Read-only portfolio (A1) | "LeekWallet shows your Aqua portfolio" |
-| **Q2** | **Approve + ship + dock (A2–A6)** | **Deploy, view and withdraw with hardware authorisation** ✅ |
+| **Q2** | **Approve + ship + dock (A2–A6)** ✅ | **Deploy, view and withdraw with hardware authorisation** ✅ |
 | **Q3** | SwapVM decoding (A7) | + the differentiator |
 | **Q4** *(stretch)* | Custom opcode (A8) | + the scoring bonus |
 
