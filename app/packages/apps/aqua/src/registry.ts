@@ -11,23 +11,47 @@
  * the registry, not by the number written here. See portfolio.ts.
  *
  * ---------------------------------------------------------------------------
- * Why this reads the chain directly instead of using @1inch/aqua-sdk
+ * Why this encodes and decodes here rather than calling @1inch/aqua-sdk
  *
- * The SDK was read before this was written (1inch/sdks, typescript/aqua). For
- * Q1 it offers three things: `calculateStrategyHash`, which is literally
- * `keccak256(strategy)`; `encodeShipCallData` / `encodeDockCallData`, which are
- * write paths this milestone deliberately does not have; and event decoders.
- * Against that it brings viem plus `@1inch/sdk-core`'s `Address`/`HexString`
- * wrapper classes into a package whose entire job is to be deletable, and it
- * hard-codes a chain enum this repo already has a reviewed answer for in
- * chains.ts. It also has no reader at all for `rawBalances`, which is the one
- * call this milestone is actually built on.
+ * An earlier version of this comment said the SDK was effectively unavailable.
+ * That was wrong and is worth correcting rather than quietly deleting: the
+ * package is published, it is at 0.3.1, and it installs. docs/SDK-POLICY.md
+ * asks, reasonably, that it be used for exactly what this file does —
+ * `encodeShipCallData`, `encodeDockCallData`, `calculateStrategyHash`, and the
+ * event decoders.
  *
- * So: signatures are typed out below and their selectors derived with keccak by
- * core's own `selectorOf`, the same way allowances.ts does it, and the decoders
- * are bounds-checked here. The SDK's published `Shipped` topic is pinned in the
- * tests as an independent check that the signature string is right — using it
- * as a cross-check costs nothing and using it as a dependency costs a lot.
+ * It is not used for them, and the reason is the licence rather than the code.
+ * `@1inch/aqua-sdk` is `LicenseRef-Degensoft-Aqua-Source-1.1`: source
+ * available, not open source, and it cannot be redistributed inside this
+ * project's signed Apache-2.0 release binaries. §2.1 grants distribution of
+ * *unmodified* forms while §1.7 counts static linking and "artifacts shipped
+ * together as one product" as a Modification; §5 attaches commercial triggers,
+ * §6 an audit right, §11.3 a bar on assignment, §7.1 a terminating patent
+ * grant. Apache-2.0 promises every recipient of a release that they carry none
+ * of that, and this project cannot make that promise about code it does not
+ * own. The full argument, clause by clause, is in test/sdk-parity.test.ts, and
+ * the consequences for contributors are in THIRD-PARTY-LICENSES.md.
+ *
+ * Calling the deployed contracts is unaffected — the licence is explicit about
+ * that, and it is what this file does.
+ *
+ * So the SDK is a devDependency, and it earns that place: test/sdk-parity.test.ts
+ * builds every `ship` and `dock` this file builds a second time with
+ * `AquaProtocolContract` and asserts the bytes are identical, checks
+ * `strategyHash` against `calculateStrategyHash`, and checks the three topics
+ * and the registry address below against the SDK's published constants. Two
+ * independent implementations of one ABI, compared — which is a stronger
+ * statement than one implementation would have been, and it is the only reason
+ * the hand-written encoders here are trustworthy.
+ *
+ * That test also runs SDK-built calldata through the device's own decoder
+ * (packages/core/src/eth-decode.ts, the mirror of src/eth-decode.c), so the
+ * claim that this file's canonical layout is the protocol's canonical layout is
+ * checked at both ends.
+ *
+ * The one thing the SDK is not consulted about is the chain list — see
+ * AQUA_CHAIN_IDS, where it is wrong. It also has no reader for `rawBalances`,
+ * which is the call the whole portfolio is built on.
  *
  * ---------------------------------------------------------------------------
  * `rawBalances`, not `safeBalances`
@@ -80,6 +104,9 @@ export const AQUA_SWAPVM_ROUTER = "0x111111338c5091e8440b67b168bae16a668ac0de";
  * carry (Monad, Cronos, HyperEVM, Robinhood); offering those here would mean
  * inventing endpoints, and chains.ts's header is explicit that being listed is
  * a claim. Adding one is one line here after one entry there.
+ *
+ * The traffic runs the other way too, and that is the more interesting half:
+ * this list contains a chain the SDK does not have. See below.
  */
 /* The twelve mainnets Aqua's README lists, plus Ethereum Sepolia (11155111),
    which it does not.
@@ -92,7 +119,15 @@ export const AQUA_SWAPVM_ROUTER = "0x111111338c5091e8440b67b168bae16a668ac0de";
  
    That matters because it is the only chain where this app can be exercised
    without mainnet funds -- the SwapVM router really is mainnet-only, so Q3
-   still needs a fork, but the registry alone is enough for ship and dock. */
+   still needs a fork, but the registry alone is enough for ship and dock.
+
+   It is also the one place where @1inch/aqua-sdk is simply wrong about its own
+   protocol. Its NetworkEnum contains no testnet at all, so
+   AQUA_CONTRACT_ADDRESSES has no key 11155111 and a chain list derived from it
+   would delete the only chain ship and dock can be tested on. Where the SDK and
+   the chain disagree, the chain wins. test/sdk-parity.test.ts pins the
+   disagreement, so a release that adds Sepolia turns this comment red rather
+   than leaving it quietly false. */
 export const AQUA_CHAIN_IDS: readonly number[] =
   [1, 10, 56, 100, 130, 137, 146, 324, 8453, 42161, 43114, 59144, 11155111];
 
@@ -139,11 +174,12 @@ export function encodeRawBalances(
  * is a better failure than the alternative but still a failure, so the encoder
  * and the decoder are written from the same description of the layout.
  *
- * Selectors are derived by hashing, like every other one in this file. Note
- * that neither of these was in the SDK's documented surface at the time: they
- * were read off the deployed dispatcher on Sepolia and confirmed against the
- * `Shipped` topic the contract emits, which is why they are derived rather
- * than pinned.
+ * Selectors are derived by hashing, like every other one in this file, rather
+ * than pinned — a pinned selector records what somebody once observed, a
+ * derived one records the signature it came from, and only the second can be
+ * checked by reading it. They were first read off the deployed dispatcher on
+ * Sepolia; test/sdk-parity.test.ts now also compares the whole encoding,
+ * selector included, against `AquaProtocolContract`.
  */
 
 /** `ship(address app, bytes strategy, address[] tokens, uint256[] amounts)`. */
@@ -267,7 +303,8 @@ export function decodeRawBalances(value: unknown): RegistrySlot {
 
 /**
  * `strategyHash = keccak256(strategy)`. Identical to the SDK's
- * `calculateStrategyHash`, which is why the SDK is not imported for it.
+ * `calculateStrategyHash` — asserted against it in test/sdk-parity.test.ts,
+ * rather than imported from it, for the licence reason at the top of this file.
  *
  * Note what this hash does NOT contain: the maker. `Aqua.ship` keys the slot by
  * `msg.sender` separately, so the same strategy bytes shipped by two makers

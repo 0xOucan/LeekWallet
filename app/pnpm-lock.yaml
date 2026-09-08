@@ -85,6 +85,10 @@ importers:
       '@noble/hashes':
         specifier: 1.8.0
         version: 1.8.0
+    devDependencies:
+      '@1inch/aqua-sdk':
+        specifier: 0.3.1
+        version: 0.3.1(typescript@5.9.3)
 
   packages/apps/ats:
     dependencies:
@@ -126,6 +130,26 @@ importers:
         version: 2.55.13(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.67)
 
 packages:
+
+  '@1inch/aqua-sdk@0.3.1':
+    resolution: {integrity: sha512-ribj/7E71vEQsg1q8ku6PVJUwU4wYXtlaDt/BYh6xde2KTLx5KGAHPHasbeWyWdgBAD5tK3IxnY1Ovzq5q6yew==}
+
+  '@1inch/byte-utils@3.1.8':
+    resolution: {integrity: sha512-feZgJZomcbbD7HrCokwAwcvAdB7Y31xsz6EzgcuFGxLwkSq0xtW1YbUGPxAy6fOP95uu0Boyqat7zuZQAHYddA==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      assert: ^2.0.0
+    peerDependenciesMeta:
+      assert:
+        optional: true
+
+  '@1inch/sdk-core@0.1.3':
+    resolution: {integrity: sha512-qYx4dxowK3isyQ8G15kjUfTHfCQzguXN0Zncbx9cHjBSsrBTJtgD0UGCbjJaHqEmAdw+fJ4AHldHXdOtxsI8fQ==}
+    peerDependencies:
+      assert: '*'
+    peerDependenciesMeta:
+      assert:
+        optional: true
 
   '@adraffy/ens-normalize@1.11.1':
     resolution: {integrity: sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==}
@@ -1229,6 +1253,31 @@ packages:
       '@types/emscripten': '>=1.39.6'
 
 snapshots:
+
+  '@1inch/aqua-sdk@0.3.1(typescript@5.9.3)':
+    dependencies:
+      '@1inch/sdk-core': 0.1.3(typescript@5.9.3)
+      tslib: 2.8.1
+      viem: 2.55.13(typescript@5.9.3)
+    transitivePeerDependencies:
+      - assert
+      - bufferutil
+      - typescript
+      - utf-8-validate
+      - zod
+
+  '@1inch/byte-utils@3.1.8': {}
+
+  '@1inch/sdk-core@0.1.3(typescript@5.9.3)':
+    dependencies:
+      '@1inch/byte-utils': 3.1.8
+      tslib: 2.8.1
+      viem: 2.55.13(typescript@5.9.3)
+    transitivePeerDependencies:
+      - bufferutil
+      - typescript
+      - utf-8-validate
+      - zod
 
   '@adraffy/ens-normalize@1.11.1': {}
 
