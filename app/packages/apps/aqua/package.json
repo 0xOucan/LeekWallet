@@ -12,8 +12,10 @@
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/registry.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/positions.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/portfolio.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/deploy.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/sdk-parity.test.ts"
   },
   "dependencies": {
-    "@1inch/aqua-sdk": "0.3.1",
     "@leekwallet/core": "workspace:*",
     "@noble/hashes": "1.8.0"
+  },
+  "devDependencies": {
+    "@1inch/aqua-sdk": "0.3.1"
   }
 }

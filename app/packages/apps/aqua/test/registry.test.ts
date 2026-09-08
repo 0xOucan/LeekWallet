@@ -4,11 +4,12 @@
  * Three things carry the file.
  *
  * The selectors and topics are DERIVED from signature strings, so what is
- * really under test is whether those strings match the deployed contract. The
- * `Shipped` topic published by @1inch/aqua-sdk is pinned below as an
- * independent witness — if the signature were wrong, that is the assertion that
- * would say so, which is precisely the value the SDK has here without being a
- * dependency.
+ * really under test is whether those strings match the deployed contract. This
+ * file cannot answer that on its own — hashing the wrong string correctly still
+ * passes — so the answer lives in sdk-parity.test.ts, where every topic and
+ * every encoded byte is compared against @1inch/aqua-sdk's. That is the whole
+ * job of the SDK in this repository, and the reason it is a devDependency
+ * rather than a dependency is set out there.
  *
  * `rawBalances` decoding must produce three distinguishable states from two
  * words, and the sentinel that means "docked" must never be read as a token
