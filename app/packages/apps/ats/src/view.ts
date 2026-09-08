@@ -21,9 +21,9 @@
 
 import { formatUnits } from "@leekwallet/core/chains.ts";
 import {
-  maxSupplyIsCap, privilegedFreshness, registerProvenance,
-  type ControlListView, type HolderRow, type Outcome, type RegisterView,
-  type RoleRow, type SnapshotView,
+  maxSupplyIsCap, privilegedFreshness, registerDiagnosis, registerProvenance,
+  type ControlListView, type HolderRow, type Outcome, type RegisterDiagnosis,
+  type RegisterView, type RoleRow, type SnapshotView,
 } from "./register.ts";
 
 /** What a field says when it is not `ok`. Never a number, never a blank. */
@@ -156,18 +156,57 @@ function holderRow(
   return tr;
 }
 
-function rolesSection(roles: Outcome<RoleRow[]>): HTMLElement {
+/**
+ * Does this row fail for the one reason the diagnosis already gave?
+ *
+ * The test is on the reason, not on "is uncertain": a role that failed for its
+ * OWN reason is still worth a row, and folding it into the diagnosis would hide
+ * the one interesting failure inside a summary of thirty-six boring ones.
+ */
+const explainedBy = (o: Outcome<unknown>, d: RegisterDiagnosis | undefined): boolean =>
+  d !== undefined && o.state === "unavailable" && o.why === d.why;
+
+/**
+ * Which role rows are worth printing, and how many the diagnosis already
+ * covered.
+ *
+ * Split out of the DOM so the fix for the forty-identical-rows bug is a
+ * property of data that a test can assert without a document. The counting is
+ * the assertion: `folded` is how many sentences the reader no longer has to
+ * scroll past, and `shown` is what survives — a role that failed for its own
+ * reason is still worth a row, because the one interesting failure must not be
+ * hidden inside a summary of thirty-six boring ones.
+ */
+export function partitionRoles(
+  roles: readonly RoleRow[], diagnosis?: RegisterDiagnosis,
+): { shown: RoleRow[]; folded: number } {
+  // Only roles that are held, or whose membership could not be read. Listing
+  // thirty-seven empty rows buries the two that matter.
+  const candidates = roles.filter(
+    (r) => isUncertain(r.memberCount) || (r.memberCount.state === "ok" && r.memberCount.value > 0n),
+  );
+  const shown = candidates.filter((r) => !explainedBy(r.memberCount, diagnosis));
+  return { shown, folded: candidates.length - shown.length };
+}
+
+function rolesSection(roles: Outcome<RoleRow[]>, diagnosis?: RegisterDiagnosis): HTMLElement {
   const section = el("section", "ats-panel");
   section.appendChild(el("h4", undefined, "Roles"));
   if (roles.state !== "ok") {
     section.appendChild(el("p", "ats-notice", describeOutcome(roles, () => "")));
     return section;
   }
-  // Only roles that are held, or whose membership could not be read. Listing
-  // thirty-seven empty rows buries the two that matter.
-  const shown = roles.value.filter(
-    (r) => isUncertain(r.memberCount) || (r.memberCount.state === "ok" && r.memberCount.value > 0n),
-  );
+  /* The forty-identical-rows fix. A role whose failure is the diagnosis's
+   * failure adds nothing a reader did not already learn at the top of the page,
+   * so it is counted rather than printed — and it IS counted, because silently
+   * dropping thirty-seven roles would be a different lie. */
+  const { shown, folded } = partitionRoles(roles.value, diagnosis);
+  if (folded > 0) {
+    section.appendChild(el("p", "ats-muted",
+      `${folded} role(s) not shown: each answered the same undecodable way as ` +
+      "everything else on this address, which the notice above explains once."));
+  }
+  if (shown.length === 0 && folded > 0) return section;
   if (shown.length === 0) {
     section.appendChild(el("p", "ats-muted", "No role has any member."));
     return section;
@@ -233,6 +272,14 @@ export function renderRegister(view: RegisterView, now: number, notice?: string)
   const root = el("div", "ats-panel");
   if (notice !== undefined) root.appendChild(el("p", "ats-notice", notice));
 
+  /* Said once, above everything, before the reader has scrolled past forty
+   * copies of it. See registerDiagnosis. */
+  const diagnosis = registerDiagnosis(view);
+  if (diagnosis !== undefined) {
+    root.appendChild(el("p", "ats-notice", diagnosis.text));
+    root.appendChild(el("p", "ats-muted", `Every one of them said: ${diagnosis.why}`));
+  }
+
   const title = el("h3");
   const name = view.name.state === "ok" ? view.name.value : undefined;
   const symbol = view.symbol.state === "ok" ? view.symbol.value : undefined;
@@ -265,7 +312,7 @@ export function renderRegister(view: RegisterView, now: number, notice?: string)
     isUncertain(view.controlList)));
 
   root.appendChild(holdersSection(view));
-  root.appendChild(rolesSection(view.roles));
+  root.appendChild(rolesSection(view.roles, diagnosis));
   root.appendChild(snapshotsSection(view.snapshots,
     view.decimals.state === "ok" ? view.decimals.value : 0));
   return root;

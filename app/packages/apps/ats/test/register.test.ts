@@ -17,12 +17,15 @@
  */
 
 import { freshnessOf } from "@leekwallet/core/balances.ts";
-import { fixtureRequest, fixtureSelfCheck } from "../src/fixtures.ts";
+import { fixtureRequest, fixtureSelfCheck, htsLikeRequest } from "../src/fixtures.ts";
 import {
-  PRIVILEGED_STALE_AFTER_MS, maxSupplyIsCap, privilegedFreshness, readRegister,
-  registerProvenance, type Outcome, type RegisterView,
+  DIAGNOSIS_THRESHOLD, PRIVILEGED_STALE_AFTER_MS, maxSupplyIsCap,
+  privilegedFreshness, readRegister, registerDiagnosis, registerProvenance,
+  type Outcome, type RegisterView,
 } from "../src/register.ts";
-import { describeOutcome, isUncertain, kycLabel, supplyLine } from "../src/view.ts";
+import {
+  describeOutcome, isUncertain, kycLabel, partitionRoles, supplyLine,
+} from "../src/view.ts";
 
 let failures = 0;
 const check = (cond: boolean, msg: string): void => {
@@ -184,6 +187,58 @@ group("nothing is carried across a failed refresh");
   check(okValue(after.roles).every((r) => r.memberCount.state !== "ok"),
         "a failed refresh must not retain a single member count from the previous one");
   check(after.fetchedAt >= before.fetchedAt, "the new view is dated at its own read");
+}
+
+group("a non-ATS address is diagnosed once, not forty times");
+{
+  /* The HTS trap, as the console meets it. An HTS system contract answers an
+   * unknown selector with `success` and non-conforming data (plan §2b), so
+   * every call is answered and every answer fails to decode, identically. The
+   * old behaviour was forty rows of the same sentence. */
+  const view = await readRegister(htsLikeRequest(), 296, TOKEN, () => "testnet.hashio.io");
+  const diagnosis = registerDiagnosis(view);
+  check(diagnosis !== undefined, "a contract answering nothing decodable produced no diagnosis");
+  check((diagnosis?.count ?? 0) >= DIAGNOSIS_THRESHOLD,
+        `the diagnosis counted only ${diagnosis?.count} fields`);
+  check(diagnosis?.text.includes("does not answer like an ATS security") === true,
+        `the diagnosis does not say what it found: ${diagnosis?.text}`);
+  // The reason survives. It is said once rather than not at all.
+  check(diagnosis?.why.startsWith("undecodable reply:") === true,
+        `the diagnosis dropped the reason: ${diagnosis?.why}`);
+
+  /* The measurement the bug report made, inverted into an assertion: how many
+   * rows repeat the sentence the banner already gave. Forty before, none now,
+   * and the count of what was folded is still reported to the reader. */
+  if (view.roles.state === "ok") {
+    const { shown, folded } = partitionRoles(view.roles.value, diagnosis);
+    check(folded >= DIAGNOSIS_THRESHOLD, `only ${folded} role rows were folded away`);
+    check(shown.length === 0,
+          `${shown.length} role rows still repeat the diagnosis's own sentence`);
+    /* Without the diagnosis the rows come back. The fix must be the banner
+     * absorbing them, not a filter that hides roles in general. */
+    check(partitionRoles(view.roles.value, undefined).shown.length === folded,
+          "the folded rows are not the rows that would otherwise have printed");
+  } else {
+    check(false, "the roles list itself failed; this test needs the per-role failures");
+  }
+}
+
+group("an unreachable endpoint is NOT diagnosed as a wrong address");
+{
+  /* The failure mode of the fix. A dead transport also fails every field the
+   * same way, and a banner reading "this address does not answer like an ATS
+   * security" would send the user hunting for a better address when what they
+   * need is a working connection. Only a reply that ARRIVED and failed to
+   * decode is evidence about the address. */
+  const dead = await readRegister(deadRequest, 296, TOKEN, () => undefined);
+  check(registerDiagnosis(dead) === undefined,
+        "an unreachable endpoint was diagnosed as a non-ATS address");
+}
+
+group("a healthy register gets no banner at all");
+{
+  check(registerDiagnosis(live) === undefined,
+        "a register that read fine acquired a diagnosis");
 }
 
 console.log(failures === 0 ? "PASSED (0 failures)" : `FAILED (${failures})`);
