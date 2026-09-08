@@ -154,7 +154,14 @@ group("the contract lives in core, where no app owns it");
      could broadcast an already-signed transaction through it, which is not a
      new capability, because obtaining that signature still requires `propose`
      and a press on the device. */
-  const ALLOWED_FIELDS = ["chainId", "address", "request", "endpointHost", "propose", "requestOn"];
+  /* `scanQr` reads one QR code with the shell's camera and returns what the
+     app's own `accept` predicate matched. It is a read capability: it produces
+     text, cannot sign, cannot spend, and reaches no key or transport. What it
+     returns is untrusted -- a QR code is whatever somebody printed -- so an app
+     must validate it, which La Caja's waiter does by refusing any request that
+     does not pay its configured address. */
+  const ALLOWED_FIELDS =
+    ["chainId", "address", "request", "endpointHost", "propose", "requestOn", "scanQr"];
   const declared = [...fields.matchAll(/^\s{2}(\w+)\??[:(]/gm)].map((m) => m[1] as string);
   check(declared.length > 0, "no AppContext fields were found to check");
   for (const field of declared) {

@@ -574,6 +574,11 @@
              active chain has one registered - see src/apps/registry.ts, which
              is the single line a release build removes to exclude one. -->
         <div id="apps" hidden></div>
+        <!-- One camera surface for every mini-app, owned by the shell.
+             An app never gets a MediaStream; it calls AppContext.scanQr and
+             receives whatever its own accept() matched. -->
+        <video id="appvideo" class="wc-video" hidden muted playsinline
+               aria-label="Camera, scanning for a QR code"></video>
 
         <section class="panel" id="logpanel" aria-labelledby="loghead">
           <h2 id="loghead">Device log</h2>

@@ -275,6 +275,35 @@ export const TILL_WAITER_APP: MiniApp = {
      * test/waiter.test.ts asserts there is no other. */
     scan.setAttribute("aria-label", "Scan the cashier's request");
     scanRow.append(scan);
+
+    /* The camera, which is how this is actually used: a waiter points a phone
+     * at the cashier's screen. The text field stays, because a request also
+     * travels by message and because a camera can be absent, refused, or dark.
+     *
+     * `accept` runs inside the shell's scan loop, so a code that is not one of
+     * our requests is ignored rather than pasted here — the field cannot be
+     * filled with something the app did not recognise. Still a *decode*, not a
+     * trust decision: acceptRequest below is what refuses a request that pays
+     * somebody else. */
+    if (context.scanQr) {
+      const camera = document.createElement("button");
+      camera.type = "button";
+      camera.textContent = "Scan with camera";
+      camera.addEventListener("click", () => {
+        void context.scanQr?.((raw) => {
+          /* The same gate the pasted field goes through, so the camera cannot
+             become a second, laxer way in. A code that is not a request this
+             terminal would accept is left in shot rather than filled in. */
+          return acceptRequest(raw.trim(), context.address).ok ? raw.trim() : undefined;
+        }).then((raw) => {
+          if (raw === null) return;
+          scan.value = raw;
+          scan.dispatchEvent(new Event("input"));
+        });
+      });
+      scanRow.append(camera);
+    }
+
     panel.append(scanRow);
 
     const error = document.createElement("p");

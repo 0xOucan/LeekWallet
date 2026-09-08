@@ -1347,7 +1347,7 @@ function remountApps(info: ChainInfo): void {
   const { request, host } = balanceRequest(info);
   mountApps(
     $("apps"),
-    { chainId: info.id, address, request, endpointHost: host, requestOn: chainChannel },
+    { chainId: info.id, address, request, endpointHost: host, requestOn: chainChannel, scanQr: appScanQr },
     /* How an app asks for a signature, and the whole of it. Bound per app so
      * the review card can name which one asked, and built here rather than
      * inside mount.ts so the shell's live chain, address and review queue stay
@@ -1600,6 +1600,39 @@ function balanceRequest(info: ChainInfo): { request: EthRequest; host: () => str
  * required to render that as a chain nobody asked rather than as a chain with
  * nothing on it. See AppContext.requestOn.
  */
+/**
+ * The camera, lent to a mini-app for exactly one code.
+ *
+ * The shell owns the video element and the stream; an app never sees either.
+ * It supplies `accept`, which decides what counts, so a code for something
+ * else stays ignored rather than being handed over — the same rule the
+ * recipient scanner uses, for the same reason.
+ *
+ * Resolves null when the user closes it without a match, so "they changed
+ * their mind" and "it found nothing" are one state to the caller and neither
+ * is an error.
+ */
+async function appScanQr<T>(accept: (raw: string) => T | undefined): Promise<T | null> {
+  if (!qrScanningAvailable()) return null;
+  const video = $("appvideo") as HTMLVideoElement;
+  video.hidden = false;
+  const controller = new AbortController();
+  try {
+    return await new Promise<T | null>((resolve) => {
+      void scanQr<T>(
+        video,
+        accept,
+        (value) => { controller.abort(); resolve(value); },
+        (message) => { log(`scan: ${message}`); controller.abort(); resolve(null); },
+        controller.signal,
+      );
+    });
+  } finally {
+    controller.abort();
+    video.hidden = true;
+  }
+}
+
 const chainChannels = new Map<number, ChainChannel>();
 function chainChannel(chainId: number): ChainChannel | undefined {
   const cached = chainChannels.get(chainId);

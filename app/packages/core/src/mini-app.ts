@@ -115,6 +115,27 @@ export interface AppContext {
    * two are different facts and only one of them is safe to tell a customer.
    */
   requestOn?: (chainId: number) => ChainChannel | undefined;
+
+  /**
+   * Ask the shell to read one QR code with the camera, or undefined where the
+   * shell has no camera to offer.
+   *
+   * The app supplies `accept`, which decides whether a code in shot is the one
+   * it wanted; anything else is ignored rather than handed over, so an
+   * unrelated code cannot be pasted into a field. Resolves with the accepted
+   * value, or null if the user closed the scanner without one.
+   *
+   * Added for La Caja's waiter, which exists to scan a request the cashier
+   * issued. Without it the app had a text box, which is not a thing anyone
+   * uses at a table.
+   *
+   * This is a READ capability and stays one. It returns text a camera saw; it
+   * cannot sign, spend, or reach a key. What it returns is untrusted -- a QR
+   * code is whatever somebody printed -- and an app must treat it as input to
+   * be validated, never as instruction. La Caja does: the scanned request is
+   * refused unless it pays the address the terminal was configured with.
+   */
+  scanQr?: <T>(accept: (raw: string) => T | undefined) => Promise<T | null>;
 }
 
 /** A read path to one chain, and whoever most recently answered on it. */
