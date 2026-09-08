@@ -49,6 +49,7 @@
 
 import type { AppProposal, ProposalOutcome } from "./app-proposal.ts";
 import type { EthRequest } from "./balances.ts";
+import type { Descriptor } from "./erc7730.ts";
 
 /** Everything the shell hands an app when it mounts one. */
 export interface AppContext {
@@ -152,6 +153,34 @@ export interface MiniApp {
    * into one document and two apps sharing a class name would style each other.
    */
   css: string;
+  /**
+   * ERC-7730 descriptors this app offers as evidence for its OWN proposals.
+   *
+   * Optional, and most apps want nothing here: a call to a contract with a
+   * canonical address per chain belongs in the bundled set (erc7730-circle.ts),
+   * where every screen in the wallet benefits from it. This exists for the
+   * opposite case, which the ATS issuer console is: an instrument whose address
+   * is different for every issuance, so the descriptor cannot be a constant and
+   * has to be built around the address the user is looking at. `to` is passed
+   * for exactly that reason — the app returns descriptors deployed at that
+   * address or returns nothing.
+   *
+   * What this does NOT do is let an app describe its way past the gate.
+   * `screenProposal` still judges what comes back: every argument must render,
+   * the chain and address must match, and the descriptor must not disagree with
+   * the firmware-mirroring decoder about what the calldata says. An app
+   * supplies EVIDENCE; core keeps the verdict. The reason that is safe is the
+   * same reason the static registry import is safe — an app is in-tree, built
+   * into this binary, and deleted from a release by deleting its directory. It
+   * is not a plugin and there is no route by which one arrives at runtime.
+   *
+   * The alternative considered and rejected: push the ATS descriptors into
+   * `DEFAULT_DESCRIPTORS`. It would have put an app's private knowledge in
+   * core, where deleting the app leaves it behind, and it cannot express an
+   * address chosen at runtime at all.
+   */
+  descriptors?: (chainId: number, to: string) => readonly Descriptor[];
+
   /**
    * Render into `root`, which the app owns and may clear.
    *

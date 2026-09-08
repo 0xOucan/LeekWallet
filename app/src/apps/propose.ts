@@ -22,6 +22,9 @@ import {
   declined, screenProposal,
   type AppProposal, type ProposalOutcome, type ScreenedProposal,
 } from "@leekwallet/core/app-proposal.ts";
+import { DEFAULT_DESCRIPTORS } from "@leekwallet/core/tx-interpret.ts";
+import type { MiniApp } from "@leekwallet/core/mini-app.ts";
+import type { Descriptor } from "@leekwallet/core/erc7730.ts";
 import type { RequestPlan } from "../wc/requests.ts";
 import type { LocalRequest } from "../wc/ui.ts";
 
@@ -80,7 +83,7 @@ function planOf(screened: ScreenedProposal): RequestPlan {
  * assumed.
  */
 export function appProposer(
-  app: { id: string; name: string },
+  app: Pick<MiniApp, "id" | "name"> & Partial<Pick<MiniApp, "descriptors">>,
   mounted: { chainId: number; address: string },
   host: ProposeHost,
 ): (proposal: AppProposal) => Promise<ProposalOutcome> {
@@ -99,7 +102,29 @@ export function appProposer(
       return refuse("the wallet has changed account since this app was opened");
     }
 
+    /* An app's own descriptors, for a contract whose address is only known at
+     * runtime (mini-app.ts explains why that case exists). Appended, never
+     * substituted: the bundled set stays in front, so an app cannot shadow a
+     * descriptor core already ships for the same chain and address. Core still
+     * judges whatever comes back — every field must render and the reading must
+     * agree with the firmware's decoder — so this widens what can be DESCRIBED
+     * and not what can be signed without a description. */
+    let offered: readonly Descriptor[] = [];
+    if (proposal.kind === "call") {
+      try {
+        offered = app.descriptors?.(chainId, proposal.to) ?? [];
+      } catch (e) {
+        /* An app's factory that throws — a malformed descriptor document, an
+         * address it would not build for — is a refusal, not an exception the
+         * app gets to catch. Letting it propagate would hand an app a way to
+         * distinguish this failure from every other no, which is the one thing
+         * the single opaque refusal exists to prevent. */
+        return refuse(`${app.name} could not produce a descriptor: ${(e as Error).message}`);
+      }
+    }
+
     const screened = screenProposal(proposal, {
+      ...(offered.length > 0 ? { descriptors: [...DEFAULT_DESCRIPTORS, ...offered] } : {}),
       chainId,
       /* The signer. Not a field on the proposal, not derived from anything the
        * app said — the address the user is looking at. */
