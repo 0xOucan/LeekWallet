@@ -167,6 +167,43 @@ Explicitly out of scope for this project:
 
 ---
 
+## M1 — design-system pass for the shell redesign (UI-REDESIGN-PLAN.md §1)
+
+`ui-ux-pro-max` is a GitHub-hosted skill and this environment has no network
+access to install third-party skills; it could not be run. Its stated remit —
+fintech/crypto palette, type pairing, reasoning rules — was applied by hand
+instead, against the existing tokens rather than a generated replacement,
+because the existing system already **is** that pairing: IBM Plex Sans/Mono,
+a single accent, hairline borders, no shadows, no gradients. A wholesale
+palette swap would have meant re-measuring nine colour pairs across two themes
+for no behavioural gain, which is exactly the churn §1b rules out ("efficiency
+outranks aesthetics" — a repaint that only looks different is not the win).
+
+**What changed:** one token, `--surface-2`, added for the M2 header and tab
+bar so they read as a distinct band above the panel content without a shadow
+or a second accent. It is decorative, not informational — same status as
+`--border` under docs/ACCESSIBILITY.md §4 — because the boundary that matters
+(panel edge) is still carried by `--border` at 1px, and the tab bar's own
+active-state signal is the `--accent` underline, which is asserted at 3:1+ on
+`--surface-2` in both themes: **5.25:1 light, 8.11:1 dark**. `--surface-2`
+itself measures 1.05:1 (light, on `--bg`) / 1.15:1 (light, on `--surface`) and
+1.05:1 / 1.03:1 in dark — consistent with `--border`'s own 1.27–1.40:1 in the
+existing table, i.e. deliberately low because no information rides on it
+alone. Arithmetic in the M1 commit body.
+
+**What was declined**, per §1b, because a skill run against "fintech wallet"
+reliably suggests it: glassmorphism/`backdrop-filter` (single most expensive
+GPU op on the target Android tablet), drop-shadow elevation (flat is the
+point — `docs/DESIGN.md` already says so), skeleton shimmer (animated
+gradient to say "wait"; a static "Reading…" says it for free), and a second
+accent colour for "trustworthy fintech blue" (one accent is the existing
+constraint and colour-only meaning is banned in this app for the actual
+reason — a danger action must read as dangerous in monochrome, and diluting
+the single accent's association with "the actionable one" undermines that).
+
+No other token changed. Typography, spacing, radius and motion values are
+unchanged from the table above.
+
 ## Pre-delivery checklist
 
 - [ ] All colours from tokens; none hardcoded

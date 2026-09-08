@@ -15,6 +15,12 @@
    * and rules and must not go on a button, an input or a select. Measured:
    * 3.75:1 on surface, 3.42:1 on bg (docs/ACCESSIBILITY.md). */
   --control-border: #7E867F;
+  /* Header/tab-bar fill (M2 shell). Decorative only, like --border: the 1px
+   * --border edge and the underline on the active tab (--accent, already
+   * measured above) carry every piece of information here, so this token is
+   * exempt from 1.4.11 the same way --border is (docs/ACCESSIBILITY.md §4).
+   * Measured anyway: 1.05:1 on --bg, 1.15:1 on --surface. */
+  --surface-2: #EEF0EA;
   --text:      #1A1D1A;
   --muted:     #5E665F;
   --accent:    #3F6E31;
@@ -43,6 +49,8 @@
 :root[data-theme="dark"] {
   --bg: #0F1210; --surface: #171B18; --border: #2A302B;
   --control-border: #6A716B;
+  /* 1.05:1 on --bg, 1.03:1 on --surface — decorative, see the light-mode note. */
+  --surface-2: #141813;
   --text: #E8EDE9; --muted: #909A91;
   --accent: #7ABF6A; --accent-fg: #0F1210;
   --danger: #E5796A; --warn: #D9A441; --ok: #7ABF6A;
@@ -52,6 +60,7 @@
   :root:not([data-theme="light"]) {
     --bg: #0F1210; --surface: #171B18; --border: #2A302B;
     --control-border: #6A716B;
+    --surface-2: #141813;
     --text: #E8EDE9; --muted: #909A91;
     --accent: #7ABF6A; --accent-fg: #0F1210;
     --danger: #E5796A; --warn: #D9A441; --ok: #7ABF6A;
