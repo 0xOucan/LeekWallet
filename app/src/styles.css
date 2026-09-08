@@ -242,6 +242,22 @@ p  { margin: 0 0 var(--space-3); color: var(--muted); font-size: var(--text-sm);
 [data-tab] { animation: tabfade var(--motion) ease-out; }
 @keyframes tabfade { from { opacity: 0; } to { opacity: 1; } }
 
+/* Full-flash disclosure on the flasher panel (L2). Closed by default like
+ * .custom-chain, but the summary is danger-coloured: this one gates the
+ * operation that erases every wallet, not a convenience field. */
+.flashmode-full {
+  margin: var(--space-2) 0 var(--space-3);
+  padding: var(--space-3);
+  border: 1px dashed var(--danger);
+  border-radius: var(--radius);
+}
+.flashmode-full > summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--danger);
+}
+.flashmode-full[open] > summary { margin-bottom: var(--space-3); }
+
 /* Diagnostics (M2). Collapsed by default, one click away. The <summary>
  * reuses .panel's own chrome so a closed diagnostics disclosure reads the
  * same as any other panel heading. */

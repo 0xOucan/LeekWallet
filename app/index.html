@@ -335,17 +335,32 @@
             <button id="flashconnect" type="button" class="secondary">Connect</button>
             <span class="muted" id="flashdevice">Not connected.</span>
           </div>
-          <!-- Two operations, not one. They differ by whether the person loses
-               their money, and that cannot be inferred from the file: both
-               images start with the same ESP-IDF magic byte. So it is asked,
-               and the backend refuses to guess. -->
-          <label class="field">
+          <!-- Two operations, not one, and they read as what they do (L2):
+               "Update firmware" / "Full flash", not a filename. They differ by
+               whether the person loses their money, and that cannot be
+               inferred from the file: both images start with the same
+               ESP-IDF magic byte. So it is asked, and the backend refuses to
+               guess.
+
+               The destructive one is behind a closed <details>, same
+               property M4 gave the release list, and closing it snaps the
+               choice back to Update (see the "toggle" handler in
+               flasher.ts) so a user cannot leave it collapsed while still
+               armed. -->
+          <div class="field" id="flashmodefield">
             <span>What are you doing?</span>
-            <select id="flashmode" class="addr">
-              <option value="update" selected>Updating firmware — keeps my wallet</option>
-              <option value="provision">Setting up a new or reset board — erases every wallet</option>
-            </select>
-          </label>
+            <label class="row">
+              <input type="radio" id="flashmodeupdate" name="flashmode" value="update" checked />
+              <span>Update firmware — keeps your wallet</span>
+            </label>
+            <details class="flashmode-full" id="flashmodedetails">
+              <summary>Full flash instead (<strong>ERASES every wallet</strong>)</summary>
+              <label class="row">
+                <input type="radio" id="flashmodeprovision" name="flashmode" value="provision" />
+                <span>Full flash — for a new or reset board only. <strong>ERASES every wallet.</strong></span>
+              </label>
+            </details>
+          </div>
           <label class="field">
             <span id="flashfilelabel">Firmware image (-update.bin, written at 0x10000) — or pick a release above</span>
             <input id="flashfile" type="file" accept=".bin,application/octet-stream" />
