@@ -1,7 +1,7 @@
 /**
  * All-chain balances (L3, docs/UI-L3-SPEC.md) — one chain's worth of the
  * wallet-menu headline: the account's native currency plus WETH, USDC, EURC
- * and cbBTC, batched per chain.
+ * and cirBTC, batched per chain.
  *
  * This file decides *which contract to ask* on each chain; it fetches
  * nothing and scales nothing itself — `multicall.ts` does the batched read,
@@ -11,7 +11,7 @@
  *
  * The address matrix is deliberately small and typed by hand, per
  * docs/UI-L3-SPEC.md §2: USDC and EURC are re-exported from
- * erc7730-circle.ts rather than retyped, and WETH/cbBTC live as TOKEN_HINTS
+ * erc7730-circle.ts rather than retyped, and WETH/cirBTC live as TOKEN_HINTS
  * entries in chains.ts, each with a comment recording how it was verified.
  * A chain absent from a token's map has no entry anywhere in this app for
  * that pairing — there is no fallback address to fall back to.
@@ -28,10 +28,10 @@ import { fetchTokenBalancesBatched, type TokenBalanceResult } from "./multicall.
 import { EURC_DEPLOYMENTS, USDC_DEPLOYMENTS } from "./erc7730-circle.ts";
 
 /** The four ERC-20s this screen tracks. ETH and HBAR are native, not here. */
-export type TrackedTokenSymbol = "WETH" | "USDC" | "EURC" | "cbBTC";
+export type TrackedTokenSymbol = "WETH" | "USDC" | "EURC" | "cirBTC";
 
 export const TRACKED_TOKEN_SYMBOLS: readonly TrackedTokenSymbol[] =
-  ["WETH", "USDC", "EURC", "cbBTC"];
+  ["WETH", "USDC", "EURC", "cirBTC"];
 
 /**
  * WETH deployments, verified 2026-09-08 by eth_call of symbol() against each
@@ -49,14 +49,20 @@ const WETH_DEPLOYMENTS: Readonly<Record<number, string>> = {
 };
 
 /**
- * cbBTC deployments, verified the same way. Sepolia only. The user holds
- * cbBTC on Arc Testnet too, but neither the Sepolia nor the Base-mainnet
- * cbBTC address has code there — that address is unknown and stays out
- * until it is supplied and verified, per docs/UI-L3-SPEC.md §2.
+ * cirBTC — Circle Wrapped Bitcoin — deployments, verified 2026-09-08 the
+ * same way: both answer symbol() "cirBTC", name() "Circle Wrapped Bitcoin",
+ * decimals() 8. Two chains, which is the whole of where it exists on
+ * testnets.
+ *
+ * Not to be confused with cbBTC, Coinbase Wrapped BTC: a different token
+ * from a different issuer that also wraps Bitcoin. This screen tracks
+ * cirBTC because that is what the user holds; an earlier draft read
+ * "cirBTC" as a typo for cbBTC and pointed Sepolia at Coinbase's contract,
+ * which would have shown a balance of the wrong asset.
  */
-const CBBTC_DEPLOYMENTS: Readonly<Record<number, string>> = {
-  11155111: "0x25554f552a72d1263a868d8be2bc50096b2953eb", // Sepolia
-  // TODO(cbBTC on Arc Testnet, 5042002): address unknown, do not guess one in.
+const CIRBTC_DEPLOYMENTS: Readonly<Record<number, string>> = {
+  5042002: "0xf0c4a4ce82a5746abaad9425360ab04fbba432bf",  // Arc Testnet
+  11155111: "0x3a3fe695f684bf9b9e43cf43c2b895ea5e392bb3", // Sepolia
 };
 
 /** `Deployments` (array of [chainId, address] pairs) as a chainId → address map. */
@@ -75,7 +81,7 @@ function deploymentsFor(symbol: TrackedTokenSymbol): Readonly<Record<number, str
     case "WETH": return WETH_DEPLOYMENTS;
     case "USDC": return USDC_BY_CHAIN;
     case "EURC": return EURC_BY_CHAIN;
-    case "cbBTC": return CBBTC_DEPLOYMENTS;
+    case "cirBTC": return CIRBTC_DEPLOYMENTS;
   }
 }
 
@@ -225,7 +231,7 @@ async function fetchPresentTokens(
       out.set(symbol, { kind: "error" });
       continue;
     }
-    // hintMeta first (WETH/cbBTC in TOKEN_HINTS, chains.ts), falling back to
+    // hintMeta first (WETH/cirBTC in TOKEN_HINTS, chains.ts), falling back to
     // fetchTokenMeta's contract-declared answer is deliberately NOT done
     // here: every address this screen asks about is either in TOKEN_HINTS
     // already (all four tracked symbols are) or has no meta at all, and a

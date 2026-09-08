@@ -10,7 +10,7 @@ four static states.
 
 ## 1. Assets shown
 
-The user named six: **ETH, WETH, USDC, EURC, cbBTC, HBAR**. They are not the
+The user named six: **ETH, WETH, USDC, EURC, cirBTC, HBAR**. They are not the
 same kind of thing and must not be treated as one list.
 
 - **Native** — `eth_getBalance`, no contract address. ETH on the Ethereum-family
@@ -18,7 +18,7 @@ same kind of thing and must not be treated as one list.
   gas token is USDC with an 18-decimal native face**, not ETH — the existing
   comment in `erc7730-circle.ts` explains it. Do not label Arc's native balance
   "ETH".
-- **ERC-20** — WETH, USDC, EURC, cbBTC. Each needs a contract address *per
+- **ERC-20** — WETH, USDC, EURC, cirBTC. Each needs a contract address *per
   chain*, and a token that has no address on a chain does not exist there.
 
 ## 2. The address matrix
@@ -29,7 +29,7 @@ the wrong number, which is the one failure this screen exists to avoid.
 USDC and EURC addresses already live in `packages/core/src/erc7730-circle.ts`
 (USDC on 9 testnets, EURC on 4) — **reuse those, do not retype them.**
 
-WETH and cbBTC are the gaps. These were verified on 2026-09-08 by
+WETH and cirBTC are the gaps. These were verified on 2026-09-08 by
 `eth_call` of `symbol()` against the chain's own RPC and are the only ones
 that may be hard-coded:
 
@@ -41,15 +41,19 @@ that may be hard-coded:
 | Unichain Sepolia | 1301 | WETH | `0x4200000000000000000000000000000000000006` | `WETH` |
 | OP Sepolia | 11155420 | WETH | `0x4200000000000000000000000000000000000006` | `WETH` |
 | Polygon Amoy | 80002 | WETH | `0x52eF3d68BaB452a294342DC3e5f464d7f610f72E` | `WETH` |
-| Sepolia | 11155111 | cbBTC | `0x25554f552a72D1263a868D8BE2BC50096b2953Eb` | `cbBTC` |
+| Sepolia | 11155111 | cirBTC | `0x3a3fe695F684Bf9b9e43CF43C2b895Ea5e392bB3` | `cirBTC` |
+| Arc Testnet | 5042002 | cirBTC | `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` | `cirBTC` |
 
 **Everything not in that table has no entry**, including: WETH on Hedera, Arc,
 Hoodi, BSC Testnet, Fuji and Linea Sepolia (the usual Linea WETH candidate
-returned no code); cbBTC on every chain except Sepolia. The user says they hold
-cbBTC on **Arc Testnet** as well, but neither the Sepolia nor the Base-mainnet
-cbBTC address has code on Arc — that address is still **unknown and must be
-left out** until it is supplied and verified. Leave a named `TODO` for it rather
-than a plausible-looking constant.
+returned no code); cirBTC on every chain except Sepolia and Arc Testnet.
+
+**cirBTC is Circle Wrapped Bitcoin, not Coinbase's cbBTC.** They are different
+tokens from different issuers that both wrap Bitcoin. An earlier draft of this
+spec read "cirBTC" as a typo for cbBTC and pointed Sepolia at Coinbase's
+`0x25554f55…`, which would have displayed a balance of the wrong asset. Both
+addresses in the table answer `symbol()` `cirBTC`, `name()` `Circle Wrapped
+Bitcoin`, `decimals()` `8`. Do not "correct" one to the other.
 
 If you add any address not in the table above, verify it first with an
 `eth_call` of `symbol()` (and `decimals()`) against that chain's own RPC and

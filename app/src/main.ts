@@ -1910,7 +1910,7 @@ function renderChainRow(chain: ChainInfo): void {
       { symbol: "WETH", state: { kind: "reading" } },
       { symbol: "USDC", state: { kind: "reading" } },
       { symbol: "EURC", state: { kind: "reading" } },
-      { symbol: "cbBTC", state: { kind: "reading" } },
+      { symbol: "cirBTC", state: { kind: "reading" } },
     ];
   for (const t of tokens) {
     // Token decimals are display-only inside assetStateText's `native` arm,

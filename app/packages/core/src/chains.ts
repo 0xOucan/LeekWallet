@@ -819,25 +819,25 @@ const TOKEN_HINTS: readonly TokenHint[] = [
   { chainId: 11155111, address: "0x08210f9170f89ab7658f0b5e3ff39b0e03c594d4", symbol: "EURC", decimals: 6, verified: false },
   { chainId: 11155420, address: "0x5fd84259d66cd46123540766be93dfe6d43130d7", symbol: "USDC", decimals: 6, verified: false },
 
-  /* WETH and cbBTC, for the all-chain balances screen (docs/UI-L3-SPEC.md
+  /* WETH and cirBTC, for the all-chain balances screen (docs/UI-L3-SPEC.md
    * §2). Verified on 2026-09-08 by eth_call of symbol() (and decimals())
    * against each chain's own RPC — see the spec's table for the exact
-   * responses. Everything not listed here, including cbBTC on every chain
-   * but Sepolia and WETH on Hedera/Arc/Hoodi/BSC Testnet/Fuji/Linea Sepolia,
-   * has no verified address and is deliberately absent: a chain with no
-   * entry here renders that token `unavailable`, never a guessed 0. cbBTC on
-   * Arc specifically is a known gap — the user holds it there, but neither
-   * the Sepolia nor the Base-mainnet cbBTC address has code on Arc, so it
-   * stays unlisted until a real address is supplied and verified. */
+   * responses. Everything not listed here, including cirBTC on every chain
+   * but Arc and Sepolia and WETH on Hedera/Arc/Hoodi/BSC Testnet/Fuji/Linea
+   * Sepolia, has no verified address and is deliberately absent: a chain
+   * with no entry here renders that token `unavailable`, never a guessed 0.
+   *
+   * cirBTC is Circle Wrapped Bitcoin, NOT Coinbase's cbBTC — a different
+   * issuer's wrapper for the same underlying asset. Do not "correct" one to
+   * the other. */
   { chainId: 11155111, address: "0xfff9976782d46cc05630d1f6ebab18b2324d6b14", symbol: "WETH", decimals: 18, verified: false },
   { chainId: 84532, address: "0x4200000000000000000000000000000000000006", symbol: "WETH", decimals: 18, verified: false },
   { chainId: 421614, address: "0x980b62da83eff3d4576c647993b0c1d7faf17c73", symbol: "WETH", decimals: 18, verified: false },
   { chainId: 1301, address: "0x4200000000000000000000000000000000000006", symbol: "WETH", decimals: 18, verified: false },
   { chainId: 11155420, address: "0x4200000000000000000000000000000000000006", symbol: "WETH", decimals: 18, verified: false },
   { chainId: 80002, address: "0x52ef3d68bab452a294342dc3e5f464d7f610f72e", symbol: "WETH", decimals: 18, verified: false },
-  { chainId: 11155111, address: "0x25554f552a72d1263a868d8be2bc50096b2953eb", symbol: "cbBTC", decimals: 8, verified: false },
-  // TODO(cbBTC on Arc Testnet, 5042002): unknown address. Do not guess one in
-  // — see the paragraph above.
+  { chainId: 5042002, address: "0xf0c4a4ce82a5746abaad9425360ab04fbba432bf", symbol: "cirBTC", decimals: 8, verified: false },
+  { chainId: 11155111, address: "0x3a3fe695f684bf9b9e43cf43c2b895ea5e392bb3", symbol: "cirBTC", decimals: 8, verified: false },
 ] as const;
 
 /**

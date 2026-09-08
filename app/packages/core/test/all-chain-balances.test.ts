@@ -42,18 +42,28 @@ function successfulAggregate(count: number, raw: bigint): string {
 
 group("the tracked address matrix matches docs/UI-L3-SPEC.md §2 exactly");
 {
-  // Sepolia has all four tracked tokens; Arc (5042002) has none of the four
-  // (its USDC is native, not one of the tracked ERC-20s here) — both facts
-  // are asserted so a future edit to either table cannot drift silently.
+  // Sepolia has all four tracked tokens; Arc (5042002) has three of them but
+  // no WETH — both facts are asserted so a future edit to either table
+  // cannot drift silently.
   check(
     trackedTokenAddress("WETH", 11155111)?.toLowerCase() === "0xfff9976782d46cc05630d1f6ebab18b2324d6b14",
     "Sepolia WETH address does not match the spec table",
   );
   check(
-    trackedTokenAddress("cbBTC", 11155111)?.toLowerCase() === "0x25554f552a72d1263a868d8be2bc50096b2953eb",
-    "Sepolia cbBTC address does not match the spec table",
+    trackedTokenAddress("cirBTC", 11155111)?.toLowerCase() === "0x3a3fe695f684bf9b9e43cf43c2b895ea5e392bb3",
+    "Sepolia cirBTC address does not match the spec table",
   );
-  check(trackedTokenAddress("cbBTC", 5042002) === undefined, "cbBTC on Arc has an address — the spec says it must not");
+  check(
+    trackedTokenAddress("cirBTC", 5042002)?.toLowerCase() === "0xf0c4a4ce82a5746abaad9425360ab04fbba432bf",
+    "Arc cirBTC address does not match the spec table",
+  );
+  // cirBTC is Circle's wrapper, not Coinbase's cbBTC. Pointing Sepolia at
+  // Coinbase's contract (0x25554f55…) would read the wrong asset entirely,
+  // so the address above is asserted exactly rather than merely "defined".
+  check(
+    trackedTokenAddress("cirBTC", 11155111)?.toLowerCase() !== "0x25554f552a72d1263a868d8be2bc50096b2953eb",
+    "Sepolia cirBTC points at Coinbase's cbBTC — wrong token",
+  );
   check(trackedTokenAddress("WETH", 296) === undefined, "WETH on Hedera has an address — the spec says it must not");
   check(trackedTokenAddress("USDC", 84532) !== undefined, "USDC on Base Sepolia has no address (should reuse erc7730-circle.ts)");
   check(trackedTokenAddress("EURC", 11155111) !== undefined, "EURC on Sepolia has no address (should reuse erc7730-circle.ts)");
@@ -61,14 +71,14 @@ group("the tracked address matrix matches docs/UI-L3-SPEC.md §2 exactly");
 
 group("a token with no address on a chain is unavailable, never 0");
 {
-  // Arc Testnet has USDC and EURC (its ERC-20 face and Circle's EURC) but no
-  // WETH and no cbBTC (docs/UI-L3-SPEC.md §2) — a mixed chain is the sharper
-  // test than an all-absent one, since it proves "unavailable" is decided
-  // per token, not per chain.
+  // Arc Testnet has USDC, EURC and cirBTC but no WETH (docs/UI-L3-SPEC.md
+  // §2) — a mixed chain is the sharper test than an all-absent one, since it
+  // proves "unavailable" is decided per token, not per chain.
   const chain = CHAINS.find((c) => c.id === 5042002);
   if (!chain) throw new Error("Arc Testnet missing from CHAINS");
   const present = TRACKED_TOKEN_SYMBOLS.filter((s) => trackedTokenAddress(s, 5042002) !== undefined);
-  check(present.length === 2, `expected USDC+EURC present on Arc, got ${present.join(",")}`);
+  check(present.length === 3, `expected USDC+EURC+cirBTC present on Arc, got ${present.join(",")}`);
+  check(trackedTokenAddress("WETH", 5042002) === undefined, "WETH on Arc has an address — the spec says it must not");
 
   const request: EthRequest = async ({ method, params }) => {
     if (method === "eth_getBalance") return uint(0n); // zero native, a real answer
@@ -80,7 +90,7 @@ group("a token with no address on a chain is unavailable, never 0");
   const row = await fetchChainBalances(request, chain, OWNER);
   check(row.native.kind === "native", "Arc's native balance did not read as a real figure");
   for (const t of row.tokens) {
-    if (t.symbol === "USDC" || t.symbol === "EURC") {
+    if (t.symbol === "USDC" || t.symbol === "EURC" || t.symbol === "cirBTC") {
       check(t.state.kind === "token", `${t.symbol} on Arc should have answered with a real figure`);
       continue;
     }
