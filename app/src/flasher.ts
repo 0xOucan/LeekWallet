@@ -379,14 +379,20 @@ export function initFlasher(bridge: FlashBridge | null): void {
   const warning = $("flashwarning");
   const erase = $("flasherase");
   const ack = $("flashack") as HTMLInputElement;
-  const mode = $("flashmode") as HTMLSelectElement;
+  // Two radios rather than a <select>: the destructive one lives inside a
+  // closed <details> (L2), so reaching it is "open the disclosure, then
+  // choose it" — never a single click from arrival, and closing the
+  // disclosure snaps back to Update (see the "toggle" listener below).
+  const modeUpdate = $("flashmodeupdate") as HTMLInputElement;
+  const modeProvision = $("flashmodeprovision") as HTMLInputElement;
+  const modeDetails = $("flashmodedetails") as HTMLDetailsElement;
   const ackText = $("flashacktext");
   const fileLabel = $("flashfilelabel");
 
   /** Offsets from partitions.csv: nvs 0x9000, phy_init 0xf000, app 0x10000. */
   const PROVISION_OFFSET = 0x0;
   const UPDATE_OFFSET = 0x10000;
-  const provisioning = () => mode.value === "provision";
+  const provisioning = () => modeProvision.checked;
   const offsetForMode = () => (provisioning() ? PROVISION_OFFSET : UPDATE_OFFSET);
 
   /* The acknowledgement is not boilerplate to click past — it is the sentence
@@ -395,23 +401,39 @@ export function initFlasher(bridge: FlashBridge | null): void {
      consent to erase one. */
   const describeMode = (): void => {
     if (provisioning()) {
-      fileLabel.textContent = "Firmware image (-provision.bin, written at 0x0)";
+      // Named by consequence first (L2): the filename is the parenthetical,
+      // not the headline — a person choosing this should not have to know
+      // what "-provision.bin" means to understand what they are about to do.
+      fileLabel.textContent = "Full flash image (-provision.bin, written at 0x0)";
       ackText.textContent =
         "I have written down my recovery phrase. I understand that this erases " +
         "the device including every seed stored on it, and that the firmware I " +
         "install will have full access to my PIN and my seed.";
     } else {
-      fileLabel.textContent = "Firmware image (-update.bin, written at 0x10000)";
+      fileLabel.textContent = "Update image (-update.bin, written at 0x10000)";
       ackText.textContent =
         "I understand that the firmware I install will have full access to my " +
         "PIN and my seed. My wallet stays on the device.";
     }
   };
-  mode.addEventListener("change", () => {
+  const onModeChange = (): void => {
     ack.checked = false;
     describeMode();
     erase.hidden = !provisioning();
     refresh();
+  };
+  modeUpdate.addEventListener("change", onModeChange);
+  modeProvision.addEventListener("change", onModeChange);
+  // Closing the disclosure is itself a decision to step back from the
+  // destructive path (L2: "never one click from arrival" must survive a user
+  // opening it, looking, and changing their mind without explicitly
+  // reselecting Update). Opening it does not select provision by itself —
+  // only the radio inside does that.
+  modeDetails.addEventListener("toggle", () => {
+    if (!modeDetails.open && modeProvision.checked) {
+      modeUpdate.checked = true;
+      onModeChange();
+    }
   });
   describeMode();
   const portSelect = $("flashport") as HTMLSelectElement;
@@ -467,15 +489,23 @@ export function initFlasher(bridge: FlashBridge | null): void {
 
   /**
    * Accept bytes picked from a release rather than the file input — same
-   * state, same gates. Sets `mode` and re-arms the acknowledgement exactly as
-   * the mode selector's own change handler does, because picking a
-   * -provision.bin asset is exactly that: choosing the destructive mode.
+   * state, same gates. Sets the mode radio and re-arms the acknowledgement
+   * exactly as the mode radios' own change handler does, because picking a
+   * -provision.bin asset is exactly that: choosing the destructive mode. The
+   * release list's own closed <details> (M4) was that path's deliberate
+   * second step, so the details here is opened rather than made redundant —
+   * it reflects the choice already made instead of asking it twice.
    */
   const acceptImage = async (bytes: Uint8Array<ArrayBuffer>, label: string, kind: "update" | "provision", knownSha: string | null): Promise<void> => {
     image = bytes;
     digest = await sha256Hex(image);
-    if (mode.value !== kind) {
-      mode.value = kind;
+    if (provisioning() !== (kind === "provision")) {
+      if (kind === "provision") {
+        modeProvision.checked = true;
+        modeDetails.open = true;
+      } else {
+        modeUpdate.checked = true;
+      }
       ack.checked = false;
       describeMode();
       erase.hidden = !provisioning();
