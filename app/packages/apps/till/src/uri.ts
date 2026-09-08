@@ -34,7 +34,14 @@
 
 import { checksumAddress } from "@leekwallet/core/tx-interpret.ts";
 
-export interface PaymentRequest {
+/**
+ * The four fields an EIP-681 transfer URI carries.
+ *
+ * Named for the URI rather than for the bill: `PaymentRequest` in request.ts is
+ * the thing the cashier issues and the waiter displays, and two types with one
+ * name in one package is how a recipient ends up in an amount's place.
+ */
+export interface PaymentUriParts {
   chainId: number;
   /** The ERC-20 being transferred. */
   token: string;
@@ -50,7 +57,7 @@ function address20(raw: string, what: string): string {
   return checksumAddress(raw.slice(2));
 }
 
-export function buildPaymentUri(req: PaymentRequest): string {
+export function buildPaymentUri(req: PaymentUriParts): string {
   if (req.amount <= 0n) throw new RangeError("a payment request must be for a positive amount");
   if (!Number.isSafeInteger(req.chainId) || req.chainId <= 0) throw new RangeError("bad chain id");
   const token = address20(req.token, "token contract");

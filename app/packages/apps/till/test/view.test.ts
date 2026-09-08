@@ -30,6 +30,7 @@ const state = (over: Partial<TillState> = {}): TillState => ({
   token: "USDC",
   chainId: 84532,
   marker: 17,
+  issuedAt: 1_789_000_000,
   ...over,
 });
 

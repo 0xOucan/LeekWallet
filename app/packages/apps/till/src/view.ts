@@ -20,6 +20,7 @@ import {
   breakevenCents, CARD_NOTICE, costsMoreThanCard, deploymentFor,
   railsCheapestFirst, type Rail, type TillToken,
 } from "./rails.ts";
+import { sealRequest } from "./request.ts";
 import { buildPaymentUri, shareMessage, whatsappLink } from "./uri.ts";
 
 export interface TillState {
@@ -35,6 +36,12 @@ export interface TillState {
   chainId: number;
   /** Sub-cent order marker, 0–99. See order.ts. */
   marker: number;
+  /**
+   * Unix seconds stamped into the issued request. State rather than
+   * `Date.now()` inside the view so the model stays pure and a test can assert
+   * that the same bill seals to the same bytes.
+   */
+  issuedAt: number;
 }
 
 /** How a line should read. `unavailable` is a state, never a styled zero. */
@@ -73,6 +80,13 @@ export type Charge =
       uri: string;
       share: string;
       whatsapp: string;
+      /**
+       * The same bill as a request the waiter's terminal can scan. The cashier
+       * issues it; `request.ts` explains what it does and does not prove.
+       */
+      requestText: string;
+      /** Its checksum, printed so the two screens can be compared by eye. */
+      requestDigest: string;
     }
   | { ok: false; reason: string };
 
@@ -191,6 +205,18 @@ function chargeFor(state: TillState, order: Order | null): Charge {
     amount: units,
   });
   const unitsText = formatUnits(units, deployment.decimals);
+  /* Every chain this terminal takes, not the one picked here: the customer
+   * chooses, and the waiter's screen must be able to show them all. The rail
+   * order is cheapest-first, and it survives into the request. */
+  const sealed = sealRequest({
+    merchant: state.merchant,
+    recipient: state.recipient,
+    token: state.token,
+    total: order.total,
+    marker: state.marker,
+    chains: railsCheapestFirst().map((r) => r.chainId),
+    issuedAt: state.issuedAt,
+  });
   const rail = railsCheapestFirst().find((r) => r.chainId === state.chainId);
   const share = shareMessage({
     merchant: state.merchant,
@@ -199,7 +225,10 @@ function chargeFor(state: TillState, order: Order | null): Charge {
     chainName: rail?.name ?? String(state.chainId),
     uri,
   });
-  return { ok: true, units, unitsText, uri, share, whatsapp: whatsappLink(share) };
+  return {
+    ok: true, units, unitsText, uri, share, whatsapp: whatsappLink(share),
+    requestText: sealed.text, requestDigest: sealed.digest,
+  };
 }
 
 /* ------------------------------------------------------------------ DOM */
@@ -319,7 +348,16 @@ export function renderCharge(
     plain.append(qrSvg(view.recipient));
     plain.append(el("p", "till-code-note", `Then send ${view.charge.unitsText} yourself.`));
 
-    codes.append(exact, plain);
+    /* Third code, and it faces the other way: the two above are for the
+     * customer's wallet, this one is for the waiter's terminal. It carries the
+     * amount and the recipient, which is what makes them unchangeable at the
+     * table — see request.ts. */
+    const waiter = el("div", "till-code");
+    waiter.append(el("p", "till-code-label", "Hand to the waiter"));
+    waiter.append(qrSvg(view.charge.requestText));
+    waiter.append(el("p", "till-code-note", `Checksum ${view.charge.requestDigest}`));
+
+    codes.append(exact, plain, waiter);
     charge.append(codes);
 
     charge.append(el("p", "till-amount", `${view.charge.unitsText} to ${view.recipient}`));
