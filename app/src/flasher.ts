@@ -142,6 +142,130 @@ export function digestRefusal(expected: string, actual: string): string {
   return "";
 }
 
+/* ------------------------------------------------------------- releases (M4) */
+
+/** One flashable asset out of a GitHub release. */
+export interface ReleaseAsset {
+  name: string;
+  /** "update" keeps the wallet, "provision" erases every one. Never guessed
+   * from bytes — see the module doc — always from the filename suffix. */
+  kind: "update" | "provision";
+  board: "ESP32-C3 (Pixie)" | "ESP32-S3";
+  downloadUrl: string;
+  size: number;
+  /** From this release's SHA256SUMS asset, when one was found and parsed.
+   * Null means "not verifiable from the release notes", never "matches". */
+  sha256: string | null;
+}
+
+export interface Release {
+  tag: string;
+  publishedAt: string;
+  /** The release page, so a person can read the notes before trusting a file. */
+  htmlUrl: string;
+  assets: ReleaseAsset[];
+}
+
+const RELEASES_API = "https://api.github.com/repos/0xOucan/LeekWallet/releases";
+
+/** Board and image kind out of a filename — the two things a release build
+ * actually names. Everything else (chip id, digest) is checked from bytes. */
+function classifyAsset(name: string): Pick<ReleaseAsset, "kind" | "board"> | null {
+  const lower = name.toLowerCase();
+  let kind: ReleaseAsset["kind"];
+  if (lower.endsWith("-update.bin")) kind = "update";
+  else if (lower.endsWith("-provision.bin")) kind = "provision";
+  else return null;
+  const board = lower.includes("esp32s3") || lower.includes("esp32-s3")
+    ? "ESP32-S3"
+    : "ESP32-C3 (Pixie)";
+  return { kind, board };
+}
+
+/** `name  digest` or `digest  name`, one per line — the shape `sha256sum` writes. */
+export function parseShaSums(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const m = /^([0-9a-f]{64})\s+\*?(\S+)$/i.exec(line.trim());
+    if (m) { out[m[2] as string] = (m[1] as string).toLowerCase(); continue; }
+    const m2 = /^(\S+)\s+([0-9a-f]{64})$/i.exec(line.trim());
+    if (m2) out[m2[1] as string] = (m2[2] as string).toLowerCase();
+  }
+  return out;
+}
+
+/**
+ * The releases list, or a thrown error naming what went wrong.
+ *
+ * Never returns an empty array on failure — an empty list reads as "no
+ * releases exist" (UI-REDESIGN-PLAN.md §2a), which is a lie the caller must
+ * not be allowed to render. A genuinely empty releases page is possible and
+ * is a different, honest state the caller renders itself; this function only
+ * ever returns [] for that case, and throws for every kind of "could not ask".
+ */
+export async function fetchReleases(): Promise<Release[]> {
+  let res: Response;
+  try {
+    res = await fetch(RELEASES_API, { headers: { Accept: "application/vnd.github+json" } });
+  } catch (e) {
+    throw new Error(
+      `Could not reach GitHub to list releases: ${String((e as Error).message ?? e)}`,
+    );
+  }
+  if (!res.ok) {
+    throw new Error(`GitHub returned ${res.status} listing releases — could not list them.`);
+  }
+  const body = (await res.json()) as unknown;
+  if (!Array.isArray(body)) throw new Error("GitHub's releases response was not a list.");
+
+  const releases: Release[] = [];
+  for (const r of body as Record<string, unknown>[]) {
+    const tag = typeof r["tag_name"] === "string" ? r["tag_name"] : "";
+    const publishedAt = typeof r["published_at"] === "string" ? r["published_at"] : "";
+    const htmlUrl = typeof r["html_url"] === "string" ? r["html_url"] : "";
+    const rawAssets = Array.isArray(r["assets"]) ? (r["assets"] as Record<string, unknown>[]) : [];
+
+    // The digest file, if this release carries one — fetched once per release
+    // and applied to every image asset in it, rather than trusting anything
+    // an asset's own name claims.
+    const sumsAsset = rawAssets.find((a) =>
+      typeof a["name"] === "string" && /^SHA256SUMS/i.test(a["name"] as string));
+    let sums: Record<string, string> = {};
+    if (sumsAsset && typeof sumsAsset["browser_download_url"] === "string") {
+      try {
+        const sr = await fetch(sumsAsset["browser_download_url"] as string);
+        if (sr.ok) sums = parseShaSums(await sr.text());
+      } catch { /* no digests for this release; assets carry sha256: null */ }
+    }
+
+    const assets: ReleaseAsset[] = [];
+    for (const a of rawAssets) {
+      const name = typeof a["name"] === "string" ? a["name"] : "";
+      const url = typeof a["browser_download_url"] === "string" ? a["browser_download_url"] : "";
+      const size = typeof a["size"] === "number" ? a["size"] : 0;
+      const cls = classifyAsset(name);
+      if (!cls || !url) continue;
+      assets.push({ name, kind: cls.kind, board: cls.board, downloadUrl: url, size,
+        sha256: sums[name] ?? null });
+    }
+    releases.push({ tag, publishedAt, htmlUrl, assets });
+  }
+  return releases;
+}
+
+/** Download an asset's bytes, over the same fetch the release list used. */
+export async function downloadAsset(asset: ReleaseAsset): Promise<Uint8Array<ArrayBuffer>> {
+  let res: Response;
+  try {
+    res = await fetch(asset.downloadUrl);
+  } catch (e) {
+    throw new Error(`Could not download ${asset.name}: ${String((e as Error).message ?? e)}`);
+  }
+  if (!res.ok) throw new Error(`GitHub returned ${res.status} downloading ${asset.name}.`);
+  const buf = await res.arrayBuffer();
+  return new Uint8Array(buf.slice(0));
+}
+
 /** Whether the image belongs on the attached board, and what to say if not. */
 export function chipRefusal(imageId: number | null, device: DetectedChip | null): string {
   if (device === null || imageId === null) return "";
@@ -338,6 +462,110 @@ export function initFlasher(bridge: FlashBridge | null): void {
     refresh();
   });
   expected.addEventListener("input", refresh);
+
+  /**
+   * Accept bytes picked from a release rather than the file input — same
+   * state, same gates. Sets `mode` and re-arms the acknowledgement exactly as
+   * the mode selector's own change handler does, because picking a
+   * -provision.bin asset is exactly that: choosing the destructive mode.
+   */
+  const acceptImage = async (bytes: Uint8Array<ArrayBuffer>, label: string, kind: "update" | "provision", knownSha: string | null): Promise<void> => {
+    image = bytes;
+    digest = await sha256Hex(image);
+    if (mode.value !== kind) {
+      mode.value = kind;
+      ack.checked = false;
+      describeMode();
+      erase.hidden = !provisioning();
+    }
+    // The digest travelling with the release is a cross-check against a
+    // corrupted or tampered download, not a shortcut past it — it is compared
+    // against the bytes just fetched exactly like a pasted one would be.
+    expected.value = knownSha ?? "";
+    const built = imageChipId(image);
+    digestOut.textContent = `${label} — ${image.length} bytes, built for ${chipName(built)}\nSHA-256 ${digest}` +
+      (knownSha ? "" : "\nThis release did not publish a SHA256SUMS this app could parse — nothing to cross-check against.");
+    refresh();
+  };
+
+  const releasesStatus = $("releasesstatus");
+  const releasesList = $("releaseslist");
+
+  const renderReleases = (releases: Release[]): void => {
+    releasesList.replaceChildren();
+    if (releases.length === 0) {
+      releasesStatus.textContent = "No releases published yet.";
+      return;
+    }
+    releasesStatus.textContent = `${releases.length} release${releases.length === 1 ? "" : "s"} from github.com/0xOucan/LeekWallet.`;
+    for (const rel of releases) {
+      const box = document.createElement("div");
+      box.className = "field";
+      const title = document.createElement("strong");
+      const date = rel.publishedAt ? new Date(rel.publishedAt).toLocaleDateString() : "undated";
+      title.textContent = `${rel.tag} — ${date}`;
+      box.append(title);
+
+      const updates = rel.assets.filter((a) => a.kind === "update");
+      const provisions = rel.assets.filter((a) => a.kind === "provision");
+
+      const row = document.createElement("div");
+      row.className = "row";
+      for (const a of updates) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "secondary";
+        b.textContent = `${a.board} — update (keeps your wallet)`;
+        b.addEventListener("click", () => {
+          releasesStatus.textContent = `Downloading ${a.name}…`;
+          void downloadAsset(a)
+            .then((bytes) => acceptImage(bytes, a.name, "update", a.sha256))
+            .then(() => { releasesStatus.textContent = `Loaded ${a.name} from ${rel.tag}.`; })
+            .catch((e: unknown) => { releasesStatus.textContent = String((e as Error).message ?? e); });
+        });
+        row.append(b);
+      }
+      box.append(row);
+
+      if (provisions.length > 0) {
+        // Never in the open list, never one click away (§4): a second,
+        // deliberate action — opening this — stands between "browsing
+        // releases" and "the button that erases every wallet".
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Show the image that erases every wallet";
+        details.append(summary);
+        const prow = document.createElement("div");
+        prow.className = "row";
+        for (const a of provisions) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "danger";
+          b.textContent = `${a.board} — provision (ERASES every wallet)`;
+          b.addEventListener("click", () => {
+            releasesStatus.textContent = `Downloading ${a.name}…`;
+            void downloadAsset(a)
+              .then((bytes) => acceptImage(bytes, a.name, "provision", a.sha256))
+              .then(() => { releasesStatus.textContent = `Loaded ${a.name} from ${rel.tag}. Read the acknowledgement above before flashing.`; })
+              .catch((e: unknown) => { releasesStatus.textContent = String((e as Error).message ?? e); });
+          });
+          prow.append(b);
+        }
+        details.append(prow);
+        box.append(details);
+      }
+      releasesList.append(box);
+    }
+  };
+
+  releasesStatus.textContent = "Checking github.com/0xOucan/LeekWallet for releases…";
+  void fetchReleases()
+    .then(renderReleases)
+    .catch((e: unknown) => {
+      // Never an empty list on failure — that reads as "no releases exist",
+      // which is not what happened (UI-REDESIGN-PLAN.md §2a/§4).
+      releasesStatus.textContent = String((e as Error).message ?? e);
+    });
 
   file.addEventListener("change", () => {
     const f = file.files?.[0];

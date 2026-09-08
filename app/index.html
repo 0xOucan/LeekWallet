@@ -277,6 +277,28 @@
                cannot drift apart. -->
           <p class="notice notice--danger" id="flasherase"></p>
           <p class="notice notice--danger" id="flashwarning" data-secure="false"></p>
+
+          <!--
+            Releases (M4, UI-REDESIGN-PLAN.md §2a/§4). Fetched from GitHub,
+            never guessed: an empty list here means "could not ask", not "no
+            releases exist" - the two read identically to a user unless the
+            copy says which one happened, so #releasesstatus always does.
+
+            Picking a release asset fills the same file-selection state the
+            manual picker below fills (image bytes, digest, expected digest),
+            so every existing gate in flashBlockedReason() still applies -
+            there is no separate, shorter path to the Flash button.
+
+            The destructive image is never the default and never one press
+            from being flashed: -update.bin buttons sit in the open list,
+            -provision.bin buttons are behind a closed <details> a user has to
+            choose to open, worded with what it destroys rather than a bare
+            filename.
+          -->
+          <h3>Releases</h3>
+          <p class="muted" id="releasesstatus" role="status">Checking github.com/0xOucan/LeekWallet for releases…</p>
+          <div id="releaseslist"></div>
+
           <label class="field">
             <span>Device</span>
             <select id="flashport" class="addr"></select>
@@ -297,7 +319,7 @@
             </select>
           </label>
           <label class="field">
-            <span id="flashfilelabel">Firmware image (-update.bin, written at 0x10000)</span>
+            <span id="flashfilelabel">Firmware image (-update.bin, written at 0x10000) — or pick a release above</span>
             <input id="flashfile" type="file" accept=".bin,application/octet-stream" />
           </label>
           <p class="muted addr" id="flashdigest"></p>

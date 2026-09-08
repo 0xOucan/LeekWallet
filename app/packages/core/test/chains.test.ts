@@ -222,6 +222,16 @@ group("the CSP allowlist still bounds the registry, by exact origin");
      * entry outlives the source that justified it. Fetching a list is a
      * disclosure, never a check — see TOKEN_LIST_NOTICE. */
     ...TOKEN_LIST_URLS.map((s) => new URL(s.url).origin),
+    /* The flasher's release list (M4, UI-REDESIGN-PLAN.md §2a/§4): the
+     * GitHub API for github.com/0xOucan/LeekWallet/releases, the release
+     * page a person is pointed at to read notes before trusting a file, and
+     * the two hosts GitHub serves release-asset bytes and SHA256SUMS from
+     * (asset URLs are 302-redirected across both, depending on age). None of
+     * these are RPC endpoints; the app never signs against them. */
+    "https://api.github.com",
+    "https://github.com",
+    "https://objects.githubusercontent.com",
+    "https://release-assets.githubusercontent.com",
   ]);
 
   for (const entry of allowed) {
