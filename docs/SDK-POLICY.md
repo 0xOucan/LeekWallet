@@ -5,7 +5,7 @@ contracts. That is a fair check, and the current state does not pass it:
 
 | Sponsor | SDK | Used today? |
 |---|---|---|
-| 1inch | `@1inch/aqua-sdk` **0.3.1** | ❌ hand-rolled encoders |
+| 1inch | `@1inch/aqua-sdk` **0.3.1** | ⚠️ tests only — **licence**, see below |
 | Hedera | `@hashgraph/asset-tokenization-sdk` **8.0.0** | ❌ ABIs + viem |
 | Circle | `@circle-fin/app-kit` **1.14.0** | ❌ not at all |
 
@@ -47,9 +47,46 @@ device is that it says what the bytes do, independently of whatever built them.
 
 ## Per app
 
-**Aqua** — `AquaProtocolContract` for `ship`/`dock` encoding, `calculateStrategyHash`,
-and the `Shipped`/`Pushed`/`Docked` event decoders. Our firmware decoder stays:
-it is the device's independent reading of the same bytes, which is exactly rule 2.
+**Aqua** — this was the plan, and the licence stopped it. It is worth reading
+before doing the same thing to Hedera or Circle.
+
+`@1inch/aqua-sdk` is `LicenseRef-Degensoft-Aqua-Source-1.1`: source-available,
+not open source. Calling the deployed Aqua contracts is unaffected, which is
+what `AQUA-1INCH.md` already said — but **putting the package inside a signed
+Apache-2.0 release binary is a different act**, and it fails. §2.1 permits
+distributing *unmodified* forms while §1.7 counts static linking and "artifacts
+shipped together as one product" as a Modification; §5 attaches commercial
+triggers, §6 an audit right, §11.3 a bar on assignment, §7.1 a terminating
+patent grant, and §5.3's saving waiver is revocable on ten days' notice. Our
+`LICENSE` promises every recipient of a release that they carry none of that,
+and this project cannot make that promise about code it does not own. Clause by
+clause: `THIRD-PARTY-LICENSES.md`.
+
+So the SDK is a **devDependency**, and `app/packages/apps/aqua/test/sdk-parity.test.ts`
+uses it for everything the list above named: `AquaProtocolContract` builds every
+`ship` and `dock` a second time and the bytes must match ours exactly,
+`calculateStrategyHash` must match our hash, and the `Shipped`/`Pushed`/`Docked`
+topics and `AQUA_CONTRACT_ADDRESSES` must match our constants. That suite also
+asserts no `src/` file imports the SDK, which is what keeps it out of the
+bundle.
+
+This is not a retreat from the rule at the top of this file. Two independent
+implementations of one ABI, compared byte for byte, is a **stronger** claim than
+one implementation would have been — importing the SDK would have collapsed them
+into a single source of truth and proved nothing. "We ran the sponsor's own SDK
+against ours and the bytes are identical, and then we decoded them on the device"
+is the sentence, and it is true.
+
+Our firmware decoder stays regardless: it is the device's independent reading of
+the same bytes, which is exactly rule 2. That test now runs **SDK-built**
+calldata through it, which is the strongest form of rule 2 available — the
+sponsor builds the bytes, and the device still says what they do.
+
+**The general lesson: read the SDK's licence before adopting it, not after.**
+Sponsorship is not a licence grant, and "the sponsor wants integrations" is not
+one either. Check Hedera's and Circle's before wiring them in — if either is
+similarly encumbered, the same test-only shape applies and is equally
+submittable.
 
 **Hedera ATS** — the SDK's `Equity`, `Role`, `Kyc`, `Dividend` ports for reads
 and for building calls. Its wallet layer (`METAMASK`, `HWALLETCONNECT`, `DFNS`,

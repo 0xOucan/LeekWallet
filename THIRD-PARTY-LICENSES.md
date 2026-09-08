@@ -13,6 +13,11 @@ govern those files. Nothing here is relicensed.
 | QRCode | `src/qrcode.c`, `src/qrcode.h` | MIT | Yes |
 | ESP-IDF | build dependency, not vendored | Apache-2.0 | Yes |
 | zxing-wasm | `app/` npm dependency, WASM bundled into the app | MIT | Yes |
+| @1inch/aqua-sdk | `app/packages/apps/aqua/` **devDependency, tests only — never bundled** | LicenseRef-Degensoft-Aqua-Source-1.1 | **No — see below** |
+
+Every row above is bundled into a release except `@1inch/aqua-sdk`, which is
+deliberately not, because it is the one entry that could not be. The section
+on it below says why, and what contributors must not do with it.
 
 MIT is permissive and imposes only attribution, so MIT code may be distributed
 inside an Apache-2.0 project provided the copyright notices and license text
@@ -124,3 +129,76 @@ and no implementation was copied.
 one.** Doing so would make this project AGPL and invalidate its license. If you
 want a behaviour Colibri has, read its documentation or observe its protocol,
 then write the implementation here.
+
+## @1inch/aqua-sdk
+
+`app/packages/apps/aqua/` — the 1inch Aqua SDK. A **devDependency**, used only
+by `test/sdk-parity.test.ts`, which builds the same `ship` and `dock` calldata
+the app builds and asserts the two agree byte for byte. **No module under any
+`src/` imports it, so no release artifact contains it**; that suite asserts as
+much, because everything below depends on it staying true.
+
+License: **Degensoft Aqua Source License 1.1** (`LicenseRef-Degensoft-Aqua-Source-1.1`),
+Copyright © 2025 Degensoft Ltd. Full text ships in the package: `LICENSE`.
+
+**Source-available, not open source, and not compatible with Apache-2.0.**
+
+### Why it is not a dependency
+
+`docs/apps/AQUA-1INCH.md` notes that calling the deployed Aqua contracts is
+unaffected by this licence. That is right, and it is what the app does. Putting
+the SDK *into a signed release binary* is a different act, and it fails on five
+independent clauses:
+
+- **§2.1 vs §1.7.** The grant covers distributing *unmodified* source or object
+  forms. §1.7 defines Modification to include static or dynamic linking and
+  "artifacts shipped/deployed together as one product". A bundled, tree-shaken,
+  minified companion is both, so the bundle is not what §2.1 permits us to hand
+  out.
+- **§5 and §6.** Commercial use requires a separate written agreement from
+  Degensoft; Degensoft may demand an annual audit. These are obligations that
+  would attach to whoever holds the binary. Our `LICENSE` tells them they have
+  none.
+- **§7.1.** The patent grant terminates when the licensee stops using the work
+  or asserts a claim, and forbids seeking patent protection for any system that
+  depends on it. Apache-2.0 §3 is irrevocable except on patent litigation.
+- **§9 and §11.3.** The licence terminates on uncured material breach and may
+  not be assigned without written consent. Apache-2.0 is perpetual and
+  irrevocable, and a public release is exactly an unconsented conveyance to
+  strangers.
+- **§5.3.** The waiver that makes ordinary use practical is revocable "at any
+  time in its sole discretion, including with respect to existing users", with
+  ten days to cure. Binaries already downloaded cannot be cured at all.
+
+There is also an internal contradiction worth knowing about: **§3.1 C requires
+the designation "Powered by Aqua"** in README and UI for distributed
+Modifications, while **§7.2 grants no right to use that designation** absent
+separate written permission. Any path that made us a distributor of a
+Modification would require contacting Degensoft to resolve it.
+
+The short version: this project cannot grant rights it does not hold, and cannot
+bind people who download a release to terms they never saw. Keeping the SDK out
+of the bundle avoids all of it, and costs nothing — see below.
+
+### What we get instead
+
+The SDK is more useful as a witness than as a dependency. `src/registry.ts` and
+`AquaProtocolContract` are two independent implementations of the same ABI, and
+`test/sdk-parity.test.ts` compares every byte either produces, plus the strategy
+hash, the three event topics and the registry address. Importing the SDK would
+have replaced two implementations with one and proved nothing. A differential
+test against the protocol authors' own code is the stronger result.
+
+### Rules for contributors
+
+1. **Do not import `@1inch/aqua-sdk` from any `src/` directory**, and do not
+   promote it to `dependencies`. Both would put it in the release bundle and
+   everything above would start applying. `test/sdk-parity.test.ts` fails if the
+   first happens.
+2. **Do not copy or vendor Aqua source**, SDK or contracts, into this
+   repository. Calling published contracts is permitted; a copied file is a
+   Modification under §1.7 and would pull this project under a licence it cannot
+   be released under.
+3. **If this project ever charges for anything**, re-read §5 before shipping,
+   not after — the triggers are measured on gross receipts and aggregate across
+   affiliates.
