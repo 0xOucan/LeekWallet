@@ -1442,6 +1442,14 @@ function remountApps(info: ChainInfo): void {
       review: (local) => walletConnect.review(local),
       log,
     }),
+    /* Pre-connect (M3, UI-REDESIGN-PLAN.md §2a): only apps that hold no key
+     * by design belong on the pre-connect surface alongside Connect and Flash
+     * firmware. "Holds no key" is not a field MiniApp carries — that type is
+     * in packages/core, out of scope for this pass — so it is named here by
+     * id, the one place the shell is already allowed to know an app exists.
+     * The cashier half of La Caja needs a signer to issue a bill and stays
+     * off until a device is connected; the waiter only displays one. */
+    client === null ? (app) => app.id === "till-waiter" : undefined,
   );
   // mountApps() just wrote #apps's own [hidden] based on chain content; when
   // the tab bar is showing, the tab-switch rule (only visible on the Apps
@@ -3500,6 +3508,9 @@ async function disconnect(): Promise<void> {
   ($("connect") as HTMLButtonElement).disabled = false;
   ($("unlock") as HTMLButtonElement).disabled = true;
   ($("disconnect") as HTMLButtonElement).disabled = true;
+  // Re-narrows the mini-app surface back to "holds no key" (M3) now that
+  // client is null; loadAddresses() is the mirror call on the way back in.
+  remountApps(activeChain());
   log("disconnected; session secrets cleared");
 }
 

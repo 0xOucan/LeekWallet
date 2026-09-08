@@ -37,9 +37,17 @@ export function mountApps(
   container: HTMLElement,
   context: AppContext,
   proposerFor?: (app: MiniApp) => AppContext["propose"],
+  /**
+   * A display-only narrowing on top of the chain gate (M3,
+   * UI-REDESIGN-PLAN.md §2a). Used with no device connected, to offer only
+   * apps that hold no key by design — the same "excluded is deleted, filtered
+   * is not" rule as the chain gate above: everything stays in the bundle,
+   * this only decides what mounts right now.
+   */
+  filter?: (app: MiniApp) => boolean,
 ): void {
   container.replaceChildren();
-  const apps = miniAppsForChain(context.chainId);
+  const apps = miniAppsForChain(context.chainId).filter((a) => filter?.(a) ?? true);
   container.hidden = apps.length === 0;
   if (apps.length === 0) return;
 
