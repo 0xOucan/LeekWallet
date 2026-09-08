@@ -106,6 +106,10 @@ const CSS = `
 .till-charge { display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-start; }
 .till-amount { font-weight: 700; margin: 0; word-break: break-all; }
 .till-uri { font-size: 0.75em; opacity: 0.75; word-break: break-all; }
+.till-codes { display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: flex-start; }
+.till-code { display: grid; gap: 0.4rem; justify-items: center; max-width: 15rem; }
+.till-code-label { font-size: 0.8em; font-weight: 600; margin: 0; }
+.till-code-note { font-size: 0.72em; opacity: 0.7; margin: 0; text-align: center; }
 .till-actions { display: flex; gap: 0.5rem; align-items: center; }
 .till-watch { display: flex; flex-direction: column; gap: 0.4rem; }
 .till-watch-rows { display: flex; flex-direction: column; gap: 0.25rem; }

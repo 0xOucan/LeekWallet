@@ -263,7 +263,36 @@ export function renderCharge(
     charge.classList.add("till-tone-unavailable");
     charge.append(el("p", "till-value", view.charge.reason));
   } else {
-    charge.append(qrSvg(view.charge.uri));
+    /* Two QR codes, because one of them is not reliably scannable.
+     *
+     * The EIP-681 code is correct -- target is the token, `address=` is the
+     * recipient, `uint256` is in raw units -- and where a wallet implements the
+     * ERC-20 /transfer form it fills the whole payment in one scan. But that
+     * form is thinly supported: MetaMask Mobile currently has an open bug where
+     * its scanner does not parse EIP-681 at all, and several wallets only
+     * handle the plain-address case.
+     *
+     * A terminal that only works with some wallets is not a terminal. So the
+     * address code is offered beside it: every wallet can scan an address, and
+     * the amount is displayed large enough to be typed. Slower, and it always
+     * works.
+     *
+     * The exact-payment code is first because when it works it is better. */
+    const codes = el("div", "till-codes");
+
+    const exact = el("div", "till-code");
+    exact.append(el("p", "till-code-label", "Pay exactly — one scan"));
+    exact.append(qrSvg(view.charge.uri));
+    exact.append(el("p", "till-code-note", "If your wallet does not read this, use the code beside it."));
+
+    const plain = el("div", "till-code");
+    plain.append(el("p", "till-code-label", "Or scan the address"));
+    plain.append(qrSvg(view.recipient));
+    plain.append(el("p", "till-code-note", `Then send ${view.charge.unitsText} yourself.`));
+
+    codes.append(exact, plain);
+    charge.append(codes);
+
     charge.append(el("p", "till-amount", `${view.charge.unitsText} to ${view.recipient}`));
     charge.append(el("code", "till-uri", view.charge.uri));
 
