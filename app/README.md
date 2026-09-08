@@ -38,11 +38,21 @@ native window and the real transports.
 
 ### Running the native shell
 
-Two paths, and picking the wrong one gives a window that says it cannot reach
-localhost:
+Normally one command:
 
 ```bash
-# Development: Vite serves the frontend, edits reload live.
+pnpm tauri dev
+```
+
+`beforeDevCommand` in `tauri.conf.json` is `pnpm dev`, so this starts Vite and
+then the app, in one terminal, and stops both together. Prefer it.
+
+The two-terminal form below exists for one case: iterating on the **Rust** side
+without restarting Vite every time, since `cargo run` rebuilds only the binary.
+It is also what the failure mode looks like, so it is worth understanding.
+
+```bash
+# Development, split: Vite serves the frontend, edits reload live.
 pnpm dev                        # terminal 1, must be running first
 cd src-tauri && cargo run       # terminal 2
 ```
@@ -57,7 +67,11 @@ A **debug** build loads `devUrl` from `tauri.conf.json`, which is
 `http://localhost:1420`. A **release** build loads `frontendDist`. So
 `cargo run` without `pnpm dev` running produces exactly one symptom — a blank
 window complaining it cannot connect — and the fix is whichever half is
-missing.
+missing. `pnpm tauri dev` cannot land in that state, because it starts both.
+
+Note that `cargo run` **does not** run `beforeDevCommand`; only the `tauri` CLI
+reads that key. Running the Rust binary directly is not a shortcut past the
+frontend, it is a way to start half the app.
 
 `libEGL warning: DRI3 error` on startup is harmless; the window falls back to
 software rendering.
