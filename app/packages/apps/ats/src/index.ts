@@ -45,13 +45,17 @@
  * register; it signs nothing, and `AppContext` gives it nothing it could sign
  * with.
  *
- * `descriptors.ts` and `action.ts` add E3's half of the privileged surface:
- * what a `grantRole`, `pause` or `revokeKyc` screen SAYS, and — more to the
- * point — when there is no honest screen and the call must refuse. They are
- * pure functions over calldata. There is still no button and no signing seam,
- * on purpose: shipping the button before the screen is the exact failure the
- * plan is written to avoid, and the screen had to exist first to be reviewed
- * on its own. Dividends are E4 and remain absent.
+ * `descriptors.ts` and `action.ts` say what a `grantRole`, `pause` or
+ * `revokeKyc` screen SAYS, and — more to the point — when there is no honest
+ * screen and the call must refuse. `act.ts` (E3) connects that to
+ * `AppContext.propose`, and `act-view.ts` is the form. The order those were
+ * written in is the order they are listed: the screen existed and was reviewed
+ * before any button could reach it, because shipping the button first is the
+ * exact failure the plan is written to avoid.
+ *
+ * This app still holds no device, no key and no transport. It can ask; the
+ * shell screens the ask a second time, the device draws it, and a human presses
+ * a button. Dividends are E4 and remain absent.
  */
 
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
@@ -59,6 +63,8 @@ import type { EthRequest } from "@leekwallet/core/balances.ts";
 import { FIXTURE_ADDRESS, FIXTURE_NOTICE, fixtureRequest } from "./fixtures.ts";
 import { readRegister, type RegisterView } from "./register.ts";
 import { renderRegister } from "./view.ts";
+import { atsDescriptors } from "./descriptors.ts";
+import { renderPrivilegedPanel } from "./act-view.ts";
 
 export * from "./abi.ts";
 export * from "./roles.ts";
@@ -67,6 +73,8 @@ export * from "./view.ts";
 export * from "./fixtures.ts";
 export * from "./descriptors.ts";
 export * from "./action.ts";
+export * from "./act.ts";
+export * from "./act-view.ts";
 
 /** The chain this app is about. Hedera testnet; see chains.ts for the entry. */
 export const ATS_CHAIN_ID = 296;
@@ -105,6 +113,14 @@ const CSS = `
   border: 1px solid var(--danger, #dc322f); border-radius: 6px;
   padding: 0.4rem 0.6rem; font-size: 0.9em;
 }
+/* The preview of what the device is about to draw. Framed so it reads as a
+   quotation of another screen rather than as this one's own assertion — it is
+   host text, and the notice inside it says so. */
+.ats-screen {
+  border: 1px solid var(--border, #444); border-radius: 6px;
+  padding: 0.6rem 0.8rem; margin: 0.5rem 0;
+}
+.ats-screen-title { font-weight: 700; letter-spacing: 0.03em; margin-bottom: 0.4rem; }
 `;
 
 /**
@@ -168,6 +184,12 @@ export function buildPanel(root: HTMLElement, context: AppContext): void {
     out.append(
       renderRegister(state.view, Date.now(), state.fixture ? FIXTURE_NOTICE : undefined),
     );
+    /* The write half only exists once a read has produced facts for it: the
+     * security's name, its decimals and the direction of its control list all
+     * come from the register, never from the form. A console that offered to
+     * freeze a holder before it had read the security would be describing a
+     * contract it had never looked at. */
+    renderPrivilegedPanel(out, state.view, context);
   };
 
   const read = async (address: string, request: EthRequest, fixture: boolean): Promise<void> => {
@@ -222,6 +244,13 @@ export const ATS_APP: MiniApp = {
     "supply, roles, KYC, control list and snapshots.",
   chainIds: [ATS_CHAIN_ID],
   css: CSS,
+  /* Evidence, not authority. Every ATS security is a fresh diamond at a fresh
+   * address, so its descriptors cannot be a constant in core and have to be
+   * built around the address in front of the user — which is the case
+   * `MiniApp.descriptors` exists for. Core still judges what comes back: every
+   * argument must render and the reading must not disagree with the firmware's
+   * own decoder. See mini-app.ts. */
+  descriptors: (chainId, to) => atsDescriptors(chainId, to),
   async mount(root, context) {
     if (context.chainId !== ATS_CHAIN_ID) {
       /* Refused rather than rendered empty. Reading an ATS security over a
