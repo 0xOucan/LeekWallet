@@ -40,7 +40,15 @@ group("a priced bill");
   eq(view.lines[0]?.value, "284.53 USDC", "bill");
   eq(view.lines[1]?.label, "Tip 15%", "the tip line names the rate the waiter chose");
   eq(view.lines[1]?.value, "42.68 USDC", "tip");
-  eq(view.lines[2]?.value, "327.21 USDC", "total");
+  /* The headline is the payable figure, not the rounded bill.
+ 
+     This asserted "327.21 USDC" when the payable was 327.2117, which is the
+     bug it was written to describe rather than to catch: only the exact amount
+     settles, so a customer reading a rounded total types a number that is
+     listed and never matches. The row is labelled "Total to pay" and carries
+     the marker. */
+  eq(view.lines[2]?.label, "Total to pay", "the total row says what it is");
+  eq(view.lines[2]?.value, "327.2117 USDC", "the headline is what must arrive");
   check(view.charge.ok, "a complete bill charges");
   if (view.charge.ok) {
     eq(view.charge.unitsText, "327.2117", "the marker shows in the payable figure");

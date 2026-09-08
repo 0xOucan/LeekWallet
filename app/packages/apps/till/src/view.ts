@@ -91,6 +91,27 @@ function railCost(rail: Rail): string {
   return `≈ $${(rail.feeCents / 100).toFixed(2)} in gas`;
 }
 
+/**
+ * The exact figure the customer must send, in the selected token's units.
+ *
+ * Falls back to the rounded total only when no rail is selected, because then
+ * there is no decimals to scale by and nothing to pay into yet.
+ */
+function totalToPay(state: TillState, order: Order): string {
+  /* A zero bill has no marker, because there is nothing to tell apart and
+     nothing to pay. Without this, an empty terminal reads "0.0017 USDC" --
+     a charge invented out of the disambiguator. */
+  const deployment =
+    order.total === 0n || state.chainId === null
+      ? null
+      : deploymentFor(state.chainId, state.token);
+  if (deployment === null || !deployment.ok) {
+    return `${formatCents(order.total)} ${state.token}`;
+  }
+  const units = payableUnits(order.total, deployment.decimals, state.marker);
+  return `${formatUnits(units, deployment.decimals)} ${state.token}`;
+}
+
 export function tillView(state: TillState): TillView {
   const order: Order | null = state.base === null ? null : buildOrder(state.base, state.tip);
 
@@ -103,7 +124,15 @@ export function tillView(state: TillState): TillView {
           value: `${formatCents(order.tip)} ${state.token}`,
           tone: order.tip === 0n ? "muted" : "normal",
         },
-        { label: "Total", value: `${formatCents(order.total)} ${state.token}`, tone: "normal" },
+        /* Not formatCents(order.total).
+         *
+         * The bill rounds to cents; the payable amount does not. It carries the
+         * sub-cent marker that tells two open bills apart, and only the exact
+         * figure settles -- a transfer for the rounded amount is listed and
+         * does not match. So a "Total" reading 5.61 beside a payable 5.6129 is
+         * not a display nicety, it is a number a customer can type and lose
+         * money to. Show the one that has to arrive. */
+        { label: "Total to pay", value: totalToPay(state, order), tone: "normal" },
       ];
 
   const total = order?.total ?? 0n;
