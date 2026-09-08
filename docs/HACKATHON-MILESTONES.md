@@ -249,6 +249,13 @@ and render intent:
   0x?? deadline         →  Expires 6 Sep 14:00
 ```
 
+**The opcode numbers above are ILLUSTRATIVE AND WRONG.** They match neither
+the contract enum (`StaticBalances` is `0x90`, `LimitSwap` `0x53`) nor the
+SDK's dense index, and the two schemes disagree with each other. Which one
+the deployed router uses is unresolved — see `docs/AQUA-B3-SPEC.md` §3 and
+§10.1. No opcode number ships until that is settled on chain.
+
+
 Nobody else will render bytecode on a hardware screen, and SwapVM use is
 explicitly scored higher.
 
