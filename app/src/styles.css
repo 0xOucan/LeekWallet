@@ -127,7 +127,7 @@ main { flex: 1; width: 100%; max-width: 640px; margin: 0 auto; padding: var(--sp
   }
   /* The warning and the log are read straight through, so they get the width.
    * Everything else is a form or a list and reads better in a column. */
-  .notice, #logpanel, .tabbar, .diagnostics { grid-column: 1 / -1; }
+  .notice, #logpanel, .tabbar, .diagnostics, .launcher, .destination { grid-column: 1 / -1; }
   /* Grid items ignore the panel's own bottom margin; the gap does that job. */
   .panel, .notice { margin-bottom: 0; }
 }
@@ -149,6 +149,62 @@ p  { margin: 0 0 var(--space-3); color: var(--muted); font-size: var(--text-sm);
   padding: var(--space-4);
   margin-bottom: var(--space-4);
 }
+
+/*
+ * Launcher (L1, docs/UI-SPEC-V2.md §1 and §2e). One column on every
+ * platform, including the two-column grid @900px main declares below — the
+ * launcher opts itself out (see the media query at the bottom of this file)
+ * because §2e asks for "one thing per screen" everywhere, and a 640px-wide
+ * tile is still one thing even inside a wide window.
+ *
+ * Type carries the hierarchy: a bold title line and a muted description line,
+ * no icon, minimal border. The border is kept (1px, --control-border) only
+ * because a tile is a button and 1.4.11 asks 3:1 on a control's own boundary
+ * — the same reason buttons elsewhere in this file keep theirs.
+ */
+.launcher {
+  display: flex; flex-direction: column; gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.launcher__tile {
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: var(--space-1);
+  width: 100%;
+  /* 44px is the floor, not the height — the two text lines plus padding
+   * clear it on their own; this just guarantees a short description never
+   * shrinks the tap target below it. */
+  min-height: 44px;
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--motion) ease-out, background var(--motion) ease-out;
+}
+.launcher__tile:hover { border-color: var(--accent); }
+.launcher__title { font-size: var(--text-lg); font-weight: 500; }
+.launcher__desc { font-size: var(--text-sm); color: var(--muted); }
+
+/* A destination's way back (docs/UI-SPEC-V2.md §1: "there is a way back").
+ * Full-width tap target, ≥44px, placed first in reading and tab order so it
+ * is found before anything else in the destination — the same reasoning
+ * .skiplink already uses for "skip to main". */
+.destination__back {
+  display: block;
+  min-height: 44px;
+  margin: calc(var(--space-2) * -1) calc(var(--space-2) * -1) var(--space-3);
+  padding: 0 var(--space-2);
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font: inherit; font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.destination__back:hover { color: var(--text); }
 
 /* Tab bar (M2). --surface-2 is decorative only, same status as --border; the
  * active tab is carried by --accent (text + underline), which measures 3:1+

@@ -373,7 +373,6 @@ export function tauriFlashBridge(log: (line: string) => void): FlashBridge | nul
 }
 
 export function initFlasher(bridge: FlashBridge | null): void {
-  const panel = $("flashpanel");
   const button = $("flashgo") as HTMLButtonElement;
   const connectButton = $("flashconnect") as HTMLButtonElement;
   const status = $("flashstatus");
@@ -442,8 +441,12 @@ export function initFlasher(bridge: FlashBridge | null): void {
     if (reason !== "") status.textContent = reason;
   };
 
+  /* panel's own [hidden] is no longer this module's to set (L1,
+   * docs/UI-SPEC-V2.md §1): it is a launcher destination now, shown only when
+   * chosen from the launcher or entered via Back from elsewhere — see
+   * applyPreConnectVisibility() in main.ts. Its default in index.html is
+   * `hidden`, same as before this module ran at all. */
   if (!bridge) {
-    panel.hidden = false;
     warning.textContent =
       "Flashing needs the desktop app; a browser window cannot reach a USB device.";
     button.disabled = true;
@@ -451,7 +454,6 @@ export function initFlasher(bridge: FlashBridge | null): void {
     return;
   }
 
-  panel.hidden = false;
   ack.addEventListener("change", refresh);
   portSelect.addEventListener("change", () => {
     // A different port is a different board until it says otherwise. Keeping a

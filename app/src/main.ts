@@ -760,6 +760,12 @@ function selectTab(tab: string): void {
  */
 function setShellVisible(visible: boolean): void {
   $("tabbar").hidden = !visible;
+  /* The waiter destination's wrapper (L1) is reachable two ways: through the
+   * launcher pre-connect, and through the Apps tab once connected. This is
+   * the second: #apps's own [hidden] still tracks its content and the active
+   * tab exactly as before (applyTabVisibility, unchanged), so this line only
+   * ever widens or narrows the outer gate, never overrides that decision. */
+  $("waiterdest").hidden = !visible;
   if (visible) {
     selectTab(activeTab);
   } else {
@@ -769,6 +775,72 @@ function setShellVisible(visible: boolean): void {
       const el = document.getElementById(id);
       if (el) el.hidden = true;
     }
+  }
+}
+
+/**
+ * The launcher (L1, docs/UI-SPEC-V2.md §1 and §2e).
+ *
+ * Replaces the tab bar's old job of showing everything at once, pre-connect,
+ * with three destinations that are entered and left one at a time — "one
+ * thing per screen" per §2e. TAB_PANEL_IDS/applyTabVisibility (M2, above)
+ * still own what happens *after* a device is connected and unlocked; this is
+ * only about what is on screen before that.
+ */
+type PreConnectDest = "launcher" | "connect" | "flash" | "waiter";
+let preConnectDest: PreConnectDest = "launcher";
+
+/** Show exactly the launcher, or exactly the one destination chosen. */
+function applyPreConnectVisibility(): void {
+  $("launcher").hidden = preConnectDest !== "launcher";
+  $("devicepanel").hidden = preConnectDest !== "connect";
+  $("flashpanel").hidden = preConnectDest !== "flash";
+  $("waiterdest").hidden = preConnectDest !== "waiter";
+}
+
+/** Flash and the waiter hold no session, so leaving them is never more than
+ * a screen change — no teardown, unlike the connect destination below. */
+function goToLauncher(): void {
+  preConnectDest = "launcher";
+  applyPreConnectVisibility();
+}
+
+function enterDest(dest: PreConnectDest): void {
+  preConnectDest = dest;
+  applyPreConnectVisibility();
+}
+
+/* Guards a concurrent Back click the same way `connecting` guards a second
+ * Connect click (see its own comment above, and the two-handshake bug it
+ * fixed) — disconnect() awaits transport.close() before it clears `client`,
+ * so a second click in that window would still see a session to tear down
+ * and start a second, overlapping disconnect(). */
+let backingOut = false;
+
+/**
+ * The connect destination's Back button.
+ *
+ * Unlike Flash and the waiter, this destination can be mid-handshake or
+ * fully connected when Back is pressed, and there is no safe way to just
+ * hide the panel under either condition: a hidden Device panel with a live
+ * transport is a session with no Disconnect button. So Back reuses
+ * disconnect() itself — the same teardown the visible Disconnect button
+ * calls — rather than inventing a second way to end a session that could
+ * disagree with the first about what "ended" means.
+ *
+ * `connecting` is checked first because disconnect() is not safe to run
+ * concurrently with connectOnce(): both would end up touching the same
+ * `transport`/`client` variables from two different in-flight async
+ * functions, which is exactly the shape of the race documented on
+ * `connecting` above.
+ */
+function connectDestBack(): void {
+  if (connecting || backingOut) return;
+  if (client) {
+    backingOut = true;
+    void disconnect().finally(() => { backingOut = false; });
+  } else {
+    goToLauncher();
   }
 }
 
@@ -3517,6 +3589,11 @@ async function disconnect(): Promise<void> {
   // client is null; loadAddresses() is the mirror call on the way back in.
   remountApps(activeChain());
   log("disconnected; session secrets cleared");
+  // Symmetric with connectOnce()'s "the app moves itself to the wallet
+  // screen" (docs/UI-SPEC-V2.md §1c): losing the session moves it back to
+  // the launcher, whether Disconnect was pressed directly or via the connect
+  // destination's Back button (connectDestBack, above).
+  goToLauncher();
 }
 
 /* ------------------------------------------------------------------- wiring */
@@ -3637,6 +3714,14 @@ initMaxAmount();
 initTabbar();
 populateAssets();
 void initRpcTransport();
+applyPreConnectVisibility();
+
+$("gotoconnect").addEventListener("click", () => enterDest("connect"));
+$("gotoflash").addEventListener("click", () => enterDest("flash"));
+$("gotowaiter").addEventListener("click", () => enterDest("waiter"));
+$("connectback").addEventListener("click", connectDestBack);
+$("flashback").addEventListener("click", goToLauncher);
+$("waiterback").addEventListener("click", goToLauncher);
 
 $("connect").addEventListener("click", () => void connect());
 $("unlock").addEventListener("click", () => void unlock());

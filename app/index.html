@@ -48,7 +48,34 @@
           independently — see AUDIT.md before using real funds.
         </div>
 
-        <section class="panel" aria-labelledby="devicehead">
+        <!--
+          The launcher (docs/UI-SPEC-V2.md §1). Three destinations and nothing
+          else before a device is connected — no tab bar, no empty panels, no
+          greyed controls. Each tile is a <button> so it is a real 44px+ touch
+          target and reachable by keyboard, not a styled <div>.
+
+          Membership of the pre-connect surface for mini-apps is decided
+          elsewhere, in remountApps() (main.ts), by MiniApp.worksWithoutDevice
+          — never by name. This nav only carries the three fixed destinations
+          the brief names; it does not enumerate apps.
+        -->
+        <nav class="launcher" id="launcher" aria-label="Choose what to do">
+          <button type="button" class="launcher__tile" id="gotoconnect">
+            <span class="launcher__title">Connect device</span>
+            <span class="launcher__desc">USB or Bluetooth</span>
+          </button>
+          <button type="button" class="launcher__tile" id="gotoflash">
+            <span class="launcher__title">Flash firmware</span>
+            <span class="launcher__desc">Install or update from a release</span>
+          </button>
+          <button type="button" class="launcher__tile" id="gotowaiter">
+            <span class="launcher__title">La Caja — waiter</span>
+            <span class="launcher__desc">Take a payment. No wallet needed.</span>
+          </button>
+        </nav>
+
+        <section class="panel" id="devicepanel" aria-labelledby="devicehead" hidden>
+          <button type="button" class="destination__back" id="connectback"><span aria-hidden="true">← </span>Back</button>
           <h2 id="devicehead">Device</h2>
           <p id="devicehint">Checking for a device…</p>
           <div class="row">
@@ -268,6 +295,7 @@
              a one-click flasher in a wallet is a way to install firmware that
              reads the PIN. See app/src/flasher.ts and src-tauri/src/flash.rs. -->
         <div class="panel" id="flashpanel" hidden>
+          <button type="button" class="destination__back" id="flashback"><span aria-hidden="true">← </span>Back</button>
           <h2>Flash firmware</h2>
           <!-- Two dangers, said separately because they have different
                remedies: the write destroys the seed on the device (write the
@@ -625,10 +653,20 @@
                aria-labelledby="wcsessionshead"></div>
         </section>
 
-        <!-- Mini-apps mount here, one panel each. Empty and hidden unless the
-             active chain has one registered - see src/apps/registry.ts, which
-             is the single line a release build removes to exclude one. -->
-        <div id="apps" data-tab="apps" hidden></div>
+        <!--
+          La Caja — waiter, as a destination (docs/UI-SPEC-V2.md §1a). This
+          wrapper is only what the launcher's nav hides/shows pre-connect; the
+          #apps div inside keeps deciding its own [hidden] from mounted
+          content, and keeps its data-tab="apps" role for the post-connect
+          tab bar (M2) unchanged — this wrapper does not replace that.
+        -->
+        <section class="destination" id="waiterdest" hidden>
+          <button type="button" class="destination__back" id="waiterback"><span aria-hidden="true">← </span>Back</button>
+          <!-- Mini-apps mount here, one panel each. Empty and hidden unless the
+               active chain has one registered - see src/apps/registry.ts, which
+               is the single line a release build removes to exclude one. -->
+          <div id="apps" data-tab="apps" hidden></div>
+        </section>
         <!-- One camera surface for every mini-app, owned by the shell.
              An app never gets a MediaStream; it calls AppContext.scanQr and
              receives whatever its own accept() matched. -->
