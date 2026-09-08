@@ -1044,6 +1044,11 @@ async function loadAddresses(): Promise<void> {
 
   $("sfrom").textContent = addressPath(account, selectedIndex);
   log(`derived ${addresses.length} addresses under account ${account}`);
+  /* Apps hold the address as a snapshot taken at mount, and until now the only
+     mount was on chain selection — which happens before a device is connected.
+     An app that needs an address was therefore permanently told there isn't
+     one. */
+  remountApps(activeChain());
   walletConnect.accountsChanged();
   /* One of the two moments a fetch happens without being asked for: the app
    * has just learned which address the user is looking at, which is exactly
@@ -1323,8 +1328,23 @@ function applyChain(info: ChainInfo): void {
    * left running against the previous network would keep rendering figures
    * from a chain nobody has selected. See src/apps/registry.ts -- this and
    * that file are the shell's entire knowledge that apps exist. */
-  const { request, host } = balanceRequest(info);
+  remountApps(info);
+}
+
+/**
+ * (Re)mount the mini-apps for a chain.
+ *
+ * Called from applyChain and again whenever the selected address changes.
+ * Apps receive the address as a snapshot at mount, and originally this ran only
+ * on chain selection — which is before a device is connected, so every app
+ * mounted with an empty address and never learned one arrived. La Caja showed
+ * "No merchant address to be paid into" on a wallet that plainly had ten.
+ */
+function remountApps(info: ChainInfo): void {
   const address = addresses[selectedIndex] ?? "";
+  /* Built here rather than passed in: this runs on address changes too, and a
+     request bound at chain-select time would outlive the chain it was for. */
+  const { request, host } = balanceRequest(info);
   mountApps(
     $("apps"),
     { chainId: info.id, address, request, endpointHost: host, requestOn: chainChannel },
@@ -1985,6 +2005,8 @@ function initAddressActions(): void {
     drawSelectedAddress();
     hint.textContent = "";
     log(`selected address ${i}`);
+    // Same reason as after derivation: the snapshot an app holds is now stale.
+    remountApps(activeChain());
     /* A different address has different balances, so the ones on screen are
      * now about somebody else. Clear first, fetch second: showing the previous
      * address's figures under the new address, even for a second, is the kind

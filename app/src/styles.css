@@ -653,3 +653,29 @@ main {
   font-size: var(--text-xs);
   overflow-wrap: anywhere;
 }
+
+/* -------------------------------------------------------- mini-app tabs
+   One app on screen at a time. The strip only appears when more than one
+   applies to the chain, so a single app is not given a tab that does nothing
+   but sit there looking clickable. */
+.apptabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  margin-bottom: 0.75rem;
+}
+.apptab {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+  background: var(--bg-raised, #1a1d23);
+  color: var(--fg-muted, #9aa4b2);
+  border: 1px solid var(--border, #2a2f38);
+  border-bottom: 2px solid transparent;
+}
+.apptab:hover { color: var(--fg, #e6e9ee); }
+.apptab.on {
+  color: var(--fg, #e6e9ee);
+  border-bottom-color: var(--accent, #6ee7a8);
+}

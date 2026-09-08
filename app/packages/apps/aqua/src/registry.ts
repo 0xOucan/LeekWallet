@@ -81,7 +81,20 @@ export const AQUA_SWAPVM_ROUTER = "0x111111338c5091e8440b67b168bae16a668ac0de";
  * inventing endpoints, and chains.ts's header is explicit that being listed is
  * a claim. Adding one is one line here after one entry there.
  */
-export const AQUA_CHAIN_IDS: readonly number[] = [1, 10, 56, 100, 130, 137, 146, 324, 8453, 42161, 43114, 59144];
+/* The twelve mainnets Aqua's README lists, plus Ethereum Sepolia (11155111),
+   which it does not.
+ 
+   Sepolia is here on evidence rather than documentation: eth_getCode at the
+   registry address returns runtime bytecode whose hash is identical to
+   Polygon's and Gnosis's (4c886bff...), which follows from the deterministic
+   deployment the README describes, and it emitted 25 events in 9000 blocks. It
+   is a live deployment that the docs simply do not mention.
+ 
+   That matters because it is the only chain where this app can be exercised
+   without mainnet funds -- the SwapVM router really is mainnet-only, so Q3
+   still needs a fork, but the registry alone is enough for ship and dock. */
+export const AQUA_CHAIN_IDS: readonly number[] =
+  [1, 10, 56, 100, 130, 137, 146, 324, 8453, 42161, 43114, 59144, 11155111];
 
 export const isAquaChain = (chainId: number): boolean => AQUA_CHAIN_IDS.includes(chainId);
 
