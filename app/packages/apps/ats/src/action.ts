@@ -41,8 +41,8 @@ import { formatUnits } from "@leekwallet/core/chains.ts";
 import { matchDescriptor, type Descriptor, type DescriptorField } from "@leekwallet/core/erc7730.ts";
 import { sanitiseText } from "./abi.ts";
 import {
-  ACTION_BY_SELECTOR, ROLE_POWER, actionName, atsDescriptors,
-  type SignatureConfidence,
+  ACTION_BY_SELECTOR, ROLE_POWER, UNRENDERABLE_BY_SELECTOR, actionName,
+  atsDescriptors, type SignatureConfidence,
 } from "./descriptors.ts";
 import { roleInfo } from "./roles.ts";
 
@@ -169,6 +169,14 @@ export function describePrivilegedCall(
     data,
   });
   if (match === undefined) {
+    /* Same refusal either way — nothing is signed and nothing is sent. The
+     * only difference is whether we can name the reason. A call on the known
+     * list is one no descriptor can ever describe, and saying so stops the
+     * reader looking for a descriptor that could not exist. */
+    const known = UNRENDERABLE_BY_SELECTOR.get(selector);
+    if (known !== undefined) {
+      return refuse(`this call cannot be described on any screen: ${known}`, selector);
+    }
     return refuse(
       "no descriptor describes this call on this contract, so there is no " +
         "honest way to say what approving it would do",
@@ -216,10 +224,9 @@ export function describePrivilegedCall(
       break;
     }
 
-    case "grantKyc":
-      effect = "this holder may receive and send shares under the compliance rules";
-      break;
-
+    /* There is no `grantKyc` case, and its absence is the point: the real
+     * `IKyc.grantKyc` takes a credential id as a `string`, so it has no
+     * descriptor and never reaches this switch. See UNRENDERABLE. */
     case "revokeKyc":
       // Stated as a loss to the holder, not as an administrative state change:
       // the balance does not move, and that is exactly what makes it dangerous.

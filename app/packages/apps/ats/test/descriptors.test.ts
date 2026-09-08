@@ -51,7 +51,7 @@ function screenOf(r: PrivilegedRendering, what: string): PrivilegedScreen {
   failures++;
   return {
     state: "screen", title: "", fields: [], effect: "", selector: "0x", signature: "",
-    confidence: "inferred", source: "", advisory: true, unverified: true,
+    confidence: "artifact", source: "", advisory: true, unverified: true,
   };
 }
 
@@ -122,9 +122,19 @@ group("grantRole and revokeRole name the role and its power");
 
 group("KYC screens state what happens to the holder's balance");
 {
-  const granted = screenOf(render(call("grantKyc(address)", [addressWord(ALICE)])), "grantKyc");
-  check(granted.title === "GRANT KYC · ACME Equity", `title is ${granted.title}`);
-  check(granted.effect.includes("may receive and send shares"), `effect: ${granted.effect}`);
+  /* There is no grant-KYC screen, and that is the artifacts' doing rather than
+   * an omission: `IKyc.grantKyc` takes a credential id as a `string`, so the
+   * descriptor engine drops it and the console refuses. `grantKyc(address)`
+   * exists only on `MockedExternalKycList` — a descriptor for it would draw a
+   * confident screen for a function no real security has. Asserted here as a
+   * refusal so that anyone who "fixes" it has to argue with a test. */
+  const granted = render(call("grantKyc(address)", [addressWord(ALICE)]));
+  check(granted.state === "refused", "grantKyc(address) produced a screen; it matches only a mock");
+  const real = render(call("grantKyc(address,string,uint256,uint256,address)"));
+  check(real.state === "refused" &&
+        real.why.includes("variable-length string"),
+        `the real grantKyc must refuse with its own reason; it said: ` +
+        `${real.state === "refused" ? real.why : "a screen"}`);
 
   const revoked = screenOf(render(call("revokeKyc(address)", [addressWord(ALICE)])), "revokeKyc");
   // Stranding is the consequence an issuer is least likely to have in mind.
@@ -148,9 +158,11 @@ group("pause and unpause say who is affected");
 
 group("lock, mint and the supply cap restate amounts in shares");
 {
+  /* Amount first: that is the compiled ABI's order, and writing it the
+   * readable way round is the bug conformance.test.ts caught. */
   const lock = screenOf(
-    render(call("lock(address,uint256,uint256)",
-               [addressWord(ALICE), word(5_000n), word(1_800_000_000n)])), "lock");
+    render(call("lock(uint256,address,uint256)",
+               [word(5_000n), addressWord(ALICE), word(1_800_000_000n)])), "lock");
   check(lock.title === "LOCK HOLDER BALANCE · ACME Equity", `title is ${lock.title}`);
   check(lock.effect.includes("cannot move"), `lock effect: ${lock.effect}`);
   const amount = lock.fields.find((f) => f.label === "Amount");

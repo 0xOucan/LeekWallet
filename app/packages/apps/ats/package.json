@@ -1,7 +1,7 @@
 {
   "name": "@leekwallet/app-ats",
   "version": "0.1.0",
-  "description": "Read-only issuer console for a Hedera Asset Tokenization Studio security",
+  "description": "Issuer console for a Hedera Asset Tokenization Studio security: read the register, and approve privileged actions on the device",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -9,10 +9,13 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/abi.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/register.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/snapshots.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/app.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/descriptors.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/abi.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/register.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/snapshots.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/app.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/descriptors.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/act.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/conformance.test.ts"
   },
   "dependencies": {
     "@leekwallet/core": "workspace:*",
     "@noble/hashes": "1.8.0"
+  },
+  "devDependencies": {
+    "@hashgraph/asset-tokenization-contracts": "8.0.0"
   }
 }
