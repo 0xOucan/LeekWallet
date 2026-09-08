@@ -61,13 +61,18 @@
 import { parseDescriptor, type Descriptor } from "./erc7730.ts";
 
 /** chainId → contract address, lower-case. */
-type Deployments = ReadonlyArray<readonly [number, string]>;
+export type Deployments = ReadonlyArray<readonly [number, string]>;
 
 /**
  * USDC. Nine chains: the eight CCTP V2 testnet source domains plus Arc.
  *
  * Arc's entry is the native gas token's ERC-20 face, which is why its address
  * is a predeploy and not a normal deployment.
+ *
+ * Exported (as `USDC_DEPLOYMENTS`) so the all-chain balances screen
+ * (docs/UI-L3-SPEC.md §2) can ask "which chains have USDC, at what address"
+ * without a second, hand-typed copy of this table. TOKEN_HINTS in chains.ts
+ * carries the matching symbol/decimals for these exact addresses already.
  */
 const USDC: Deployments = [
   [1301, "0x31d0220469e10c4e71834a79b1f276d740d3768f"],       // Unichain Sepolia
@@ -92,6 +97,11 @@ const EURC: Deployments = [
   [5042002, "0x89b50855aa3be2f677cd6303cec089b5f319d72a"],    // Arc Testnet
   [11155111, "0x08210f9170f89ab7658f0b5e3ff39b0e03c594d4"],   // Sepolia
 ] as const;
+
+/** `USDC`, exported for reuse — see the comment above `USDC`. */
+export const USDC_DEPLOYMENTS: Deployments = USDC;
+/** `EURC`, exported for reuse — same reason as `USDC_DEPLOYMENTS`. */
+export const EURC_DEPLOYMENTS: Deployments = EURC;
 
 /**
  * The two calls worth describing.

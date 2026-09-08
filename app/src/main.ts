@@ -40,6 +40,10 @@ import { appProposer } from "./apps/propose.ts";
 import type { ChainChannel } from "../packages/core/src/mini-app.ts";
 import { fetchTokenBalancesBatched } from "../packages/core/src/multicall.ts";
 import {
+  fetchAllChainBalances, trackedChains, type AssetState, type ChainBalanceRow,
+  type TrackedTokenSymbol,
+} from "../packages/core/src/all-chain-balances.ts";
+import {
   buildTokenIndex, parseTokenList, refreshTokenList, TOKEN_LIST_NOTICE, TOKEN_LIST_URLS,
   type TokenIndex,
 } from "../packages/core/src/token-list.ts";
@@ -761,6 +765,9 @@ function selectTab(tab: string): void {
  */
 function setShellVisible(visible: boolean): void {
   $("tabbar").hidden = !visible;
+  // L3: the wallet-menu headline shares the tab bar's gate — both mean "there
+  // is a derived address to show something about".
+  $("walletmenu").hidden = !visible;
   /* The waiter destination's wrapper (L1) is reachable two ways: through the
    * launcher pre-connect, and through the Apps tab once connected. This is
    * the second: #apps's own [hidden] still tracks its content and the active
@@ -769,6 +776,12 @@ function setShellVisible(visible: boolean): void {
   $("waiterdest").hidden = !visible;
   if (visible) {
     selectTab(activeTab);
+    renderWalletMenu();
+    // Entering the wallet menu is a fetch moment (docs/UI-L3-SPEC.md §5);
+    // refreshAllChainBalances itself no-ops with no address yet, and the
+    // "addresses derived"/"address changed" hooks cover the case where an
+    // address already exists when this runs.
+    void refreshAllChainBalances("entered wallet menu");
   } else {
     // Force every tab-owned panel shut; apps keeps deciding for itself.
     for (const [tab, id] of Object.entries(TAB_PANEL_IDS)) {
@@ -776,6 +789,9 @@ function setShellVisible(visible: boolean): void {
       const el = document.getElementById(id);
       if (el) el.hidden = true;
     }
+    // Leaving the wallet menu is the same "stop showing a stale number about
+    // whoever was here before" moment clearBalances() already covers.
+    allChainRows = new Map();
   }
 }
 
@@ -1210,6 +1226,8 @@ async function loadAddresses(): Promise<void> {
   clearBalances();
   populateAssets();
   void refreshBalances("addresses derived");
+  renderWalletMenu();
+  void refreshAllChainBalances("addresses derived");
 }
 
 /* -------------------------------------------------------------- passphrase */
@@ -1820,6 +1838,129 @@ function chainChannel(chainId: number): ChainChannel | undefined {
   return channel;
 }
 
+/* ------------------------------------------------------- L3: wallet menu
+ *
+ * All-chain balances (docs/UI-L3-SPEC.md), separate from the single-chain
+ * balances/watched-tokens panel above: that panel is about the chain and
+ * tokens the user picked, this is the headline that shows every tracked
+ * testnet at once. Both read through the same chainChannel()/FailoverRpc, so
+ * "who was asked" is answered the same way in both places.
+ */
+
+let allChainRows = new Map<number, ChainBalanceRow>();
+let fetchingAllChainBalances = false;
+
+/** One asset's figure or word, per docs/UI-L3-SPEC.md §3's four states. */
+function assetStateText(symbol: string, decimals: number, state: AssetState): string {
+  switch (state.kind) {
+    case "reading": return "reading…";
+    case "unavailable": return "unavailable";
+    case "error": return "—";
+    case "native": return `${formatUnits(state.wei, decimals)} ${symbol}`;
+    case "token": {
+      const view = state.view;
+      // Every scaled figure here goes through TokenAmountView (balances.ts) —
+      // no bare pretty string is ever built. A token with no metadata (no
+      // TOKEN_HINTS entry, no answer from the contract) has no `scaled` and
+      // falls through to raw units, which is still an honest figure, never a
+      // guess dressed up as one.
+      return view.scaled ? `${view.scaled.text} ${view.scaled.symbol ?? symbol}` : `${view.rawText} raw units`;
+    }
+  }
+}
+
+function walletMenuAssetRow(label: string, decimals: number, state: AssetState): HTMLElement {
+  const row = document.createElement("li");
+  row.className = "walletmenu__asset";
+  row.dataset["state"] = state.kind;
+  const name = document.createElement("span");
+  name.textContent = label;
+  const value = document.createElement("span");
+  value.textContent = assetStateText(label, decimals, state);
+  row.append(name, value);
+  return row;
+}
+
+/** Redraw one chain's block from `allChainRows`. No fetching here. */
+function renderChainRow(chain: ChainInfo): void {
+  const container = $("wmchains");
+  let block = container.querySelector<HTMLElement>(`[data-chain="${chain.id}"]`);
+  if (!block) {
+    block = document.createElement("li");
+    block.className = "walletmenu__chain";
+    block.dataset["chain"] = String(chain.id);
+    // Chains are appended in trackedChains() order, which is CHAINS' fixed
+    // curated order — stable across refreshes, not reshuffled by fetch speed.
+    container.appendChild(block);
+  }
+  block.textContent = "";
+
+  const heading = document.createElement("div");
+  heading.className = "walletmenu__chainname";
+  const row = allChainRows.get(chain.id);
+  heading.textContent = row ? row.label : chainLabelDetailed(chain.id).text;
+  block.appendChild(heading);
+
+  const list = document.createElement("ul");
+  list.className = "walletmenu__chains";
+  const native = row?.native ?? { kind: "reading" as const };
+  list.appendChild(walletMenuAssetRow(chain.nativeCurrency.symbol, chain.nativeCurrency.decimals, native));
+  const tokens: readonly { symbol: TrackedTokenSymbol; state: AssetState }[] =
+    row?.tokens ?? [
+      { symbol: "WETH", state: { kind: "reading" } },
+      { symbol: "USDC", state: { kind: "reading" } },
+      { symbol: "EURC", state: { kind: "reading" } },
+      { symbol: "cbBTC", state: { kind: "reading" } },
+    ];
+  for (const t of tokens) {
+    // Token decimals are display-only inside assetStateText's `native` arm,
+    // which this branch never takes — describeTokenAmount already carries
+    // whatever decimals it found, so 0 here is inert.
+    list.appendChild(walletMenuAssetRow(t.symbol, 0, t.state));
+  }
+  block.appendChild(list);
+}
+
+function renderWalletMenu(): void {
+  const account = effectiveAccount();
+  const address = addresses[selectedIndex];
+  $("wmaccount").textContent = `Account ${account}`;
+  $("wmaddress").textContent = address ? checksumAddress(address.slice(2)) : "—";
+  for (const chain of trackedChains()) renderChainRow(chain);
+}
+
+/**
+ * Fetch every tracked chain's balances, concurrently, rendering each as it
+ * settles. No polling: called on entering the wallet menu (setShellVisible)
+ * and on the events that already invalidate the single-chain balances above
+ * (address/account/chain change, connect) plus the Refresh button, and never
+ * while the window is hidden.
+ */
+async function refreshAllChainBalances(reason: string): Promise<void> {
+  const address = addresses[selectedIndex];
+  if (!address || fetchingAllChainBalances || document.hidden) return;
+  fetchingAllChainBalances = true;
+  ($("wmrefresh") as HTMLButtonElement).disabled = true;
+  allChainRows = new Map();
+  renderWalletMenu();
+
+  try {
+    await fetchAllChainBalances(
+      (chainId) => chainChannel(chainId)?.request,
+      address,
+      (row) => {
+        allChainRows.set(row.chainId, row);
+        const chain = trackedChains().find((c) => c.id === row.chainId);
+        if (chain) renderChainRow(chain);
+      },
+    );
+  } finally {
+    fetchingAllChainBalances = false;
+    ($("wmrefresh") as HTMLButtonElement).disabled = false;
+    log(`all-chain balances refreshed (${reason})`);
+  }
+}
+
 /**
  * Fetch the selected address's balances on the active chain.
  *
@@ -2011,6 +2152,7 @@ function renderBalances(): void {
 
 function initBalances(): void {
   $("balrefresh").addEventListener("click", () => void refreshBalances("button"));
+  $("wmrefresh").addEventListener("click", () => void refreshAllChainBalances("button"));
 
   $("tokenadd").addEventListener("click", () => {
     const field = $("tokenaddr") as HTMLInputElement;
@@ -2222,6 +2364,8 @@ function initAddressActions(): void {
      * of thing people act on. */
     clearBalances();
     void refreshBalances("address changed");
+    renderWalletMenu();
+    void refreshAllChainBalances("address changed");
     walletConnect.accountsChanged();
   });
 

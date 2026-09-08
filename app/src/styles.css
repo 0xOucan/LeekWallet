@@ -566,6 +566,29 @@ button.danger { color: var(--danger); border-color: var(--danger); }
  * cannot read as current even at a glance.
  */
 
+/* L3 — the wallet menu's all-chain balances (docs/UI-L3-SPEC.md). Type
+ * carries the hierarchy per §2e: a big account line, quiet rows underneath,
+ * no boxes-within-boxes. The four states are told apart by text, not only by
+ * the dimming below — "unavailable" and "—" are different words on the page,
+ * not the same grey pixel with different tooltips. */
+.walletmenu { margin-bottom: var(--space-4); }
+.walletmenu__accountline { font-size: var(--text-lg); font-weight: 500; }
+.walletmenu__address { margin-top: var(--space-1); }
+.walletmenu__chains { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
+.walletmenu__chain {
+  border-top: 1px solid var(--border);
+  padding: var(--space-3) 0;
+}
+.walletmenu__chainname { font-size: var(--text-sm); margin-bottom: var(--space-1); }
+.walletmenu__asset {
+  display: flex; justify-content: space-between; gap: var(--space-3);
+  font-family: var(--font-mono); font-size: var(--text-sm);
+  padding: 2px 0;
+}
+.walletmenu__asset[data-state="unavailable"],
+.walletmenu__asset[data-state="error"],
+.walletmenu__asset[data-state="reading"] { color: var(--muted); }
+
 .balances { margin-top: var(--space-4); }
 .balances__native { font-family: var(--font-mono); font-size: var(--text-lg); }
 .balances__native[data-stale="true"] { color: var(--muted); }
