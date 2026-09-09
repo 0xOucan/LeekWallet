@@ -539,6 +539,45 @@ static size_t make_strategy(uint8_t *out, const uint8_t maker[20])
     return 96;
 }
 
+
+/* A SwapVM-shaped Aqua strategy: abi.encode(ISwapVM.Order{maker,traits,data}),
+ * with `data` = tokenA(20) || tokenB(20) || program and the program's start
+ * offset packed into traits at bits 208..223 (docs/AQUA-B3-SPEC.md §4).
+ *
+ * Built here rather than reused from make_strategy() because that one stops at
+ * the maker word -- these vectors exist to exercise the program walk, which
+ * only runs when the ship's app argument is the SwapVM router. */
+static size_t make_swapvm_strategy(uint8_t *out, const uint8_t maker[20],
+                                   const uint8_t *program, size_t program_len)
+{
+    const size_t PROGRAM_START = 40;              /* tokenA(20) || tokenB(20) */
+    size_t data_len = PROGRAM_START + program_len;
+    size_t padded   = (data_len + 31u) & ~(size_t)31u;
+    size_t total    = 0xa0 + padded;
+
+    memset(out, 0, total);
+    out[31] = 0x20;                                /* dynamic tuple head      */
+    memcpy(out + 32 + 12, maker, 20);              /* maker                   */
+    /* traits: programStart is bits 223..208 of the word. In a 32-byte
+     * big-endian value byte k holds bits [255-8k .. 248-8k], so bits 223..216
+     * are byte 4 and bits 215..208 are byte 5 -- NOT bytes 5..6. */
+    out[0x40 + 4] = (uint8_t)((PROGRAM_START >> 8) & 0xff);
+    out[0x40 + 5] = (uint8_t)(PROGRAM_START & 0xff);
+    out[0x60 + 31] = 0x60;                         /* in-struct offset of data */
+    out[0x80 + 30] = (uint8_t)((data_len >> 8) & 0xff);
+    out[0x80 + 31] = (uint8_t)(data_len & 0xff);
+    /* tokenA < tokenB, as MakerTraitsLib.build enforces. */
+    out[0xa0 + 19] = 0x01;
+    out[0xa0 + 39] = 0x02;
+    memcpy(out + 0xa0 + PROGRAM_START, program, program_len);
+    return total;
+}
+
+static const uint8_t SWAPVM_ROUTER_ADDR[20] = {
+    0x11, 0x11, 0x11, 0x33, 0x8c, 0x50, 0x91, 0xe8, 0x44, 0x0b,
+    0x67, 0xb1, 0x68, 0xba, 0xe1, 0x6a, 0x66, 0x8a, 0xc0, 0xde,
+};
+
 static const uint8_t AQUA_APP_ADDR[20] = {
     0x22, 0x8e, 0x82, 0x83, 0x1a, 0xfa, 0xc5, 0xdd, 0x9e, 0xbd,
     0xe3, 0x48, 0x9e, 0x9e, 0x18, 0xae, 0x9c, 0x7b, 0xcb, 0xf4,
@@ -1383,6 +1422,62 @@ static int emit_vectors(const char *path)
     len = build_aqua_dock(data, sizeof(data), "dock(address,bytes32,address[])",
                           AQUA_APP_ADDR, hash32, tokens1, 1);
     CASE("aqua dock, one leg", data, len);
+
+    /* ------------------------------------------------ SwapVM programs (B3)
+     *
+     * These only mean anything when the ship's app IS the SwapVM router --
+     * that is the refusal boundary in docs/AQUA-B3-SPEC.md §6.6, and it is
+     * why they use SWAPVM_ROUTER_ADDR rather than AQUA_APP_ADDR. Each refusal
+     * below has to be refused by BOTH decoders; a program only one side
+     * rejects is exactly the drift these vectors exist to catch. */
+    {
+        uint8_t sv[512];
+        uint8_t tk[1][20];
+        uint64_t am[1] = { 1 };
+        memcpy(tk[0], SPENDER, 20);
+
+        /* Readable: XYCSwap, Decay(300), FeeFlatIn(50). */
+        const uint8_t ok_prog[] = {
+            0x50, 0x00,
+            0x9c, 0x02, 0x01, 0x2c,
+            0x70, 0x03, 0x00, 0x00, 0x32,
+        };
+        size_t svl = make_swapvm_strategy(sv, OTHER, ok_prog, sizeof(ok_prog));
+        len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                              SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
+        CASE("swapvm program, three understood instructions", data, len);
+
+        /* 0x99 is a real SwapVM opcode (PiecewiseLinearScaleBalanceOut) that
+         * the Aqua router does not dispatch -- so it is unknown to us, and an
+         * unknown opcode is the milestone's headline refusal. */
+        const uint8_t unknown_prog[] = { 0x50, 0x00, 0x99, 0x01, 0x07 };
+        svl = make_swapvm_strategy(sv, OTHER, unknown_prog, sizeof(unknown_prog));
+        len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                              SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
+        CASE("swapvm program, unknown opcode", data, len);
+
+        /* Deadline is uint40, five bytes. Four is not "close enough". */
+        const uint8_t badlen_prog[] = { 0x20, 0x04, 0x00, 0x00, 0x00, 0x01 };
+        svl = make_swapvm_strategy(sv, OTHER, badlen_prog, sizeof(badlen_prog));
+        len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                              SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
+        CASE("swapvm program, wrong args_len", data, len);
+
+        /* Header says two argument bytes; only one follows. */
+        const uint8_t trunc_prog[] = { 0x50, 0x00, 0x9c, 0x02, 0x01 };
+        svl = make_swapvm_strategy(sv, OTHER, trunc_prog, sizeof(trunc_prog));
+        len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                              SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
+        CASE("swapvm program, truncated tail", data, len);
+
+        /* Jump (0x03) is dispatched on chain but refused here: a jump means
+         * the list on the screen is not the list that executes (§6.3). */
+        const uint8_t jump_prog[] = { 0x50, 0x00, 0x03, 0x02, 0x00, 0x00 };
+        svl = make_swapvm_strategy(sv, OTHER, jump_prog, sizeof(jump_prog));
+        len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                              SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
+        CASE("swapvm program, control flow refused", data, len);
+    }
 
     /* ---------------------------------------------------------- refusals */
 
