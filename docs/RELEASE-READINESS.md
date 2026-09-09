@@ -69,9 +69,11 @@ did exactly that. **Transport changes need a board.**
 
 Separate repo, `/leekwalletwebsite`. `npm run check` passes: 7 views, no errors,
 no 404s, no horizontal overflow. `/flash` is compliant with the two-image
-manifest above. `assets/firmware/manifest.json` still has an empty `releases: []`
-— it fills from a release, and the page already renders the "no release yet"
-state rather than an empty list.
+manifest above. `assets/firmware/manifest.json` now carries all four
+entries for `v0.1.0-chaak-pool` (two per board), and their hashes were
+re-verified against freshly reproduced binaries on 2026-09-09 — all ten
+artifacts matched byte for byte. The "no release yet" state remains the
+page's behaviour when the manifest is empty.
 
 ## 5. Before the first release — human only
 
