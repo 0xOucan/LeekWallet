@@ -115,7 +115,27 @@ export const NEEDS: Readonly<Record<string, readonly string[]>> = {
   mint: ["account", "amount"],
   addToControlList: ["account"],
   removeFromControlList: ["account"],
+  takeSnapshot: [],
+  /* Empty, and not because it needs nothing: a dividend needs a snapshot, the
+   * holder balances at it, a payment token and a rate, and it needs them
+   * checked against each other before any of it becomes calldata. That is the
+   * distribution panel's job, so `setDividend` is in PANEL_ACTIONS below and
+   * never appears in this form's chooser. The entry is here so the table stays
+   * complete — an action missing from NEEDS is a test failure, which is what
+   * keeps a new action from silently having no form at all. */
+  setDividend: [],
 };
+
+/**
+ * Actions the generic form does NOT offer, because they have a panel of their
+ * own. Exported so the exclusion is a value a test can read rather than a
+ * condition buried in a loop.
+ */
+export const PANEL_ACTIONS: ReadonlySet<string> = new Set(["setDividend"]);
+
+/** What the chooser lists: the table, minus what a dedicated panel owns. */
+export const FORM_ACTIONS: readonly string[] =
+  PRIVILEGED_ACTIONS.filter((a) => !PANEL_ACTIONS.has(a));
 
 /** Human labels for the inputs. */
 const LABEL: Readonly<Record<string, string>> = {
@@ -193,6 +213,10 @@ export function intentFrom(action: string, f: Fields): PrivilegedIntent | string
     case "mint": return { action: "mint", to: account, amount: uint(f.amount) as bigint };
     case "addToControlList": return { action: "addToControlList", account };
     case "removeFromControlList": return { action: "removeFromControlList", account };
+    case "takeSnapshot": return { action: "takeSnapshot" };
+    case "setDividend":
+      return "A dividend is built in the distribution panel, which reconciles it " +
+        "against a snapshot first.";
     default: return `${action} is not an action this console offers`;
   }
 }
@@ -229,7 +253,7 @@ export function renderPrivilegedPanel(
   const chooser = el("div", "ats-row");
   chooser.appendChild(el("span", "ats-label", "Action"));
   const select = el("select");
-  for (const name of PRIVILEGED_ACTIONS) {
+  for (const name of FORM_ACTIONS) {
     const opt = document.createElement("option");
     opt.value = name;
     opt.textContent = name;

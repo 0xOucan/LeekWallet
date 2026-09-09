@@ -56,6 +56,10 @@ import { AbiError } from "@leekwallet/core/balances.ts";
 import { addressWord, bytes32Word, word } from "./abi.ts";
 import { ACTIONS, actionName } from "./descriptors.ts";
 import {
+  nextPayment, record, totalForSnapshot,
+  type Allocation, type DistributionLedger, type DividendPlan,
+} from "./dividend.ts";
+import {
   describePrivilegedCall, REFUSAL_NOTICE,
   type PrivilegedRefusal, type PrivilegedScreen, type SecurityFacts,
 } from "./action.ts";
@@ -84,7 +88,19 @@ export type PrivilegedIntent =
   | { action: "setMaxSupply"; cap: bigint }
   | { action: "mint"; to: string; amount: bigint }
   | { action: "addToControlList"; account: string }
-  | { action: "removeFromControlList"; account: string };
+  | { action: "removeFromControlList"; account: string }
+  | { action: "takeSnapshot" }
+  /**
+   * Declare a dividend.
+   *
+   * Carries a whole `DividendPlan` rather than four numbers, and that is the
+   * safety property in the type system: `planDividend` is the only constructor
+   * of one, and it refuses any distribution whose total does not equal
+   * per-share × snapshot supply. `encodeDividend` re-runs the same arithmetic
+   * on the plan it is handed, so a plan built by hand still cannot become
+   * calldata with an unchecked total.
+   */
+  | { action: "setDividend"; plan: DividendPlan };
 
 /** The names a caller may ask for, derived from the action table, not typed twice. */
 export const PRIVILEGED_ACTIONS: readonly string[] = ACTIONS.map(actionName);
@@ -148,7 +164,42 @@ export function encodePrivileged(intent: PrivilegedIntent): string {
       return head + word(intent.cap);
     case "mint":
       return head + addressWord(intent.to) + word(intent.amount);
+    case "takeSnapshot":
+      return head;
+    case "setDividend":
+      return head + encodeDividend(intent.plan);
   }
+}
+
+/**
+ * The four words of an `IDividendTypes.Dividend`, in the contracts' order.
+ *
+ * The struct's components are all static, so they sit in the head one after
+ * another exactly as four separate arguments would: no offset, no length, and
+ * nothing for a decoder to follow. That is why this call has a descriptor at
+ * all — see descriptors.ts.
+ *
+ * The total is RECOMPUTED here from the snapshot rather than copied out of the
+ * plan. A plan is only produced by `planDividend`, which already refused any
+ * total that did not equal per-share × snapshot supply; recomputing costs a
+ * multiplication and closes the one remaining route to a wrong number on a
+ * device screen, which is a caller that assembled the object itself.
+ */
+export function encodeDividend(plan: DividendPlan): string {
+  const t = plan.terms;
+  const computed = totalForSnapshot(t.perShare, t.snapshot);
+  if (computed.state !== "ok") throw new AbiError(computed.why);
+  if (computed.total !== plan.total || computed.total !== t.statedTotal) {
+    throw new AbiError(
+      `this dividend's total (${plan.total}) is not per-share × snapshot supply ` +
+      `(${computed.total}), so it will not be encoded`,
+    );
+  }
+  if (t.token.decimals < 0 || t.token.decimals > 255) {
+    throw new AbiError("the payment token's decimals do not fit in a uint8");
+  }
+  return word(t.recordDate) + word(t.executionDate) + word(computed.total)
+    + word(BigInt(t.token.decimals));
 }
 
 /* ------------------------------------------------------------------ asking */
@@ -246,4 +297,138 @@ export async function proposePrivileged(
     return { kind: "declined", notice: DECLINED_NOTICE, screen: rendering };
   }
   return { kind: "sent", result: outcome.result, screen: rendering };
+}
+
+/* ------------------------------------------------------- paying the holders */
+
+/**
+ * The payout leg, and why it is separate from everything above.
+ *
+ * `setDividend` declares; it moves nothing. Paying is N ERC-20 transfers of
+ * some other token, one approval each, and none of them is an ATS call at all
+ * — so none of them goes through `describePrivilegedCall`, and none of them is
+ * described by this app's descriptors. Core screens them exactly as it screens
+ * any other transfer: with a descriptor for that token, or not at all. If the
+ * payment token has none, the wallet declines and the payout cannot proceed
+ * from here. That is the descriptor rule applying to us, and it is worked
+ * around nowhere in this file.
+ */
+export const PAYMENT_SIGNATURE = "transfer(address,uint256)";
+
+/** What one attempted payment did to the run. */
+export interface PaymentAttempt {
+  /**
+   * `paid` — a hash came back. `uncertain` — we asked and do not know.
+   * `blocked` / `complete` / `cannot-ask` — nothing was asked.
+   */
+  kind: "paid" | "uncertain" | "blocked" | "complete" | "cannot-ask";
+  /** The ledger AFTER this attempt. Always keep this one; the old is stale. */
+  ledger: DistributionLedger;
+  /** Which holder, when one was attempted. */
+  allocation?: Allocation;
+  /** Transaction hash, when one came back. */
+  result?: string;
+  notice: string;
+}
+
+export const PAYMENT_UNCERTAIN_NOTICE =
+  "The wallet did not return a transaction hash. That covers a rejection on " +
+  "the device, a wallet that would not describe the transfer, and a connection " +
+  "lost after signing — an app is not told which, and the last of those may " +
+  "have paid. This holder is now marked uncertain and the run has stopped: " +
+  "check the address on an explorer, then mark it paid or not paid. This app " +
+  "will not retry on its own, because retrying a transfer that did land is how " +
+  "a holder gets paid twice.";
+
+/**
+ * Pay the next holder in the plan, once.
+ *
+ * One holder per call, deliberately. A loop that pays fourteen holders from one
+ * press is one approval for fourteen irreversible transfers, which is the
+ * batching this file's header refuses; and a loop that pays them from fourteen
+ * presses is this function, called fourteen times, with the ledger written down
+ * in between. The ledger is what makes the run resumable, so it has to exist
+ * between the presses rather than inside a loop.
+ */
+export async function payNext(
+  context: AppContext,
+  plan: DividendPlan,
+  ledger: DistributionLedger,
+): Promise<PaymentAttempt> {
+  const step = nextPayment(plan, ledger);
+  if (step.state === "complete") {
+    return {
+      kind: "complete", ledger,
+      notice: `All ${step.paid} holders are marked paid, totalling ${step.total} raw units.`,
+    };
+  }
+  if (step.state === "blocked") return { kind: "blocked", ledger, notice: step.why };
+
+  const propose = context.propose;
+  if (!propose) return { kind: "cannot-ask", ledger, notice: NO_DEVICE_NOTICE };
+
+  const a = step.allocation;
+  const data = `0x${selectorOf(PAYMENT_SIGNATURE)}${addressWord(a.address)}${word(a.amount)}`;
+  let outcome;
+  try {
+    outcome = await propose({
+      kind: "call",
+      to: plan.terms.token.address,
+      data,
+      reason: `dividend ${plan.planId.slice(0, 10)}: holder ${step.index + 1}`.slice(0, 120),
+    });
+  } catch (e) {
+    /* A throw is the worst case and gets the most conservative reading: the
+     * request may have reached the device, and the device may have signed. */
+    return {
+      kind: "uncertain",
+      ledger: record(ledger, a.address,
+        { state: "uncertain", why: String((e as Error)?.message ?? e) }),
+      allocation: a,
+      notice: PAYMENT_UNCERTAIN_NOTICE,
+    };
+  }
+
+  if (!outcome.ok || outcome.kind !== "call") {
+    /* A decline is NOT read as "not paid", even though a user pressing reject
+     * is much the commonest cause. The seam gives one opaque no for a
+     * rejection, an undescribable transfer and a connection lost after
+     * signing, and only the last of those may have moved money. Reading the
+     * common case would be right most of the time and would double-pay in
+     * exactly the case that costs money, so the run stops and a person looks. */
+    return {
+      kind: "uncertain",
+      ledger: record(ledger, a.address, { state: "uncertain", why: "the wallet returned no hash" }),
+      allocation: a,
+      notice: PAYMENT_UNCERTAIN_NOTICE,
+    };
+  }
+  return {
+    kind: "paid",
+    ledger: record(ledger, a.address, { state: "paid", tx: outcome.result }),
+    allocation: a,
+    result: outcome.result,
+    notice: `Paid ${a.amount} raw units to ${a.address}. Transaction ${outcome.result}.`,
+  };
+}
+
+/**
+ * Resolve an uncertain holder, by hand, with the chain in front of you.
+ *
+ * The only way past a `blocked` run, and it takes a person: "paid" needs the
+ * transaction hash they found, "not paid" needs them to have looked. Neither is
+ * something this app can determine — it holds no receipts and has no way to
+ * read one — so both are inputs rather than inferences.
+ */
+export function resolveUncertain(
+  ledger: DistributionLedger,
+  address: string,
+  resolution: { paid: true; tx: string } | { paid: false; why: string },
+): DistributionLedger {
+  return record(
+    ledger, address,
+    resolution.paid
+      ? { state: "paid", tx: resolution.tx }
+      : { state: "not-paid", why: resolution.why },
+  );
 }

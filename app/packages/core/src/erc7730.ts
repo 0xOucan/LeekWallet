@@ -26,9 +26,13 @@
  * Design rules, all of them inherited from the firmware decoder:
  *
  * - **Exact, not best-effort.** A signature with any dynamic type (bytes,
- *   string, arrays, tuples) has argument offsets we would have to follow to
- *   read, and a misread offset produces a confident wrong number. Those
- *   formats are dropped whole rather than partly rendered.
+ *   string, arrays, tuples containing either) has argument offsets we would
+ *   have to follow to read, and a misread offset produces a confident wrong
+ *   number. Those formats are dropped whole rather than partly rendered. A
+ *   tuple whose components are all static is the one exception, and it is not
+ *   really one: such a tuple is encoded inline in the head, so its calldata is
+ *   byte for byte the flattened argument list and there is no offset in it at
+ *   all. See `parseParams`.
  * - **Ignore what we cannot render.** An unsupported field format is omitted
  *   and counted, never guessed at. The count is surfaced so the UI can say
  *   "2 fields not shown" instead of implying the list is complete.
@@ -173,9 +177,94 @@ function isStaticType(type: string): boolean {
   return false; // arrays, tuples, fixed-point: offsets we will not follow
 }
 
+/**
+ * One leaf argument: exactly one 32-byte word, and the path that names it.
+ *
+ * A flat signature has one leaf per parameter. A signature with an all-static
+ * tuple has one leaf per component, in calldata order, addressed by the dotted
+ * path ERC-7730 uses for them (`#.newDividend.amount`).
+ */
+interface SignatureWord {
+  /** Dotted path without the `#.` prefix. Absent when a tuple has no name. */
+  path?: string;
+  type: string;
+}
+
 interface ParsedSignature {
   canonical: string;
+  /** Top-level parameters. A tuple keeps its whole `(uint256,...)` type here. */
   params: ReadonlyArray<{ name?: string; type: string }>;
+  /** Every word of the arguments, flattened, in calldata order. */
+  words: readonly SignatureWord[];
+}
+
+/** Split on commas that are not inside parentheses. */
+function splitTopLevel(body: string): string[] | null {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === "(") depth++;
+    else if (c === ")") { depth--; if (depth < 0) return null; }
+    else if (c === "," && depth === 0) { out.push(body.slice(start, i)); start = i + 1; }
+  }
+  if (depth !== 0) return null;
+  out.push(body.slice(start));
+  return out;
+}
+
+/**
+ * Parse a parameter list, flattening all-static tuples.
+ *
+ * A tuple whose components are ALL static is not a relaxation of the "no
+ * offsets" rule: such a tuple is encoded inline, component after component, in
+ * the head — the calldata is byte for byte what the flattened argument list
+ * would have been, and there is no offset to follow or misread. A tuple
+ * containing anything dynamic still has one, and is still rejected whole.
+ *
+ * This exists because `IDividend.setDividend` takes
+ * `(uint256,uint256,uint256,uint8)` and is the one call an issuer signs to
+ * declare a distribution. Refusing it would not have been caution; it would
+ * have been refusing the only readable rendering of the call while the bytes
+ * stayed exactly as checkable as a flat one's.
+ */
+function parseParams(
+  body: string,
+  prefix: string,
+): { types: string[]; params: Array<{ name?: string; type: string }>; words: SignatureWord[] } | null {
+  const types: string[] = [];
+  const params: Array<{ name?: string; type: string }> = [];
+  const words: SignatureWord[] = [];
+  const parts = splitTopLevel(body);
+  if (parts === null) return null;
+
+  for (const raw of parts) {
+    const text = raw.trim();
+    if (text.startsWith("(")) {
+      const close = text.lastIndexOf(")");
+      if (close < 0) return null;
+      const name = text.slice(close + 1).trim();
+      // `(...)[]` and `(...)[2]` are arrays of tuples: offsets, or a length we
+      // would have to trust. Neither is followed here.
+      if (name.includes("[") || name.includes(")") || /\s/.test(name)) return null;
+      const inner = parseParams(text.slice(1, close), name.length > 0 ? `${prefix}${name}.` : "");
+      if (inner === null) return null;
+      const type = `(${inner.types.join(",")})`;
+      types.push(type);
+      params.push(name.length > 0 ? { name, type } : { type });
+      words.push(...inner.words);
+      continue;
+    }
+    const bits = text.split(/\s+/);
+    const type = bits[0];
+    if (type === undefined || !isStaticType(type)) return null;
+    const name = bits.length > 1 ? bits[1] : undefined;
+    types.push(type);
+    params.push(name === undefined ? { type } : { name, type });
+    words.push(name === undefined ? { type } : { path: `${prefix}${name}`, type });
+  }
+  return { types, params, words };
 }
 
 /**
@@ -193,21 +282,17 @@ export function parseSignature(key: string): ParsedSignature | null {
   if (!m) return null;
   const name = m[1] as string;
   const body = (m[2] as string).trim();
-  if (body.includes("(") || body.includes(")")) return null; // tuple
+  if (body.length === 0) return { canonical: `${name}()`, params: [], words: [] };
 
-  const params: Array<{ name?: string; type: string }> = [];
-  if (body.length > 0) {
-    for (const raw of body.split(",")) {
-      const parts = raw.trim().split(/\s+/);
-      const type = parts[0];
-      if (type === undefined || !isStaticType(type)) return null;
-      const p: { name?: string; type: string } = { type };
-      // "calldata"/"memory" cannot appear on static types, so parts[1] is a name.
-      if (parts.length > 1 && parts[1] !== undefined) p.name = parts[1];
-      params.push(p);
-    }
-  }
-  return { canonical: `${name}(${params.map((p) => p.type).join(",")})`, params };
+  // "calldata"/"memory" cannot appear on a static type, so the second word of a
+  // parameter is always its name.
+  const parsed = parseParams(body, "");
+  if (parsed === null) return null;
+  return {
+    canonical: `${name}(${parsed.types.join(",")})`,
+    params: parsed.params,
+    words: parsed.words,
+  };
 }
 
 /** keccak-256 of the canonical signature, first four bytes, lower-case hex. */
@@ -305,9 +390,12 @@ export function parseDescriptor(raw: unknown, source: string): Descriptor | null
     const fieldsRaw = value["fields"];
     if (fieldsRaw !== undefined && !Array.isArray(fieldsRaw)) return null;
 
+    /* Keyed by the flattened path, so `#.amount` and `#.newDividend.amount`
+     * resolve the same way: to the index of the word that actually holds the
+     * value. A tuple's components are words of their own — see parseParams. */
     const wordOf = new Map<string, number>();
-    sig.params.forEach((p, i) => {
-      if (p.name !== undefined) wordOf.set(p.name, i);
+    sig.words.forEach((w, i) => {
+      if (w.path !== undefined) wordOf.set(w.path, i);
     });
 
     const fields: PreparedField[] = [];
@@ -328,7 +416,7 @@ export function parseDescriptor(raw: unknown, source: string): Descriptor | null
       const format = fmt === undefined ? "raw" : fmt;
       if (typeof format !== "string" || !SUPPORTED_FORMATS.has(format)) { omitted++; continue; }
 
-      const source_ = resolvePath(path, wordOf, sig.params);
+      const source_ = resolvePath(path, wordOf, sig.words);
       if (source_ === null) { omitted++; continue; }
       // `amount` means the chain's native currency; on a calldata word that
       // would be an 18-decimal claim about an arbitrary integer.
@@ -360,7 +448,7 @@ export function parseDescriptor(raw: unknown, source: string): Descriptor | null
         if (typeof resolved === "string" && ADDRESS_RE.test(resolved)) {
           field.token = { from: "literal", address: resolved.toLowerCase() };
         } else if (typeof viaPath === "string") {
-          const ref = resolvePath(viaPath, wordOf, sig.params);
+          const ref = resolvePath(viaPath, wordOf, sig.words);
           if (ref !== null && ref.from === "param" && ref.type === "address") {
             field.token = { from: "param", word: ref.word };
           }
@@ -382,7 +470,7 @@ export function parseDescriptor(raw: unknown, source: string): Descriptor | null
       signature: sig.canonical,
       intent,
       fields,
-      words: sig.params.length,
+      words: sig.words.length,
       hidden,
       omitted,
     });
@@ -399,23 +487,28 @@ export function parseDescriptor(raw: unknown, source: string): Descriptor | null
 /**
  * Resolve an ERC-7730 path to a source of bytes.
  *
- * Supported: `amount`, `#.amount` (a top-level calldata parameter by name) and
- * `@.value` (the transaction's own value). `@.from`, `@.to`, nested paths and
- * array slices return null and cost the field: `@.from` in particular is the
- * *sender*, which this module is not given and would have to invent.
+ * Supported: `amount`, `#.amount` (a calldata parameter by name), the dotted
+ * form for a component of an all-static tuple (`#.newDividend.amount`), and
+ * `@.value` (the transaction's own value). `@.from`, `@.to` and array slices
+ * return null and cost the field: `@.from` in particular is the *sender*, which
+ * this module is not given and would have to invent.
+ *
+ * A dotted path resolves only because `parseParams` flattened the tuple into
+ * words first — the lookup is still "which word of the calldata is this", never
+ * a walk through a structure whose layout we inferred.
  */
 function resolvePath(
   path: string,
   wordOf: ReadonlyMap<string, number>,
-  params: ReadonlyArray<{ name?: string; type: string }>,
+  words: readonly SignatureWord[],
 ): FieldSource | null {
   if (path === "@.value") return { from: "txValue" };
   if (path.startsWith("@.")) return null;
   const name = path.startsWith("#.") ? path.slice(2) : path;
-  if (name.includes(".") || name.includes("[")) return null;
+  if (name.includes("[")) return null;
   const word = wordOf.get(name);
   if (word === undefined) return null;
-  const type = params[word]?.type;
+  const type = words[word]?.type;
   if (type === undefined) return null;
   return { from: "param", word, type };
 }

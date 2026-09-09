@@ -19,7 +19,8 @@ import {
   encodePrivileged, previewPrivileged, proposePrivileged,
   DECLINED_NOTICE, NO_DEVICE_NOTICE, PRIVILEGED_ACTIONS, type PrivilegedIntent,
 } from "../src/act.ts";
-import { NEEDS } from "../src/act-view.ts";
+import { FORM_ACTIONS, NEEDS, PANEL_ACTIONS } from "../src/act-view.ts";
+import { planDividend, type DividendPlan } from "../src/dividend.ts";
 import { describePrivilegedCall, type SecurityFacts } from "../src/action.ts";
 import { atsDescriptorJson, ACTIONS } from "../src/descriptors.ts";
 import { ATS_APP } from "../src/index.ts";
@@ -56,6 +57,27 @@ function spyContext(): { context: AppContext; asked: AppProposal[] } {
   };
   return { context, asked };
 }
+
+/**
+ * A dividend that reconciles: two holders, 150 raw shares at 2 decimals (1.5
+ * whole shares), a rate of 50 payment units per whole share, so the total is
+ * 50 × 150 / 100 = 75 and the two holders take 50 and 25.
+ */
+const BOB = "0x000000000000000000000000000000000048b3c4";
+const PAY_TOKEN = "0x0000000000000000000000000000000000068cda";
+const planned = planDividend(CHAIN, TOKEN, {
+  snapshot: { id: 3n, totalSupply: 150n, holderCount: 2n, decimals: 2 },
+  token: { address: PAY_TOKEN, decimals: 6, reportedSymbol: "USDC" },
+  perShare: 50n,
+  statedTotal: 75n,
+  recordDate: 1893456000n,
+  executionDate: 1893542400n,
+}, [{ address: ALICE, shares: 100n }, { address: BOB, shares: 50n }]);
+if (planned.state !== "plan") {
+  console.log(`  FAIL: the fixture dividend does not plan: ${planned.why}`);
+  process.exit(1);
+}
+const PLAN: DividendPlan = planned;
 
 /* ------------------------------------------------------------------ encoding */
 
@@ -94,6 +116,8 @@ group("calldata is built from the same table the descriptors are built from");
     { action: "mint", to: ALICE, amount: 5n },
     { action: "addToControlList", account: ALICE },
     { action: "removeFromControlList", account: ALICE },
+    { action: "takeSnapshot" },
+    { action: "setDividend", plan: PLAN },
   ];
   check(intents.length === ACTIONS.length,
     `${intents.length} intents for ${ACTIONS.length} actions: one of them has no test`);
@@ -115,6 +139,14 @@ group("the form offers exactly the actions the table has");
   }
   check(Object.keys(NEEDS).length === PRIVILEGED_ACTIONS.length,
     "the form's input map has entries for actions that are not in the table");
+  /* An action a dedicated panel owns is excluded from the generic chooser and
+   * from nowhere else: it is still in the table, still encodable, and still
+   * subject to every refusal. The exclusion is about which form builds it. */
+  for (const action of FORM_ACTIONS) {
+    check(!PANEL_ACTIONS.has(action), `${action} has its own panel and is still in the chooser`);
+  }
+  check(FORM_ACTIONS.length + PANEL_ACTIONS.size === PRIVILEGED_ACTIONS.length,
+    "an action is in neither the chooser nor a panel, so nothing can build it");
 }
 
 group("a bad address never becomes calldata");

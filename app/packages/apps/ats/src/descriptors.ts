@@ -325,6 +325,39 @@ export const ACTIONS: readonly ActionSpec[] = [
     ],
   },
   {
+    /* Snapshots are what make a distribution reconcilable rather than
+     * approximate, and taking one is the step before every dividend. It takes
+     * no arguments and moves nothing, so the screen is a title and a
+     * consequence — which is the honest amount of screen for it. */
+    key: "takeSnapshot()",
+    title: "Take snapshot",
+    intent: "Record every holder's balance at this instant",
+    confidence: "artifact",
+    fields: [],
+  },
+  {
+    /* The one call in this table with a struct argument. Its four components
+     * are all static, so the calldata is four words in the head with no offset
+     * anywhere in it — see `parseParams` in core/erc7730.ts, which is where the
+     * engine was taught to flatten exactly this shape and nothing looser.
+     *
+     * The component names are the contracts' own (IDividendTypes.Dividend), and
+     * the parameter name is `newDividend` because that is what IDividend
+     * declares; conformance.test.ts checks both against the artifacts. */
+    key:
+      "setDividend((uint256 recordDate,uint256 executionDate,uint256 amount," +
+      "uint8 amountDecimals) newDividend)",
+    title: "Distribute dividend",
+    intent: "Declare a dividend",
+    confidence: "artifact",
+    fields: [
+      { label: "Total", path: "#.newDividend.amount", format: "raw" },
+      { label: "Decimals", path: "#.newDividend.amountDecimals", format: "raw" },
+      { label: "Record", path: "#.newDividend.recordDate", format: "date", params: { encoding: "timestamp" } },
+      { label: "Payable", path: "#.newDividend.executionDate", format: "date", params: { encoding: "timestamp" } },
+    ],
+  },
+  {
     key: "addToControlList(address _account)",
     title: "Add to control list",
     intent: "Add an address to the control list",

@@ -237,6 +237,35 @@ export function describePrivilegedCall(
       effect = "blocks all transfers by every holder until the register is unpaused";
       break;
 
+    case "takeSnapshot":
+      effect = "records every holder's balance at this instant, permanently, as a numbered snapshot";
+      break;
+
+    case "setDividend": {
+      /* The amount's scale is in the calldata, one word after the amount, so
+       * the restatement is derived from the same bytes the device will draw
+       * rather than from anything the console was told. The security's own
+       * `decimals()` is deliberately NOT used here: this figure is denominated
+       * in the payment token, which is a different contract with a different
+       * scale, and applying the share scale to it would be off by orders of
+       * magnitude in a number nobody could check by eye. */
+      const scale = argWord(data, 3);
+      if (scale === undefined || scale > 77n) {
+        return refuse("the dividend's amount scale is not a usable number of decimals", selector);
+      }
+      fields = fields.map((f) =>
+        f.label === "Total" && /^\d+$/.test(f.value)
+          ? { ...f, value: `${formatUnits(BigInt(f.value), Number(scale))} (${f.value} raw units)` }
+          : f);
+      /* Two sentences because this call does two surprising things: it moves
+       * no money, and the snapshot it will use is not the one the console
+       * reconciled against — the register takes its own at the record date. */
+      effect =
+        "declares a dividend on this register; it transfers nothing by itself, and " +
+        "each holder is paid by a separate transfer that needs its own approval";
+      break;
+    }
+
     case "unpause":
       effect = "allows transfers by every holder again";
       break;
