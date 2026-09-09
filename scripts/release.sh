@@ -45,7 +45,11 @@ if ! git -C "${ROOT}" rev-parse --verify --quiet "${TAG}^{commit}" >/dev/null; t
     exit 2
 fi
 
-COMMIT=$(git -C "${ROOT}" rev-parse "${TAG}")
+# `${TAG}` alone resolves an annotated tag to the TAG OBJECT, not the commit —
+# so BUILDINFO recorded a sha that `git checkout` cannot use, and a verifier
+# reproducing the build got a confusing failure. `^{commit}` dereferences it,
+# and is what the check above already validates.
+COMMIT=$(git -C "${ROOT}" rev-parse "${TAG}^{commit}")
 OUT="${ROOT}/release/${TAG}/${ENV_NAME}"
 
 # ---------------------------------------------------------------------------
