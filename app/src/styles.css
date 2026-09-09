@@ -127,7 +127,7 @@ main { flex: 1; width: 100%; max-width: 640px; margin: 0 auto; padding: var(--sp
   }
   /* The warning and the log are read straight through, so they get the width.
    * Everything else is a form or a list and reads better in a column. */
-  .notice, #logpanel, .tabbar, .diagnostics, .launcher, .destination { grid-column: 1 / -1; }
+  .notice, #logpanel, .diagnostics, .launcher, .destination { grid-column: 1 / -1; }
   /* Grid items ignore the panel's own bottom margin; the gap does that job. */
   .panel, .notice { margin-bottom: 0; }
 }
@@ -205,42 +205,6 @@ p  { margin: 0 0 var(--space-3); color: var(--muted); font-size: var(--text-sm);
   cursor: pointer;
 }
 .destination__back:hover { color: var(--text); }
-
-/* Tab bar (M2). --surface-2 is decorative only, same status as --border; the
- * active tab is carried by --accent (text + underline), which measures 3:1+
- * on --surface-2 in both themes (docs/DESIGN.md, M1). */
-.tabbar {
-  display: flex; gap: var(--space-1);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--space-1);
-  margin-bottom: var(--space-4);
-  overflow-x: auto;
-}
-.tab {
-  font: inherit; font-size: var(--text-sm);
-  height: 36px; padding: 0 var(--space-3);
-  background: transparent; color: var(--muted);
-  border: none; border-radius: var(--radius);
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  /* Colour and opacity only, and short — a tab switch is not the place for a
-   * layout-affecting transition (UI-REDESIGN-PLAN.md §1b). */
-  transition: color var(--motion) ease-out, border-color var(--motion) ease-out;
-}
-.tab:hover { color: var(--text); }
-.tab[aria-selected="true"] {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-  font-weight: 500;
-}
-
-/* Panel-container cross-fade (M2). transform/opacity only, capped at 200ms
- * per §1b; reduced-motion turns it off along with everything else in
- * tokens.css. */
-[data-tab] { animation: tabfade var(--motion) ease-out; }
-@keyframes tabfade { from { opacity: 0; } to { opacity: 1; } }
 
 /* Full-flash disclosure on the flasher panel (L2). Closed by default like
  * .custom-chain, but the summary is danger-coloured: this one gates the

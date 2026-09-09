@@ -10,7 +10,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "pnpm -r test && node --experimental-strip-types --disable-warning=ExperimentalWarning test/wc-uri.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/wc-requests.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/rpc-proxy.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/qr.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/qr-decode.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/flasher.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/apps.test.ts",
+    "test": "pnpm -r test && node --experimental-strip-types --disable-warning=ExperimentalWarning test/wc-uri.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/wc-requests.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/rpc-proxy.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/qr.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/qr-decode.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/flasher.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/nav.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/apps.test.ts",
     "dev": "vite --port 1420 --strictPort",
     "build": "vite build",
     "preview": "vite preview",
