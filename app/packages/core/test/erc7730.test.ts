@@ -53,7 +53,25 @@ group("signatures parse into canonical form and the right selector");
   // offset renders a confident wrong number, so the whole format is refused.
   check(parseSignature("swap(bytes data)") === null, "a dynamic parameter was accepted");
   check(parseSignature("batch(uint256[] ids)") === null, "an array parameter was accepted");
-  check(parseSignature("f((uint256,uint256) t)") === null, "a tuple parameter was accepted");
+  /* An ALL-STATIC tuple is the one shape that survives, and it survives for
+   * the same reason the others do not: it is encoded inline in the head, so
+   * its calldata is byte for byte the flattened argument list and there is no
+   * offset in it to follow. The canonical form keeps the parentheses (that is
+   * what the selector is taken from) while the words are flat. */
+  const tuple = parseSignature("setDividend((uint256 a,uint8 b) d)");
+  check(tuple?.canonical === "setDividend((uint256,uint8))",
+    "an all-static tuple did not keep its parentheses in the canonical form");
+  check(tuple?.words.length === 2, "an all-static tuple was not flattened into its words");
+  check(tuple?.words[1]?.path === "d.b", "a tuple component is not addressable by its dotted path");
+  check(tuple?.params.length === 1 && tuple.params[0]?.name === "d",
+    "the tuple stopped being one top-level parameter");
+  // A tuple with anything dynamic inside it, and an array of tuples, still have
+  // offsets. Both are refused whole.
+  check(parseSignature("f((uint256,bytes) t)") === null, "a tuple containing bytes was accepted");
+  check(parseSignature("f((uint256,uint256)[] t)") === null, "an array of tuples was accepted");
+  check(parseSignature("f((uint256,uint256)[2] t)") === null,
+    "a fixed-length array of tuples was accepted");
+  check(parseSignature("f((uint256,uint256) t") === null, "an unbalanced signature was accepted");
   check(parseSignature("0xa9059cbb") === null, "a bare selector key was accepted as a signature");
 }
 

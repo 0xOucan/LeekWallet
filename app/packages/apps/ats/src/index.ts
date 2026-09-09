@@ -63,7 +63,13 @@
  *
  * This app still holds no device, no key and no transport. It can ask; the
  * shell screens the ask a second time, the device draws it, and a human presses
- * a button. Dividends are E4 and remain absent.
+ * a button.
+ *
+ * `dividend.ts` and `dividend-view.ts` (E4 / C3) add the one lifecycle
+ * operation: a dividend declared against a snapshot, refused unless its total
+ * equals per-share × snapshot supply, and paid out one holder and one press at
+ * a time against a record that makes the payout resumable. `docs/ATS.md` is the
+ * written half of it.
  */
 
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
@@ -72,7 +78,8 @@ import { FIXTURE_ADDRESS, FIXTURE_NOTICE, fixtureRequest } from "./fixtures.ts";
 import { readRegister, type RegisterView } from "./register.ts";
 import { renderRegister } from "./view.ts";
 import { atsDescriptors } from "./descriptors.ts";
-import { renderPrivilegedPanel } from "./act-view.ts";
+import { factsFrom, renderPrivilegedPanel } from "./act-view.ts";
+import { renderDistributionPanel } from "./dividend-view.ts";
 
 export * from "./abi.ts";
 export * from "./roles.ts";
@@ -81,8 +88,10 @@ export * from "./view.ts";
 export * from "./fixtures.ts";
 export * from "./descriptors.ts";
 export * from "./action.ts";
+export * from "./dividend.ts";
 export * from "./act.ts";
 export * from "./act-view.ts";
+export * from "./dividend-view.ts";
 
 /** The chain this app is about. Hedera testnet; see chains.ts for the entry. */
 export const ATS_CHAIN_ID = 296;
@@ -198,6 +207,9 @@ export function buildPanel(root: HTMLElement, context: AppContext): void {
      * freeze a holder before it had read the security would be describing a
      * contract it had never looked at. */
     renderPrivilegedPanel(out, state.view, context);
+    /* The distribution panel needs everything the privileged form needs and a
+     * snapshot besides, so it comes after it and reads the same facts. */
+    renderDistributionPanel(out, state.view, factsFrom(state.view), context);
   };
 
   const read = async (address: string, request: EthRequest, fixture: boolean): Promise<void> => {

@@ -68,7 +68,8 @@ import {
 } from "@leekwallet/core/multicall.ts";
 import {
   addressWord, bytes32Word, decodeAddressArray, decodeBool, decodeString,
-  decodeUint, decodeUint8, encode, selectorOf, word, type SigName,
+  decodeHolderBalanceArray, decodeUint, decodeUint8, encode, selectorOf, word,
+  type HolderBalance, type SigName,
 } from "./abi.ts";
 import { ROLES, type RoleInfo } from "./roles.ts";
 
@@ -596,6 +597,53 @@ async function readSnapshots(ctx: ReadContext): Promise<Outcome<SnapshotView>> {
     next += BigInt(step);
   }
   return ok({ rows, truncated: true });
+}
+
+/**
+ * Every holder's balance AT one snapshot, for a distribution to reconcile to.
+ *
+ * A separate read rather than part of `readRegister`, because it is a different
+ * question asked at a different time: the register view is "who holds what
+ * now", and this is "who held what at snapshot #3", which only a distribution
+ * cares about and which costs a call per page for a snapshot nobody is looking
+ * at.
+ *
+ * `balancesOfAtSnapshot` returns `(address,uint256)[]` — the pair, in one call,
+ * so the address and the balance cannot come from two different reads and be
+ * zipped together wrongly. That is why it is used here in preference to
+ * `getTokenHoldersAtSnapshot` plus a `balanceOfAtSnapshot` per holder.
+ *
+ * A snapshot with more holders than one page returns `unavailable` rather than
+ * a partial list, and the sentence says so. `planDividend` would refuse a short
+ * list anyway — it checks the count against the snapshot's own — but a partial
+ * list should not travel that far: everything downstream of here treats a
+ * holder list as the whole register at that instant.
+ */
+export async function readSnapshotHolders(
+  request: EthRequest,
+  chainId: number,
+  token: string,
+  snapshotId: bigint,
+  host: () => string | undefined = () => undefined,
+  block = "latest",
+): Promise<Outcome<HolderBalance[]>> {
+  addressWord(token);
+  const ctx: ReadContext = { request, chainId, token, block, host };
+  const out = await callBatch(ctx, [
+    call(ctx.token, "getTotalTokenHoldersAtSnapshot", [word(snapshotId)]),
+    call(ctx.token, "balancesOfAtSnapshot", [word(snapshotId), word(0n), word(BigInt(PAGE_SIZE))]),
+  ]);
+  const count = mapOutcome(out[0] ?? unavailable<string>("no entry"), decodeUint);
+  if (count.state !== "ok") return carry<HolderBalance[]>(count);
+  const rows = mapOutcome(out[1] ?? unavailable<string>("no entry"), decodeHolderBalanceArray);
+  if (rows.state !== "ok") return rows;
+  if (BigInt(rows.value.length) !== count.value) {
+    return unavailable<HolderBalance[]>(
+      `snapshot ${snapshotId} reports ${count.value} holders and one page returned ` +
+      `${rows.value.length}. A distribution is not planned from part of a register.`,
+    );
+  }
+  return ok(rows.value);
 }
 
 /** Does this revert payload begin with that error selector? */
