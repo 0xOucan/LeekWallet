@@ -107,6 +107,78 @@ export const UNREADABLE_STRATEGY_NOTICE =
   "cannot tell you whose position it would create. The device applies the same " +
   "rule and would refuse it too. Nothing is signed.";
 
+/* --------------------------------------------------------------- B3: the tail
+ *
+ * readStrategy() above is unchanged: same two checks, same refusal kinds. What
+ * follows reaches further into the SAME bytes for a caller that already knows
+ * why it wants to — program.ts's readOrderProgram(), once it has separately
+ * decided the `ship` app is the SwapVM router (spec §6.6). Nothing here is
+ * consulted by readStrategy() and nothing here changes what it accepts.
+ *
+ * The wire shape past the maker is exactly what encodeStrategy() below
+ * writes, because Aqua's own `ISwapVM.Order` — `(address maker,
+ * MakerTraits traits, bytes data)` — is the same `(address, uint256, bytes)`
+ * layout as `(address maker, bytes32 config, bytes program)`: a head word,
+ * then three struct words (maker, a 32-byte word, an in-struct offset that
+ * must be 0x60), then the dynamic tail's length and bytes. See spec §4.
+ */
+
+/** `readStrategy()`'s result, plus the SwapVM-Order-shaped tail past the maker. */
+export interface StrategyData {
+  maker: string;
+  hash: string;
+  /** Word 2 of the struct: `MakerTraits`, as a packed `uint256`. */
+  traits: bigint;
+  /** The struct's `data` field, verbatim — tokens, hook slices, then the program. */
+  data: Uint8Array;
+}
+
+export type StrategyDataReading =
+  | { ok: true; value: StrategyData }
+  | { ok: false; refusal: StrategyRefusal };
+
+/**
+ * `readStrategy()`, extended to `traits` and `data`. Every check
+ * `readStrategy()` already makes still runs, unchanged, via the call to it
+ * below — this only adds checks past the point where `readStrategy()` stops
+ * reading.
+ */
+export function readStrategyData(strategy: string): StrategyDataReading {
+  const base = readStrategy(strategy);
+  if (!base.ok) return base;
+
+  /* readStrategy() already proved this is whole-byte hex of at least two
+   * words with a 0x20 head, so body exists and is even-length from here on. */
+  const body = strategy.slice(2).toLowerCase();
+  if (body.length < 5 * 64) {
+    return { ok: false, refusal: { kind: "malformed", why: "shorter than five words" } };
+  }
+
+  const traits = BigInt(`0x${body.slice(128, 192)}`);
+
+  /* The in-struct offset of `data`. abi.encode always puts it at 0x60 for
+   * this shape; anything else is not this struct. */
+  if (body.slice(192, 256) !== `${"0".repeat(62)}60`) {
+    return { ok: false, refusal: { kind: "malformed", why: "data offset is not 0x60" } };
+  }
+
+  const lenWord = body.slice(256, 320);
+  const length = Number(BigInt(`0x${lenWord}`));
+  if (!Number.isSafeInteger(length)) {
+    return { ok: false, refusal: { kind: "malformed", why: "data length is not representable" } };
+  }
+  const dataStart = 320;
+  const dataHexLen = length * 2;
+  if (body.length < dataStart + dataHexLen) {
+    return { ok: false, refusal: { kind: "malformed", why: "data runs past the strategy's end" } };
+  }
+
+  const dataHex = body.slice(dataStart, dataStart + dataHexLen);
+  const data = Uint8Array.from(dataHex.match(/../g) ?? [], (b) => parseInt(b, 16));
+
+  return { ok: true, value: { maker: base.maker, hash: base.hash, traits, data } };
+}
+
 /**
  * Does this strategy name `maker`, and nothing else?
  *
