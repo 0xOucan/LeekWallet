@@ -48,6 +48,14 @@ import {
   UNREADABLE_STRATEGY_NOTICE, WRONG_MAKER_NOTICE, checkMaker,
   type StrategyRefusal,
 } from "./strategy.ts";
+import { readOrderProgram, type Instruction, type OrderProgramReading } from "./program.ts";
+
+/** The refusal half of `readOrderProgram`'s result — `ProgramRefusal` when
+ * the program itself failed, or a `StrategyRefusal` when the strategy could
+ * not even be reached that far (readStrategyData's own checks, spec §4,
+ * are strictly stronger than `checkMaker`'s, so this is reachable even after
+ * the maker check above has already passed). */
+type OrderProgramRefusal = Extract<OrderProgramReading, { ok: false }>["refusal"];
 
 const HEX40 = /^0x[0-9a-fA-F]{40}$/;
 
@@ -86,7 +94,13 @@ export type DeployRefusal =
   | { kind: "unreadable-strategy"; refusal: StrategyRefusal; notice: string }
   | { kind: "unlimited-cap"; token: string; notice: string }
   | { kind: "nothing-to-ship"; notice: string }
-  | { kind: "too-many-legs"; legs: number; notice: string };
+  | { kind: "too-many-legs"; legs: number; notice: string }
+  /**
+   * B3, spec §6.6/§6.7: `app` is the SwapVM router and its program is not one
+   * this wallet understands in full. Refuses the WHOLE signature, not the
+   * program page — there is no approve button on this screen, ever.
+   */
+  | { kind: "unreadable-program"; refusal: OrderProgramRefusal; notice: string };
 
 /** One transaction, already encoded, with this app's own words for it. */
 export interface DeployStep {
@@ -114,6 +128,14 @@ export interface DeployPlan {
   strategyHash: string;
   /** Everything the UI must say, in order. */
   notices: string[];
+  /**
+   * Present only when `app` is the SwapVM router and its program decoded in
+   * full — one entry per instruction, in program order, spec §6.7's success
+   * screen. Absent for every other app (B3 does not touch B2's flow) and
+   * absent whenever the program could not be read, because there is no such
+   * plan: an unreadable program refuses before a `DeployPlan` is built at all.
+   */
+  program?: readonly Instruction[];
 }
 
 export type DeployResult = DeployPlan | { ok: false; refusal: DeployRefusal };
@@ -126,6 +148,70 @@ export const CAP_MEANING_NOTICE =
   "not just this one. The cap below is the amount this position is being " +
   "credited with — so once it is spent, nothing more can be pulled until you " +
   "approve again. It is never unlimited.";
+
+/**
+ * Said above the refusal screen, spec §6.7's exact wording: a shipped
+ * strategy authorises every future swap its program permits, so a program
+ * that cannot be read in full cannot be described honestly, and a partial
+ * description of bytecode is worse than none because it looks like a
+ * complete one. `programRefusalDetail()` below appends the kind in plain
+ * words and the program's hex.
+ */
+export const UNREADABLE_PROGRAM_NOTICE =
+  "This strategy's program contains an instruction this wallet does not " +
+  "understand. A shipped strategy authorises every future swap its program " +
+  "permits, so a program that cannot be read in full cannot be described " +
+  "honestly — and a partial description of bytecode is worse than none, " +
+  "because it looks like a complete one. The device applies the same rule " +
+  "and would refuse it too. Nothing is signed.";
+
+/**
+ * The refusal kind, in the plain words spec §6.7 asks for: "instruction 0xNN
+ * at byte 12 is not one of the nine this wallet reads", and so on for every
+ * kind in program.ts's `ProgramRefusal`. Kept as one function so the wording
+ * for each kind is written exactly once and a reviewer can grep for all nine.
+ */
+export function programRefusalDetail(refusal: OrderProgramRefusal): string {
+  switch (refusal.kind) {
+    case "unknown-opcode":
+      return `instruction 0x${refusal.opcode.toString(16).padStart(2, "0")} ` +
+        `at byte ${refusal.offset} is not one of the nine this wallet reads.`;
+    case "bad-args-length":
+      return `${refusal.name} at byte ${refusal.offset} carries ` +
+        `${refusal.actual} argument byte(s), not the ${refusal.expected} this ` +
+        "wallet requires exactly.";
+    case "truncated":
+      return `the instruction at byte ${refusal.offset} runs past the end ` +
+        "of the program.";
+    case "has-control-flow":
+      return `${refusal.name} at byte ${refusal.offset} is control flow: a ` +
+        "jump or delegation this wallet deliberately never renders, because " +
+        "the linear list it would show is not the list that would execute.";
+    case "empty":
+      return "the program has no instructions at all.";
+    case "too-long":
+      return `the program has ${refusal.count} instructions, more than this ` +
+        "wallet will read in full.";
+    case "not-swapvm":
+      /* Unreachable here: planDeployment only calls readOrderProgram after
+       * confirming the app, and this notice is only shown for that refusal
+       * kind. Kept so the switch is exhaustive rather than trusting a cast. */
+      return "this strategy's app is not the SwapVM router.";
+    /* readStrategyData's own refusals (spec §4): reachable because its
+     * checks are strictly stronger than checkMaker's, so a strategy can pass
+     * the maker check above and still fail here. */
+    case "malformed":
+      return `the strategy is not readable past the maker: ${refusal.why}.`;
+    case "not-a-tuple":
+      return "the strategy is not the dynamic-tuple shape a SwapVM Order has.";
+    case "no-maker":
+      return "the strategy's maker field is not a clean address.";
+    default: {
+      const _exhaustive: never = refusal;
+      return String(_exhaustive);
+    }
+  }
+}
 
 /** Said above the ship screen. */
 export const SHIP_MEANING_NOTICE =
@@ -196,6 +282,24 @@ export function planDeployment(request: DeployRequest): DeployResult {
           },
         };
   }
+
+  /* B3, spec §6.6: a program this wallet cannot read in full refuses the
+   * WHOLE signature, before anything else about the plan is built. Only
+   * attempted when `app` is the SwapVM router — `readOrderProgram` itself
+   * returns `not-swapvm` for any other app, and that is not a B3 refusal at
+   * all (B2's flow for every other app is exactly what it was). */
+  const programReading = readOrderProgram(request.strategy, request.app);
+  if (!programReading.ok && programReading.refusal.kind !== "not-swapvm") {
+    return {
+      ok: false,
+      refusal: {
+        kind: "unreadable-program",
+        refusal: programReading.refusal,
+        notice: UNREADABLE_PROGRAM_NOTICE,
+      },
+    };
+  }
+  const program = programReading.ok ? programReading.instructions : undefined;
 
   const steps: DeployStep[] = [];
   const notices: string[] = [CAP_MEANING_NOTICE];
@@ -289,5 +393,8 @@ export function planDeployment(request: DeployRequest): DeployResult {
   });
   notices.push(SHIP_MEANING_NOTICE);
 
-  return { ok: true, steps, strategyHash: maker.hash, notices };
+  return {
+    ok: true, steps, strategyHash: maker.hash, notices,
+    ...(program !== undefined ? { program } : {}),
+  };
 }

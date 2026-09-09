@@ -87,6 +87,19 @@ typedef enum {
  * tokensCount the registry itself stores in a uint8 with 0xff reserved. */
 #define ETH_AQUA_MAX_LEGS 4
 
+/* B3: SwapVM program instructions the device will draw, and therefore the
+ * most it will accept before refusing the whole ship rather than summarising
+ * it (docs/AQUA-B3-SPEC.md §6.5 `too-long`, §6.6 "no partial render").
+ *
+ * Set equal to the host's `AQUA_MAX_INSTRUCTIONS`
+ * (app/packages/apps/aqua/src/program.ts) on purpose: spec §7 requires the
+ * host's accepted set to be a SUBSET of the firmware's, never wider, and the
+ * simplest way to keep that true on this one axis is to make the two bounds
+ * identical rather than trust two numbers to stay in the right order by hand.
+ * Real strategies use at most six instructions (spec §5), so both bounds have
+ * the same headroom above real usage. */
+#define ETH_AQUA_MAX_INSTRUCTIONS 16
+
 /* The static ABI types a generic argument may have. Deliberately only the ones
  * that occupy exactly one 32-byte word: a dynamic type (`bytes`, `string`, any
  * array, any tuple) is an offset into a tail the device would then have to
@@ -176,6 +189,26 @@ typedef struct {
      * no amounts: docking returns whatever is there. */
     uint16_t    aqua_amount_off[ETH_AQUA_MAX_LEGS];
     bool        has_aqua_amounts;
+
+    /* ------------------------------------------------- SwapVM program (B3)
+     *
+     * Only populated for a ship whose `app` is the pinned SwapVM router
+     * (AQUA_SWAPVM_ROUTER, aqua-swapvm.h) -- for every other app this stays
+     * false/zero and the ship is drawn exactly as it was before B3 (spec
+     * §6.6: refusing every non-SwapVM app would break a working flow for no
+     * safety gain). When the app IS the router, aqua_decode_ship() walks the
+     * program with the same closed opcode table program.ts uses and REFUSES
+     * THE WHOLE SHIP (returns false, so the call becomes ETH_CALL_UNKNOWN) if
+     * any instruction is not fully understood -- there is no separate
+     * "program-refused-but-legs-shown" state, because that would be exactly
+     * the partial render spec §6.6 forbids. */
+    bool        aqua_is_swapvm;
+    uint8_t     aqua_instr_count;
+    /* Byte offset of each instruction's opcode byte within the SAME calldata
+     * buffer as aqua_token_off[] -- no allocation, no copy of the program. A
+     * renderer reads the opcode and its args back out of that buffer with
+     * aqua_instr_field(). */
+    uint16_t    aqua_instr_off[ETH_AQUA_MAX_INSTRUCTIONS];
 } EthCall;
 
 /**
@@ -252,6 +285,30 @@ bool eth_aqua_token(const EthCall *call, const uint8_t *data, size_t len,
 /** Leg `i`'s amount. False for a dock, which has no amounts. */
 bool eth_aqua_amount(const EthCall *call, const uint8_t *data, size_t len,
                      int i, EthQuantity *out);
+
+/**
+ * The name of SwapVM program instruction `i` ("Deadline", "XYCSwap", ...),
+ * into `out`. Empty string if `i` is out of range or the opcode byte at
+ * `data[call->aqua_instr_off[i]]` no longer matches one of the nine this
+ * device draws -- re-read from `data` rather than cached at decode time, for
+ * the same reason every other `eth_arg_*`/`eth_aqua_*` accessor is (see
+ * eth_arg_word()). Only meaningful when `call->aqua_is_swapvm` is true.
+ */
+void eth_aqua_instr_name(const EthCall *call, const uint8_t *data, size_t len,
+                         int i, char *out, size_t out_size);
+
+/**
+ * Instruction `i`'s one headline figure, formatted for a screen: a
+ * `uint40`/`uint24`/`uint16` as a decimal integer (Deadline, FeeFlatIn,
+ * Decay), an address (the two balance-check opcodes), or the empty string for
+ * an opcode with no single figure worth a dedicated page (XYCSwap, Salt,
+ * XYCConcentrateSwap, PeggedSwap -- their args are shown as raw hex instead,
+ * see eth_aqua_instr_hex()). Re-reads `data`/`len` for the reason every other
+ * `eth_arg_*`/`eth_aqua_*` accessor does: this runs at render time against a
+ * buffer the renderer owns.
+ */
+bool eth_aqua_instr_value(const EthCall *call, const uint8_t *data, size_t len,
+                          int i, char *out, size_t out_size);
 
 /**
  * Enumerate the table: false once `i` is past the end.
