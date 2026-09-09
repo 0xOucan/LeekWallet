@@ -36,6 +36,7 @@ import qrcodegen from "qrcode-generator";
 import { initFlasher, tauriFlashBridge } from "./flasher.ts";
 import { parsePaymentUri } from "../packages/core/src/payment-uri.ts";
 import { mountApps } from "./apps/mount.ts";
+import { type Dest, DEST_PANEL_IDS, destHidden } from "./nav.ts";
 import { appProposer } from "./apps/propose.ts";
 import type { ChainChannel } from "../packages/core/src/mini-app.ts";
 import { fetchTokenBalancesBatched } from "../packages/core/src/multicall.ts";
@@ -669,8 +670,6 @@ async function poll(): Promise<void> {
       invalidateDerived(reason);
       if (now.unlocked) {
         await loadAddresses();
-        $("addrpanel").hidden = false;
-        $("signpanel").hidden = false;
         setShellVisible(true);
       }
     }
@@ -711,84 +710,79 @@ const busy = (on: boolean): void => {
 };
 
 /**
- * Shell tab bar (M2, UI-REDESIGN-PLAN.md §2b).
+ * The wallet menu's own blocks (L5, docs/UI-L5-SPEC.md).
  *
- * The tabs and the panels they show are shell wiring, not panel content:
- * every element named here already existed and keeps its own internal markup
- * and its own main.ts logic untouched. This block only ever toggles [hidden]
- * on whole panels.
+ * Replaces the old tab bar (M2): Send, Receive, Activity, Apps and Connect a
+ * site are destinations reached from blocks on the wallet menu, not tabs
+ * shown all at once. This extends the launcher's own state-machine shape
+ * (PreConnectDest/applyPreConnectVisibility/enterDest/goToLauncher, below)
+ * rather than inventing a second one — same idea, one level further in.
+ *
+ * The rule for which panel is visible (Dest/DEST_PANEL_IDS/destHidden) lives
+ * in nav.ts, DOM-free, so the safety property in docs/UI-L5-SPEC.md §3 can be
+ * pinned by a test that never touches a browser — see test/nav.test.ts.
  */
-const TAB_PANEL_IDS: Record<string, string> = {
-  send: "signpanel",
-  receive: "addrpanel",
-  activity: "activitypanel",
-  apps: "apps",
-  connect: "wcpanel",
-};
+let dest: Dest = "walletmenu";
 
-let activeTab = "send";
+/** Whether the post-unlock world (wallet menu and its blocks) is on screen at
+ * all. Everything DEST_PANEL_IDS names stays hidden while this is false,
+ * regardless of `dest` — the same "outer gate, inner choice" shape
+ * applyPreConnectVisibility uses for the pre-connect destinations below. */
+let shellOpen = false;
 
-/** Show the panel for `tab`, hide the other four. Apps keeps its own rule:
- * mountApps() already decides whether it has anything to show for the
- * current chain, so this only ever hides it further, never forces it open. */
-function applyTabVisibility(): void {
-  for (const [tab, id] of Object.entries(TAB_PANEL_IDS)) {
+/** Show the one panel `dest` names, hide the rest — and hide all of them
+ * while the shell is closed. */
+function applyDestVisibility(): void {
+  const hidden = destHidden(shellOpen, dest);
+  for (const id of Object.values(DEST_PANEL_IDS)) {
     const el = document.getElementById(id);
-    if (!el) continue;
-    if (tab === "apps") {
-      el.hidden = activeTab !== "apps" || el.childElementCount === 0;
-    } else {
-      el.hidden = activeTab !== tab;
-    }
+    if (el) el.hidden = hidden[id] ?? true;
   }
 }
 
-function selectTab(tab: string): void {
-  if (!(tab in TAB_PANEL_IDS)) return;
-  activeTab = tab;
-  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#tabbar .tab"))) {
-    btn.setAttribute("aria-selected", String(btn.dataset["tab"] === tab));
-  }
-  applyTabVisibility();
+/** Post-unlock home. Also the fetch moment (docs/UI-L3-SPEC.md §5): entering
+ * the wallet menu, whether by unlocking or by backing out of a block, is
+ * when a stale balance stops being shown. */
+function goToWalletMenu(): void {
+  dest = "walletmenu";
+  applyDestVisibility();
+  renderWalletMenu();
+  // refreshAllChainBalances itself no-ops with no address yet, so this is
+  // safe to call even before the first derivation has finished.
+  void refreshAllChainBalances("entered wallet menu");
+}
+
+/** Enter one of the wallet menu's blocks. No-ops before unlock: the blocks
+ * only exist inside the wallet menu, so nothing reachable pre-connect can
+ * call this with the shell closed. */
+function enterBlock(d: Dest): void {
+  if (!shellOpen) return;
+  dest = d;
+  applyDestVisibility();
 }
 
 /**
- * Whether the tab bar (and therefore Send/Receive/Activity/Apps/Connect) is
- * offered at all.
+ * Whether the post-unlock world (the wallet menu and its blocks) is offered
+ * at all.
  *
  * Called from exactly the places that already show/hide addrpanel and
  * signpanel — connect's derivation success, unlock, a host-side passphrase
- * apply, invalidateDerived, and disconnect — so the tab bar tracks "there is
- * a derived address to act on" the same way those two panels already do.
- * Pre-connect, this stays hidden: only the Device panel, Flash firmware, and
- * whatever mini-apps apply with no chain selected (M3) are on screen.
+ * apply, invalidateDerived, and disconnect — so it tracks "there is a
+ * derived address to act on" the same way those two panels already did.
+ *
+ * This is also the safety behaviour docs/UI-L5-SPEC.md §3 calls out by name:
+ * a locked device must never leave a Send form or an address on screen.
+ * Closing the shell always lands back on `dest === "walletmenu"` (cleared,
+ * not the block that happened to be open), and opening it always goes
+ * through goToWalletMenu() rather than reopening whatever was last chosen.
  */
 function setShellVisible(visible: boolean): void {
-  $("tabbar").hidden = !visible;
-  // L3: the wallet-menu headline shares the tab bar's gate — both mean "there
-  // is a derived address to show something about".
-  $("walletmenu").hidden = !visible;
-  /* The waiter destination's wrapper (L1) is reachable two ways: through the
-   * launcher pre-connect, and through the Apps tab once connected. This is
-   * the second: #apps's own [hidden] still tracks its content and the active
-   * tab exactly as before (applyTabVisibility, unchanged), so this line only
-   * ever widens or narrows the outer gate, never overrides that decision. */
-  $("waiterdest").hidden = !visible;
+  shellOpen = visible;
   if (visible) {
-    selectTab(activeTab);
-    renderWalletMenu();
-    // Entering the wallet menu is a fetch moment (docs/UI-L3-SPEC.md §5);
-    // refreshAllChainBalances itself no-ops with no address yet, and the
-    // "addresses derived"/"address changed" hooks cover the case where an
-    // address already exists when this runs.
-    void refreshAllChainBalances("entered wallet menu");
+    goToWalletMenu();
   } else {
-    // Force every tab-owned panel shut; apps keeps deciding for itself.
-    for (const [tab, id] of Object.entries(TAB_PANEL_IDS)) {
-      if (tab === "apps") continue;
-      const el = document.getElementById(id);
-      if (el) el.hidden = true;
-    }
+    dest = "walletmenu";
+    applyDestVisibility();
     // Leaving the wallet menu is the same "stop showing a stale number about
     // whoever was here before" moment clearBalances() already covers.
     allChainRows = new Map();
@@ -800,9 +794,9 @@ function setShellVisible(visible: boolean): void {
  *
  * Replaces the tab bar's old job of showing everything at once, pre-connect,
  * with three destinations that are entered and left one at a time — "one
- * thing per screen" per §2e. TAB_PANEL_IDS/applyTabVisibility (M2, above)
- * still own what happens *after* a device is connected and unlocked; this is
- * only about what is on screen before that.
+ * thing per screen" per §2e. Dest/applyDestVisibility (L5, above) own the
+ * same shape for *after* a device is connected and unlocked; this is only
+ * about what is on screen before that.
  */
 type PreConnectDest = "launcher" | "connect" | "flash" | "waiter";
 let preConnectDest: PreConnectDest = "launcher";
@@ -822,8 +816,8 @@ function goToLauncher(): void {
   applyPreConnectVisibility();
 }
 
-function enterDest(dest: PreConnectDest): void {
-  preConnectDest = dest;
+function enterDest(d: PreConnectDest): void {
+  preConnectDest = d;
   applyPreConnectVisibility();
 }
 
@@ -859,17 +853,6 @@ function connectDestBack(): void {
   } else {
     goToLauncher();
   }
-}
-
-function initTabbar(): void {
-  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("#tabbar .tab"))) {
-    btn.addEventListener("click", () => selectTab(btn.dataset["tab"] ?? "send"));
-  }
-  // remountApps() runs before this on init and may already have populated
-  // #apps; re-apply the rule once so an unlocked-on-load state (a saved
-  // session) does not show a stale hidden/visible apps panel under a tab
-  // nobody selected yet.
-  applyTabVisibility();
 }
 
 /* ----------------------------------------------------------------- actions */
@@ -1140,8 +1123,6 @@ async function unlock(): Promise<void> {
     lastStatus = await readStatus();
     renderAccountSelector();
     await loadAddresses();
-    $("addrpanel").hidden = false;
-    $("signpanel").hidden = false;
     setShellVisible(true);
     $("passpanel").hidden = !lastStatus.unlocked;
     if (!lastStatus.unlocked) {
@@ -1316,8 +1297,6 @@ function initPassphrase(): void {
       renderAccountSelector();
       if (lastStatus.unlocked) {
         await loadAddresses();
-        $("addrpanel").hidden = false;
-        $("signpanel").hidden = false;
         setShellVisible(true);
       }
     } catch (e) {
@@ -1547,10 +1526,10 @@ function remountApps(info: ChainInfo): void {
        app/test/apps.test.ts enforces this. */
     client === null ? (app) => app.worksWithoutDevice === true : undefined,
   );
-  // mountApps() just wrote #apps's own [hidden] based on chain content; when
-  // the tab bar is showing, the tab-switch rule (only visible on the Apps
-  // tab) still applies on top of that.
-  if (!$("tabbar").hidden) applyTabVisibility();
+  // mountApps() just wrote #apps's own [hidden] based on chain content;
+  // waiterdest (the wrapper around it) is a separate gate, owned by whichever
+  // destination system currently applies — pre-connect (applyPreConnectVisibility)
+  // or post-unlock (applyDestVisibility) — and neither depends on this call.
 }
 
 /** Rebuild the chain list: curated first, then custom. The order is the trust order. */
@@ -3860,17 +3839,38 @@ initTokenDiscovery();
 initFlasher(tauriFlashBridge(log));
 initToScanner();
 initMaxAmount();
-initTabbar();
 populateAssets();
 void initRpcTransport();
 applyPreConnectVisibility();
+applyDestVisibility();
 
 $("gotoconnect").addEventListener("click", () => enterDest("connect"));
 $("gotoflash").addEventListener("click", () => enterDest("flash"));
 $("gotowaiter").addEventListener("click", () => enterDest("waiter"));
 $("connectback").addEventListener("click", connectDestBack);
 $("flashback").addEventListener("click", goToLauncher);
-$("waiterback").addEventListener("click", goToLauncher);
+// waiterdest is reachable both pre-connect (La Caja, from the launcher) and
+// post-unlock (Apps, from the wallet menu); Back has to undo whichever one
+// got it here. shellOpen is the same flag setShellVisible uses to decide
+// that, so this is the one place that reads it outside this file's own
+// destination functions.
+$("waiterback").addEventListener("click", () => {
+  if (shellOpen) goToWalletMenu(); else goToLauncher();
+});
+
+// The wallet menu's blocks (L5, docs/UI-L5-SPEC.md §1.3) and each
+// destination's own Back button, all routed through enterBlock()/
+// goToWalletMenu() — the post-unlock half of the same pattern the launcher
+// uses above.
+$("wmgotosend").addEventListener("click", () => enterBlock("send"));
+$("wmgotoreceive").addEventListener("click", () => enterBlock("receive"));
+$("wmgotoactivity").addEventListener("click", () => enterBlock("activity"));
+$("wmgotoapps").addEventListener("click", () => enterBlock("apps"));
+$("wmgotoconnect").addEventListener("click", () => enterBlock("connect"));
+$("sendback").addEventListener("click", goToWalletMenu);
+$("receiveback").addEventListener("click", goToWalletMenu);
+$("activityback").addEventListener("click", goToWalletMenu);
+$("wcback").addEventListener("click", goToWalletMenu);
 
 $("connect").addEventListener("click", () => void connect());
 $("unlock").addEventListener("click", () => void unlock());

@@ -163,12 +163,14 @@
         </section>
 
         <!--
-          Wallet menu headline (L3, docs/UI-L3-SPEC.md). Account and its
-          money, across every tracked testnet chain at once, per
-          UI-SPEC-V2.md §2a/§2e. Shown and hidden by setShellVisible() in
-          main.ts, same as the tab bar below it. No polling: fetched on
-          entering (setShellVisible(true)) and on the Refresh button, and
-          nothing here refreshes while the window is hidden.
+          Wallet menu (L3 balances, L5 navigation - docs/UI-L3-SPEC.md,
+          docs/UI-L5-SPEC.md). This is the post-unlock home: account and its
+          money across every tracked testnet chain, then the blocks that
+          replace the old tab bar as the only way to Send, Receive and the
+          rest. Shown and hidden by setShellVisible() in main.ts. No polling:
+          fetched on entering (setShellVisible(true), and on backing out of a
+          block) and on the Refresh button, and nothing here refreshes while
+          the window is hidden.
         -->
         <section class="walletmenu" id="walletmenu" aria-labelledby="walletmenuhead" hidden>
           <h2 id="walletmenuhead" class="visually-hidden">Wallet</h2>
@@ -184,28 +186,46 @@
             chain. The device neither reports nor confirms them.
           </p>
           <ul class="walletmenu__chains" id="wmchains" aria-label="Balances across every chain"></ul>
+
+          <!--
+            The blocks (L5, docs/UI-L5-SPEC.md §1.3). Same tile CSS as the
+            pre-connect launcher (.launcher__tile) - reused, not reinvented,
+            per docs/UI-SPEC-V2.md §2e. Each is a destination: main.ts's
+            enterBlock() hides the wallet menu and shows exactly the one
+            panel named, and that panel's own Back button returns here.
+
+            Send and Receive point at the existing "Sign a transaction" and
+            "Addresses" panels rather than a second, purpose-built form - see
+            docs/UI-REDESIGN-PLAN.md milestones. Activity says plainly that it
+            is not built, in the tile itself, rather than opening onto an
+            empty-looking screen.
+          -->
+          <nav class="launcher walletmenu__blocks" aria-label="What do you want to do">
+            <button type="button" class="launcher__tile" id="wmgotosend">
+              <span class="launcher__title">Send</span>
+              <span class="launcher__desc">Scan a code or paste an address</span>
+            </button>
+            <button type="button" class="launcher__tile" id="wmgotoreceive">
+              <span class="launcher__title">Receive</span>
+              <span class="launcher__desc">Show an address to be paid into</span>
+            </button>
+            <button type="button" class="launcher__tile" id="wmgotoactivity">
+              <span class="launcher__title">Activity</span>
+              <span class="launcher__desc">Not built yet</span>
+            </button>
+            <button type="button" class="launcher__tile" id="wmgotoapps">
+              <span class="launcher__title">Apps</span>
+              <span class="launcher__desc">The mini-apps for this device</span>
+            </button>
+            <button type="button" class="launcher__tile" id="wmgotoconnect">
+              <span class="launcher__title">Connect a site</span>
+              <span class="launcher__desc">WalletConnect pairing</span>
+            </button>
+          </nav>
         </section>
 
-        <!--
-          Tab bar (M2). Hidden until the device is unlocked -
-          setShellVisible() in main.ts, called from the same places that
-          already show/hide addrpanel and signpanel. Each panel below carries
-          the data-tab it belongs to; switching tabs only ever toggles
-          [hidden] on whole panels, so no panel's own markup changes here.
-          M5-M7 have not been built, so Send and Receive currently point at
-          the existing "Sign a transaction" and "Addresses" panels rather
-          than the review-first forms the plan describes for those tabs, and
-          Activity is a placeholder - see docs/UI-REDESIGN-PLAN.md milestones.
-        -->
-        <nav class="tabbar" id="tabbar" role="tablist" aria-label="Sections" hidden>
-          <button type="button" class="tab" role="tab" data-tab="send" aria-selected="true">Send</button>
-          <button type="button" class="tab" role="tab" data-tab="receive" aria-selected="false">Receive</button>
-          <button type="button" class="tab" role="tab" data-tab="activity" aria-selected="false">Activity</button>
-          <button type="button" class="tab" role="tab" data-tab="apps" aria-selected="false">Apps</button>
-          <button type="button" class="tab" role="tab" data-tab="connect" aria-selected="false">Connect</button>
-        </nav>
-
-        <section class="panel" id="addrpanel" aria-labelledby="addrhead" data-tab="receive" hidden>
+        <section class="panel" id="addrpanel" aria-labelledby="addrhead" hidden>
+          <button type="button" class="destination__back" id="receiveback"><span aria-hidden="true">← </span>Back</button>
           <h2 id="addrhead">Receive</h2>
           <p>
             Pick the account, then the address to receive into — the wrong
@@ -413,12 +433,13 @@
           <p class="muted" id="flashstatus" aria-live="polite"></p>
         </div>
 
-        <!-- Activity (M7, not built). A stub rather than nothing: the tab
-             exists per the shell's M2 deliverable, and unavailable must never
-             read as zero (rule 4) - so this says plainly that no history is
-             being shown, rather than showing an empty list that looks like a
-             wallet with no transactions. -->
-        <section class="panel" id="activitypanel" aria-labelledby="activityhead" data-tab="activity" hidden>
+        <!-- Activity (M7, not built). A stub rather than nothing: the block
+             on the wallet menu already says "Not built yet", and unavailable
+             must never read as zero (rule 4) - so this repeats it plainly
+             rather than showing an empty list that looks like a wallet with
+             no transactions. -->
+        <section class="panel" id="activitypanel" aria-labelledby="activityhead" hidden>
+          <button type="button" class="destination__back" id="activityback"><span aria-hidden="true">← </span>Back</button>
           <h2 id="activityhead">Activity</h2>
           <p class="muted">
             Not built yet. When it is, this will show transactions signed on
@@ -427,7 +448,8 @@
           </p>
         </section>
 
-        <section class="panel" id="signpanel" aria-labelledby="signhead" data-tab="send" hidden>
+        <section class="panel" id="signpanel" aria-labelledby="signhead" hidden>
+          <button type="button" class="destination__back" id="sendback"><span aria-hidden="true">← </span>Back</button>
           <h2 id="signhead">Sign a transaction</h2>
           <p>
             This preview is drawn by this app and cannot be trusted. Verify the
@@ -578,7 +600,8 @@
           see docs/PROTOCOL.md section 6b for why rendering untrusted web
           content next to a signing device is the thing we are not doing.
         -->
-        <section class="panel" id="wcpanel" aria-labelledby="wchead" data-tab="connect" hidden>
+        <section class="panel" id="wcpanel" aria-labelledby="wchead" hidden>
+          <button type="button" class="destination__back" id="wcback"><span aria-hidden="true">← </span>Back</button>
           <h2 id="wchead">Dapps (WalletConnect)</h2>
           <p id="wcstatus" class="muted" role="status"></p>
 
@@ -700,18 +723,20 @@
         </section>
 
         <!--
-          La Caja — waiter, as a destination (docs/UI-SPEC-V2.md §1a). This
-          wrapper is only what the launcher's nav hides/shows pre-connect; the
-          #apps div inside keeps deciding its own [hidden] from mounted
-          content, and keeps its data-tab="apps" role for the post-connect
-          tab bar (M2) unchanged — this wrapper does not replace that.
+          Apps / La Caja — waiter, as a destination (docs/UI-SPEC-V2.md §1a,
+          docs/UI-L5-SPEC.md §3). Reachable two ways: the launcher's "La Caja"
+          tile pre-connect, and the wallet menu's "Apps" block once unlocked
+          — main.ts's enterDest()/enterBlock() both point here, and this
+          wrapper's own [hidden] is the single gate for either path (no
+          double-gating). The #apps div inside keeps deciding its own
+          [hidden] from mounted content, unrelated to which path opened it.
         -->
         <section class="destination" id="waiterdest" hidden>
           <button type="button" class="destination__back" id="waiterback"><span aria-hidden="true">← </span>Back</button>
           <!-- Mini-apps mount here, one panel each. Empty and hidden unless the
                active chain has one registered - see src/apps/registry.ts, which
                is the single line a release build removes to exclude one. -->
-          <div id="apps" data-tab="apps" hidden></div>
+          <div id="apps" hidden></div>
         </section>
         <!-- One camera surface for every mini-app, owned by the shell.
              An app never gets a MediaStream; it calls AppContext.scanQr and
