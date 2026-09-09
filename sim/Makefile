@@ -329,7 +329,18 @@ VECTORS := ../app/packages/core/test/conformance-vectors.json
 conformance: $(BUILD)/test_protocol
 	./$(BUILD)/test_protocol --emit-vectors $(VECTORS)
 
+# The mock leg of T50 (see docs/MIRROR-GAP.md): what src/eth-decode.c actually
+# does with a corpus of calldata, accepted or refused, written down for
+# eth-decode.test.ts to replay. Same reasoning as $(VECTORS) above and the same
+# reason it is not checked in and trusted: a corpus recorded from an older
+# eth-decode.c would let the TS mirror agree with a decoder that no longer
+# exists. check.sh runs this before the app tests for exactly that reason.
+ETH_DECODE_VECTORS := ../app/packages/core/test/eth-decode-vectors.json
+
+eth-decode-conformance: $(BUILD)/test_eth_decode
+	./$(BUILD)/test_eth_decode --emit-vectors $(ETH_DECODE_VECTORS)
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test asan fuzz conformance clean
+.PHONY: all test asan fuzz conformance eth-decode-conformance clean

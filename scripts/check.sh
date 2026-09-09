@@ -62,6 +62,10 @@ if [[ "$WHAT" == "all" || "$WHAT" == "app" ]]; then
     # mistake as the divergences this catches. Cheap - it is one already-built
     # binary replaying 48 requests.
     run "conformance vectors" make -C sim conformance
+    # Same reasoning, for the calldata decoders (T50): re-record what
+    # src/eth-decode.c actually accepts and refuses before eth-decode.test.ts
+    # replays it against the TS mirror. See docs/MIRROR-GAP.md.
+    run "eth-decode conformance vectors" make -C sim eth-decode-conformance
 
     if command -v pnpm >/dev/null 2>&1; then
         run "app tests" pnpm --dir app test

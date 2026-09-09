@@ -8,7 +8,12 @@
  * app can render whatever it likes, and the device screen is the authority.
  *
  * Keep the two implementations in step. If this file grows a selector the
- * firmware does not have, the mock stops being a lower bound.
+ * firmware does not have, the mock stops being a lower bound — and that claim
+ * is no longer taken on faith: `sim/test_eth_decode.c --emit-vectors` records
+ * what the real `eth_decode_call()` does with a corpus of calldata, accepted
+ * or refused, and `test/eth-decode.test.ts` replays it against this file and
+ * asserts agreement on every entry. See docs/MIRROR-GAP.md for the gap that
+ * closed and `make -C sim eth-decode-conformance` to regenerate the corpus.
  */
 
 import { keccak_256 } from "@noble/hashes/sha3";
