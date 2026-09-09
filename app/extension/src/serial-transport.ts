@@ -28,6 +28,20 @@
  * - `reader.cancel()` is what unblocks a pending `read()`. Closing the port
  *   without it hangs, because `close()` waits for the streams to be released
  *   and the read loop is still holding one.
+ *
+ * - DTR/RTS are explicitly deasserted right after `open()`. This is the fix
+ *   for the "did not answer within 5000ms" defect: Web Serial does not
+ *   specify a default signal state, and on the platform serial backends
+ *   Chromium sits on top of, opening a port commonly raises DTR as a side
+ *   effect of the OS-level open call. On the ESP32-S3's USB-Serial-JTAG
+ *   peripheral that toggle is wired to the chip's reset line, so the very act
+ *   of opening the port reboots the device — it never gets to answer `hello`
+ *   within the 5 s the handshake allows, because it is still coming back up.
+ *   The Rust desktop transport (`app/transport-serial/src/transport.rs`)
+ *   already documents and avoids exactly this for the same hardware
+ *   (`.dtr_on_open(false)`); this is that same fix, expressed the way Web
+ *   Serial requires it — asserted low immediately after `open()`, since the
+ *   API gives no way to suppress the initial toggle itself.
  */
 
 import type { Transport } from "../../packages/core/src/transport.ts";
@@ -40,6 +54,16 @@ import type { Transport } from "../../packages/core/src/transport.ts";
  * side.
  */
 const BAUD_RATE = 115200;
+
+/**
+ * How long to drain the line, in plaintext-boot-noise mode, after opening.
+ *
+ * Matches `app/transport-serial/src/transport.rs`'s 250ms sleep-then-clear: if
+ * opening the port reset the device, this is enough for the reboot's stray
+ * bytes (if any) to have arrived and be discarded before the handshake sends
+ * anything the device would otherwise never see or reply to in time.
+ */
+const SETTLE_MS = 250;
 
 export class SerialTransport implements Transport {
   readonly kind = "usb" as const;
@@ -85,7 +109,52 @@ export class SerialTransport implements Transport {
     this.writer = this.port.writable.getWriter();
     this.reader = this.port.readable.getReader();
     this.opened = true;
+
+    /* See the file header. Deasserted as early as the API allows — Web Serial
+     * only exposes `setSignals()` on an already-open port, so this cannot
+     * prevent a reset the open() call itself triggered, only stop the port
+     * from sitting there asserted afterwards. Best-effort: not every backend
+     * implements it, and failure here is not a reason to fail the connection
+     * over two lines this device does not even use for flow control. */
+    try {
+      await this.port.setSignals({ dataTerminalReady: false, requestToSend: false });
+    } catch {
+      /* Nothing to do about it; see above. */
+    }
+
+    await this.settle(this.reader);
     void this.pump(this.reader);
+  }
+
+  /**
+   * Drain and discard whatever lands in the first `SETTLE_MS`.
+   *
+   * Nothing has been sent yet, so anything read here cannot be a reply to a
+   * request — it is boot noise from a reset `open()` may have just caused, or
+   * simply nothing at all. Feeding it to the frame decoder instead would risk
+   * failing the very first real exchange on a malformed-frame error that has
+   * nothing to do with the device's actual answer.
+   */
+  private async settle(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+    const deadline = Date.now() + SETTLE_MS;
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return;
+      const timedOut = Symbol("settle-timeout");
+      const timer = new Promise<typeof timedOut>((resolve) => {
+        setTimeout(() => resolve(timedOut), remaining);
+      });
+      let result;
+      try {
+        result = await Promise.race([reader.read(), timer]);
+      } catch {
+        // The port errored before anything was ever sent; the real pump loop
+        // below will hit the same error and report it properly.
+        return;
+      }
+      if (result === timedOut || result.done) return;
+      // Discard result.value and keep draining until the window closes.
+    }
   }
 
   /**
