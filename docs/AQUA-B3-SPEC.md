@@ -58,70 +58,69 @@ while (pcs < length) {
 The repo's working note is **correct on framing** and must be kept. It is
 **wrong on opcode numbers** (§3).
 
-## 3. The opcode table — and the fact that blocks this milestone
+## 3. The opcode table — RESOLVED
 
-There are **two incompatible numbering schemes** in the 1inch sources.
+**Earlier drafts of this spec treated the opcode numbering as blocking. It is
+not, and the reason is in the prize rules:**
 
-### 3a. Scheme A — the contract enum (banked)
+> Official Aqua/SwapVM contracts must be used (**redeployments of a modified
+> SwapVM contract is allowed**) … If you use SwapVM, you may modify SwapVM
+> opcodes and define your own instructions.
 
-`src/libs/OpcodeList.sol`, asserted by `test/OpcodeEnumCheck.t.sol`
-(`assertEq(uint8(Opcode.XYCSwap), 0x50)`). Banked by family; `0xf0–0xff`
-reserved.
+So we do not have to discover what the *mainnet* router uses. We deploy
+`1inch/swap-vm` at a pinned commit ourselves, and the numbering is then a fact
+we control and can verify against the source we deployed.
 
-| Value | Name | Args |
+For commit `4918338`, the wire byte **is** the `Opcode` enum value. This is not
+inferred — `src/opcodes/AquaOpcodes.sol` dispatches by comparing the wire byte
+directly to the enum:
+
+```solidity
+     if (opcode == Jump.opcode.asU8())    Jump.exec(ctx, args);
+else if (opcode == XYCSwap.opcode.asU8()) XYCSwap.exec(ctx, args);
+...
+else revert UnknownOpcode(opcode);
+```
+
+The sixteen opcodes the Aqua router dispatches, extracted from
+`OpcodeList.sol` and `AquaOpcodes.sol` at that commit and cross-checked against
+the repo's own `test/OpcodeEnumCheck.t.sol`:
+
+| Byte | Name | In our supported set? |
 |---|---|---|
-| `0x00` | Stop | *(none)* |
-| `0x01` | Revert | `bytes4` or `bytes` |
-| `0x02` | Salt | `uint64` or `bytes` |
-| `0x03` | Jump | `uint16 nextPC` |
-| `0x04` | Extruction | `address target, bytes args` |
-| `0x20` | Deadline | `uint40 deadline` |
-| `0x23` | OnlyTakerTokenBalanceNonZero | `address token` |
-| `0x24` | OnlyTakerTokenBalanceGte | `address token, uint256 amount` |
-| `0x25` | OnlyTakerTokenSupplyShareGte | `address token, uint64 share` |
-| `0x26` | OnlyTxOriginTokenBalanceNonZero | `address token` |
-| `0x2b` | PrivateOrder | `Whitelist.sol` |
-| `0x2c`/`0x2d` | WhitelistCoequal / Sequential | `Whitelist.sol` |
-| `0x30` | JumpIfDirection | `bool (bit 0), uint16 nextPC` |
-| `0x31`/`0x32` | JumpIfTokenIn / JumpIfTokenOut | `address token, uint16 nextPC` |
-| `0x40` | InvalidateBit | `Invalidators.sol` |
-| `0x41`/`0x42` | InvalidateTokenIn / Out | `Invalidators.sol` |
-| `0x48` | ValidateSeriesEpoch | `SeriesEpochManager.sol` |
-| `0x50` | XYCSwap | *(none)* |
-| `0x51` | XYCConcentrateSwap | `uint256 sqrtPriceMin, sqrtPriceMax` |
-| `0x53`/`0x54` | LimitSwap / LimitSwapFullAmount | `LimitSwap.sol` |
-| `0x58` | PeggedSwap | `uint256 x0, y0, linearWidth, rateA, rateB` |
-| `0x70`/`0x71` | FeeFlatIn / FeeFlatOut | `uint24 feeBps` |
-| `0x80` | FeeProtocol | variable, flag-dependent |
-| `0x90`/`0x91` | StaticBalances / DynamicBalances | `Balances.sol` |
-| `0x94`/`0x95` | DutchAuctionBalanceIn / Out | `DutchAuction.sol` |
-| `0x98`/`0x99` | PiecewiseLinearScaleBalanceIn / Out | |
-| `0x9c` | Decay | `uint16 period` |
-| `0xb0`/`0xb1` | RequireMinRate / AdjustMinRate | `MinRate.sol` |
-| `0xb2` | OraclePriceAdjuster | |
-| `0xb4` | BaseFeeAdjuster | |
+| `0x02` | Salt | yes |
+| `0x03` | Jump | **no — control flow (§6.3)** |
+| `0x04` | Extruction | **no — control flow (§6.3)** |
+| `0x20` | Deadline | yes |
+| `0x23` | OnlyTakerTokenBalanceNonZero | yes |
+| `0x24` | OnlyTakerTokenBalanceGte | yes |
+| `0x25` | OnlyTakerTokenSupplyShareGte | yes |
+| `0x26` | OnlyTxOriginTokenBalanceNonZero | yes |
+| `0x31` | JumpIfTokenIn | **no — control flow (§6.3)** |
+| `0x32` | JumpIfTokenOut | **no — control flow (§6.3)** |
+| `0x50` | XYCSwap | yes |
+| `0x51` | XYCConcentrateSwap | yes |
+| `0x58` | PeggedSwap | yes |
+| `0x70` | FeeFlatIn | yes |
+| `0x80` | FeeProtocol | **no — variable-length args (§6.4)** |
+| `0x9c` | Decay | yes |
 
-### 3b. Scheme B — the SDK's dense array index
+Anything else on the Aqua router reverts `UnknownOpcode(opcode)` on chain, and
+must refuse in our decoder.
 
-`@1inch/swap-vm-sdk@0.4.1`, `dist/index.js:1248` — `ProgramBuilder.decode` reads
-the same framing but resolves the opcode byte as `this.ixsSet[opcodeIdx]`, an
-**index into an ordered array**: ten `EMPTY_OPCODE` slots at 0–9, then
-`jump=10, jumpIfTokenIn=11, jumpIfTokenOut=12, deadline=13,
-onlyTakerTokenBalanceNonZero=14, …, xycSwapXD=17, …, decayXD=19, salt=20, …,
-peggedSwap=31, extruction=32, onlyTxOriginTokenBalanceNonZero=33`.
+**The repo's old note was wrong in an instructive way.** It said
+`0x26 limitSwap1D`; `0x26` is a real opcode, but it is
+`OnlyTxOriginTokenBalanceNonZero`. And `0x17 staticBalances` is not an opcode at
+all — `StaticBalances` is `0x90`, and it is not even dispatched by the Aqua
+router. The numbers appear to have come from a dense array index in an older SDK
+build, written down as hex. **The SDK's `ixsSet` index is not the wire format**
+and must not be used as one.
 
-`Decay` is `0x9c` in scheme A and `19` in scheme B. Both cannot be right.
+### 3a. The table is pinned to a deployment
 
-### 3c. What this means for us
-
-**Do not write an opcode table into `dist/` until §10.1 is resolved.** The
-existing repo note (`0x17 staticBalances`, `0x26 limitSwap1D`) matches neither
-scheme and must be corrected wherever it appears.
-
-Worth noting: scheme B's `xycSwapXD` **is** index 17, and the non-Aqua array's
-index 17 is `staticBalancesXD`. The repo's note looks like a decimal index from
-an older SDK build written down as hex. That is exactly the error this milestone
-exists to make impossible.
+This table is valid for commit `4918338` deployed by us. If the router address
+in `registry.ts` changes, or the commit is bumped, the table must be
+re-extracted from the source actually deployed. Pin both, so a change is a diff.
 
 ## 4. Where the program lives — CONFIRMED
 
@@ -375,7 +374,7 @@ milestone's headline claim and it costs one unit test.
 
 | # | Claim | Status | How to settle it |
 |---|---|---|---|
-| 10.1 | **Which opcode numbering the deployed router uses** | **UNCONFIRMED — blocking** | Deploy `AquaSwapVMRouter` on Sepolia from the pinned commit; ship a one-instruction program under each scheme; the one that does not revert `UnknownOpcode` is the answer. See §10.10 — the mainnet-disassembly cross-check does not work. |
+| 10.1 | Which opcode numbering applies | **RESOLVED — §3** | The rules permit redeploying SwapVM, so we deploy commit `4918338` and the enum value is the wire byte by construction, as its own dispatcher and `OpcodeEnumCheck.t.sol` both show. Re-extract if the commit or router address changes. |
 | 10.2 | The 16-opcode dispatch set matches the deployment | UNCONFIRMED | Same probe, one instruction per candidate opcode. The SDK claiming 29 is direct evidence of drift. |
 | 10.3 | Commit `4918338` is what is deployed | UNCONFIRMED | Compare deployed bytecode against a local build. |
 | 10.4 | The SwapVM licence carries the same bundling bar | UNCONFIRMED | Read `swap-vm/LICENSES/SwapVM-1.1.txt` clause by clause; record in `THIRD-PARTY-LICENSES.md`. Presume encumbered until read. |
