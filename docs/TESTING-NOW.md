@@ -117,4 +117,11 @@ paste that address into **Read register**.
 - Chrome extension — offscreen document never answers.
 - Android USB — fix applied, **never tested**. BLE works.
 - Windows/macOS companions — build, never run.
-- Aqua SwapVM decoding (Q3) — not built; needs a mainnet fork anyway.
+- Aqua SwapVM decoding (Q3/B3) — **built, never run against a chain.** The
+  host decoder, the firmware walker and the refusal screen all exist, and the
+  shared calldata vectors prove both decoders refuse the same programs (35
+  vectors, 18 refusals, five of them SwapVM programs). What has not happened is
+  a real `ship` to a real router: the mainnet-fork worry was misplaced —
+  redeploying SwapVM is explicitly allowed, so the Sepolia path in
+  `swap-vm/DEPLOY.md` is the way to exercise it. Until then the evidence is
+  fixtures, not transactions.
