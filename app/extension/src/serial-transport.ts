@@ -58,10 +58,17 @@ const BAUD_RATE = 115200;
 /**
  * How long to drain the line, in plaintext-boot-noise mode, after opening.
  *
- * Matches `app/transport-serial/src/transport.rs`'s 250ms sleep-then-clear: if
- * opening the port reset the device, this is enough for the reboot's stray
- * bytes (if any) to have arrived and be discarded before the handshake sends
- * anything the device would otherwise never see or reply to in time.
+ * Taken from `app/transport-serial/src/transport.rs`'s 250ms sleep-then-clear
+ * — but note the two cases are NOT the same, and this number has not been
+ * validated for ours. There, `dtr_on_open(false)` prevents the reset outright,
+ * so 250ms only has to cover draining bytes the device had already queued.
+ * Here Web Serial gives no way to suppress the initial toggle, so if the open
+ * does reset the board, this window has to cover an actual ESP32-S3 boot,
+ * which may well be longer. No boot time is recorded anywhere in this repo.
+ *
+ * So treat 250 as a lower bound copied from an easier problem, not a measured
+ * figure: if a device still reports "did not answer within 5000ms" on a real
+ * board, raise this first before suspecting anything else.
  */
 const SETTLE_MS = 250;
 
