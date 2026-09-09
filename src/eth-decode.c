@@ -4,6 +4,7 @@
 
 #include "eth-decode.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "memzero.h"
@@ -431,6 +432,169 @@ static bool aqua_strategy_maker(const uint8_t *body, size_t len, uint8_t out[20]
     return true;
 }
 
+/* ---------------------------------------------------- SwapVM program (B3)
+ *
+ * The pinned router this table is valid for. If the deployment's commit or
+ * address ever changes, this must be re-extracted from the source actually
+ * deployed before it is trusted again -- see docs/AQUA-B3-SPEC.md §3a/§11.
+ * Kept as bytes, not a string to parse, for the same reason the rest of this
+ * file avoids hex literals it would have to decode at runtime. */
+static const uint8_t AQUA_SWAPVM_ROUTER[20] = {
+    0x11, 0x11, 0x11, 0x33, 0x8c, 0x50, 0x91, 0xe8, 0x44, 0x0b,
+    0x67, 0xb1, 0x68, 0xba, 0xe1, 0x6a, 0x66, 0x8a, 0xc0, 0xde,
+};
+
+/* One row of the closed opcode allowlist -- the SAME nine names, the SAME
+ * fixed widths, as app/packages/apps/aqua/src/program.ts's OPCODES table.
+ * `argsLen < 0` means "any length is understood" (Salt: `exec()` never reads
+ * its args, so there is no field being interpreted). Every width here was
+ * read out of the same src/instructions/ *.sol file the host module's header
+ * comment cites -- not re-derived, not guessed. */
+typedef struct {
+    uint8_t     opcode;
+    int16_t     args_len;   /* -1 = any length */
+    const char *name;
+} AquaOpSpec;
+
+static const AquaOpSpec AQUA_OPCODES[] = {
+    { 0x02, -1,  "Salt" },
+    { 0x20,  5,  "Deadline" },
+    { 0x23, 20,  "OnlyTakerTokenBalanceNonZero" },
+    { 0x26, 20,  "OnlyTxOriginTokenBalanceNonZero" },
+    { 0x50,  0,  "XYCSwap" },
+    { 0x51, 64,  "XYCConcentrateSwap" },
+    { 0x58, 160, "PeggedSwap" },
+    { 0x70,  3,  "FeeFlatIn" },
+    { 0x9c,  2,  "Decay" },
+};
+#define AQUA_OPCODES_COUNT (sizeof(AQUA_OPCODES) / sizeof(AQUA_OPCODES[0]))
+
+/* Real Aqua-dispatched opcodes, deliberately refused rather than added to the
+ * table above -- Jump/Extruction/JumpIfTokenIn/JumpIfTokenOut, spec §6.3. A
+ * jump means the linear list this walker would produce is not the list the
+ * router executes; Extruction hands the swap registers to arbitrary
+ * maker-chosen bytecode this walker cannot read by construction. */
+static bool aqua_is_control_flow(uint8_t opcode)
+{
+    return opcode == 0x03 || opcode == 0x04 || opcode == 0x31 || opcode == 0x32;
+}
+
+static const AquaOpSpec *aqua_opcode_spec(uint8_t opcode)
+{
+    for (size_t i = 0; i < AQUA_OPCODES_COUNT; i++) {
+        if (AQUA_OPCODES[i].opcode == opcode) {
+            return &AQUA_OPCODES[i];
+        }
+    }
+    return NULL;
+}
+
+/**
+ * Walk a SwapVM program -- `[opcode][args_len][args]` repeated -- exactly as
+ * `ContextLib.runLoop` does (spec §2), and refuse the WHOLE program (return
+ * false) the moment any instruction is not understood. No allocation: each
+ * accepted instruction records only the byte offset of its opcode into the
+ * SAME calldata buffer `aqua_token_off[]` already points into; nothing is
+ * copied and nothing outlives this call except those offsets.
+ *
+ * There is no partial result. A caller that gets `false` back has an `out`
+ * whose aqua_instr_* fields must not be trusted -- the same rule
+ * program.ts's readProgram() documents as "either every instruction or none".
+ */
+static bool aqua_program_walk(const uint8_t *data, size_t prog_off,
+                              size_t prog_len, EthCall *out)
+{
+    if (prog_len == 0) {
+        return false;                       /* `empty` */
+    }
+
+    size_t  pc = 0;
+    uint8_t count = 0;
+
+    while (pc < prog_len) {
+        if (pc + 2 > prog_len) {
+            return false;                    /* `truncated`: mid-header */
+        }
+        uint8_t opcode   = data[prog_off + pc];
+        uint8_t args_len = data[prog_off + pc + 1];
+        size_t  inst_off = prog_off + pc;
+        pc += 2;
+
+        if (aqua_is_control_flow(opcode)) {
+            return false;                    /* `has-control-flow` */
+        }
+        const AquaOpSpec *spec = aqua_opcode_spec(opcode);
+        if (!spec) {
+            return false;                    /* `unknown-opcode` */
+        }
+        if (spec->args_len >= 0 && args_len != (uint8_t)spec->args_len) {
+            return false;                    /* `bad-args-length` */
+        }
+        if (pc + args_len > prog_len) {
+            return false;                    /* `truncated`: tail runs past end */
+        }
+        pc += args_len;
+
+        if (count >= ETH_AQUA_MAX_INSTRUCTIONS) {
+            return false;                    /* `too-long` */
+        }
+        out->aqua_instr_off[count++] = (uint16_t)inst_off;
+    }
+
+    out->aqua_instr_count = count;
+    return true;
+}
+
+/**
+ * Locate and walk the program inside a SwapVM `Order`'s strategy bytes.
+ *
+ * `strategy_off`/`strategy_len` describe the SAME strategy bytes
+ * aqua_strategy_maker() already validated (0x20 head, maker at word 1) --
+ * this reaches past that point exactly as program.ts's readStrategyData()
+ * does, spec §4:
+ *
+ *   word 2 (byte 0x40)  traits, a packed uint256 -- only bits 208..223 matter
+ *                       here (programStart), which land in the big-endian
+ *                       traits word's bytes 4 and 5.
+ *   word 3 (byte 0x60)  in-struct offset of `data`, always 0x60 for this shape
+ *   word 4 (byte 0x80)  data.length
+ *   byte 0xa0..         data, then program = data[programStart..]
+ */
+static bool aqua_swapvm_program(const uint8_t *data, size_t strategy_off,
+                                size_t strategy_len, EthCall *out)
+{
+    if (strategy_len < 0xa0) {
+        return false;                        /* too short to hold the struct */
+    }
+    if (data[strategy_off + 0x60 + 31] != 0x60) {
+        return false;
+    }
+    for (int i = 0; i < 31; i++) {
+        if (data[strategy_off + 0x60 + i] != 0) {
+            return false;                    /* dirty high bytes: not 0x60 */
+        }
+    }
+
+    size_t data_len;
+    if (!word_as_size(data + strategy_off + 0x80, strategy_len - 0xa0,
+                      &data_len)) {
+        return false;
+    }
+    size_t data_off = strategy_off + 0xa0;
+
+    /* programStart = (traits >> 208) & 0xffff -- bits 208..223 of a 256-bit
+     * big-endian word are exactly bytes 4 and 5 of that word, counting from
+     * the most significant byte. */
+    size_t program_start = ((size_t)data[strategy_off + 0x40 + 4] << 8) |
+                           (size_t)data[strategy_off + 0x40 + 5];
+    if (program_start > data_len) {
+        return false;                        /* programStart past data's end */
+    }
+
+    return aqua_program_walk(data, data_off + program_start,
+                             data_len - program_start, out);
+}
+
 /* ship(address,bytes,address[],uint256[]) -- canonical encoding only. */
 static bool aqua_decode_ship(const uint8_t *data, size_t len, EthCall *out)
 {
@@ -468,6 +632,21 @@ static bool aqua_decode_ship(const uint8_t *data, size_t len, EthCall *out)
     if (!aqua_strategy_maker(strategy, len_s, out->aqua_maker)) return false;
     out->has_aqua_maker = true;
     keccak_256(strategy, len_s, out->aqua_hash);
+
+    /* B3: only when `app` is the pinned SwapVM router is a program even
+     * present to read -- for any other app this strategy's bytes are that
+     * app's own business, unchanged since before this milestone (spec §6.6).
+     * When it IS the router, a program this device cannot read in full
+     * refuses the WHOLE ship, not just the program pages: there is no state
+     * where the legs above are shown next to a program the device gave up
+     * on. */
+    if (memcmp(out->aqua_app, AQUA_SWAPVM_ROUTER, 20) == 0) {
+        out->aqua_is_swapvm = true;
+        size_t strategy_off = (size_t)(strategy - data);
+        if (!aqua_swapvm_program(data, strategy_off, len_s, out)) {
+            return false;
+        }
+    }
 
     /* tokens */
     if (off_t + 32 > span) return false;
@@ -855,6 +1034,105 @@ bool eth_aqua_amount(const EthCall *call, const uint8_t *data, size_t len,
         return false;
     }
     return eth_quantity_set(out, word, 32);
+}
+
+/* Re-bounds-check instruction `i`'s opcode byte against the caller's `len`
+ * and hand back its offset and the spec row it decoded against at record
+ * time -- same discipline as aqua_leg_word() above and eth_arg_word(): this
+ * runs at render time, from a buffer the renderer owns, not from a copy the
+ * decoder trusted itself to have taken correctly. */
+static bool aqua_instr_lookup(const EthCall *call, const uint8_t *data,
+                              size_t len, int i, size_t *off,
+                              const AquaOpSpec **spec)
+{
+    if (!call || !data || !call->aqua_is_swapvm ||
+        i < 0 || i >= call->aqua_instr_count) {
+        return false;
+    }
+    size_t o = call->aqua_instr_off[i];
+    if (o + 2 > len) {
+        return false;
+    }
+    uint8_t opcode = data[o];
+    if (aqua_is_control_flow(opcode)) {
+        return false;
+    }
+    const AquaOpSpec *s = aqua_opcode_spec(opcode);
+    if (!s) {
+        return false;
+    }
+    if (off)  *off  = o;
+    if (spec) *spec = s;
+    return true;
+}
+
+void eth_aqua_instr_name(const EthCall *call, const uint8_t *data, size_t len,
+                         int i, char *out, size_t out_size)
+{
+    if (!out || out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+    size_t off;
+    const AquaOpSpec *spec;
+    if (!aqua_instr_lookup(call, data, len, i, &off, &spec)) {
+        return;
+    }
+    snprintf(out, out_size, "%s", spec->name);
+}
+
+bool eth_aqua_instr_value(const EthCall *call, const uint8_t *data, size_t len,
+                          int i, char *out, size_t out_size)
+{
+    if (!out || out_size == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    size_t off;
+    const AquaOpSpec *spec;
+    if (!aqua_instr_lookup(call, data, len, i, &off, &spec)) {
+        return false;
+    }
+    /* args start right after the two-byte header, and their length was
+     * already proven exact by the walker that accepted this program -- but
+     * re-derive it from the byte on the wire rather than trust that, for the
+     * same re-check-at-render-time reason as everywhere else in this file. */
+    uint8_t args_len = data[off + 1];
+    const uint8_t *args = data + off + 2;
+    if (off + 2 + (size_t)args_len > len) {
+        return false;
+    }
+
+    if (strcmp(spec->name, "Deadline") == 0) {
+        EthQuantity q;
+        if (!eth_quantity_set(&q, args, 5)) return false;
+        return eth_format_integer(&q, out, out_size);
+    }
+    if (strcmp(spec->name, "FeeFlatIn") == 0) {
+        EthQuantity q;
+        if (!eth_quantity_set(&q, args, 3)) return false;
+        return eth_format_integer(&q, out, out_size);
+    }
+    if (strcmp(spec->name, "Decay") == 0) {
+        EthQuantity q;
+        if (!eth_quantity_set(&q, args, 2)) return false;
+        return eth_format_integer(&q, out, out_size);
+    }
+    if (strcmp(spec->name, "OnlyTakerTokenBalanceNonZero") == 0 ||
+        strcmp(spec->name, "OnlyTxOriginTokenBalanceNonZero") == 0) {
+        /* The wire layout here is a bare 20-byte address (args_len == 20 was
+         * already proven exact by the walker), not a left-padded word, so it
+         * is passed to eth_format_address() directly. */
+        char addr[43];
+        if (!eth_format_address(args, addr, sizeof(addr))) return false;
+        snprintf(out, out_size, "%s", addr);
+        return true;
+    }
+    /* XYCSwap (no args), Salt, XYCConcentrateSwap and PeggedSwap: no single
+     * figure summarises these honestly, so the page shows the opcode name
+     * only and this stays empty -- never a truncated guess at one of several
+     * wide fields. */
+    return false;
 }
 
 bool eth_decode_table_entry(size_t i, const char **sig, const char **names)

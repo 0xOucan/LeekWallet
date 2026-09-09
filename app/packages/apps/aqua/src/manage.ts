@@ -25,7 +25,10 @@ import { parseUnits } from "@leekwallet/core/balances.ts";
 import { fetchAllowances } from "@leekwallet/core/allowances.ts";
 import type { AppContext } from "@leekwallet/core/mini-app.ts";
 import { AQUA_MAX_LEGS, AQUA_REGISTRY } from "./registry.ts";
-import { planDeployment, type DeployLeg, type DeployStep } from "./deploy.ts";
+import {
+  planDeployment, programRefusalDetail, type DeployLeg, type DeployStep,
+} from "./deploy.ts";
+import type { Instruction } from "./program.ts";
 import { encodeStrategy } from "./strategy.ts";
 import { planDock, revokeOffer, type TokenAfterDock } from "./withdraw.ts";
 import { outstandingText, runSteps, type RunOutcome } from "./run.ts";
@@ -185,11 +188,20 @@ function deployForm(ctx: ManageContext): HTMLElement {
         out.append(el("code", "aqua-detail",
           `strategy names ${plan.refusal.named}; this wallet is ${plan.refusal.expected}`));
       }
+      if (plan.refusal.kind === "unreadable-program") {
+        /* Spec §6.7: the refusal kind in plain words, and the program's hex
+         * so it can be inspected elsewhere. No approve button anywhere on
+         * this screen -- `out` never gets a `sign` button appended below,
+         * because this function returns before that point. */
+        out.append(el("p", "aqua-detail", programRefusalDetail(plan.refusal.refusal)));
+        out.append(el("code", "aqua-detail", program.value.trim()));
+      }
       return;
     }
 
     for (const text of plan.notices) out.append(notice(text));
     out.append(el("p", "aqua-detail", `Strategy hash: ${plan.strategyHash}`));
+    if (plan.program !== undefined) out.append(programList(plan.program));
     out.append(stepList(plan.steps));
 
     const sign = el("button", undefined,
@@ -230,6 +242,35 @@ function allowanceOf(portfolio: Portfolio, token: string): { allowance?: bigint 
     return { allowance: exposure.allowance.amount };
   }
   return {};
+}
+
+/**
+ * Spec §6.7's success screen: one row per instruction, in program order, each
+ * naming the opcode and — for the ones with a single figure worth showing —
+ * that figure. Multi-field opcodes (XYCConcentrateSwap, PeggedSwap) and
+ * Salt/XYCSwap show the name alone; their full byte-exact fields are on
+ * `Instruction.fields` for a caller that wants more than this summary.
+ */
+function programList(instructions: readonly Instruction[]): HTMLElement {
+  const heading = el("h4", undefined, "Strategy program");
+  const list = el("ol", "aqua-program");
+  for (const instr of instructions) {
+    const detail = ((): string => {
+      switch (instr.fields.name) {
+        case "Deadline": return String(instr.fields.deadline);
+        case "OnlyTakerTokenBalanceNonZero":
+        case "OnlyTxOriginTokenBalanceNonZero": return instr.fields.token;
+        case "FeeFlatIn": return `${instr.fields.feeBps} / 1e7`;
+        case "Decay": return `${instr.fields.period}s`;
+        default: return "";
+      }
+    })();
+    const item = el("li", undefined, detail ? `${instr.fields.name}  ${detail}` : instr.fields.name);
+    list.append(item);
+  }
+  const wrap = el("div", "aqua-program-wrap");
+  wrap.append(heading, list);
+  return wrap;
 }
 
 function stepList(steps: readonly DeployStep[]): HTMLElement {

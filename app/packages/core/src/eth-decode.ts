@@ -86,6 +86,17 @@ export interface AquaCall {
   strategy?: string;
   /** One entry per leg, in the order the contract will read them. */
   legs: AquaLeg[];
+  /** ship only: whether `app` is the pinned SwapVM router. */
+  isSwapVm?: boolean;
+  /**
+   * ship to the SwapVM router only: every instruction, in program order.
+   * Absent when `isSwapVm` is false. A program this device cannot read in
+   * full never reaches this field at all — the whole ship decodes as
+   * `CallKind.Unknown` instead (spec §6.6, "no partial render"): there is no
+   * state where `legs` above is populated next to a program this mirror gave
+   * up on.
+   */
+  program?: AquaInstruction[];
 }
 
 export interface AquaLeg {
@@ -174,6 +185,50 @@ export const MAX_ARGS = 6;
  * five legs is a screen the signature does not match.
  */
 export const AQUA_MAX_LEGS = 4;
+
+/**
+ * `ETH_AQUA_MAX_INSTRUCTIONS` in eth-decode.h — B3's bound, set equal to the
+ * firmware's on purpose so this mirror's accepted set cannot be wider on this
+ * axis. A program with more instructions is refused, not truncated.
+ */
+export const AQUA_MAX_INSTRUCTIONS = 16;
+
+/**
+ * The pinned SwapVM router (`AQUA_SWAPVM_ROUTER` in eth-decode.c's
+ * `AQUA_SWAPVM_ROUTER[20]`, and in `packages/apps/aqua/src/registry.ts`).
+ * Program decoding is attempted only when a ship's `app` equals this — for
+ * any other app the strategy's bytes past the maker are that app's own
+ * business (spec §6.6). Three copies of one address, not one imported across
+ * a layer boundary this package does not have: `registry.ts` lives in the
+ * Aqua app, and core must not depend on it.
+ */
+const AQUA_SWAPVM_ROUTER = "0x111111338c5091e8440b67b168bae16a668ac0de";
+
+/** One row of the closed opcode allowlist — the mirror of `AQUA_OPCODES` in
+ * eth-decode.c, which is itself the mirror of `OPCODES` in program.ts. `null`
+ * argsLen means any length is understood (Salt). */
+const AQUA_OPCODES: Readonly<Record<number, { name: string; argsLen: number | null }>> = {
+  0x02: { name: "Salt", argsLen: null },
+  0x20: { name: "Deadline", argsLen: 5 },
+  0x23: { name: "OnlyTakerTokenBalanceNonZero", argsLen: 20 },
+  0x26: { name: "OnlyTxOriginTokenBalanceNonZero", argsLen: 20 },
+  0x50: { name: "XYCSwap", argsLen: 0 },
+  0x51: { name: "XYCConcentrateSwap", argsLen: 64 },
+  0x58: { name: "PeggedSwap", argsLen: 160 },
+  0x70: { name: "FeeFlatIn", argsLen: 3 },
+  0x9c: { name: "Decay", argsLen: 2 },
+};
+
+/** Jump, JumpIfTokenIn, JumpIfTokenOut, Extruction — refused, not tabled. */
+const AQUA_CONTROL_FLOW = new Set([0x03, 0x04, 0x31, 0x32]);
+
+/** One SwapVM program instruction, as decoded from a ship's strategy. */
+export interface AquaInstruction {
+  readonly opcode: number;
+  readonly name: string;
+  /** Exactly `args_len` bytes, verbatim. */
+  readonly args: Uint8Array;
+}
 
 interface ParsedArg {
   type: string;
@@ -454,6 +509,62 @@ function strategyMaker(strategy: Uint8Array): string | null {
   return addressFrom(strategy, 32);
 }
 
+/**
+ * Walk a SwapVM program (spec §2), mirroring `aqua_program_walk()` in
+ * eth-decode.c exactly: same table, same order of checks, same "no partial
+ * result" — `null` means refuse, and a caller must not use a partially built
+ * array, because there is none: this only ever returns every instruction or
+ * nothing.
+ */
+function walkAquaProgram(program: Uint8Array): AquaInstruction[] | null {
+  if (program.length === 0) return null;
+
+  const out: AquaInstruction[] = [];
+  let pc = 0;
+  while (pc < program.length) {
+    if (pc + 2 > program.length) return null;
+    const opcode = program[pc] as number;
+    const argsLen = program[pc + 1] as number;
+    pc += 2;
+
+    if (AQUA_CONTROL_FLOW.has(opcode)) return null;
+    const spec = AQUA_OPCODES[opcode];
+    if (spec === undefined) return null;
+    if (spec.argsLen !== null && argsLen !== spec.argsLen) return null;
+    if (pc + argsLen > program.length) return null;
+
+    const args = program.subarray(pc, pc + argsLen);
+    pc += argsLen;
+
+    if (out.length >= AQUA_MAX_INSTRUCTIONS) return null;
+    out.push({ opcode, name: spec.name, args });
+  }
+  return out;
+}
+
+/**
+ * Locate the program inside a SwapVM `Order`'s strategy bytes and walk it —
+ * mirroring `aqua_swapvm_program()` in eth-decode.c, spec §4: `strategy` here
+ * is the SAME bytes `strategyMaker()` above already validated (0x20 head,
+ * maker at word 1).
+ */
+function decodeSwapVmProgram(strategy: Uint8Array): AquaInstruction[] | null {
+  if (strategy.length < 0xa0) return null;
+  for (let i = 0; i < 31; i++) if (strategy[0x60 + i] !== 0) return null;
+  if (strategy[0x60 + 31] !== 0x60) return null;
+
+  const dataLen = wordAsSize(strategy, 0x80, strategy.length - 0xa0);
+  if (dataLen === null) return null;
+  const dataOff = 0xa0;
+
+  /* programStart = (traits >> 208) & 0xffff — bytes 4 and 5 of the 32-byte
+   * big-endian traits word, counting from the most significant byte. */
+  const programStart = ((strategy[0x40 + 4] as number) << 8) | (strategy[0x40 + 5] as number);
+  if (programStart > dataLen) return null;
+
+  return walkAquaProgram(strategy.subarray(dataOff + programStart, dataOff + dataLen));
+}
+
 function decodeAquaShip(bytes: Uint8Array): DecodedCall {
   if (bytes.length < 4 + 4 * 32) return UNKNOWN;
   const span = bytes.length - 4;
@@ -484,6 +595,20 @@ function decodeAquaShip(bytes: Uint8Array): DecodedCall {
   const maker = strategyMaker(strategy);
   if (maker === null) return UNKNOWN;
 
+  /* B3: only when `app` is the pinned SwapVM router is there a program to
+   * read at all — any other app's strategy bytes past the maker are that
+   * app's own business, unchanged from before this milestone (spec §6.6). A
+   * program this mirror cannot read in full refuses the WHOLE ship, exactly
+   * as aqua_swapvm_program() forces aqua_decode_ship() to in the C decoder:
+   * there is no state where `legs` renders next to a program that failed. */
+  const isSwapVm = app === AQUA_SWAPVM_ROUTER;
+  let program: AquaInstruction[] | undefined;
+  if (isSwapVm) {
+    const decoded = decodeSwapVmProgram(strategy);
+    if (decoded === null) return UNKNOWN;
+    program = decoded;
+  }
+
   const legs = wordAsSize(bytes, at(offT), span);
   if (legs === null || legs === 0 || legs > AQUA_MAX_LEGS) return UNKNOWN;
   if (offT + 32 + legs * 32 > span) return UNKNOWN;
@@ -510,6 +635,8 @@ function decodeAquaShip(bytes: Uint8Array): DecodedCall {
       strategy: "0x" + toHex(strategy),
       strategyHash: "0x" + toHex(keccak_256(strategy)),
       legs: out,
+      isSwapVm,
+      ...(program !== undefined ? { program } : {}),
     },
   };
 }

@@ -140,10 +140,12 @@ const CONTROL_FLOW: Readonly<Record<number, string>> = {
  * walk, set generously above what any real Aqua strategy uses: spec §5 says
  * `AquaXYCAmmStrategy`/`AquaPeggedAmmStrategy` build at most six instructions.
  *
- * Provisional: spec §7 puts a matching `ETH_AQUA_MAX_INSTRUCTIONS` on the
- * firmware side, out of scope for this pass. When the firmware walker ships,
- * this constant must equal it — the host's accepted set has to be a subset of
- * the device's, never wider.
+ * This equals `ETH_AQUA_MAX_INSTRUCTIONS` in `src/eth-decode.h`, and must
+ * keep equalling it: the host's accepted set has to be a subset of the
+ * device's, never wider. The shared calldata vectors
+ * (`app/packages/core/test/eth-decode-vectors.json`) are what now catch a
+ * disagreement, so changing one bound without the other fails the suite
+ * rather than drifting quietly.
  */
 export const AQUA_MAX_INSTRUCTIONS = 16;
 
