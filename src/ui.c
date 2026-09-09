@@ -4354,6 +4354,8 @@ typedef enum {
     SIGN_PAGE_AQUA_HASH,    /* Aqua: keccak256(strategy), or dock's argument */
     SIGN_PAGE_AQUA_LEG,     /* Aqua: one token of the strategy */
     SIGN_PAGE_AQUA_AMOUNT,  /* Aqua ship: what that token is credited with */
+    SIGN_PAGE_AQUA_INSTR,   /* Aqua ship to the SwapVM router: one SwapVM
+                             * program instruction, in program order (B3) */
     SIGN_PAGE_FROM          /* the address that will sign (T47) */
 } SignPageKind;
 
@@ -4367,7 +4369,7 @@ typedef enum {
  * screen together, and a shortened amount is a different amount. */
 #define SIGN_TYPED_PAGES   (EIP712_MAX_RENDER_FIELDS + 2)
 #define SIGN_GENERIC_PAGES (ETH_MAX_ARGS + 3)
-#define SIGN_AQUA_PAGES    (2 * ETH_AQUA_MAX_LEGS + 6)
+#define SIGN_AQUA_PAGES    (2 * ETH_AQUA_MAX_LEGS + ETH_AQUA_MAX_INSTRUCTIONS + 6)
 #define SIGN_MAX2(a, b) ((a) > (b) ? (a) : (b))
 #define SIGN_MAX_PAGES \
     SIGN_MAX2(SIGN_AQUA_PAGES, SIGN_MAX2(SIGN_TYPED_PAGES, SIGN_GENERIC_PAGES))
@@ -4613,6 +4615,20 @@ void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
                 sign_page_kind[n++] = SIGN_PAGE_AQUA_LEG;
                 sign_page_field[n] = leg;
                 sign_page_kind[n++] = SIGN_PAGE_AQUA_AMOUNT;
+            }
+            /* B3: one page per SwapVM program instruction, in program order,
+             * only for a ship to the pinned router. Reaching this point at
+             * all means aqua_decode_ship() already walked the whole program
+             * successfully -- a program it could not read in full made the
+             * ship refuse outright (ETH_CALL_UNKNOWN), long before this
+             * switch, so there is never a page here for an instruction the
+             * device gave up on (spec §6.6). */
+            if (sign_call.aqua_is_swapvm) {
+                for (int ins = 0; ins < sign_call.aqua_instr_count &&
+                                  n < SIGN_MAX_PAGES - 1; ins++) {
+                    sign_page_field[n] = ins;
+                    sign_page_kind[n++] = SIGN_PAGE_AQUA_INSTR;
+                }
             }
             sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
             break;
@@ -5472,6 +5488,37 @@ static void screen_sign_confirm_render(void)
                 char part[22];
                 snprintf(part, sizeof(part), "%.21s", amount + off);
                 oled_draw_string(3 + row, 0, part);
+            }
+            break;
+        }
+        case SIGN_PAGE_AQUA_INSTR: {
+            /* One SwapVM program instruction: its name, and its one headline
+             * figure when it has one (spec §6.7's example row). Re-read from
+             * sign_tx.data at render time via eth_aqua_instr_name/value,
+             * exactly like every other Aqua field on this screen -- never a
+             * copy the decoder made that this render trusts blindly. */
+            int ins = sign_page_field[sign_page];
+            char heading[32];
+            snprintf(heading, sizeof(heading), "Program %d of %u", ins + 1,
+                     (unsigned)sign_call.aqua_instr_count);
+            oled_draw_string(1, 0, heading);
+
+            char name[32];
+            eth_aqua_instr_name(&sign_call, sign_tx.data, sign_tx.data_length,
+                                ins, name, sizeof(name));
+            oled_draw_string(2, 0, name[0] ? name : "(unavailable)");
+
+            char value[80];
+            if (eth_aqua_instr_value(&sign_call, sign_tx.data, sign_tx.data_length,
+                                     ins, value, sizeof(value)) && value[0]) {
+                size_t vlen = strlen(value);
+                for (int row = 0; row < 4; row++) {
+                    size_t off = (size_t)row * 21;
+                    if (off >= vlen) break;
+                    char part[22];
+                    snprintf(part, sizeof(part), "%.21s", value + off);
+                    oled_draw_string(3 + row, 0, part);
+                }
             }
             break;
         }
