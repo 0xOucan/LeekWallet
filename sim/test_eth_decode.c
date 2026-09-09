@@ -1170,10 +1170,17 @@ static void emit_case(FILE *out, const char *name, const uint8_t *data, size_t l
     fprintf(out, "    \"accepted\": true,\n");
     fprintf(out, "    \"kind\": \"%s\",\n", kind_json_name(kind));
 
-    bool has_address = kind == ETH_CALL_ERC20_TRANSFER || kind == ETH_CALL_ERC20_APPROVE ||
-                        kind == ETH_CALL_ERC20_TRANSFER_FROM ||
-                        kind == ETH_CALL_SET_APPROVAL_ALL || kind == ETH_CALL_MINT_TO ||
-                        kind == ETH_CALL_MINT_TOKEN_TO;
+    /* Faithful recording, not a curated one: this file's whole purpose is to
+     * be what eth-decode.c actually produced, so `address` is emitted whenever
+     * the decoder populated it. A hand-maintained allowlist of kinds was the
+     * first thing to drift -- it omitted the Aqua kinds, which DO set address
+     * (aqua_decode_ship and aqua_decode_dock both memcpy aqua_app into it),
+     * so the vectors claimed null and the replay then had to special-case
+     * Aqua to stay green. An all-zero address means the decoder set nothing. */
+    bool has_address = false;
+    for (size_t i = 0; i < sizeof(call.address); i++) {
+        if (call.address[i] != 0) { has_address = true; break; }
+    }
     fprintf(out, "    \"address\": ");
     if (has_address) write_addr(out, call.address); else fprintf(out, "null");
     fprintf(out, ",\n");

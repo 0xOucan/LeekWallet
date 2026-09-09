@@ -406,15 +406,8 @@ for (const v of ethDecodeVectors) {
 
   check(d.kind !== CallKind.Unknown, `${v.name}: firmware accepted, TS refused`);
   check(d.kind === v.kind, `${v.name}: kind ${d.kind} != firmware's ${v.kind}`);
-  /* Aqua only: this decoder additionally sets the top-level `address` to the
-   * app, for advisory host-side display. The firmware's EthCall.address stays
-   * zero for both Aqua kinds -- the screen reads aqua_app instead -- so there
-   * is nothing on that side to compare against; aqua.app below is the field
-   * that is actually cross-checked. */
-  if (v.kind !== CallKind.AquaShip && v.kind !== CallKind.AquaDock) {
-    check((d.address ?? null) === (v.address ?? null),
-      `${v.name}: address ${d.address} != firmware's ${v.address}`);
-  }
+  check((d.address ?? null) === (v.address ?? null),
+    `${v.name}: address ${d.address} != firmware's ${v.address}`);
   check((d.second ?? null) === (v.second ?? null),
     `${v.name}: second ${d.second} != firmware's ${v.second}`);
   check((d.amount === undefined ? null : d.amount.toString()) === (v.amount ?? null),
