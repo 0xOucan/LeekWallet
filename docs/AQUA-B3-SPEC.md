@@ -322,8 +322,11 @@ B3 extends all three or it extends none:
 3. `src/ui.c` — one page per instruction, in program order.
 
 The host module may be richer in wording, **never in acceptance**: the set of
-programs it renders must be a subset of what the firmware renders. Conformance
-vectors prove it.
+programs it renders must be a subset of what the firmware renders. **Nothing
+currently proves that** — `make -C sim conformance` emits protocol frames, not
+calldata vectors, and the two decoders are never compared on the same input.
+See `docs/MIRROR-GAP.md`. Building the shared calldata-vector file is part of
+finishing B3, not a separate nicety.
 
 ## 8. The SDK stays out of `dist/`
 
@@ -429,7 +432,9 @@ all green, plus:
   everything that ships" check still passes with the new devDependency.
 - `grep -rn "@1inch/" app/packages/apps/aqua/src/` returns nothing.
 - Bundle growth under 10 KB. The decoder is a table and a loop.
-- `src/eth-decode.c` refuses the same programs, proven by conformance vectors.
+- `src/eth-decode.c` refuses the same programs, proven by a shared calldata-
+  vector file replayed in the TS suite (`docs/MIRROR-GAP.md`) — not by the
+  protocol conformance vectors, which do not cover this.
 - Three programs shipped on Sepolia decode correctly, photographed.
 - **One photographed refusal screen for an unknown opcode, next to the program
   that caused it. This photograph is the milestone.**
