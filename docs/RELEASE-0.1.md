@@ -30,13 +30,23 @@ timeout, hold-to-lock, and the companion with WalletConnect.
 
 | Artefact | Target | Built by | Device-tested? |
 |---|---|---|---|
-| `leekwallet-s3-0.1.0.bin` | ESP32-S3-N16R8 | CI, Linux | **yes** |
-| `leekwallet-pixie-0.1.0.bin` | Firefly Pixie (C3) | CI, Linux | **yes** |
+| `leekwallet-s3-0.1.0-chaak-pool-provision.bin` | ESP32-S3-N16R8 | CI, Linux | **yes** |
+| `leekwallet-s3-0.1.0-chaak-pool-update.bin` | ESP32-S3-N16R8 | CI, Linux | **yes** |
+| `leekwallet-pixie-0.1.0-chaak-pool-provision.bin` | Firefly Pixie (C3) | CI, Linux | **yes** |
+| `leekwallet-pixie-0.1.0-chaak-pool-update.bin` | Firefly Pixie (C3) | CI, Linux | **yes** |
 | `LeekWallet-0.1.0.AppImage` | Linux x86-64 | CI, ubuntu | **yes** |
 | `LeekWallet-0.1.0.msi` | Windows x86-64 | CI, windows | **no — see below** |
 | `LeekWallet-0.1.0.dmg` | macOS | CI, macos | **no — see below** |
 | `leekwallet-0.1.0.apk` | Android arm64 | CI, ubuntu | **yes** |
 | `SHA256SUMS` | — | CI | — |
+| `SHA256SUMS.asc` | — | maintainer | — |
+
+Two firmware images per board, and they are **not** interchangeable. `provision`
+is the merged image written at `0x0`; it spans `nvs` at `0x9000` and therefore
+**erases every wallet** — correct for a new or deliberately reset board and only
+then. `update` is the application alone at `0x10000` and leaves the vault where
+it is. Neither can be told from the other by its bytes, so the operation is
+chosen by the person flashing, never inferred.
 
 The Pixie firmware **did** ship in 0.1: phase 3 of
 [PIXIE-PORT.md](PIXIE-PORT.md) landed, and the board boots, displays, signs and
