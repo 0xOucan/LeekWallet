@@ -38,9 +38,11 @@ the factory's own `deployEquity` calls on the mirror node. See
 
 ## The privileged surface
 
-Thirteen actions, each with a descriptor and a consequence line. **A privileged
-call with no descriptor refuses** — it does not render the selector, and does
-not show raw calldata with a warning:
+Thirteen actions rendered through the shared ERC-7730 engine, each with a
+descriptor and a consequence line, plus two more rendered by a
+purpose-built decoder (below). **A privileged call with no descriptor
+refuses** — it does not render the selector, and does not show raw calldata
+with a warning:
 
 `grantRole`, `revokeRole`, `revokeKyc`, `pause`, `unpause`, `lock`, `mint`,
 `setMaxSupply`, `setAddressFrozen`, `freezePartialTokens`, `addToControlList`,
@@ -61,6 +63,50 @@ Verification that holds these honest, all in `app/packages/apps/ats/test/`:
 - the unrenderable list names real functions, none of which parse;
 - nothing here claims to be verified — no host-derived label is presented as
   device-attested.
+
+### Compliance controls: `controllerTransfer` and `grantKyc`
+
+The shared ERC-7730 engine (`packages/core/src/erc7730.ts`) refuses every
+signature with a `bytes` or `string` argument, on principle: it will not
+follow an offset it cannot bounds-check, for any descriptor set that uses it.
+That refusal is correct and stays in place. But two of the calls it refuses —
+`controllerTransfer(address,address,uint256,bytes,bytes)` (a forced transfer)
+and `grantKyc(address,string,uint256,uint256,address)` (granting KYC) — are
+exactly the compliance-control actions this track's extra-points item names,
+and hiding them behind a generic refusal was a worse trade than writing a
+second, narrower decoder for just these two shapes.
+
+`action.ts`'s `decodeDynamicTail` is that decoder. It does not "follow"
+offsets so much as predict them: from the declared head shape it recomputes
+where a canonical ABI encoder must have placed each dynamic segment
+(tightly packed, in head order, zero-padded to a whole word), and refuses
+unless the actual calldata matches that prediction exactly — no gap, no
+overlap, no reordering, no unaccounted trailing bytes, no nonzero padding
+past the declared length. There is no reading of a malformed offset; there is
+only "this is canonical" or "refused".
+
+The two screens say what they can and no more:
+
+- **Force transfer** states plainly that shares move *without the holder's
+  consent*. The two `bytes` fields (`_data`, `_operatorData`) are shown as
+  opaque hex, truncated for the screen only — never interpreted, because the
+  contracts declare no meaning for them.
+- **Grant KYC** shows the holder, the validity window, the issuer, and the
+  credential id as sanitised text (the same treatment `name()` already gets)
+  — explicitly labelled as unverified, host-decoded text, not a value checked
+  against any registry.
+
+`test/conformance.test.ts` re-derives both signatures and every parameter name
+from the same compiled ABI as `ACTIONS`, and additionally asserts that the
+shared engine still refuses to parse them — the decoder exists because that
+refusal is correct, not despite it. `test/descriptors.test.ts` pins a group of
+malformed-offset/length fixtures (misaligned offset, skipped offset, an
+over-long declared length, nonzero padding, trailing calldata) that must all
+refuse rather than render.
+
+`issue`, `issueByPartition` and `applyRoles` remain unrendered — not because
+they are harder to bounds-check, but because nobody has yet written their
+consequence wording.
 
 ## C3 — what the contracts actually do
 

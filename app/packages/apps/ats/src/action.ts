@@ -41,8 +41,9 @@ import { formatUnits } from "@leekwallet/core/chains.ts";
 import { matchDescriptor, type Descriptor, type DescriptorField } from "@leekwallet/core/erc7730.ts";
 import { sanitiseText } from "./abi.ts";
 import {
-  ACTION_BY_SELECTOR, ROLE_POWER, UNRENDERABLE_BY_SELECTOR, actionName,
-  atsDescriptors, type SignatureConfidence,
+  ACTION_BY_SELECTOR, ATS_DESCRIPTOR_SOURCE, DYNAMIC_ACTION_BY_SELECTOR, ROLE_POWER,
+  UNRENDERABLE_BY_SELECTOR, actionName, atsDescriptors,
+  type DynamicActionSpec, type SignatureConfidence,
 } from "./descriptors.ts";
 import { roleInfo } from "./roles.ts";
 
@@ -117,6 +118,88 @@ const roleIdAt = (data: string, i: number): string | undefined => {
   return w === undefined ? undefined : `0x${w.toString(16).padStart(64, "0")}`;
 };
 
+/** Hex characters of argument word `i` (64 of them), or undefined if absent. */
+function hexWordAt(data: string, i: number): string | undefined {
+  const start = 10 + i * 64;
+  const hex = data.slice(start, start + 64);
+  return /^[0-9a-fA-F]{64}$/.test(hex) ? hex : undefined;
+}
+
+/**
+ * Decode a call's `bytes`/`string` tail arguments, or refuse.
+ *
+ * This is the bounds-checked decoder `UNRENDERABLE`'s header promises, and the
+ * bound it checks against is not "inside the calldata somewhere" — it is
+ * "exactly where a canonical ABI encoder must have put it". A standard encoder
+ * lays the tail out in head order, tightly packed, each segment a length word
+ * followed by `ceil(length / 32)` words of content with any partial final word
+ * zero-padded. Nothing else a real transaction-builder emits looks any other
+ * way, so this function does not accept any other way either:
+ *
+ *  - every dynamic slot's offset must equal where the PREVIOUS segment ended,
+ *    not merely some in-bounds word — an offset that skips ahead, doubles
+ *    back, or overlaps another segment refuses instead of being "followed";
+ *  - a segment's declared length must leave enough calldata for its own
+ *    content, and the padding bytes past that length must be zero — nonzero
+ *    padding is bytes hiding outside the length the encoder claims to have
+ *    written, which is exactly the kind of mismatch a naive offset-follower
+ *    would silently drop;
+ *  - after the last segment, not one hex character may be left over — trailing
+ *    calldata is calldata this decode did not account for, the same rule
+ *    `matchDescriptor` enforces for static calls.
+ *
+ * There is therefore no offset here that is "trusted": every one is first
+ * predicted from the shape `DynamicActionSpec` declares and the lengths
+ * encountered so far, and the actual bytes are checked against the
+ * prediction rather than walked on their own authority. Anything that does
+ * not match refuses as a whole; nothing is partly decoded.
+ */
+function decodeDynamicTail(
+  data: string,
+  spec: DynamicActionSpec,
+): readonly string[] | undefined {
+  const headWords = spec.params.length;
+  const argHex = data.slice(10);
+  if (argHex.length % 64 !== 0) return undefined; // not a whole number of words
+  const totalWords = argHex.length / 64;
+  if (totalWords < headWords) return undefined;
+
+  let cursor = headWords; // next word the encoder must use, canonically
+  const out: string[] = [];
+  for (const slot of spec.dynamic) {
+    const offset = argWord(data, slot);
+    if (offset === undefined) return undefined;
+    if (offset % 32n !== 0n) return undefined;
+    if (offset !== BigInt(cursor) * 32n) return undefined; // not tightly packed
+
+    const length = argWord(data, cursor);
+    if (length === undefined) return undefined;
+    if (length > BigInt(Number.MAX_SAFE_INTEGER)) return undefined;
+    const lengthN = Number(length);
+    const dataWords = Math.ceil(lengthN / 32);
+
+    let content = "";
+    for (let w = 0; w < dataWords; w++) {
+      const hex = hexWordAt(data, cursor + 1 + w);
+      if (hex === undefined) return undefined; // truncated tail
+      content += hex;
+    }
+    const hexLen = lengthN * 2;
+    const padding = content.slice(hexLen);
+    // Padding beyond the declared length must be exactly zero: any other
+    // value is bytes the length prefix does not account for.
+    if (!/^0*$/.test(padding)) return undefined;
+    out.push(content.slice(0, hexLen));
+
+    cursor += 1 + dataWords;
+  }
+
+  // Every hex character must belong to a head word or an accounted-for tail
+  // segment. Anything past the last segment is unexplained calldata.
+  if (cursor !== totalWords) return undefined;
+  return out;
+}
+
 /**
  * The security's name for the title, or its address.
  *
@@ -147,6 +230,164 @@ function withShares(fields: readonly DescriptorField[], label: string, decimals?
   });
 }
 
+/** The address in word `i`, or undefined if the high 12 bytes are not zero. */
+function addressWordAt(data: string, i: number): string | undefined {
+  const w = argWord(data, i);
+  if (w === undefined || w >> 160n) return undefined;
+  return `0x${w.toString(16).padStart(40, "0")}`;
+}
+
+/**
+ * A dynamic field's bytes, shown as hex and never interpreted.
+ *
+ * `_data` and `_operatorData` on `controllerTransfer` are arbitrary,
+ * issuer-chosen bytes with no declared meaning in the contracts — there is no
+ * honest summary of them, only the bytes themselves. Long enough content is
+ * truncated for the screen (never for the bounds check, which already ran
+ * over the whole thing in `decodeDynamicTail`), and the truncation says so
+ * rather than silently dropping bytes a reader would assume were shown.
+ */
+function opaqueBytes(hex: string, maxBytes = 48): string {
+  if (hex.length === 0) return "(empty)";
+  if (hex.length <= maxBytes * 2) return `0x${hex}`;
+  return `0x${hex.slice(0, maxBytes * 2)}… (${hex.length / 2} bytes total, opaque)`;
+}
+
+/** A calldata word as a uint256 decimal string, for a raw-format field. */
+const decimalWord = (data: string, i: number): string | undefined => argWord(data, i)?.toString();
+
+/** Seconds since epoch, ISO-8601, or undefined if out of `Date`'s usable range. */
+function isoDate(secs: bigint): string | undefined {
+  if (secs > 8_640_000_000_000n) return undefined;
+  return new Date(Number(secs) * 1000).toISOString().replace(".000Z", "Z");
+}
+
+/**
+ * A forced transfer: the Controller role moving a holder's shares to another
+ * address without that holder's signature. This is the call the plan calls
+ * out by name, and the screen says so in exactly those words rather than
+ * describing it as an ordinary transfer with an extra approver.
+ */
+function renderControllerTransfer(
+  data: string,
+  facts: SecurityFacts,
+  spec: DynamicActionSpec,
+  selector: string,
+): PrivilegedRendering {
+  const from = addressWordAt(data, 0);
+  const to = addressWordAt(data, 1);
+  const amount = decimalWord(data, 2);
+  if (from === undefined || to === undefined || amount === undefined) {
+    return refuse("controllerTransfer's static arguments are not well-formed", selector);
+  }
+
+  const tail = decodeDynamicTail(data, spec);
+  if (tail === undefined) {
+    return refuse(
+      "the operator-data fields of this forced transfer are not the canonical " +
+        "ABI encoding this console can bounds-check, so it will not guess what " +
+        "bytes they point to",
+      selector,
+    );
+  }
+  const [transferData, operatorData] = tail as [string, string];
+
+  let fields: readonly DescriptorField[] = [
+    { label: "From", value: from, format: "addressName" },
+    { label: "To", value: to, format: "addressName" },
+    { label: "Amount", value: amount, format: "raw" },
+    { label: "Data", value: opaqueBytes(transferData), format: "raw" },
+    { label: "Operator data", value: opaqueBytes(operatorData), format: "raw" },
+  ];
+  fields = withShares(fields, "Amount", facts.decimals);
+
+  return {
+    state: "screen",
+    title: `${spec.title.toUpperCase()} · ${securityLabel(facts)}`,
+    fields,
+    effect:
+      "moves this holder's shares to another address WITHOUT their consent — " +
+      "a forced transfer, not an ordinary one. The Data and Operator data " +
+      "fields above are arbitrary bytes this console cannot interpret and " +
+      "shows only as opaque hex; they carry no meaning this screen can vouch for",
+    selector,
+    signature: spec.signature,
+    confidence: spec.confidence,
+    source: ATS_DESCRIPTOR_SOURCE,
+    advisory: true,
+    unverified: true,
+  };
+}
+
+/**
+ * Granting KYC: the one refusal the earlier version of this file argued for
+ * by name, in a comment daring a future reader to "fix" it. What changed is
+ * not the argument — a credential id IS attacker/issuer-controlled text next
+ * to numbers, exactly the risk `sanitiseText` exists for — but that the risk
+ * turned out to be the same one `name()` already carries onto a screen, with
+ * the same treatment: bounded, control-character-stripped, and never trusted
+ * as anything more than a label.
+ */
+function renderGrantKyc(
+  data: string,
+  facts: SecurityFacts,
+  spec: DynamicActionSpec,
+  selector: string,
+): PrivilegedRendering {
+  const account = addressWordAt(data, 0);
+  const validFrom = argWord(data, 2);
+  const validTo = argWord(data, 3);
+  const issuer = addressWordAt(data, 4);
+  if (account === undefined || validFrom === undefined || validTo === undefined || issuer === undefined) {
+    return refuse("grantKyc's static arguments are not well-formed", selector);
+  }
+  const from = isoDate(validFrom);
+  const to = isoDate(validTo);
+  if (from === undefined || to === undefined) {
+    return refuse("grantKyc's validity window is not a usable date", selector);
+  }
+
+  const tail = decodeDynamicTail(data, spec);
+  if (tail === undefined) {
+    return refuse(
+      "the credential id in this KYC grant is not the canonical ABI encoding " +
+        "this console can bounds-check, so it will not guess what bytes it " +
+        "points to",
+      selector,
+    );
+  }
+  const [vcIdHex] = tail as [string];
+  const vcIdBytes = new Uint8Array(vcIdHex.length / 2);
+  for (let i = 0; i < vcIdBytes.length; i++) {
+    vcIdBytes[i] = Number.parseInt(vcIdHex.slice(i * 2, i * 2 + 2), 16);
+  }
+  const vcId = sanitiseText(new TextDecoder("utf-8", { fatal: false }).decode(vcIdBytes), 64)
+    ?? "(empty or unprintable credential id)";
+
+  return {
+    state: "screen",
+    title: `${spec.title.toUpperCase()} · ${securityLabel(facts)}`,
+    fields: [
+      { label: "Holder", value: account, format: "addressName" },
+      { label: "Credential id", value: vcId, format: "raw" },
+      { label: "Valid from", value: from, format: "date" },
+      { label: "Valid to", value: to, format: "date" },
+      { label: "Issuer", value: issuer, format: "addressName" },
+    ],
+    effect:
+      "this holder gains KYC status for the window shown and can send and " +
+      "receive shares, subject to any other restriction still in force. The " +
+      "credential id is decoded text supplied in the calldata, not a value " +
+      "this console has verified against any registry",
+    selector,
+    signature: spec.signature,
+    confidence: spec.confidence,
+    source: ATS_DESCRIPTOR_SOURCE,
+    advisory: true,
+    unverified: true,
+  };
+}
+
 /**
  * Render a privileged call, or refuse.
  *
@@ -169,6 +410,19 @@ export function describePrivilegedCall(
     data,
   });
   if (match === undefined) {
+    /* Calls with a dynamic argument never reach `matchDescriptor`: the shared
+     * engine drops any signature it cannot bounds-check, on principle, for
+     * every descriptor set that uses it. `controllerTransfer` and `grantKyc`
+     * are rendered anyway, by a decoder built for exactly these two shapes —
+     * see `decodeDynamicTail` and `DYNAMIC_ACTIONS`'s header for why this does
+     * not weaken the engine's rule. */
+    const dynamicSpec = DYNAMIC_ACTION_BY_SELECTOR.get(selector);
+    if (dynamicSpec !== undefined) {
+      return dynamicSpec.signature.startsWith("controllerTransfer")
+        ? renderControllerTransfer(data, facts, dynamicSpec, selector)
+        : renderGrantKyc(data, facts, dynamicSpec, selector);
+    }
+
     /* Same refusal either way — nothing is signed and nothing is sent. The
      * only difference is whether we can name the reason. A call on the known
      * list is one no descriptor can ever describe, and saying so stops the

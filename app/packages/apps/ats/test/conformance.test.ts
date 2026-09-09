@@ -48,7 +48,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { ACTIONS, UNRENDERABLE, actionName } from "../src/descriptors.ts";
+import { ACTIONS, DYNAMIC_ACTIONS, UNRENDERABLE, actionName } from "../src/descriptors.ts";
 import { ROLES } from "../src/roles.ts";
 import { parseSignature } from "@leekwallet/core/erc7730.ts";
 
@@ -141,6 +141,37 @@ group("every action's signature is a function these contracts declare");
 
     check(spec.confidence === "artifact",
       `${spec.key}: every surviving action is artifact-verified; ${spec.confidence} is stale`);
+  }
+}
+
+group("every dynamic action's signature and parameter names match the artifacts");
+{
+  /* Same authority, same check as ACTIONS above — DYNAMIC_ACTIONS is rendered
+   * by a hand-written decoder instead of the shared ERC-7730 engine, but its
+   * signature and parameter names still have to be the real function or the
+   * decoder is bounds-checking bytes that were never going to arrive. */
+  for (const spec of DYNAMIC_ACTIONS) {
+    // The shared engine must still refuse to parse this signature — that is
+    // the whole reason a hand-written decoder exists for it. If this ever
+    // starts passing, `erc7730.ts` grew dynamic-type support and this
+    // decoder should be reconsidered, not silently duplicated.
+    check(parseSignature(spec.signature) === null,
+      `${spec.signature} is now accepted by the shared engine; ` +
+      "DYNAMIC_ACTIONS may no longer need its own decoder");
+
+    const names = declared.get(spec.signature);
+    check(names !== undefined,
+      `${spec.signature} is declared by NO contract in ` +
+      "@hashgraph/asset-tokenization-contracts");
+    if (names === undefined) continue;
+
+    const ours = spec.params.join(",");
+    check(names.has(ours),
+      `${spec.signature}: parameter names match no declaration of this function. ` +
+      `The contracts declare: ${[...names].map((n) => `(${n})`).join(" or ")}`);
+
+    check(spec.confidence === "artifact",
+      `${spec.signature}: every dynamic action is artifact-verified; ${spec.confidence} is stale`);
   }
 }
 
