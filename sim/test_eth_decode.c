@@ -1057,8 +1057,414 @@ static void test_dynamic_types_stay_refused(void)
           "a fourth word rode in behind safeTransferFrom");
 }
 
-int main(void)
+/* ------------------------------------------------- shared calldata vectors
+ *
+ * The mock leg of T50's mirror gap: the firmware's own answers, written down
+ * for the TypeScript decoder to replay. See sim/test_protocol.c's emit_case()
+ * for the pattern this copies rather than reinvents, and docs/MIRROR-GAP.md
+ * for why a shared file beats two suites that merely look alike.
+ *
+ * Every entry runs the SAME eth_decode_call() the CHECK()s above exercise, so
+ * there is no second decode path here to drift from the first. Refusals are
+ * recorded as faithfully as acceptances: an entry the C side rejects and the
+ * TS side accepts is exactly the drift this file exists to catch.
+ */
+
+static void write_hex(FILE *out, const uint8_t *bytes, size_t len)
 {
+    for (size_t i = 0; i < len; i++) fprintf(out, "%02x", bytes[i]);
+}
+
+static void write_addr(FILE *out, const uint8_t addr[20])
+{
+    fprintf(out, "\"0x");
+    write_hex(out, addr, 20);
+    fprintf(out, "\"");
+}
+
+static void write_hash(FILE *out, const uint8_t hash[32])
+{
+    fprintf(out, "\"0x");
+    write_hex(out, hash, 32);
+    fprintf(out, "\"");
+}
+
+/* The same strings as TS's CallKind values in eth-decode.ts, so the replay
+ * needs no translation table of its own -- a mapping that could itself drift
+ * is exactly the kind of second copy this file exists to avoid. */
+static const char *kind_json_name(EthCallKind k)
+{
+    switch (k) {
+        case ETH_CALL_EMPTY:               return "empty";
+        case ETH_CALL_ERC20_TRANSFER:      return "erc20-transfer";
+        case ETH_CALL_ERC20_APPROVE:       return "erc20-approve";
+        case ETH_CALL_ERC20_TRANSFER_FROM: return "erc20-transfer-from";
+        case ETH_CALL_SET_APPROVAL_ALL:    return "set-approval-for-all";
+        case ETH_CALL_WETH_DEPOSIT:        return "weth-deposit";
+        case ETH_CALL_WETH_WITHDRAW:       return "weth-withdraw";
+        case ETH_CALL_MINT_TO:             return "mint-to";
+        case ETH_CALL_MINT_TOKEN_TO:       return "mint-token-to";
+        case ETH_CALL_MINT:                return "mint";
+        case ETH_CALL_GENERIC:             return "generic";
+        case ETH_CALL_AQUA_SHIP:           return "aqua-ship";
+        case ETH_CALL_AQUA_DOCK:           return "aqua-dock";
+        default:                           return "unknown";
+    }
+}
+
+/* The declared type string a generic argument was parsed from ("uint16",
+ * "bytes4", ...), rebuilt from the enum and width the decoder kept rather
+ * than a copy of the original text -- which is exactly what the TS decoder
+ * itself reconstructs when it labels an argument, so the two stay comparable. */
+static const char *arg_type_string(const EthArg *a, char *buf, size_t bufsize)
+{
+    /* bits == 0 means 256: eth-decode.c's in-band spelling of "full word",
+     * read back the same way arg_bits() does there. */
+    unsigned bits = a->bits == 0 ? 256u : (unsigned)a->bits;
+    switch ((EthArgType)a->type) {
+        case ETH_ARG_ADDRESS: return "address";
+        case ETH_ARG_BOOL:    return "bool";
+        case ETH_ARG_UINT:    snprintf(buf, bufsize, "uint%u", bits); return buf;
+        case ETH_ARG_INT:     snprintf(buf, bufsize, "int%u", bits); return buf;
+        case ETH_ARG_BYTESN:  snprintf(buf, bufsize, "bytes%u", bits / 8u); return buf;
+        default:               return "?";
+    }
+}
+
+/* The full canonical signature a generic call matched, found by re-hashing
+ * the table the same way eth_decode_call() itself does. `entry` in EthCall is
+ * opaque outside eth-decode.c on purpose (see EthAbiEntry in eth-decode.h), so
+ * this is the only way to get the signature string back out here -- the same
+ * property test_a_tampered_signature_stops_matching() leans on above. */
+static const char *generic_signature(const uint8_t selector[4])
+{
+    const char *sig;
+    for (size_t j = 0; eth_decode_table_entry(j, &sig, NULL); j++) {
+        uint8_t hash[32];
+        keccak_256((const uint8_t *)sig, strlen(sig), hash);
+        if (memcmp(hash, selector, 4) == 0) return sig;
+    }
+    return "";
+}
+
+/* Run one calldata input through the real eth_decode_call() and write what it
+ * did. Kept to fields a screen actually draws, which is also every field the
+ * TS decoder's DecodedCall carries -- see eth-decode.ts. */
+static void emit_case(FILE *out, const char *name, const uint8_t *data, size_t len,
+                      bool first)
+{
+    EthCall call;
+    EthCallKind kind = eth_decode_call(data, len, &call);
+
+    fprintf(out, "%s\n  {\n", first ? "" : ",");
+    fprintf(out, "    \"name\": \"%s\",\n", name);
+    fprintf(out, "    \"dataHex\": \"");
+    write_hex(out, data, len);
+    fprintf(out, "\",\n");
+
+    if (kind == ETH_CALL_UNKNOWN) {
+        fprintf(out, "    \"accepted\": false\n  }");
+        return;
+    }
+
+    fprintf(out, "    \"accepted\": true,\n");
+    fprintf(out, "    \"kind\": \"%s\",\n", kind_json_name(kind));
+
+    bool has_address = kind == ETH_CALL_ERC20_TRANSFER || kind == ETH_CALL_ERC20_APPROVE ||
+                        kind == ETH_CALL_ERC20_TRANSFER_FROM ||
+                        kind == ETH_CALL_SET_APPROVAL_ALL || kind == ETH_CALL_MINT_TO ||
+                        kind == ETH_CALL_MINT_TOKEN_TO;
+    fprintf(out, "    \"address\": ");
+    if (has_address) write_addr(out, call.address); else fprintf(out, "null");
+    fprintf(out, ",\n");
+
+    fprintf(out, "    \"second\": ");
+    if (call.has_second) write_addr(out, call.second); else fprintf(out, "null");
+    fprintf(out, ",\n");
+
+    fprintf(out, "    \"amount\": ");
+    if (call.has_amount) {
+        char text[80];
+        eth_format_integer(&call.amount, text, sizeof(text));
+        fprintf(out, "\"%s\"", text);
+    } else {
+        fprintf(out, "null");
+    }
+    fprintf(out, ",\n");
+
+    fprintf(out, "    \"unlimited\": %s,\n", call.unlimited ? "true" : "false");
+
+    fprintf(out, "    \"flag\": ");
+    if (kind == ETH_CALL_SET_APPROVAL_ALL) fprintf(out, "%s", call.flag ? "true" : "false");
+    else fprintf(out, "null");
+    fprintf(out, ",\n");
+
+    fprintf(out, "    \"generic\": ");
+    if (kind == ETH_CALL_GENERIC) {
+        char fn[24];
+        eth_call_function_name(&call, fn, sizeof(fn));
+        fprintf(out, "{ \"signature\": \"%s\", \"functionName\": \"%s\", \"args\": [",
+                generic_signature(data), fn);
+        for (int i = 0; i < call.arg_count; i++) {
+            char argname[32];
+            eth_call_arg_name(&call, i, argname, sizeof(argname));
+            char typebuf[16];
+            const char *typestr = arg_type_string(&call.args[i], typebuf, sizeof(typebuf));
+
+            fprintf(out, "%s{ \"name\": \"%s\", \"type\": \"%s\", \"value\": ",
+                    i == 0 ? "" : ", ", argname, typestr);
+
+            EthArgType t = (EthArgType)call.args[i].type;
+            if (t == ETH_ARG_ADDRESS) {
+                uint8_t addr[20];
+                eth_arg_address(&call, data, len, i, addr);
+                write_addr(out, addr);
+            } else if (t == ETH_ARG_BOOL) {
+                const uint8_t *w = eth_arg_word(&call, data, len, i);
+                fprintf(out, "%s", (w && w[31] == 1) ? "true" : "false");
+            } else {
+                EthQuantity q;
+                char text[80];
+                eth_arg_quantity(&call, data, len, i, &q);
+                eth_format_integer(&q, text, sizeof(text));
+                fprintf(out, "\"%s\"", text);
+            }
+
+            fprintf(out, ", \"unlimited\": %s }",
+                    eth_arg_unlimited(&call, data, len, i) ? "true" : "false");
+        }
+        fprintf(out, "] }");
+    } else {
+        fprintf(out, "null");
+    }
+    fprintf(out, ",\n");
+
+    fprintf(out, "    \"aqua\": ");
+    if (kind == ETH_CALL_AQUA_SHIP || kind == ETH_CALL_AQUA_DOCK) {
+        fprintf(out, "{ \"app\": ");
+        write_addr(out, call.aqua_app);
+        fprintf(out, ", \"maker\": ");
+        if (call.has_aqua_maker) write_addr(out, call.aqua_maker); else fprintf(out, "null");
+        fprintf(out, ", \"hash\": ");
+        write_hash(out, call.aqua_hash);
+        fprintf(out, ", \"legs\": [");
+        for (int i = 0; i < call.aqua_legs; i++) {
+            uint8_t token[20];
+            eth_aqua_token(&call, data, len, i, token);
+            fprintf(out, "%s{ \"token\": ", i == 0 ? "" : ", ");
+            write_addr(out, token);
+            fprintf(out, ", \"amount\": ");
+            EthQuantity q;
+            if (eth_aqua_amount(&call, data, len, i, &q)) {
+                char text[80];
+                eth_format_integer(&q, text, sizeof(text));
+                fprintf(out, "\"%s\"", text);
+            } else {
+                fprintf(out, "null");
+            }
+            fprintf(out, " }");
+        }
+        fprintf(out, "] }");
+    } else {
+        fprintf(out, "null");
+    }
+    fprintf(out, "\n  }");
+}
+
+/* The corpus. Deliberately more refusals than acceptances -- see the header
+ * over test_refusals(): the property under test is refusal, and that is the
+ * one a shared vector file has to pin hardest, because it is the one a lone
+ * TS suite has no way to prove agrees with the firmware at all. */
+static int emit_vectors(const char *path)
+{
+    FILE *out = fopen(path, "w");
+    if (!out) {
+        fprintf(stderr, "cannot write %s\n", path);
+        return 1;
+    }
+
+    uint8_t data[ETH_MAX_DATA];
+    uint8_t amount[32], amount2[32];
+    amount_u64(amount, 1500000);
+    amount_u64(amount2, 42);
+    size_t len;
+    int i = 0;
+#define CASE(nm, d, l) emit_case(out, (nm), (d), (l), i++ == 0)
+
+    fprintf(out, "[");
+
+    /* -------------------------------------------------------- happy paths */
+
+    CASE("empty calldata", NULL, 0);
+
+    len = build_call(data, SEL_TRANSFER, SPENDER, amount);
+    CASE("erc20 transfer", data, len);
+
+    len = build_call(data, SEL_APPROVE, SPENDER, amount2);
+    CASE("erc20 approve, bounded", data, len);
+
+    uint8_t maxu[32];
+    memset(maxu, 0xFF, 32);
+    len = build_call(data, SEL_APPROVE, SPENDER, maxu);
+    CASE("erc20 approve, unlimited", data, len);
+
+    len = build_transfer_from(data, SPENDER, OTHER, amount2);
+    CASE("erc20 transferFrom", data, len);
+
+    len = build_approval_all(data, SPENDER, true);
+    CASE("setApprovalForAll, grant", data, len);
+
+    len = build_approval_all(data, SPENDER, false);
+    CASE("setApprovalForAll, revoke", data, len);
+
+    CASE("weth deposit()", SEL_DEPOSIT, 4);
+
+    len = build_uint_call(data, SEL_WITHDRAW, amount);
+    CASE("weth withdraw(uint256)", data, len);
+
+    len = build_call(data, SEL_MINT_TO, SPENDER, amount);
+    CASE("mint(address,uint256)", data, len);
+
+    len = build_uint_call(data, SEL_MINT, amount);
+    CASE("mint(uint256)", data, len);
+
+    {
+        uint8_t words[4][32];
+        word_address(words[0], SPENDER);
+        word_u64(words[1], 1000000);
+        word_address(words[2], OTHER);
+        word_u64(words[3], 0);
+        len = build_sig_call(data, sizeof(data),
+                             "supply(address,uint256,address,uint16)", words, 4);
+        CASE("aave supply, generic", data, len);
+    }
+
+    {
+        uint8_t words[3][32];
+        word_address(words[0], SPENDER);
+        word_address(words[1], OTHER);
+        word_u64(words[2], 7);
+        len = build_sig_call(data, sizeof(data),
+                             "safeTransferFrom(address,address,uint256)", words, 3);
+        CASE("safeTransferFrom, generic (not transferFrom)", data, len);
+    }
+
+    {
+        uint8_t words[4][32];
+        memset(words, 0, sizeof(words));
+        word_address(words[0], SPENDER);
+        word_address(words[1], OTHER);
+        memset(words[2] + 12, 0xFF, 20);   /* amount = 2^160 - 1 */
+        memset(words[3] + 26, 0xFF, 6);    /* expiration = 2^48 - 1 */
+        len = build_sig_call(data, sizeof(data),
+                             "approve(address,address,uint160,uint48)", words, 4);
+        CASE("permit2 approve, generic, unlimited amount not deadline", data, len);
+    }
+
+    uint8_t strategy[96], tokens2[2][20];
+    size_t strategy_len = make_strategy(strategy, OTHER);
+    memcpy(tokens2[0], SPENDER, 20);
+    memcpy(tokens2[1], OTHER, 20);
+    uint64_t amounts2[2] = { 1000000, 250 };
+    len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                          AQUA_APP_ADDR, strategy, strategy_len, tokens2, amounts2, 2);
+    CASE("aqua ship, two legs", data, len);
+
+    uint8_t hash32[32], tokens1[1][20];
+    memset(hash32, 0xab, sizeof(hash32));
+    memcpy(tokens1[0], SPENDER, 20);
+    len = build_aqua_dock(data, sizeof(data), "dock(address,bytes32,address[])",
+                          AQUA_APP_ADDR, hash32, tokens1, 1);
+    CASE("aqua dock, one leg", data, len);
+
+    /* ---------------------------------------------------------- refusals */
+
+    const uint8_t sel_unknown[4] = {0xde, 0xad, 0xbe, 0xef};
+    len = build_call(data, sel_unknown, SPENDER, amount);
+    CASE("unknown selector, otherwise well-formed", data, len);
+
+    len = build_call(data, SEL_TRANSFER, SPENDER, amount);
+    CASE("truncated calldata, one byte short", data, len - 1);
+    CASE("selector-only calldata", data, 4);
+
+    memset(data + 68, 0xAB, 12);
+    CASE("transfer with trailing bytes", data, 80);
+
+    len = build_call(data, SEL_TRANSFER, SPENDER, amount);
+    data[4] = 0x01;
+    CASE("transfer, dirty address padding", data, len);
+
+    len = build_transfer_from(data, SPENDER, OTHER, amount2);
+    CASE("transferFrom truncated to two words", data, 68);
+
+    len = build_approval_all(data, SPENDER, true);
+    data[67] = 2;
+    CASE("setApprovalForAll, a bool of 2", data, len);
+
+    memset(data, 0, 36);
+    memcpy(data, SEL_DEPOSIT, 4);
+    CASE("deposit() with an argument word it does not take", data, 36);
+
+    {
+        uint8_t words[4][32];
+        memset(words, 0, sizeof(words));
+        word_address(words[0], SPENDER);
+        word_address(words[1], OTHER);
+        word_u64(words[2], 7);
+        word_u64(words[3], 0x80);
+        len = build_sig_call(data, sizeof(data),
+                             "safeTransferFrom(address,address,uint256,bytes)", words, 4);
+        CASE("safeTransferFrom(...,bytes), a dynamic argument", data, len);
+    }
+
+    len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                          AQUA_APP_ADDR, strategy, strategy_len, tokens2, amounts2, 2);
+    data[len] = 0x01;
+    CASE("aqua ship, one trailing byte", data, len + 1);
+
+    len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                          AQUA_APP_ADDR, strategy, strategy_len, tokens2, amounts2, 2);
+    CASE("aqua ship, truncated by one byte", data, len - 1);
+
+    /* A strategy offset that points somewhere legal but not where solc puts
+     * it -- the "bad/out-of-range offset" refusal the spec calls for. */
+    len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                          AQUA_APP_ADDR, strategy, strategy_len, tokens2, amounts2, 2);
+    amount_u64(data + 4 + 32, 4 * 32 + 32);
+    CASE("aqua ship, strategy offset moved off the canonical slot", data, len);
+
+    {
+        uint8_t many[ETH_AQUA_MAX_LEGS + 1][20];
+        uint64_t many_amounts[ETH_AQUA_MAX_LEGS + 1];
+        for (size_t j = 0; j < ETH_AQUA_MAX_LEGS + 1; j++) {
+            memcpy(many[j], SPENDER, 20);
+            many_amounts[j] = j + 1;
+        }
+        len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                              AQUA_APP_ADDR, strategy, 64, many, many_amounts,
+                              ETH_AQUA_MAX_LEGS + 1);
+        CASE("aqua ship, more legs than the device will draw", data, len);
+    }
+
+    len = build_aqua_dock(data, sizeof(data), "dock(address,bytes32,address[])",
+                          AQUA_APP_ADDR, hash32, tokens1, 1);
+    amount_u64(data + 4 + 64, 4 * 32);   /* offT moved off 3*32 */
+    CASE("aqua dock, tokens offset moved off the canonical slot", data, len);
+
+#undef CASE
+    fprintf(out, "\n]\n");
+    fclose(out);
+
+    printf("wrote %d eth-decode vectors to %s\n", i, path);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[1], "--emit-vectors") == 0) {
+        return emit_vectors(argv[2]);
+    }
+
     test_empty_is_native();
     test_transfer();
     test_approve_bounded();
