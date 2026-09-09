@@ -43,8 +43,11 @@
  *    selector no ATS contract has, so the descriptor would never have fired
  *    and every lock would have refused, for a reason nobody could have found.
  *  - `grantKyc(address)` matched only `MockedExternalKycList`. The real
- *    `IKyc.grantKyc` takes five arguments including a `string`, which is why
- *    it is in UNRENDERABLE below rather than here.
+ *    `IKyc.grantKyc` takes five arguments including a `string` — which is why
+ *    it is not an `ActionSpec` below. It IS rendered, by `DYNAMIC_ACTIONS`
+ *    further down: a hand-written, bounds-checked decoder outside this
+ *    engine, because the engine drops every dynamic type on principle and
+ *    that principle is correct for it.
  *
  * The failure mode of a wrong signature is why that was survivable rather than
  * fatal: a selector is derived from the signature by keccak, so a wrong
@@ -387,20 +390,25 @@ export const ACTIONS: readonly ActionSpec[] = [
  * deserves to know whether the fix is to add a descriptor or that no descriptor
  * is possible.
  *
- * `grantKyc` is the one that stings. Granting KYC is exactly the kind of
- * third-party-affecting action this console exists to put on a screen, and the
- * real `IKyc.grantKyc` carries a verifiable-credential id as a `string`. Until
- * either the engine grows checked dynamic decoding or the device draws the call
- * itself, granting KYC from this console is refused. Revoking is not: it is
- * `revokeKyc(address)`, entirely static, and it is the dangerous direction.
+ * `grantKyc` and `controllerTransfer` used to be here, with the same reason as
+ * everything below: a variable-length argument the shared engine will not
+ * follow. They no longer are. Both are rendered now, by `DYNAMIC_ACTIONS` —
+ * NOT by teaching `erc7730.ts` to follow offsets (that engine is shared with
+ * every other descriptor set in this app, and its refusal to guess at dynamic
+ * layouts is correct for all of them), but by a small decoder in `action.ts`
+ * that recomputes, from the declared head shape, exactly where a canonical ABI
+ * encoder must have put each dynamic segment, and refuses unless the calldata
+ * is byte-for-byte that layout with nothing left over. See
+ * `decodeDynamicTail` there for what "bounds-checked" means precisely.
+ *
+ * `issue`, `issueByPartition` and `applyRoles` remain refused. Not because they
+ * are harder in kind — `issue`'s `bytes` is the same shape as
+ * `controllerTransfer`'s — but because nobody has yet written the consequence
+ * wording a screen for them would need, and a decoder without a sentence to
+ * attach is not a screen. Extending `DYNAMIC_ACTIONS` to cover them is future
+ * work, not a wall.
  */
 export const UNRENDERABLE: ReadonlyArray<{ signature: string; why: string }> = [
-  {
-    signature: "grantKyc(address,string,uint256,uint256,address)",
-    why:
-      "granting KYC carries a credential id as a variable-length string, and " +
-      "this wallet will not follow calldata offsets it cannot bounds-check",
-  },
   {
     signature: "issue(address,uint256,bytes)",
     why: "the ERC-1400 issuance path carries arbitrary `bytes` of issuance data",
@@ -413,11 +421,65 @@ export const UNRENDERABLE: ReadonlyArray<{ signature: string; why: string }> = [
     signature: "applyRoles(bytes32[],bool[],address)",
     why: "batch role changes take arrays, whose length this wallet will not trust",
   },
+];
+
+/**
+ * Privileged calls rendered OUTSIDE the ERC-7730 engine, because they carry a
+ * dynamic argument the engine will always and correctly refuse to touch (see
+ * `UNRENDERABLE`'s header above). `action.ts`'s `decodeDynamicTail` is the
+ * decoder; this table is only the two facts it needs per call: which head
+ * slots are dynamic, and the screen's title. The parameter names are the
+ * contracts' own — `conformance.test.ts` checks both the signature and every
+ * name here against the compiled ABI the same way it checks `ACTIONS`.
+ *
+ * Kept separate from `ActionSpec`/`ACTIONS` rather than folded in, because an
+ * `ActionSpec`'s `fields` are ERC-7730 field descriptors the shared engine
+ * resolves against static words — there is no slot in that shape for "this
+ * one is a length-prefixed tail segment", and inventing one would make every
+ * OTHER consumer of `ActionSpec` (any future descriptor set that is not
+ * hand-decoded) responsible for a case it can never hit.
+ */
+export interface DynamicActionSpec {
+  /** Canonical signature, types only — what `selectorOf` hashes. */
+  signature: string;
+  /**
+   * Every top-level parameter's name, in calldata order, exactly as the
+   * contracts declare it. Length is the call's head word count.
+   */
+  params: readonly string[];
+  /** 0-based indices into `params` of the dynamic (`bytes`/`string`) ones. */
+  dynamic: readonly number[];
+  title: string;
+  confidence: SignatureConfidence;
+}
+
+export const DYNAMIC_ACTIONS: readonly DynamicActionSpec[] = [
   {
+    /* The most dangerous single call an issuer can make: it moves shares out
+     * of a holder's balance without their signature, their consent, or even
+     * their awareness until after the fact. Refusing to render it would not
+     * have made it safer — it would only have hidden it behind whatever
+     * generic "unknown call" screen a less careful wallet shows, which is
+     * worse. See action.ts for the effect wording this call gets. */
     signature: "controllerTransfer(address,address,uint256,bytes,bytes)",
-    why: "a forced transfer carries two `bytes` fields of operator data",
+    params: ["_from", "_to", "_value", "_data", "_operatorData"],
+    dynamic: [3, 4],
+    title: "Force transfer",
+    confidence: "artifact",
+  },
+  {
+    signature: "grantKyc(address,string,uint256,uint256,address)",
+    params: ["_account", "_vcId", "_validFrom", "_validTo", "_issuer"],
+    dynamic: [1],
+    title: "Grant KYC",
+    confidence: "artifact",
   },
 ];
+
+/** Selector → spec, the same way `ACTION_BY_SELECTOR` is keyed. */
+export const DYNAMIC_ACTION_BY_SELECTOR: ReadonlyMap<string, DynamicActionSpec> = new Map(
+  DYNAMIC_ACTIONS.map((a) => [`0x${selectorOf(a.signature)}`, a]),
+);
 
 /** Selectors of the calls we know about and know we cannot draw. */
 export const UNRENDERABLE_BY_SELECTOR: ReadonlyMap<string, string> = new Map(

@@ -42,6 +42,48 @@ const FACTS: SecurityFacts = {
 const call = (signature: string, args: readonly string[] = []): string =>
   `0x${selectorOf(signature)}${args.join("")}`;
 
+/** Hex bytes for a UTF-8 string, no `0x`. */
+const utf8Hex = (s: string): string =>
+  [...new TextEncoder().encode(s)].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+/**
+ * A canonical, tightly-packed `bytes`/`string` tail segment: a length word
+ * followed by the content, zero-padded up to a whole number of words. This is
+ * what every real ABI encoder emits, and it is the ONLY layout
+ * `decodeDynamicTail` (action.ts) will accept — see its tests below for what
+ * happens to a call that deviates from it.
+ */
+function tailSegment(contentHex: string): string {
+  const lengthBytes = contentHex.length / 2;
+  const words = Math.ceil(lengthBytes / 32) || 0;
+  const padded = contentHex.padEnd(words * 64, "0");
+  return word(BigInt(lengthBytes)) + padded;
+}
+
+/**
+ * Calldata for a call whose head is `headWords` words, with dynamic segments
+ * placed canonically (in order, tightly packed) starting right after the
+ * head — the layout every real ABI encoder produces.
+ */
+function callDynamic(
+  signature: string,
+  head: readonly string[],
+  dynamicSlots: readonly number[],
+  segments: readonly string[],
+): string {
+  const headWords = [...head];
+  let cursor = headWords.length;
+  let tail = "";
+  segments.forEach((seg, idx) => {
+    const slot = dynamicSlots[idx] as number;
+    headWords[slot] = word(BigInt(cursor) * 32n);
+    const built = tailSegment(seg);
+    tail += built;
+    cursor += built.length / 64;
+  });
+  return call(signature, [...headWords, tail]);
+}
+
 const ROLE_ISSUER = roleInfo("0x5eeaf5602c75bf26e73b5206d0bd6ee82f621166255e5fd73cc06bc7bd84a95f");
 
 /** A screen, or a loud failure. Keeps every assertion below off `undefined`. */
@@ -122,19 +164,34 @@ group("grantRole and revokeRole name the role and its power");
 
 group("KYC screens state what happens to the holder's balance");
 {
-  /* There is no grant-KYC screen, and that is the artifacts' doing rather than
-   * an omission: `IKyc.grantKyc` takes a credential id as a `string`, so the
-   * descriptor engine drops it and the console refuses. `grantKyc(address)`
-   * exists only on `MockedExternalKycList` — a descriptor for it would draw a
-   * confident screen for a function no real security has. Asserted here as a
-   * refusal so that anyone who "fixes" it has to argue with a test. */
+  /* `grantKyc(address)` exists only on `MockedExternalKycList` — a real
+   * security has no such function, so this selector matches nothing and must
+   * still refuse even though the real `grantKyc` now renders. */
   const granted = render(call("grantKyc(address)", [addressWord(ALICE)]));
   check(granted.state === "refused", "grantKyc(address) produced a screen; it matches only a mock");
-  const real = render(call("grantKyc(address,string,uint256,uint256,address)"));
-  check(real.state === "refused" &&
-        real.why.includes("variable-length string"),
-        `the real grantKyc must refuse with its own reason; it said: ` +
-        `${real.state === "refused" ? real.why : "a screen"}`);
+
+  /* The real `IKyc.grantKyc(address,string,uint256,uint256,address)` now
+   * renders, via the bounds-checked dynamic-tail decoder (action.ts). */
+  const validFrom = 1_700_000_000n;
+  const validTo = 1_800_000_000n;
+  const realData = callDynamic(
+    "grantKyc(address,string,uint256,uint256,address)",
+    [addressWord(ALICE), "", word(validFrom), word(validTo), addressWord(ALICE)],
+    [1],
+    [utf8Hex("vc:acme:12345")],
+  );
+  const granted2 = screenOf(render(realData), "grantKyc");
+  check(granted2.title === "GRANT KYC · ACME Equity", `title is ${granted2.title}`);
+  check(granted2.fields.some((f) => f.label === "Credential id" && f.value === "vc:acme:12345"),
+        `the credential id is not shown correctly: ${JSON.stringify(granted2.fields)}`);
+  check(granted2.fields.some((f) => f.label === "Holder" && f.value.toLowerCase() === ALICE),
+        "the holder is not shown");
+  check(granted2.fields.some((f) => f.label === "Valid from" && f.value.startsWith("2023-")),
+        "the validity window start is not a readable date");
+  check(granted2.effect.includes("gains KYC status"),
+        `the grantKyc effect line is: ${granted2.effect}`);
+  check(granted2.effect.includes("not") && granted2.effect.includes("verified"),
+        "granting KYC must say the credential id is unverified host-decoded text");
 
   const revoked = screenOf(render(call("revokeKyc(address)", [addressWord(ALICE)])), "revokeKyc");
   // Stranding is the consequence an issuer is least likely to have in mind.
@@ -142,6 +199,89 @@ group("KYC screens state what happens to the holder's balance");
         `revoking KYC must say the balance is stranded; it said: ${revoked.effect}`);
   check(revoked.fields.some((f) => f.label === "Holder" && f.value.toLowerCase() === ALICE),
         "the holder is not shown");
+}
+
+group("controllerTransfer states plainly that consent was not given");
+{
+  const transferData = callDynamic(
+    "controllerTransfer(address,address,uint256,bytes,bytes)",
+    [addressWord(ALICE), addressWord(TOKEN), word(5_000n), "", ""],
+    [3, 4],
+    ["deadbeef", ""],
+  );
+  const s = screenOf(render(transferData), "controllerTransfer");
+  check(s.title === "FORCE TRANSFER · ACME Equity", `title is ${s.title}`);
+  check(s.effect.includes("WITHOUT their consent"),
+        `a forced transfer must say plainly it was not consented to: ${s.effect}`);
+  check(s.fields.some((f) => f.label === "Data" && f.value === "0xdeadbeef"),
+        `opaque operator data must be shown as hex, not interpreted: ${JSON.stringify(s.fields)}`);
+  check(s.fields.some((f) => f.label === "Operator data" && f.value === "(empty)"),
+        "an empty bytes field should read as empty, not as a zero-length hex string");
+  check(s.fields.some((f) => f.label === "Amount" && f.value === "50 shares (5000 raw)"),
+        `the forced amount is not restated in shares: ${JSON.stringify(s.fields)}`);
+
+  // A long operator-data field is shown truncated, not silently, and not
+  // pretended to be understood past the cut.
+  const longData = callDynamic(
+    "controllerTransfer(address,address,uint256,bytes,bytes)",
+    [addressWord(ALICE), addressWord(TOKEN), word(1n), "", ""],
+    [3, 4],
+    ["ab".repeat(80), ""],
+  );
+  const long = screenOf(render(longData), "controllerTransfer with long operator data");
+  const dataField = long.fields.find((f) => f.label === "Data");
+  check(dataField?.value.includes("bytes total, opaque") ?? false,
+        `long opaque data must say it was truncated: ${dataField?.value}`);
+}
+
+group("a malformed dynamic-tail offset or length refuses rather than being misread");
+{
+  /* This is the property the whole decoder exists for: an offset or length
+   * that does not describe the canonical, tightly-packed layout a real ABI
+   * encoder produces must never be "followed" into whatever bytes it happens
+   * to point at. Every case below is a plausible way a crafted or merely
+   * malformed transaction could try to smuggle a different reading past a
+   * decoder that trusted the offset word. */
+  const good = callDynamic(
+    "controllerTransfer(address,address,uint256,bytes,bytes)",
+    [addressWord(ALICE), addressWord(TOKEN), word(1n), "", ""],
+    [3, 4],
+    ["aa", "bb"],
+  );
+  check(render(good).state === "screen", "the well-formed baseline must itself render");
+
+  // Offset not a multiple of 32: cannot be a canonical word boundary.
+  const dirtyOffset = good.slice(0, 10 + 3 * 64) + word(161n) + good.slice(10 + 4 * 64);
+  check(render(dirtyOffset).state === "refused", "a non-word-aligned offset must refuse");
+
+  // Offset points past the head but not at the canonical next-free word —
+  // e.g. it skips ahead into where the SECOND segment's content lives,
+  // which would misattribute operator data as the transfer's own data.
+  const skippedOffset = good.slice(0, 10 + 3 * 64) + word(192n) + good.slice(10 + 4 * 64);
+  check(render(skippedOffset).state === "refused",
+        "an offset that does not land on the next canonical word must refuse");
+
+  // Declared length longer than the calldata actually has left.
+  const overlong = callDynamic(
+    "controllerTransfer(address,address,uint256,bytes,bytes)",
+    [addressWord(ALICE), addressWord(TOKEN), word(1n), "", ""],
+    [3, 4],
+    ["aa", "bb"],
+  );
+  const lengthWordStart = 10 + 5 * 64; // right after the head, first tail word
+  const tampered =
+    overlong.slice(0, lengthWordStart) + word(999_999n) + overlong.slice(lengthWordStart + 64);
+  check(render(tampered).state === "refused", "a length past the end of the calldata must refuse");
+
+  // Nonzero padding past the declared length: bytes hiding outside what the
+  // length prefix claims to cover.
+  const dirtyPadding = good.slice(0, good.length - 2) + "ff";
+  check(dirtyPadding.length === good.length, "the padding-tamper fixture changed length");
+  check(render(dirtyPadding).state === "refused", "nonzero padding past the declared length must refuse");
+
+  // Trailing calldata past the last accounted-for tail word.
+  const trailing = `${good}${word(0n)}`;
+  check(render(trailing).state === "refused", "trailing calldata past the tail must refuse");
 }
 
 group("pause and unpause say who is affected");
