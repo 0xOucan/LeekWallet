@@ -80,6 +80,11 @@ import { renderRegister } from "./view.ts";
 import { atsDescriptors } from "./descriptors.ts";
 import { factsFrom, renderPrivilegedPanel } from "./act-view.ts";
 import { renderDistributionPanel } from "./dividend-view.ts";
+import {
+  KNOWN_SECURITIES, RETIRED_SECURITIES, SECURITY_LABEL_NOTICE, retiredAt,
+} from "./securities.ts";
+import { ATS_MARKET, marketDescriptors, securityApproveDescriptors } from "./market.ts";
+import { renderMarketPanel } from "./market-view.ts";
 
 export * from "./abi.ts";
 export * from "./roles.ts";
@@ -92,6 +97,9 @@ export * from "./dividend.ts";
 export * from "./act.ts";
 export * from "./act-view.ts";
 export * from "./dividend-view.ts";
+export * from "./securities.ts";
+export * from "./market.ts";
+export * from "./market-view.ts";
 
 /** The chain this app is about. Hedera testnet; see chains.ts for the entry. */
 export const ATS_CHAIN_ID = 296;
@@ -138,6 +146,11 @@ const CSS = `
   padding: 0.6rem 0.8rem; margin: 0.5rem 0;
 }
 .ats-screen-title { font-weight: 700; letter-spacing: 0.03em; margin-bottom: 0.4rem; }
+/* The chooser. The fixture sits in the same list as the real securities and is
+   labelled in the list itself, not only once it is loaded — a demo that looks
+   like the others until you have clicked it is a demo somebody quotes. */
+.ats-chooser { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; }
+.ats-demo { font-style: italic; }
 `;
 
 /**
@@ -155,6 +168,8 @@ interface PanelState {
   busy: boolean;
   /** Set when the panel is reading the built-in fixture rather than a chain. */
   fixture: boolean;
+  /** Set when the address being read is a pilot that cannot be used. */
+  retired: { symbol: string; address: string; why: string } | undefined;
 }
 
 /**
@@ -167,15 +182,45 @@ interface PanelState {
  * teardown.
  */
 export function buildPanel(root: HTMLElement, context: AppContext): void {
-  const state: PanelState = { view: undefined, busy: false, fixture: false };
+  const state: PanelState = {
+    view: undefined, busy: false, fixture: false, retired: undefined,
+  };
   root.replaceChildren();
 
   const controls = document.createElement("div");
-  controls.className = "ats-row";
+  controls.className = "ats-chooser";
+  /* The four real securities, by name, and the fixture beside them labelled as
+   * what it is. The address field stays and is still the only thing that
+   * decides which contract is read — what changed is the default, which used to
+   * be "the fixture or nothing". See securities.ts. */
+  const chooser = document.createElement("select");
+  chooser.setAttribute("aria-label", "Security to read");
+  for (const s of KNOWN_SECURITIES) {
+    const opt = document.createElement("option");
+    opt.value = s.address;
+    opt.textContent = `${s.symbol} — ${s.name}`;
+    chooser.append(opt);
+  }
+  for (const s of RETIRED_SECURITIES) {
+    const opt = document.createElement("option");
+    opt.value = s.address;
+    opt.className = "ats-demo";
+    opt.textContent = `RETIRED — ${s.symbol} (cannot be minted)`;
+    chooser.append(opt);
+  }
+  {
+    const opt = document.createElement("option");
+    opt.value = FIXTURE_ADDRESS;
+    opt.className = "ats-demo";
+    opt.textContent = "DEMO — built-in fixture (not a chain read)";
+    chooser.append(opt);
+  }
   const input = document.createElement("input");
   input.type = "text";
   input.placeholder = "0x… security address";
   input.setAttribute("aria-label", "ATS security address on Hedera testnet");
+  input.value = KNOWN_SECURITIES[0]?.address ?? "";
+  chooser.addEventListener("change", () => { input.value = chooser.value; });
   const load = document.createElement("button");
   load.textContent = "Read register";
   const demo = document.createElement("button");
@@ -184,8 +229,19 @@ export function buildPanel(root: HTMLElement, context: AppContext): void {
   demo.title = "A constructed example, not a chain read";
   const out = document.createElement("div");
   out.className = "ats-panel";
-  controls.append(input, load, demo);
-  root.append(controls, out);
+  controls.append(chooser, input, load, demo);
+  const labels = document.createElement("p");
+  labels.className = "ats-muted";
+  labels.textContent = SECURITY_LABEL_NOTICE;
+  const retired = document.createElement("p");
+  retired.className = "ats-notice";
+  const paintRetired = (): void => {
+    const dead = state.retired;
+    retired.hidden = dead === undefined;
+    retired.textContent = dead === undefined ? "" : `${dead.symbol} ${dead.address}: ${dead.why}`;
+  };
+  root.append(controls, labels, retired, out);
+  paintRetired();
 
   const paint = (): void => {
     out.replaceChildren();
@@ -210,10 +266,21 @@ export function buildPanel(root: HTMLElement, context: AppContext): void {
     /* The distribution panel needs everything the privileged form needs and a
      * snapshot besides, so it comes after it and reads the same facts. */
     renderDistributionPanel(out, state.view, factsFrom(state.view), context);
+    /* The market is last: what a lot is worth is a decision made against the
+     * register above it, and a sell form above the holder list would be a form
+     * filled in without reading one. The fixture never reaches it — there is no
+     * escrow market behind a constructed example, and a market panel drawing
+     * fixture prices would be the one screen where FIXTURE_NOTICE stopped being
+     * enough. */
+    if (!state.fixture) renderMarketPanel(out, state.view, context);
   };
 
   const read = async (address: string, request: EthRequest, fixture: boolean): Promise<void> => {
     if (state.busy) return;
+    /* A retired pilot is read like any other — the register is real — but the
+     * panel says what cannot be done with it, and keeps saying it: the notice
+     * lives above `out`, which every repaint clears. */
+    state.retired = retiredAt(address);
     state.busy = true;
     state.fixture = fixture;
     // The old view goes as soon as a new read starts. Leaving it up while the
@@ -221,6 +288,7 @@ export function buildPanel(root: HTMLElement, context: AppContext): void {
     // thirty seconds ago as if it were current.
     state.view = undefined;
     load.disabled = true;
+    paintRetired();
     paint();
     try {
       state.view = await readRegister(
@@ -270,7 +338,16 @@ export const ATS_APP: MiniApp = {
    * `MiniApp.descriptors` exists for. Core still judges what comes back: every
    * argument must render and the reading must not disagree with the firmware's
    * own decoder. See mini-app.ts. */
-  descriptors: (chainId, to) => atsDescriptors(chainId, to),
+  /* Three descriptor sets, chosen by what is being called, never merged: the
+   * privileged table (built around the security's address, because every
+   * issuance is a fresh diamond), the escrow market's own three calls (one
+   * constant address), and the plain ERC-20 approve a listing needs first. An
+   * approval folded into the privileged table would owe a consequence line
+   * about an issuer power it does not confer — see market.ts. */
+  descriptors: (chainId, to) =>
+    to.toLowerCase() === ATS_MARKET
+      ? marketDescriptors(chainId, to)
+      : [...atsDescriptors(chainId, to), ...securityApproveDescriptors(chainId, to)],
   async mount(root, context) {
     if (context.chainId !== ATS_CHAIN_ID) {
       /* Refused rather than rendered empty. Reading an ATS security over a

@@ -34,6 +34,8 @@ import { fetchPortfolio } from "./portfolio.ts";
 import { isAquaChain, AQUA_CHAIN_IDS } from "./registry.ts";
 import { portfolioView, renderPortfolio } from "./view.ts";
 import { renderManage } from "./manage.ts";
+import { renderAuthor } from "./author-view.ts";
+import { aquaDescriptors } from "./tokens.ts";
 import type { ScanOptions } from "./positions.ts";
 
 export * from "./registry.ts";
@@ -47,6 +49,9 @@ export * from "./run.ts";
 export * from "./manage.ts";
 export * from "./authoring.ts";
 export * from "./dca.ts";
+export * from "./tokens.ts";
+export * from "./tier-plan.ts";
+export * from "./author-view.ts";
 
 /**
  * This app's context: the shared one, plus a scan window.
@@ -111,6 +116,20 @@ const CSS = `
   border-left: 3px solid currentColor; padding-left: 0.5rem;
 }
 .aqua-report { display: flex; flex-direction: column; gap: 0.3rem; }
+
+/* The tier picker. The band read-back is the largest thing on the screen
+   because it is the only check a person can perform on the one error the code
+   cannot catch (STRATEGIES.md §3.4); the three tier sentences sit together
+   because the choice between them is a comparison. */
+.aqua-author { display: flex; flex-direction: column; gap: 0.5rem; }
+.aqua-tiers { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.9em; }
+.aqua-tier { display: flex; gap: 0.5rem; align-items: baseline; }
+.aqua-tier-name { min-width: 5rem; font-weight: 700; text-transform: uppercase; }
+.aqua-band {
+  border: 2px solid var(--border, #444); border-radius: 6px; padding: 0.6rem;
+}
+.aqua-band-line { font-size: 1.15em; font-weight: 700; word-break: break-word; }
+.aqua-program li { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 `;
 
 export const AQUA_APP: MiniApp = {
@@ -119,6 +138,13 @@ export const AQUA_APP: MiniApp = {
   summary: "Your 1inch Aqua positions, and the approval that decides what they can cost.",
   chainIds: AQUA_CHAIN_IDS,
   css: CSS,
+  /* Evidence, not authority. A deployment is `approve` then `ship`: ship and
+   * dock are decoded by the device itself, but `approve` is an ordinary ERC-20
+   * call and core ships no descriptor for any Base mainnet token — so without
+   * this the approval step of every plan this app builds is declined by the
+   * wallet. Offered for three addresses on one chain for one signature; core
+   * still keeps the verdict. See tokens.ts. */
+  descriptors: (chainId, to) => aquaDescriptors(chainId, to),
   async mount(root, context) {
     if (!isAquaChain(context.chainId)) {
       /* Refused rather than rendered empty: "no positions on a chain Aqua is
@@ -135,6 +161,15 @@ export const AQUA_APP: MiniApp = {
       (context as AquaContext).scan ?? {},
     );
     renderPortfolio(root, portfolioView(portfolio));
+    /* The tier picker, above the raw form: it is the screen a maker should be
+     * using, and the raw strategy/program fields below it are the escape hatch
+     * for a position this app's closed pair and tier tables cannot express. */
+    renderAuthor(root, {
+      chainId: context.chainId,
+      maker: context.address,
+      context,
+      refresh: () => { void AQUA_APP.mount(root, context); },
+    });
     /* The write half, appended to the read. Deliberately after: the approval
      * and the positions are what a deployment has to be decided against, and a
      * form above them would be a form filled in without reading them. */

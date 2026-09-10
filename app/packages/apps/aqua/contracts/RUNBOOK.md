@@ -289,13 +289,27 @@ Note the arithmetic the portfolio states: exposure is `allowance × shipped
 strategies`, so a 2 USDC allowance is reachable by *either* position. It is
 capped at the total on purpose, and both positions are docked in step 8.
 
-Do this **in the companion app**, on the Aqua screen, with the device attached:
+Do this **in the companion app**, on the Aqua screen, with the device attached.
+Steps 3 to 5 of this runbook are one screen there now — "Ship a position", above
+the raw strategy form (`src/author-view.ts`, planning in `src/tier-plan.ts`):
 
 1. Open Aqua on Base. The portfolio shows the standing allowance per token.
-2. Enter the position; the app builds `approve` + `ship` as one plan.
-3. Approve the `approve` step on the device. **The device screen must show the
+2. Pick the pair and the tier. All three tier descriptions are on screen at
+   once; none of them projects a return, and none of them ever will.
+3. Type the mid price. **The band read-back appears in the units you stated it
+   in — check it by eye, exactly as in step 3 above.** The picker reads the
+   wallet's real balance for each side and refuses a leg larger than it, so a
+   position that could not be filled is never planned.
+4. The app builds `approve` + `ship` as one plan, with the approval capped at
+   the position's own amount.
+5. Approve the `approve` step on the device. **The device screen must show the
    exact figure above** — if it shows an unlimited or a different amount, reject
    it on the device and stop.
+
+The maker currently holds USDC and neither WETH nor cbBTC, so both pairs plan as
+ONE-SIDED, and the picker says so in those words rather than drawing a market
+that only exists in one direction without mentioning it. A pair with nothing on
+either side is refused outright: no plan, no button.
 
 Verify from chain state:
 
@@ -310,9 +324,14 @@ cast call "$WETH" "allowance(address,address)(uint256)" "$MAKER" "$REGISTRY" --r
 
 ## Step 5 — ship
 
-Still in the companion, still on the device. The device decodes the calldata
-itself (`src/eth-decode.c`) and draws one page per instruction, in program
-order.
+Still in the companion, still on the device — the same screen as step 4; the
+plan is one press per step, in order. The device decodes the calldata itself
+(`src/eth-decode.c`) and draws one page per instruction, in program order.
+
+The `approve` step is an ordinary ERC-20 call, so it needs an ERC-7730
+descriptor or the wallet declines it before the device sees anything. Core
+bundles none for any Base mainnet token, so the app supplies one for these three
+addresses and no others (`src/tokens.ts`); core still judges it.
 
 **What the device must show, and what to do if it does not:**
 
