@@ -301,3 +301,29 @@ says so rather than assuming.
 Nothing else has been deployed. Until this table grows, this document describes
 a console that works, a market that is tested, and one token that has never been
 used.
+
+
+---
+
+## Deployed securities — Hedera testnet, 2026-09-10
+
+Broadcast with `script/DeploySecurities.s.sol`, issuer
+`0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45` (`0.0.7307292`). Cost 18.12 HBAR
+for all four. Every field below was verified afterwards by direct `eth_call`,
+not taken from the broadcast log.
+
+| Symbol | Address | Type | Max supply | Supply | `hasRole(ISSUER, issuer)` |
+|---|---|---|---|---|---|
+| LEEKA | `0x188fd9e330d22edd3381b21715d0a1722206b43f` | equity | 1,000,000 | 0 | **true** |
+| VGF1 | `0xaab4b09e4691ec2284399a6a27466a498051bb23` | equity | 250,000 | 0 | **true** |
+| HRBR | `0x653bfb114985583e30a80b62a81f5bad1d4852eb` | equity | 5,000,000 | 0 | **true** |
+| LEEKB | `0x512988f3e1a2fc5da6fa65daffd35bb7437a3c84` | bond | 100,000 | 0 | **true** |
+
+All 6 decimals. Transaction hashes are in
+`app/packages/apps/ats/contracts/broadcast/DeploySecurities.s.sol/296/run-latest.json`.
+
+**The ISSUER column is the point.** The earlier pilot equity
+`0x651e73ebcf18ef7e050c90af0461d91d640635bb` (`LEEK`, `0.0.10461772`) was
+deployed with `DEFAULT_ADMIN_ROLE` only, so it can never be minted and its
+supply is permanently 0. These four grant ISSUER at birth, which is why they
+can. Do not confuse the two: **LEEK is the dead pilot, LEEKA is the live one.**
