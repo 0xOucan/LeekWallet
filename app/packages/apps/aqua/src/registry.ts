@@ -105,31 +105,16 @@ export const AQUA_SWAPVM_ROUTER = "0x111111338c5091e8440b67b168bae16a668ac0de";
  * inventing endpoints, and chains.ts's header is explicit that being listed is
  * a claim. Adding one is one line here after one entry there.
  *
- * The traffic runs the other way too, and that is the more interesting half:
- * this list contains a chain the SDK does not have. See below.
+ * Ethereum Sepolia (11155111) used to be in this list and is not an Aqua
+ * chain. It was added on the strength of a registry-shaped deployment at the
+ * shared address, which is what deterministic deployment produces everywhere
+ * whether or not the protocol claims the chain — a shared address is not an
+ * attestation (see the registry constant's own header). The official set is
+ * the thirteen below, and Base (8453) is in it, which is where this app is
+ * actually used with real funds.
  */
-/* The twelve mainnets Aqua's README lists, plus Ethereum Sepolia (11155111),
-   which it does not.
- 
-   Sepolia is here on evidence rather than documentation: eth_getCode at the
-   registry address returns runtime bytecode whose hash is identical to
-   Polygon's and Gnosis's (4c886bff...), which follows from the deterministic
-   deployment the README describes, and it emitted 25 events in 9000 blocks. It
-   is a live deployment that the docs simply do not mention.
- 
-   That matters because it is the only chain where this app can be exercised
-   without mainnet funds -- the SwapVM router really is mainnet-only, so Q3
-   still needs a fork, but the registry alone is enough for ship and dock.
-
-   It is also the one place where @1inch/aqua-sdk is simply wrong about its own
-   protocol. Its NetworkEnum contains no testnet at all, so
-   AQUA_CONTRACT_ADDRESSES has no key 11155111 and a chain list derived from it
-   would delete the only chain ship and dock can be tested on. Where the SDK and
-   the chain disagree, the chain wins. test/sdk-parity.test.ts pins the
-   disagreement, so a release that adds Sepolia turns this comment red rather
-   than leaving it quietly false. */
 export const AQUA_CHAIN_IDS: readonly number[] =
-  [1, 10, 56, 100, 130, 137, 146, 324, 8453, 42161, 43114, 59144, 11155111];
+  [1, 10, 56, 100, 130, 137, 146, 324, 4663, 8453, 42161, 43114, 59144];
 
 export const isAquaChain = (chainId: number): boolean => AQUA_CHAIN_IDS.includes(chainId);
 

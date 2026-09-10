@@ -1310,7 +1310,35 @@ static void emit_case(FILE *out, const char *name, const uint8_t *data, size_t l
             }
             fprintf(out, " }");
         }
-        fprintf(out, "] }");
+        fprintf(out, "]");
+        /* The program, recorded the same faithful way as everything above:
+         * the opcode byte, the name this build gave it, and the one headline
+         * figure the page would show. Without it the vectors pinned only
+         * "accepted", so the two decoders could have agreed to accept a
+         * program while disagreeing about what every instruction in it MEANS
+         * -- which is exactly how a wrong opcode table ships. `null` for a
+         * non-SwapVM app, where no walk was attempted. */
+        fprintf(out, ", \"program\": ");
+        if (call.aqua_is_swapvm) {
+            fprintf(out, "[");
+            for (int i = 0; i < call.aqua_instr_count; i++) {
+                char iname[48];
+                char ivalue[80];
+                eth_aqua_instr_name(&call, data, len, i, iname, sizeof(iname));
+                bool has_value = eth_aqua_instr_value(&call, data, len, i,
+                                                      ivalue, sizeof(ivalue));
+                fprintf(out, "%s{ \"opcode\": %u, \"name\": \"%s\", \"argsLen\": %u, \"value\": ",
+                        i == 0 ? "" : ", ",
+                        (unsigned)data[call.aqua_instr_off[i]], iname,
+                        (unsigned)data[call.aqua_instr_off[i] + 1]);
+                if (has_value) fprintf(out, "\"%s\"", ivalue); else fprintf(out, "null");
+                fprintf(out, " }");
+            }
+            fprintf(out, "]");
+        } else {
+            fprintf(out, "null");
+        }
+        fprintf(out, " }");
     } else {
         fprintf(out, "null");
     }
@@ -1436,47 +1464,102 @@ static int emit_vectors(const char *path)
         uint64_t am[1] = { 1 };
         memcpy(tk[0], SPENDER, 20);
 
-        /* Readable: XYCSwap, Decay(300), FeeFlatIn(50). */
+        /* Readable: xycSwapXD, decayXD(300), flatFeeAmountInXD(3_000_000 =
+         * 0.30% against the 1e9 = 100% base). Dense indices 17/19/21, which
+         * is what the deployed router dispatches on. */
         const uint8_t ok_prog[] = {
-            0x50, 0x00,
-            0x9c, 0x02, 0x01, 0x2c,
-            0x70, 0x03, 0x00, 0x00, 0x32,
+            17, 0x00,
+            19, 0x02, 0x01, 0x2c,
+            21, 0x04, 0x00, 0x2d, 0xc6, 0xc0,
         };
         size_t svl = make_swapvm_strategy(sv, OTHER, ok_prog, sizeof(ok_prog));
         len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
                               SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
         CASE("swapvm program, three understood instructions", data, len);
 
-        /* 0x99 is a real SwapVM opcode (PiecewiseLinearScaleBalanceOut) that
-         * the Aqua router does not dispatch -- so it is unknown to us, and an
-         * unknown opcode is the milestone's headline refusal. */
-        const uint8_t unknown_prog[] = { 0x50, 0x00, 0x99, 0x01, 0x07 };
+        /* 0x99 is past the router's table entirely -- on chain it is a bare
+         * Panic(0x32), here it is the milestone's headline refusal. */
+        const uint8_t unknown_prog[] = { 17, 0x00, 0x99, 0x01, 0x07 };
         svl = make_swapvm_strategy(sv, OTHER, unknown_prog, sizeof(unknown_prog));
         len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
                               SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
         CASE("swapvm program, unknown opcode", data, len);
 
-        /* Deadline is uint40, five bytes. Four is not "close enough". */
-        const uint8_t badlen_prog[] = { 0x20, 0x04, 0x00, 0x00, 0x00, 0x01 };
+        /* deadline is uint40, five bytes. Four is not "close enough". */
+        const uint8_t badlen_prog[] = { 13, 0x04, 0x00, 0x00, 0x00, 0x01 };
         svl = make_swapvm_strategy(sv, OTHER, badlen_prog, sizeof(badlen_prog));
         len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
                               SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
         CASE("swapvm program, wrong args_len", data, len);
 
         /* Header says two argument bytes; only one follows. */
-        const uint8_t trunc_prog[] = { 0x50, 0x00, 0x9c, 0x02, 0x01 };
+        const uint8_t trunc_prog[] = { 17, 0x00, 19, 0x02, 0x01 };
         svl = make_swapvm_strategy(sv, OTHER, trunc_prog, sizeof(trunc_prog));
         len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
                               SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
         CASE("swapvm program, truncated tail", data, len);
 
-        /* Jump (0x03) is dispatched on chain but refused here: a jump means
-         * the list on the screen is not the list that executes (§6.3). */
-        const uint8_t jump_prog[] = { 0x50, 0x00, 0x03, 0x02, 0x00, 0x00 };
+        /* jump (10) is dispatched on chain but refused here: a jump means the
+         * list on the screen is not the list that executes (§6.3). */
+        const uint8_t jump_prog[] = { 17, 0x00, 10, 0x02, 0x00, 0x00 };
         svl = make_swapvm_strategy(sv, OTHER, jump_prog, sizeof(jump_prog));
         len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
                               SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
         CASE("swapvm program, control flow refused", data, len);
+
+        /* ------------------------------------------------ real programs
+         *
+         * Two maker strategies actually shipped to the Aqua router on Base
+         * mainnet (8453), their programs taken verbatim from their `Shipped`
+         * events, plus 1inch's own documented dApp program. These are the
+         * acceptance test for the opcode table: with the old `Opcode`-enum
+         * numbering all three refused, which is how the table was found to be
+         * wrong. Every one of them must decode. */
+
+        /* op 18 /64, op 21 /4, op 17 /0, op 20 /8. */
+        const uint8_t base_prog_a[] = {
+            0x12, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a, 0x9b, 0x52, 0x4d, 0xf9,
+            0xf5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x2f, 0x1a, 0x7f, 0x64, 0xee, 0x31,
+            0x15, 0x04, 0x00, 0x0f, 0x42, 0x40, 0x11, 0x00, 0x14, 0x08, 0x00,
+            0x06, 0x5b, 0x22, 0x14, 0xef, 0xca, 0xf8,
+        };
+        svl = make_swapvm_strategy(sv, OTHER, base_prog_a, sizeof(base_prog_a));
+        len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                              SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
+        CASE("swapvm program, real Base mainnet strategy A", data, len);
+
+        /* The same shape, a different maker's liquidity and salt. */
+        const uint8_t base_prog_b[] = {
+            0x12, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xfc, 0x6a, 0x26, 0xfc,
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x09, 0x50, 0x83, 0x0f, 0xe6, 0x41,
+            0x15, 0x04, 0x00, 0x0f, 0x42, 0x40, 0x11, 0x00, 0x14, 0x08, 0x00,
+            0x06, 0x5b, 0x22, 0x14, 0xef, 0xca, 0xf9,
+        };
+        svl = make_swapvm_strategy(sv, OTHER, base_prog_b, sizeof(base_prog_b));
+        len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                              SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
+        CASE("swapvm program, real Base mainnet strategy B", data, len);
+
+        /* 1inch's documented dApp program: onlyTxOriginTokenBalanceNonZero
+         * against a KycNFT, then xycSwapXD. */
+        const uint8_t dapp_prog[] = {
+            0x21, 0x14,
+            0x8a, 0x1c, 0x3a, 0x0a, 0x2b, 0x0e, 0x4d, 0x1f, 0x63, 0x77,
+            0x91, 0x2c, 0xb5, 0x0e, 0x77, 0x84, 0x9a, 0x33, 0xd6, 0x1b,
+            0x11, 0x00,
+        };
+        svl = make_swapvm_strategy(sv, OTHER, dapp_prog, sizeof(dapp_prog));
+        len = build_aqua_ship(data, sizeof(data), "ship(address,bytes,address[],uint256[])",
+                              SWAPVM_ROUTER_ADDR, sv, svl, tk, am, 1);
+        CASE("swapvm program, 1inch documented dApp program", data, len);
     }
 
     /* ---------------------------------------------------------- refusals */

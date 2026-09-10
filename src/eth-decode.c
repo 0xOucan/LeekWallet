@@ -444,12 +444,18 @@ static const uint8_t AQUA_SWAPVM_ROUTER[20] = {
     0x67, 0xb1, 0x68, 0xba, 0xe1, 0x6a, 0x66, 0x8a, 0xc0, 0xde,
 };
 
-/* One row of the closed opcode allowlist -- the SAME nine names, the SAME
- * fixed widths, as app/packages/apps/aqua/src/program.ts's OPCODES table.
- * `argsLen < 0` means "any length is understood" (Salt: `exec()` never reads
- * its args, so there is no field being interpreted). Every width here was
- * read out of the same src/instructions/ *.sol file the host module's header
- * comment cites -- not re-derived, not guessed. */
+/* One row of the closed opcode allowlist -- the SAME names, the SAME fixed
+ * widths, as app/packages/apps/aqua/src/program.ts's OPCODES table.
+ * `args_len < 0` means "any length is understood" (salt: `exec()` never reads
+ * its args, so there is no field being interpreted).
+ *
+ * These are the DENSE INDICES the deployed AquaSwapVMRouter v1.0.2 dispatches
+ * on, not the `Opcode` enum (`XYCSwap = 0x50`) an earlier version of this
+ * table shipped -- that enum belongs to a different version and refused every
+ * real Aqua strategy. Settled against two live Base mainnet strategies read
+ * back from `Shipped` events, both of which walk as 18/64, 21/4, 17/0, 20/8;
+ * both are in the shared calldata vectors. See docs/AQUA-B3-SPEC.md §3 and
+ * program.ts's header for where each width comes from. */
 typedef struct {
     uint8_t     opcode;
     int16_t     args_len;   /* -1 = any length */
@@ -457,26 +463,29 @@ typedef struct {
 } AquaOpSpec;
 
 static const AquaOpSpec AQUA_OPCODES[] = {
-    { 0x02, -1,  "Salt" },
-    { 0x20,  5,  "Deadline" },
-    { 0x23, 20,  "OnlyTakerTokenBalanceNonZero" },
-    { 0x26, 20,  "OnlyTxOriginTokenBalanceNonZero" },
-    { 0x50,  0,  "XYCSwap" },
-    { 0x51, 64,  "XYCConcentrateSwap" },
-    { 0x58, 160, "PeggedSwap" },
-    { 0x70,  3,  "FeeFlatIn" },
-    { 0x9c,  2,  "Decay" },
+    { 13,   5, "deadline" },
+    { 14,  20, "onlyTakerTokenBalanceNonZero" },
+    { 15,  52, "onlyTakerTokenBalanceGte" },
+    { 16,  28, "onlyTakerTokenSupplyShareGte" },
+    { 17,   0, "xycSwapXD" },
+    { 18,  64, "xycConcentrateGrowLiquidity2D" },
+    { 19,   2, "decayXD" },
+    { 20,  -1, "salt" },
+    { 21,   4, "flatFeeAmountInXD" },
+    { 31, 160, "peggedSwapGrowPriceRange2D" },
+    { 33,  20, "onlyTxOriginTokenBalanceNonZero" },
 };
 #define AQUA_OPCODES_COUNT (sizeof(AQUA_OPCODES) / sizeof(AQUA_OPCODES[0]))
 
 /* Real Aqua-dispatched opcodes, deliberately refused rather than added to the
- * table above -- Jump/Extruction/JumpIfTokenIn/JumpIfTokenOut, spec §6.3. A
- * jump means the linear list this walker would produce is not the list the
- * router executes; Extruction hands the swap registers to arbitrary
- * maker-chosen bytecode this walker cannot read by construction. */
+ * table above -- jump(10), jumpIfTokenIn(11), jumpIfTokenOut(12) and
+ * extruction(32), spec §6.3. A jump means the linear list this walker would
+ * produce is not the list the router executes; extruction hands the swap
+ * registers to arbitrary maker-chosen bytecode this walker cannot read by
+ * construction. */
 static bool aqua_is_control_flow(uint8_t opcode)
 {
-    return opcode == 0x03 || opcode == 0x04 || opcode == 0x31 || opcode == 0x32;
+    return opcode == 10 || opcode == 11 || opcode == 12 || opcode == 32;
 }
 
 static const AquaOpSpec *aqua_opcode_spec(uint8_t opcode)
@@ -1103,23 +1112,28 @@ bool eth_aqua_instr_value(const EthCall *call, const uint8_t *data, size_t len,
         return false;
     }
 
-    if (strcmp(spec->name, "Deadline") == 0) {
+    if (strcmp(spec->name, "deadline") == 0) {
         EthQuantity q;
         if (!eth_quantity_set(&q, args, 5)) return false;
         return eth_format_integer(&q, out, out_size);
     }
-    if (strcmp(spec->name, "FeeFlatIn") == 0) {
+    if (strcmp(spec->name, "flatFeeAmountInXD") == 0) {
+        /* A raw uint32 against a denominator of 1e9, where 1e9 is 100%. It is
+         * shown as that integer, never converted to "bps": a 1e9-base number
+         * labelled bps is wrong by five orders of magnitude, and a wrong fee
+         * on an authoritative screen is the failure this decoder exists to
+         * avoid. The page's own label carries the base. */
         EthQuantity q;
-        if (!eth_quantity_set(&q, args, 3)) return false;
+        if (!eth_quantity_set(&q, args, 4)) return false;
         return eth_format_integer(&q, out, out_size);
     }
-    if (strcmp(spec->name, "Decay") == 0) {
+    if (strcmp(spec->name, "decayXD") == 0) {
         EthQuantity q;
         if (!eth_quantity_set(&q, args, 2)) return false;
         return eth_format_integer(&q, out, out_size);
     }
-    if (strcmp(spec->name, "OnlyTakerTokenBalanceNonZero") == 0 ||
-        strcmp(spec->name, "OnlyTxOriginTokenBalanceNonZero") == 0) {
+    if (strcmp(spec->name, "onlyTakerTokenBalanceNonZero") == 0 ||
+        strcmp(spec->name, "onlyTxOriginTokenBalanceNonZero") == 0) {
         /* The wire layout here is a bare 20-byte address (args_len == 20 was
          * already proven exact by the walker), not a left-padded word, so it
          * is passed to eth_format_address() directly. */
@@ -1128,10 +1142,10 @@ bool eth_aqua_instr_value(const EthCall *call, const uint8_t *data, size_t len,
         snprintf(out, out_size, "%s", addr);
         return true;
     }
-    /* XYCSwap (no args), Salt, XYCConcentrateSwap and PeggedSwap: no single
-     * figure summarises these honestly, so the page shows the opcode name
-     * only and this stays empty -- never a truncated guess at one of several
-     * wide fields. */
+    /* xycSwapXD (no args), salt, the two Gte guards, and the two 2D curve
+     * opcodes: no single figure summarises these honestly, so the page shows
+     * the opcode name only and this stays empty -- never a truncated guess at
+     * one of several wide fields. */
     return false;
 }
 

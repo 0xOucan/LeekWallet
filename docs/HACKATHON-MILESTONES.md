@@ -244,16 +244,17 @@ SwapVM programs are `[opcode][args_len][args]` triples, signed as EIP-712. Decod
 and render intent:
 
 ```
-  0x17 staticBalances   →  Provide 1,000 USDC
-  0x26 limitSwap1D      →  Sell at ≥ 0.9995 / DAI
-  0x?? deadline         →  Expires 6 Sep 14:00
+  18 xycConcentrateGrowLiquidity2D  →  concentrated range
+  21 flatFeeAmountInXD              →  taker pays 0.10% of input
+  17 xycSwapXD                      →  constant product, x·y=k
+  20 salt                           →  uniqueness only, no effect on price
 ```
 
-**The opcode numbers above are ILLUSTRATIVE AND WRONG.** They match neither
-the contract enum (`StaticBalances` is `0x90`, `LimitSwap` `0x53`) nor the
-SDK's dense index, and the two schemes disagree with each other. Which one
-the deployed router uses is unresolved — see `docs/AQUA-B3-SPEC.md` §3 and
-§10.1. No opcode number ships until that is settled on chain.
+The numbers are the **dense indices** the deployed `AquaSwapVMRouter` v1.0.2
+dispatches on, not the `Opcode` enum (`XYCSwap = 0x50`) — settled by decoding
+real `Shipped` events on Base mainnet; the four above are one of them. The
+full table is `docs/AQUA-B3-SPEC.md` §3, and the two real programs are pinned
+in the shared calldata vectors.
 
 
 Nobody else will render bytecode on a hardware screen, and SwapVM use is

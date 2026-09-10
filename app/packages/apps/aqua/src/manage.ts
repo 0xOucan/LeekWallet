@@ -247,9 +247,15 @@ function allowanceOf(portfolio: Portfolio, token: string): { allowance?: bigint 
 /**
  * Spec §6.7's success screen: one row per instruction, in program order, each
  * naming the opcode and — for the ones with a single figure worth showing —
- * that figure. Multi-field opcodes (XYCConcentrateSwap, PeggedSwap) and
- * Salt/XYCSwap show the name alone; their full byte-exact fields are on
- * `Instruction.fields` for a caller that wants more than this summary.
+ * that figure. Multi-field opcodes (the 2D curve instructions, the two Gte
+ * guards) and salt/xycSwapXD show the name alone; their full byte-exact
+ * fields are on `Instruction.fields` for a caller that wants more than this
+ * summary.
+ *
+ * `flatFeeAmountInXD` is a uint32 against a denominator of 1e9, where 1e9 is
+ * 100% — so 3_000_000 is 0.30%. Both forms are shown, and neither is called
+ * "bps", because a 1e9-base number labelled bps is wrong by five orders of
+ * magnitude.
  */
 function programList(instructions: readonly Instruction[]): HTMLElement {
   const heading = el("h4", undefined, "Strategy program");
@@ -257,11 +263,14 @@ function programList(instructions: readonly Instruction[]): HTMLElement {
   for (const instr of instructions) {
     const detail = ((): string => {
       switch (instr.fields.name) {
-        case "Deadline": return String(instr.fields.deadline);
-        case "OnlyTakerTokenBalanceNonZero":
-        case "OnlyTxOriginTokenBalanceNonZero": return instr.fields.token;
-        case "FeeFlatIn": return `${instr.fields.feeBps} / 1e7`;
-        case "Decay": return `${instr.fields.period}s`;
+        case "deadline": return String(instr.fields.deadline);
+        case "onlyTakerTokenBalanceNonZero":
+        case "onlyTxOriginTokenBalanceNonZero": return instr.fields.token;
+        case "flatFeeAmountInXD": {
+          const fee = instr.fields.fee;
+          return `${fee} / 1e9 (${(fee / 1e7).toFixed(4)}%)`;
+        }
+        case "decayXD": return `${instr.fields.period}s`;
         default: return "";
       }
     })();

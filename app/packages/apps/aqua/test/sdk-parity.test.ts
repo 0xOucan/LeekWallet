@@ -221,24 +221,23 @@ group("our topics and registry address are the SDK's");
     "the SDK names a different Ethereum registry than registry.ts does");
 }
 
-group("the SDK's chain list omits the only chain this app can be tested on");
+group("AQUA_CHAIN_IDS is the official Aqua set, and never wider than the SDK's");
 {
-  /* Not a defect being reported — a reason AQUA_CHAIN_IDS is hand-written.
-   * The SDK's NetworkEnum contains no testnet at all, so AQUA_CONTRACT_ADDRESSES
-   * has no key for Ethereum Sepolia (11155111), where the registry demonstrably
-   * is: eth_getCode returns runtime bytecode hashing identical to Polygon's and
-   * Gnosis's. Deriving our chain list from the SDK would delete the only chain
-   * ship and dock can be exercised on without mainnet funds. Pinned so that if
-   * a later release adds Sepolia, this goes red and the comment gets revisited
-   * rather than quietly becoming false. */
+  /* AQUA_CHAIN_IDS is hand-written because it is the intersection of "Aqua is
+   * deployed" and "chains.ts has a vetted RPC", and only the second half lives
+   * in this repo. What it must never be is *wider* than the protocol's own
+   * deployment set — a chain listed here is a claim that shipping to it works.
+   *
+   * Sepolia was in this list once, on the strength of a registry-shaped
+   * deployment at the shared address. That is what deterministic deployment
+   * produces on any chain, claimed or not, so it was evidence of an address
+   * and not of a protocol. It is gone. */
   const sdkChains = Object.keys(AQUA_CONTRACT_ADDRESSES).map(Number);
-  check(!sdkChains.includes(11155111),
-    "the SDK now lists Sepolia — registry.ts's comment about it is out of date");
-  check(AQUA_CHAIN_IDS.includes(11155111), "we dropped the one testable chain");
+  check(!AQUA_CHAIN_IDS.includes(11155111),
+    "Sepolia is back in AQUA_CHAIN_IDS and is not an Aqua chain");
+  check(AQUA_CHAIN_IDS.includes(8453), "Base (8453) must be offered");
 
-  /* Where they overlap they must agree, and ours must never claim a chain the
-   * SDK does not deploy to. Sepolia is the sole documented exception. */
-  const extra = AQUA_CHAIN_IDS.filter((id) => id !== 11155111 && !sdkChains.includes(id));
+  const extra = AQUA_CHAIN_IDS.filter((id) => !sdkChains.includes(id));
   check(extra.length === 0, `we offer chains the SDK does not deploy to: ${extra.join(", ")}`);
 }
 

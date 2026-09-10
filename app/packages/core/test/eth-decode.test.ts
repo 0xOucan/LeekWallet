@@ -378,7 +378,18 @@ interface EthDecodeVector {
   unlimited?: boolean;
   flag?: boolean | null;
   generic?: { signature: string; functionName: string; args: EthDecodeArgVector[] } | null;
-  aqua?: { app: string; maker: string | null; hash: string; legs: EthDecodeLegVector[] } | null;
+  aqua?: {
+    app: string; maker: string | null; hash: string; legs: EthDecodeLegVector[];
+    /** The walked SwapVM program, or null when the app is not the router. */
+    program: EthDecodeInstructionVector[] | null;
+  } | null;
+}
+
+interface EthDecodeInstructionVector {
+  opcode: number;
+  name: string;
+  argsLen: number;
+  value: string | null;
 }
 
 const ethDecodeVectors: EthDecodeVector[] = JSON.parse(
@@ -455,6 +466,26 @@ for (const v of ethDecodeVectors) {
         `${v.name}: leg ${i} amount ${got?.amount} != firmware's ${leg.amount}`,
       );
     });
+    /* The program, instruction for instruction. "Accepted" alone would let
+     * the two decoders agree to render a program while disagreeing about what
+     * every instruction in it is — which is exactly the shape of the wrong
+     * opcode table this corpus now pins against. */
+    if (v.aqua.program) {
+      check((d.aqua?.program?.length ?? -1) === v.aqua.program.length,
+        `${v.name}: ${d.aqua?.program?.length} instructions, firmware has ${v.aqua.program.length}`);
+      v.aqua.program.forEach((instr, i) => {
+        const got = d.aqua?.program?.[i];
+        check(got?.opcode === instr.opcode,
+          `${v.name}: instruction ${i} opcode ${got?.opcode} != ${instr.opcode}`);
+        check(got?.name === instr.name,
+          `${v.name}: instruction ${i} name ${got?.name} != ${instr.name}`);
+        check(got?.args.length === instr.argsLen,
+          `${v.name}: instruction ${i} args_len ${got?.args.length} != ${instr.argsLen}`);
+      });
+    } else {
+      check(d.aqua?.program === undefined,
+        `${v.name}: TS walked a program the firmware did not`);
+    }
   } else {
     check(d.aqua === undefined, `${v.name}: TS produced an aqua field the firmware did not`);
   }
