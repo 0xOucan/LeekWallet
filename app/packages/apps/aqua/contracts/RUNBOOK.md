@@ -170,6 +170,16 @@ The gate is what keeps the position off bots without asking anyone's
 permission. The **holder is the taker**, i.e. the deployer — not the maker.
 See STRATEGIES.md §5 and `AUDIT-REPORT.md`.
 
+**First time in this directory, install the dependencies.** `lib/` is
+gitignored -- deps are installed, not committed -- so a fresh checkout has no
+`forge-std` and every command fails with `Source "forge-std/Test.sol" not
+found`:
+
+```bash
+forge install foundry-rs/forge-std --no-git
+forge install OpenZeppelin/openzeppelin-contracts --no-git
+```
+
 ```bash
 forge test                       # 21 passed, 20,000 fuzz runs, before you deploy
 
