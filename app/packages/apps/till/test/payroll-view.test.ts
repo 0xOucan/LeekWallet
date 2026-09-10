@@ -34,8 +34,8 @@ const MERCHANT = "0x7a3f1B2C4d5e6f708192A3B4c5D6E7F809a1b2c3";
 const ANA = "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF";
 const BEN = "0x388C818CA8B9251b393131C08a736A67ccB19297";
 
-const person = (address: string, amount: string, name = "Ana"): StaffMember => {
-  const made = staffFromFields({ name, role: "waiter", address, amount });
+const person = (address: string, salary: string, name = "Ana", tips = ""): StaffMember => {
+  const made = staffFromFields({ name, role: "waiter", address, salary, tips });
   if (!made.ok) throw new Error(made.reason);
   return made.member;
 };
@@ -61,7 +61,7 @@ group("a row shows the address, not just the name");
   const view = payrollView(state([person(ANA, "500")]));
   const row = view.rows[0];
   eq(row?.address, ANA, "the address is on the row");
-  eq(row?.amountText, "500 USDC", "the amount");
+  eq(row?.salaryText, "500 USDC", "the salary");
   check(view.notices.some((n) => /ADDRESS/.test(n)),
     "the screen must say the device shows the address rather than the name");
 }
@@ -118,11 +118,12 @@ group("a run in progress is reported per row, and never as more than it is");
       done: false,
     },
   }));
-  check(/^sent/.test(view.rows[0]?.state ?? ""), `the first row: ${view.rows[0]?.state}`);
+  check(/^sent/.test(view.rows[0]?.salaryState ?? ""), `the first row: ${view.rows[0]?.salaryState}`);
   /* "sent", never "paid". This app proposes and reports a hash; it does not
    * watch for inclusion, and the cashier's side has a whole module about the
    * difference. */
-  check(!/paid/i.test(view.rows.map((r) => r.state).join(" ")), "no row may claim to be paid");
+  check(!/paid/i.test(view.rows.map((r) => `${r.salaryState} ${r.tipsState}`).join(" ")),
+    "no row may claim to be paid");
   check(!view.armable, "a run under way cannot be armed again");
 }
 

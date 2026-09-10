@@ -37,8 +37,8 @@ const MERCHANT = "0x7a3f1B2C4d5e6f708192A3B4c5D6E7F809a1b2c3";
 const ANA = "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF";
 const BEN = "0x388C818CA8B9251b393131C08a736A67ccB19297";
 
-const person = (address: string, amount: string, name = "Ana"): StaffMember => {
-  const made = staffFromFields({ name, role: "waiter", address, amount });
+const person = (address: string, salary: string, name = "Ana", tips = ""): StaffMember => {
+  const made = staffFromFields({ name, role: "waiter", address, salary, tips });
   if (!made.ok) throw new Error(`fixture is invalid: ${made.reason}`);
   return made.member;
 };

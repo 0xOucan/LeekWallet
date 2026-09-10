@@ -6,18 +6,28 @@
  * What the screen has to make impossible
  *
  * Someone is about to approve a list of strangers' addresses receiving money.
- * Two mistakes are easy to make and both are unrecoverable:
+ * Three mistakes are easy to make and all of them are unrecoverable:
  *
  *  1. Approving a **total** they did not expect. So the total is the largest
  *     thing on the screen, computed from the rows (never read from the file),
  *     rendered through `describeTokenAmount` with the notice that says nobody
  *     verified the token's decimals, and shown before the run can be armed.
+ *     THREE totals, since tips arrived: salary, tips, and the sum. A payroll
+ *     with tips in it is two approvals of two different kinds of money (see
+ *     staff.ts), and a screen showing only the blended figure would ask for
+ *     one approval covering both — the exact conflation the two transactions
+ *     exist to prevent. The parts are drawn above the total, not under it.
  *  2. Believing a **label**. `name` and `role` come from a file the host read;
  *     the device has never seen them and cannot attest to them. The screen
  *     therefore prints the address on the same line as the name, every time,
  *     and says in words that the device will show the address and not the
  *     name. A payroll UI that showed "Ana — 500 USDC" and nothing else would
  *     be inviting the user to check the one field an attacker controls.
+ *  3. Losing track of **which leg of which person** succeeded. The run is
+ *     sequential and not atomic, so "Ana: salary sent, tips declined" is a
+ *     state it can genuinely end in, and it is the state an accountant has to
+ *     be able to read off the screen. Every row therefore carries two amounts
+ *     and two independent states, and neither is ever summarised into one.
  *
  * ---------------------------------------------------------------------------
  * View model first, DOM second
@@ -41,16 +51,27 @@ import {
   type PayrollPlan, type PayrollToken, type PaymentState, type RunProgress,
 } from "./payroll.ts";
 
-/** One person, as a row on the screen. */
+/**
+ * One person, as a row on the screen: two legs, each with its own state.
+ *
+ * The legs are not summed here and there is deliberately no `totalText` on a
+ * row. A row that showed "1,412.50" with the split hidden underneath would put
+ * back, on the only screen a human reads, exactly the conflation the two
+ * transactions exist to prevent.
+ */
 export interface StaffRowView {
   readonly name: string;
   readonly role: string;
   /** Always shown. The only field that decides where the money goes. */
   readonly address: string;
   /** Raw units, always; the scaled figure only where it exists. */
-  readonly amountText: string;
-  readonly rawText: string;
-  readonly state: string;
+  readonly salaryText: string;
+  readonly salaryRawText: string;
+  readonly salaryState: string;
+  /** Empty when this person earned no tips — then there is no tips transfer. */
+  readonly tipsText: string;
+  readonly tipsRawText: string;
+  readonly tipsState: string;
 }
 
 export interface PayrollView {
@@ -58,7 +79,17 @@ export interface PayrollView {
   readonly token: PayrollToken;
   readonly count: number;
   readonly rows: readonly StaffRowView[];
-  /** The prominent figure. Empty when there is nothing plannable. */
+  /** How many transfers the run is, which is not the head-count. */
+  readonly legCount: number;
+  /**
+   * The three figures, all shown, none of them derivable from the screen
+   * without the other two. Empty when there is nothing plannable.
+   */
+  readonly salaryTotalText: string;
+  readonly salaryTotalRawText: string;
+  readonly tipsTotalText: string;
+  readonly tipsTotalRawText: string;
+  /** The prominent figure: what actually leaves the account. */
   readonly totalText: string;
   readonly totalRawText: string;
   /** Why there is no total, when there is none. */
@@ -106,9 +137,13 @@ export function payrollView(state: PayrollState): PayrollView {
   const notices: string[] = [
     `Names and roles come from the file you imported. Nothing has checked them, ` +
       `and the device will show the ADDRESS, not the name — compare those.`,
+    `Salary and tips are sent as SEPARATE transactions, one screen and one ` +
+      `confirmation each. They are different money — a wage and money held for ` +
+      `the staff who earned it — and one blended transfer could never be read ` +
+      `apart again on-chain. Check both totals below: they are not the same figure.`,
     `Each payment is a separate transaction and a separate confirmation on the ` +
-      `device. A run is not atomic: it can stop part way, and rows already sent ` +
-      `stay sent.`,
+      `device. A run is not atomic: it can stop part way, and legs already sent ` +
+      `stay sent — one person's salary can be sent while their tips are not.`,
     TOKEN_SCALE_NOTICE,
   ];
 
@@ -117,10 +152,20 @@ export function payrollView(state: PayrollState): PayrollView {
       chainName,
       token: state.token,
       count: state.staff.length,
+      /* The unplannable case still shows both figures AS WRITTEN in the file.
+       * Falling back to one number here would mean the screen a user sees while
+       * fixing a bad row is the one screen that hides the split. */
       rows: state.staff.map((m) => ({
         name: m.name, role: m.role, address: m.address,
-        amountText: `${m.amount.text} ${state.token}`, rawText: "", state: "",
+        salaryText: `${m.salary.text} ${state.token}`, salaryRawText: "", salaryState: "",
+        tipsText: m.tips === undefined ? "" : `${m.tips.text} ${state.token}`,
+        tipsRawText: "", tipsState: "",
       })),
+      legCount: 0,
+      salaryTotalText: "",
+      salaryTotalRawText: "",
+      tipsTotalText: "",
+      tipsTotalRawText: "",
       totalText: "",
       totalRawText: "",
       problem: planned.line > 0 ? `Line ${planned.line}: ${planned.reason}` : planned.reason,
@@ -133,18 +178,37 @@ export function payrollView(state: PayrollState): PayrollView {
   if (plan.duplicates.length > 0) {
     notices.unshift(duplicateNotice(plan.duplicates));
   }
+
+  /* One row per PERSON, built from the flat list of legs, so that the screen is
+   * organised the way the payroll is — by who is being paid — while the run
+   * underneath is organised the way the device is, by proposal. `memberIndex`
+   * is what joins them; matching on name or address would collapse the two rows
+   * of a confirmed duplicate into one. */
+  const rows: StaffRowView[] = state.staff.map((member) => ({
+    name: member.name, role: member.role, address: member.address,
+    salaryText: "", salaryRawText: "", salaryState: "",
+    tipsText: "", tipsRawText: "", tipsState: "",
+  }));
+  for (let i = 0; i < plan.payments.length; i++) {
+    const payment = plan.payments[i] as (typeof plan.payments)[number];
+    const row = rows[payment.memberIndex] as StaffRowView;
+    const text = amountText(payment.view, state.token);
+    const legState = stateText(state.progress?.states[i]);
+    rows[payment.memberIndex] = payment.leg === "salary"
+      ? { ...row, salaryText: text, salaryRawText: payment.view.rawText, salaryState: legState }
+      : { ...row, tipsText: text, tipsRawText: payment.view.rawText, tipsState: legState };
+  }
+
   return {
     chainName,
     token: state.token,
-    count: plan.payments.length,
-    rows: plan.payments.map((payment, i) => ({
-      name: payment.member.name,
-      role: payment.member.role,
-      address: payment.member.address,
-      amountText: amountText(payment.view, state.token),
-      rawText: payment.view.rawText,
-      state: stateText(state.progress?.states[i]),
-    })),
+    count: state.staff.length,
+    rows,
+    legCount: plan.payments.length,
+    salaryTotalText: amountText(plan.salaryTotal, state.token),
+    salaryTotalRawText: plan.salaryTotal.rawText,
+    tipsTotalText: amountText(plan.tipsTotal, state.token),
+    tipsTotalRawText: plan.tipsTotal.rawText,
     totalText: amountText(plan.total, state.token),
     totalRawText: plan.total.rawText,
     notices,
@@ -176,13 +240,26 @@ export function renderPayroll(root: HTMLElement, view: PayrollView): void {
   const panel = el("div", "till-payroll");
 
   const head = el("p", "till-payroll-head",
-    `${view.count} on the payroll · ${view.token} on ${view.chainName}`);
+    view.problem === undefined
+      ? `${view.count} on the payroll · ${view.legCount} transactions · ` +
+        `${view.token} on ${view.chainName}`
+      : `${view.count} on the payroll · ${view.token} on ${view.chainName}`);
   panel.append(head);
 
   if (view.problem !== undefined) {
     panel.append(el("p", "till-error", view.problem));
   } else {
+    /* Three figures, and the two parts are drawn BEFORE the grand total rather
+     * than as a footnote under it. Reading order is the argument: somebody who
+     * stops reading after the big number has still seen what it is made of. */
     const total = el("div", "till-payroll-total");
+    const part = (label: string, text: string, raw: string) => {
+      total.append(el("p", "till-waiter-label", label));
+      total.append(el("p", "till-payroll-subtotal", text));
+      total.append(el("p", "till-waiter-bill", `${raw} raw units`));
+    };
+    part("Salary", view.salaryTotalText, view.salaryTotalRawText);
+    part("Tips", view.tipsTotalText, view.tipsTotalRawText);
     total.append(el("p", "till-waiter-label", "Total to send"));
     total.append(el("p", "till-waiter-total", view.totalText));
     total.append(el("p", "till-waiter-bill", `${view.totalRawText} raw units`));
@@ -194,8 +271,15 @@ export function renderPayroll(root: HTMLElement, view: PayrollView): void {
     const line = el("div", "till-payroll-row");
     line.append(el("span", "till-payroll-who", `${row.name} · ${row.role}`));
     line.append(el("span", "till-payroll-addr", row.address));
-    line.append(el("span", "till-payroll-amount", row.amountText));
-    if (row.state !== "") line.append(el("span", "till-payroll-state", row.state));
+    const leg = (label: string, text: string, state: string) => {
+      const span = el("span", "till-payroll-amount", `${label} ${text}`);
+      line.append(span);
+      if (state !== "") line.append(el("span", "till-payroll-state", `${label} ${state}`));
+    };
+    leg("salary", row.salaryText, row.salaryState);
+    /* No tips line at all where there are none — not "tips 0". A zero on the
+     * screen invites the reader to look for a transaction that will not exist. */
+    if (row.tipsText !== "") leg("tips", row.tipsText, row.tipsState);
     list.append(line);
   }
   panel.append(list);
@@ -220,7 +304,9 @@ export function renderPayroll(root: HTMLElement, view: PayrollView): void {
 export const TILL_PAYROLL_APP: MiniApp = {
   id: "till-payroll",
   name: "La Caja — Payroll",
-  summary: "Pay the staff: import a CSV, check the total, confirm every transfer on the device.",
+  summary:
+    "Pay the staff: import a CSV of salaries and tips, check all three totals, " +
+    "and confirm every transfer on the device — salary and tips are sent separately.",
   chainIds: TILL_CHAIN_IDS,
   css: TILL_CSS,
   async mount(root: HTMLElement, context: AppContext) {
@@ -277,7 +363,8 @@ export const TILL_PAYROLL_APP: MiniApp = {
     const paste = el("textarea");
     paste.className = "till-payroll-paste";
     paste.setAttribute("aria-label", "Paste a payroll CSV");
-    paste.placeholder = "name,role,address,amount\nAna,waiter,0x…,500.00";
+    paste.placeholder =
+      "name,role,address,salary,tips\nAna,waiter,0x…,1250.00,162.50";
     panel.append(paste);
 
     const importButton = el("button", "till-payroll-import", "Import these rows");
@@ -291,7 +378,7 @@ export const TILL_PAYROLL_APP: MiniApp = {
     panel.append(actions);
 
     const addForm = el("div", "till-payroll-add");
-    const fields = (["name", "role", "address", "amount"] as const).map((which) => {
+    const fields = (["name", "role", "address", "salary", "tips"] as const).map((which) => {
       const input = el("input");
       input.type = "text";
       input.placeholder = which;
@@ -354,7 +441,10 @@ export const TILL_PAYROLL_APP: MiniApp = {
         name: (fields[0]?.[1].value ?? ""),
         role: (fields[1]?.[1].value ?? ""),
         address: (fields[2]?.[1].value ?? ""),
-        amount: (fields[3]?.[1].value ?? ""),
+        salary: (fields[3]?.[1].value ?? ""),
+        // Left blank for somebody who earned none; `staffFromFields` reads an
+        // empty tips box and a zero in it as the same thing.
+        tips: (fields[4]?.[1].value ?? ""),
       };
       const made = staffFromFields(entered);
       if (!made.ok) { error.textContent = made.reason; return; }

@@ -1,5 +1,6 @@
 /**
- * The payroll run: a registry of people, one token, and one transfer each.
+ * The payroll run: a registry of people, one token, and two transfers each —
+ * salary and tips, never blended.
  *
  * ---------------------------------------------------------------------------
  * Why this is a third app rather than a button on the till
@@ -47,15 +48,46 @@
  * reports a row as paid on the strength of having proposed it.
  *
  * ---------------------------------------------------------------------------
- * The total is the thing being approved
+ * Two legs per person: salary, then tips
  *
- * A person approving a payroll is approving a total, so the total is computed
- * from the parsed rows (never from a figure in the file, which is why the CSV
- * has no total column) and shown before anything is proposed. It goes through
- * `describeTokenAmount`, like every other token figure in this wallet, so the
- * scaled number cannot be rendered without the notice saying the decimals are
- * unverified — balances.ts's header is explicit that there is no function
- * returning a bare pretty number, and this file adds none.
+ * A person on the payroll produces one or two proposals, never one blended
+ * one. staff.ts's header carries the argument in full — salary and tips are
+ * different money, legally and fiscally, and a single transfer of the sum
+ * destroys that distinction on-chain permanently — and this file is where it
+ * becomes calldata: two `transfer` calls to the same recipient, each with its
+ * own device screen and its own press.
+ *
+ * Note what this is NOT. It is not the batch that could not be built. If the
+ * shell grew a batch call tomorrow, these would still be two transfers, because
+ * the reason for the split is accountability and not plumbing. The plumbing
+ * limitation above is why there is no batch WITHIN a leg; the paragraph here is
+ * why there are two legs at all.
+ *
+ * A tips leg exists only where tips were entered. Nobody is asked to approve a
+ * transfer of zero: it is a press, a fee and a screen, in exchange for an
+ * on-chain record that somebody was paid nothing.
+ *
+ * `payments` is therefore a FLAT list of legs, in the order they will be
+ * proposed — Ana's salary, Ana's tips, Ben's salary, … — because that is the
+ * order the device will show them in and the order the progress list has to
+ * render. `member.line` and `leg` together name any one of them.
+ *
+ * ---------------------------------------------------------------------------
+ * Three totals, because there are three things being approved
+ *
+ * A person approving a payroll is approving a total; a person approving a
+ * payroll WITH TIPS is approving two totals that must not be conflated. So the
+ * plan computes salary, tips and the grand total separately, all three from the
+ * parsed rows (never from a figure in the file, which is why the CSV has no
+ * total column), and all three are on the screen before anything is proposed.
+ * A single blended figure would be the same erasure at the summary level that
+ * a blended transfer is at the ledger level.
+ *
+ * Every one of the three goes through `describeTokenAmount`, like every other
+ * token figure in this wallet, so a scaled number cannot be rendered without
+ * the notice saying the decimals are unverified — balances.ts's header is
+ * explicit that there is no function returning a bare pretty number, and this
+ * file adds none.
  */
 
 import { describeTokenAmount, encodeErc20Transfer, hintMeta, type TokenAmountView } from "@leekwallet/core/balances.ts";
@@ -114,9 +146,21 @@ export function payrollDeployment(chainId: number, token: PayrollToken): Payroll
   return { ok: true, chainId, token, address, decimals: hint.decimals };
 }
 
-/** One transfer: a person, the exact units, and the calldata that pays them. */
+/**
+ * Which of a person's two payments this is.
+ *
+ * A string rather than a boolean: `tips: false` on a salary transfer reads as
+ * an absence, and these are two positive kinds of money.
+ */
+export type PayrollLeg = "salary" | "tips";
+
+/** One transfer: a person, one leg, the exact units, and the calldata. */
 export interface PayrollPayment {
   readonly member: StaffMember;
+  /** Salary or tips. Two legs for one member are two proposals and two presses. */
+  readonly leg: PayrollLeg;
+  /** The member's position in the registry, so both legs of a row can be found. */
+  readonly memberIndex: number;
   readonly units: bigint;
   /** The token contract. The `to` of the proposal — never the recipient. */
   readonly contract: string;
@@ -131,9 +175,16 @@ export interface PayrollPlan {
   readonly token: PayrollToken;
   readonly contract: string;
   readonly decimals: number;
+  /** Every leg, in proposal order: each member's salary then their tips. */
   readonly payments: readonly PayrollPayment[];
+  readonly totalSalaryUnits: bigint;
+  readonly totalTipsUnits: bigint;
   readonly totalUnits: bigint;
-  /** The total, carrying its own "nobody verified these decimals" notice. */
+  /** Wages only. The figure a payroll line in a set of books is checked against. */
+  readonly salaryTotal: TokenAmountView;
+  /** Tips only. Usually reconciles against a shift's takings, not against a contract. */
+  readonly tipsTotal: TokenAmountView;
+  /** Salary plus tips: what leaves the account. All three carry the decimals notice. */
   readonly total: TokenAmountView;
   /** Recipients paid more than once. Non-empty only if the user confirmed. */
   readonly duplicates: readonly Duplicate[];
@@ -168,8 +219,10 @@ export function planPayroll(
 
   const meta = hintMeta(chainId, deployment.address);
   const payments: PayrollPayment[] = [];
-  let totalUnits = 0n;
-  for (const member of staff) {
+  let totalSalaryUnits = 0n;
+  let totalTipsUnits = 0n;
+  for (let i = 0; i < staff.length; i++) {
+    const member = staff[i] as StaffMember;
     if (member.address.toLowerCase() === from.toLowerCase()) {
       return {
         ok: false,
@@ -177,24 +230,46 @@ export function planPayroll(
         reason: `${member.name} is the address that would be paying. A payroll does not pay itself.`,
       };
     }
-    const units = unitsFor(member.amount, deployment.decimals);
-    if (!units.ok) {
-      return {
-        ok: false,
-        line: member.line,
-        reason: `${member.name}: ${units.reason}`,
-      };
+    /* Both legs are scaled BEFORE either is added to a total, so a tips figure
+     * this token cannot express refuses the whole plan rather than producing a
+     * run whose salary legs are payable and whose tips legs are not. The rule
+     * is staff.ts's: refuse whole, because a partial payroll is a total nobody
+     * chose. */
+    const salary = unitsFor(member.salary, deployment.decimals);
+    if (!salary.ok) {
+      return { ok: false, line: member.line, reason: `${member.name}, salary: ${salary.reason}` };
     }
-    totalUnits += units.units;
-    payments.push({
+    const tips = member.tips === undefined
+      ? undefined
+      : unitsFor(member.tips, deployment.decimals);
+    if (tips !== undefined && !tips.ok) {
+      return { ok: false, line: member.line, reason: `${member.name}, tips: ${tips.reason}` };
+    }
+
+    const leg = (which: PayrollLeg, units: bigint): PayrollPayment => ({
       member,
-      units: units.units,
+      leg: which,
+      memberIndex: i,
+      units,
       contract: deployment.address,
-      data: encodeErc20Transfer(member.address, units.units),
-      view: describeTokenAmount(deployment.address, units.units, meta),
+      data: encodeErc20Transfer(member.address, units),
+      view: describeTokenAmount(deployment.address, units, meta),
     });
+    totalSalaryUnits += salary.units;
+    payments.push(leg("salary", salary.units));
+    if (tips !== undefined && tips.ok) {
+      /* `unitsFor` cannot answer zero for a `DecimalAmount` — staff.ts has
+       * already collapsed a written zero to `undefined` — but the guard is
+       * here rather than assumed, because the thing being prevented is a
+       * device screen asking somebody to approve a transfer of nothing. */
+      if (tips.units > 0n) {
+        totalTipsUnits += tips.units;
+        payments.push(leg("tips", tips.units));
+      }
+    }
   }
 
+  const totalUnits = totalSalaryUnits + totalTipsUnits;
   return {
     ok: true,
     plan: {
@@ -203,7 +278,11 @@ export function planPayroll(
       contract: deployment.address,
       decimals: deployment.decimals,
       payments,
+      totalSalaryUnits,
+      totalTipsUnits,
       totalUnits,
+      salaryTotal: describeTokenAmount(deployment.address, totalSalaryUnits, meta),
+      tipsTotal: describeTokenAmount(deployment.address, totalTipsUnits, meta),
       total: describeTokenAmount(deployment.address, totalUnits, meta),
       duplicates: duplicatesIn(staff),
     },
@@ -212,7 +291,15 @@ export function planPayroll(
 
 /* ------------------------------------------------------------- the run */
 
-/** What happened to one row. `proposed` is in flight; nothing else is a claim. */
+/**
+ * What happened to ONE LEG. `proposed` is in flight; nothing else is a claim.
+ *
+ * Per leg rather than per person, which is the whole point of the split: "Ana:
+ * salary sent, tips declined" is a real state a run can end in — the run is
+ * sequential and not atomic — and it is exactly the state an accountant needs
+ * to see. A per-person state could only have said "Ana: partly", which is not
+ * an answer to any question anybody has.
+ */
 export type PaymentState =
   | { kind: "waiting" }
   | { kind: "proposed" }
@@ -241,8 +328,14 @@ export interface RunProgress {
 
 /** One line for the shell's log. App-authored text, never rendered as fact. */
 function reasonFor(plan: PayrollPlan, index: number): string {
-  const member = (plan.payments[index] as PayrollPayment).member;
-  const text = `Payroll ${index + 1}/${plan.payments.length}: ${member.role} ${member.name}`;
+  const payment = plan.payments[index] as PayrollPayment;
+  /* The LEG is in the reason, and early, because this string is the only thing
+   * distinguishing two proposals that are otherwise identical in shape and go
+   * to the same recipient. A log line reading "Payroll 3/7: waiter Ana" twice
+   * is a log that cannot answer "was the second one the tips". */
+  const text =
+    `Payroll ${index + 1}/${plan.payments.length} ${payment.leg}: ` +
+    `${payment.member.role} ${payment.member.name}`;
   // app-proposal.ts refuses a reason longer than 120 characters. The names and
   // roles are already bounded by staff.ts; this is the belt to that braces.
   return text.length <= 120 ? text : `${text.slice(0, 117)}...`;
