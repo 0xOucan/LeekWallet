@@ -98,10 +98,39 @@ const EURC: Deployments = [
   [11155111, "0x08210f9170f89ab7658f0b5e3ff39b0e03c594d4"],   // Sepolia
 ] as const;
 
+/**
+ * cirBTC — Circle Wrapped Bitcoin. Two chains, the same two
+ * `all-chain-balances.ts` verified on 2026-09-08 by calling symbol(), name()
+ * and decimals() over each chain's own RPC.
+ *
+ * NOT cbBTC. Coinbase Wrapped BTC is a different token from a different
+ * issuer at different addresses, and the two names are one keystroke apart; an
+ * earlier draft of the balances screen read "cirBTC" as a typo for it and
+ * pointed Sepolia at Coinbase's contract. A descriptor is the place that
+ * mistake would do the most damage, because a descriptor is what makes a
+ * screen say confidently what a transfer IS.
+ *
+ * Described for the same reason USDC and EURC are: any preview of a transfer
+ * of this token wants it, with or without an app compiled in. The decimals
+ * still come from TOKEN_HINTS and not from here — a deployment listed below
+ * with no token hint would print raw units and refuse to scale, which is the
+ * behaviour erc7730.test.ts pins.
+ */
+const CIRBTC: Deployments = [
+  [5042002, "0xf0c4a4ce82a5746abaad9425360ab04fbba432bf"],    // Arc Testnet
+  [11155111, "0x3a3fe695f684bf9b9e43cf43c2b895ea5e392bb3"],   // Sepolia
+] as const;
+
 /** `USDC`, exported for reuse — see the comment above `USDC`. */
 export const USDC_DEPLOYMENTS: Deployments = USDC;
 /** `EURC`, exported for reuse — same reason as `USDC_DEPLOYMENTS`. */
 export const EURC_DEPLOYMENTS: Deployments = EURC;
+/**
+ * `CIRBTC`, exported so the all-chain balances screen reads the same two
+ * addresses this file describes rather than keeping a second copy of them. Two
+ * copies of a contract address is how one of them gets to be wrong.
+ */
+export const CIRBTC_DEPLOYMENTS: Deployments = CIRBTC;
 
 /**
  * The two calls worth describing.
@@ -164,4 +193,5 @@ function descriptorsFor(symbol: string, owner: string, deployments: Deployments)
 export const CIRCLE_DESCRIPTORS: readonly Descriptor[] = [
   ...descriptorsFor("USDC", "Circle", USDC),
   ...descriptorsFor("EURC", "Circle", EURC),
+  ...descriptorsFor("cirBTC", "Circle", CIRBTC),
 ];

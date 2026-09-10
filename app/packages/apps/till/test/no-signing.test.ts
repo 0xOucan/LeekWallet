@@ -8,6 +8,29 @@
  * So this test re-derives the property from the source rather than trusting the
  * prose in index.ts that claims it.
  *
+ * ---------------------------------------------------------------------------
+ * What changed when payroll arrived, and what did not
+ *
+ * This package now holds a third app that DOES spend: payroll proposes an
+ * ERC-20 transfer per person (payroll.ts). So "nothing in this package can
+ * move money" stopped being true, and it would have been easy to weaken this
+ * whole file to accommodate it. It is not weakened. The property is stated
+ * where it belongs instead — per app, and per module:
+ *
+ *   - the cashier's app and the waiter's still cannot spend. The assertions
+ *     below still drive both through their whole UI and check that no request
+ *     comes out, and a new group checks that no module either of them uses so
+ *     much as MENTIONS `propose` — so the capability cannot arrive through
+ *     view.ts or watch.ts by the back door.
+ *   - payroll can only propose one shape: `transfer(address,uint256)` to a
+ *     token contract it resolved, with no value attached. It holds no key, no
+ *     transport and no device; a proposal is an ask the wallet screens, draws
+ *     and confirms on hardware (app-proposal.ts).
+ *
+ * The import allow-list and the forbidden-string scan cover all three apps
+ * unchanged, because they were never about who spends: they are about whether
+ * anything here could produce a signature by itself. Nothing can.
+ *
  * Three independent arguments, because any one of them alone rots:
  *
  *  1. **Nothing here imports anything that could sign.** Every import in every
@@ -38,7 +61,11 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TILL_APP, TILL_WAITER_APP, PaymentWatcher } from "../src/index.ts";
+import { TILL_APP, TILL_WAITER_APP, PaymentWatcher, planPayroll, runPayroll } from "../src/index.ts";
+import { importStaffCsv } from "../src/staff.ts";
+
+/** The merchant, for the payroll group below. Checksummed. */
+const MERCHANT = "0x7a3f1B2C4d5e6f708192A3B4c5D6E7F809a1b2c3";
 
 let failures = 0;
 const check = (cond: boolean, msg: string) => {
@@ -181,6 +208,75 @@ group("the mounted app makes no request and offers no signing action");
     }
   }
   check(!("signer" in context) && !("device" in context), "AppContext must carry no signer");
+}
+
+group("the two terminal apps cannot even name the proposal seam");
+{
+  /* `propose` is the one capability in AppContext that leads to a signature
+     being asked for, and the cashier's and waiter's halves must not touch it.
+     Reading the source rather than driving the app catches the version of this
+     that only fires on a code path a test did not visit. */
+  const TERMINAL_MODULES = [
+    "index.ts", "waiter.ts", "view.ts", "watch.ts", "watch-view.ts",
+    "order.ts", "rails.ts", "request.ts", "uri.ts", "css.ts",
+  ];
+  for (const file of TERMINAL_MODULES) {
+    const code = readFileSync(join(srcDir, file), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*/g, "");
+    check(!/\bpropose\b/.test(code), `${file} names propose, and it is a terminal module`);
+    check(!/app-proposal\.ts/.test(code), `${file} imports the proposal types`);
+  }
+  /* And the payroll modules are the only ones that do. Listed rather than
+     inferred, so a fourth module growing the ability is a diff on this line. */
+  const spenders = sources.filter((file) => {
+    const code = readFileSync(join(srcDir, file), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*/g, "");
+    return /\bpropose\b/.test(code);
+  });
+  check(spenders.sort().join() === "payroll-view.ts,payroll.ts",
+    `the modules that can propose are ${spenders.join(", ")}`);
+}
+
+group("payroll can only propose an ERC-20 transfer, and only to a token");
+{
+  /* The whole of what the spending half is allowed to ask for. It is driven
+     with a real registry over every token it offers, and every proposal it
+     produces is inspected: the selector is transfer(address,uint256), the
+     length is the 68 bytes the firmware's decoder demands, `to` is a contract
+     the app resolved rather than the recipient, no native value rides along,
+     and the app supplies neither the signer nor the chain. */
+  const staff = importStaffCsv(
+    [
+      "name,role,address,amount",
+      "Ana,waiter,0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF,12.5",
+      "Ben,chef,0x388C818CA8B9251b393131C08a736A67ccB19297,40",
+    ].join("\n"),
+  );
+  check(staff.ok, "the fixture payroll should import");
+  if (staff.ok) {
+    for (const [chainId, token] of [[84532, "USDC"], [84532, "EURC"], [5042002, "cirBTC"]] as const) {
+      const planned = planPayroll([...staff.staff], chainId, token, MERCHANT);
+      check(planned.ok, `${token} on ${chainId} should plan`);
+      if (!planned.ok) continue;
+      const asked: Record<string, unknown>[] = [];
+      await runPayroll(planned.plan, async (proposal) => {
+        asked.push(proposal as unknown as Record<string, unknown>);
+        return { ok: true, kind: "call", result: "0x" + "11".repeat(32) };
+      }, () => {});
+      check(asked.length === 2, `${token}: one proposal per person, got ${asked.length}`);
+      for (const proposal of asked) {
+        check(proposal.kind === "call", "a payroll proposal is a call, never typed data");
+        const data = String(proposal.data);
+        check(data.startsWith("0xa9059cbb"), `a payroll proposed ${data.slice(0, 10)}`);
+        check(data.length === 138, `a payroll proposed ${(data.length - 2) / 2} bytes of calldata`);
+        check(String(proposal.to).toLowerCase() === planned.plan.contract.toLowerCase(),
+          "a payroll proposal must be addressed to the token contract");
+        check(proposal.value === undefined, "a payroll transfer carries no native value");
+        check(!("from" in proposal) && !("chainId" in proposal),
+          "an app supplies neither the signer nor the chain");
+      }
+    }
+  }
 }
 
 group("the app declares only what the shell can supply");

@@ -23,16 +23,19 @@
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 import { AQUA_APP } from "@leekwallet/app-aqua";
 import { ATS_APP } from "@leekwallet/app-ats";
-import { TILL_APP, TILL_WAITER_APP } from "@leekwallet/app-till";
+import { TILL_APP, TILL_PAYROLL_APP, TILL_WAITER_APP } from "@leekwallet/app-till";
 
 export type { AppContext, MiniApp };
 
 /** Every app in this build. Delete a line to drop one. */
-/* La Caja is two apps on purpose. The cashier issues the bill, the waiter can
- * only display one that was issued; splitting them into separate mounts is what
- * makes "a waiter cannot change the amount" a fact about the code rather than a
- * disabled input. Both come out of a release with the same directory. */
-export const MINI_APPS: readonly MiniApp[] = [AQUA_APP, ATS_APP, TILL_APP, TILL_WAITER_APP];
+/* La Caja is three apps on purpose. The cashier issues the bill, the waiter can
+ * only display one that was issued, and payroll is the only one of the three
+ * that can spend; splitting them into separate mounts is what makes both "a
+ * waiter cannot change the amount" and "a terminal cannot pay anyone" facts
+ * about the code rather than disabled inputs. All three come out of a release
+ * with the same directory. */
+export const MINI_APPS: readonly MiniApp[] =
+  [AQUA_APP, ATS_APP, TILL_APP, TILL_WAITER_APP, TILL_PAYROLL_APP];
 
 export const findMiniApp = (id: string): MiniApp | undefined =>
   MINI_APPS.find((app) => app.id === id);

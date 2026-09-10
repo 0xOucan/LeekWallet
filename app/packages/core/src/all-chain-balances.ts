@@ -25,7 +25,7 @@ import {
   type EthRequest, type TokenAmountView,
 } from "./balances.ts";
 import { fetchTokenBalancesBatched, type TokenBalanceResult } from "./multicall.ts";
-import { EURC_DEPLOYMENTS, USDC_DEPLOYMENTS } from "./erc7730-circle.ts";
+import { CIRBTC_DEPLOYMENTS, EURC_DEPLOYMENTS, USDC_DEPLOYMENTS } from "./erc7730-circle.ts";
 
 /** The four ERC-20s this screen tracks. ETH and HBAR are native, not here. */
 export type TrackedTokenSymbol = "WETH" | "USDC" | "EURC" | "cirBTC";
@@ -59,11 +59,13 @@ const WETH_DEPLOYMENTS: Readonly<Record<number, string>> = {
  * cirBTC because that is what the user holds; an earlier draft read
  * "cirBTC" as a typo for cbBTC and pointed Sepolia at Coinbase's contract,
  * which would have shown a balance of the wrong asset.
+ *
+ * The addresses themselves now live in erc7730-circle.ts beside the
+ * descriptor that names this token on a signing screen, and are read from
+ * there rather than kept twice: two copies of a contract address is how one of
+ * them gets to be wrong, and this is the token where being wrong means a
+ * different issuer's asset.
  */
-const CIRBTC_DEPLOYMENTS: Readonly<Record<number, string>> = {
-  5042002: "0xf0c4a4ce82a5746abaad9425360ab04fbba432bf",  // Arc Testnet
-  11155111: "0x3a3fe695f684bf9b9e43cf43c2b895ea5e392bb3", // Sepolia
-};
 
 /** `Deployments` (array of [chainId, address] pairs) as a chainId → address map. */
 function asMap(deployments: typeof USDC_DEPLOYMENTS): Readonly<Record<number, string>> {
@@ -73,6 +75,7 @@ function asMap(deployments: typeof USDC_DEPLOYMENTS): Readonly<Record<number, st
 }
 
 const USDC_BY_CHAIN = asMap(USDC_DEPLOYMENTS);
+const CIRBTC_BY_CHAIN = asMap(CIRBTC_DEPLOYMENTS);
 const EURC_BY_CHAIN = asMap(EURC_DEPLOYMENTS);
 
 /** Which map answers for a tracked symbol. */
@@ -81,7 +84,7 @@ function deploymentsFor(symbol: TrackedTokenSymbol): Readonly<Record<number, str
     case "WETH": return WETH_DEPLOYMENTS;
     case "USDC": return USDC_BY_CHAIN;
     case "EURC": return EURC_BY_CHAIN;
-    case "cirBTC": return CIRBTC_DEPLOYMENTS;
+    case "cirBTC": return CIRBTC_BY_CHAIN;
   }
 }
 
