@@ -7,6 +7,23 @@ Spec: `../docs/SECONDARY-MARKET-SPEC.md`.
 **Status: not yet deployed.** Slither is clean (§5). One item remains before
 deployment and it cannot be closed locally (§6).
 
+**Update 2026-09-10 — a native HBAR leg was added.** `PAYMENT_TOKEN ==
+address(0)` selects native settlement. It exists because HTS association is a
+real obstacle: no account in this project holds an HTS token, and a faucet
+sending to an unassociated account simply fails. HBAR needs no association.
+
+The decimals trap is documented in the source and asserted in a test: native
+HBAR has **8** decimals on Hedera, but `msg.value` is weibar at **18**. A
+`priceTotal` on the native leg is in weibar. Getting that wrong is a 1e10 price
+error — precisely the hard-coded-scale anti-pattern the security skill names.
+
+Native-leg rules applied: exact value only (an overpayment is refused rather
+than kept or refunded, so there is no second external call to an address that
+may not accept one); `call` return value checked and surfaced as
+`NativeTransferFailed`; CEI and `nonReentrant` unchanged; the market holds no
+value between the legs. Six further tests, including a seller contract that
+refuses native transfers and a 10,000-run fuzz.
+
 ## 1. Scope and threat model
 
 A secondary market for Hedera ATS securities. Sellers escrow a lot and name a

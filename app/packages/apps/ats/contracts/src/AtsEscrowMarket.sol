@@ -43,6 +43,22 @@ import { IHederaTokenService, HTS_PRECOMPILE, HTS_SUCCESS, HTS_ALREADY_ASSOCIATE
  * Recovery belongs to the issuer, under the device, not to this contract.
  *
  * ---------------------------------------------------------------------------
+ * Two payment legs
+ *
+ * `PAYMENT_TOKEN == address(0)` means the market settles in **native HBAR**;
+ * any other address means that ERC-20 (on Hedera, an HTS token reached through
+ * its ERC-20 facade).
+ *
+ * Native settlement exists because HTS association is a real obstacle: a token
+ * cannot be received by an account that has not associated with it, which
+ * silently defeats faucets and fresh contracts alike. HBAR needs none of that.
+ *
+ * **A decimals trap worth stating.** Native HBAR has 8 decimals on Hedera, but
+ * `msg.value` in the EVM is denominated in weibar at 18 decimals. So a
+ * `priceTotal` for the native leg is in WEIBAR, not tinybar and not HBAR.
+ * 1 HBAR = 1e18 here. Getting this wrong is a 1e10 error in the price.
+ *
+ * ---------------------------------------------------------------------------
  * What is deliberately absent
  *
  * No proxy (so no initializer or storage-ordering hazard). No signatures (so no
@@ -83,6 +99,8 @@ contract AtsEscrowMarket is ReentrancyGuard {
     error NothingEscrowed(address security);
     error AssociationFailed(int64 responseCode);
     error SelfFill(uint256 listingId);
+    error WrongPayment(uint256 sent, uint256 required);
+    error NativeTransferFailed(address to, uint256 amount);
 
     /* -------------------------------------------------------------- events */
 
@@ -108,11 +126,14 @@ contract AtsEscrowMarket is ReentrancyGuard {
     /// is a market whose listings mean something different after the change.
     IERC20 public immutable PAYMENT_TOKEN;
 
-    /// Read, never assumed. USDC is 6 here and the securities are 6, but a
-    /// hard-coded scale is the anti-pattern that survives a demo and fails in
-    /// review. Stored for callers and for off-chain display; this contract does
-    /// no scaling of its own, because `priceTotal` is a total (see below).
+    /// Read, never assumed, for the ERC-20 leg. For the native leg this is 18,
+    /// because `msg.value` is weibar -- NOT 8, which is what HBAR has natively.
+    /// Stored for callers and display; this contract does no scaling of its
+    /// own, because `priceTotal` is a total (see below).
     uint8 public immutable PAYMENT_DECIMALS;
+
+    /// True when this market settles in native HBAR.
+    bool public immutable IS_NATIVE;
 
     uint256 public nextListingId = 1;
 
@@ -127,9 +148,18 @@ contract AtsEscrowMarket is ReentrancyGuard {
      *        reverts for a reason that looks nothing like the cause.
      */
     constructor(IERC20 paymentToken) {
-        if (address(paymentToken) == address(0)) revert ZeroAddress();
-
         PAYMENT_TOKEN = paymentToken;
+
+        if (address(paymentToken) == address(0)) {
+            /* Native HBAR. No association, no metadata call, nothing to get
+             * wrong -- which is the entire reason this leg exists. 18 because
+             * msg.value is weibar. */
+            IS_NATIVE = true;
+            PAYMENT_DECIMALS = 18;
+            return;
+        }
+
+        IS_NATIVE = false;
         PAYMENT_DECIMALS = IERC20Metadata(address(paymentToken)).decimals();
 
         /* Associate with the payment token. Tolerated outcomes are SUCCESS and
@@ -224,7 +254,7 @@ contract AtsEscrowMarket is ReentrancyGuard {
      * No compliance check happens here. If the buyer may not hold this security
      * the security itself reverts, and this fill reverts with it.
      */
-    function fill(uint256 listingId) external nonReentrant {
+    function fill(uint256 listingId) external payable nonReentrant {
         Listing storage l = listings[listingId];
         if (l.status != Status.Open) revert NotOpen(listingId);
         if (l.seller == msg.sender) revert SelfFill(listingId);
@@ -236,9 +266,20 @@ contract AtsEscrowMarket is ReentrancyGuard {
         uint256 priceTotal = l.priceTotal;
 
         /* Payment goes buyer -> seller directly. This contract never holds the
-         * payment token between the two legs, so there is no balance here for a
-         * failed fill to strand. */
-        PAYMENT_TOKEN.safeTransferFrom(msg.sender, seller, priceTotal);
+         * payment between the two legs, so there is no balance here for a
+         * failed fill to strand.
+         *
+         * Exact value only, on both legs. Accepting an overpayment would mean
+         * either keeping the difference or refunding it, and a refund is a
+         * second external call to an address that may not accept one. */
+        if (IS_NATIVE) {
+            if (msg.value != priceTotal) revert WrongPayment(msg.value, priceTotal);
+            (bool paid,) = seller.call{ value: priceTotal }("");
+            if (!paid) revert NativeTransferFailed(seller, priceTotal);
+        } else {
+            if (msg.value != 0) revert WrongPayment(msg.value, 0);
+            PAYMENT_TOKEN.safeTransferFrom(msg.sender, seller, priceTotal);
+        }
 
         IERC20(security).safeTransfer(msg.sender, amount);
 
