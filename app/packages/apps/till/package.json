@@ -1,7 +1,7 @@
 {
   "name": "@leekwallet/app-till",
   "version": "0.1.0",
-  "description": "La Caja terminal: a bill, a tip, a QR the customer pays from any chain, and a watcher that says when it arrived",
+  "description": "La Caja terminal: a bill, a tip, a QR the customer pays from any chain, a watcher that says when it arrived, and the payroll that pays the staff",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/order.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/request.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/waiter.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/rails.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/uri.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/watch.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/watch-view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/no-signing.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/order.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/request.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/waiter.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/rails.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/uri.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/watch.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/watch-view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/staff.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/payroll.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/payroll-view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/no-signing.test.ts"
   },
   "dependencies": {
     "@circle-fin/app-kit": "1.14.0",

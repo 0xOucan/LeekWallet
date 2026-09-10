@@ -10,9 +10,9 @@
  *     # drop "@leekwallet/app-till" from app/package.json dependencies
  *     pnpm --dir app install && pnpm --dir app typecheck && pnpm --dir app test
  *
- * Still three edits, as for `ats`, even though La Caja is now two mini-apps:
- * they share one directory, one import line and one array literal, so the
- * second app costs no third deletion. The third edit exists because pnpm
+ * Still three edits, as for `ats`, even though La Caja is now three mini-apps
+ * — cashier, waiter and payroll: they share one directory, one import line and
+ * one array literal, so the second and third apps cost no further deletion. The third edit exists because pnpm
  * refuses to install a workspace dependency whose package is gone — a removal
  * that is half-done fails loudly rather than shipping.
  *
@@ -25,6 +25,13 @@
  *
  * ---------------------------------------------------------------------------
  * Scope: C2, C3 and C4 of docs/apps/ARC-LA-CAJA.md
+ *
+ * Payroll (payroll.ts, staff.ts, payroll-view.ts) is the one part of La Caja
+ * that spends rather than collects, and it is a THIRD app rather than a mode
+ * on this one. The reason is in payroll.ts: "this terminal cannot spend" has
+ * to be a property of which module was mounted, not of a boolean somebody
+ * could flip. The cashier's app and the waiter's remain incapable of
+ * proposing anything, and test/no-signing.test.ts still proves it of both.
  *
  * The cashier enters a total, picks a tip, and gets three codes: two for the
  * customer's wallet and one for the waiter's terminal, which carries the whole
@@ -78,6 +85,9 @@ import { TILL_CSS } from "./css.ts";
 
 export * from "./css.ts";
 export * from "./order.ts";
+export * from "./payroll.ts";
+export * from "./payroll-view.ts";
+export * from "./staff.ts";
 export * from "./request.ts";
 export * from "./rails.ts";
 export * from "./uri.ts";

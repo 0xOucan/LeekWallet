@@ -74,4 +74,24 @@ export const TILL_CSS = `
 .till-waiter-label { font-size: 0.8em; opacity: 0.75; margin: 0; text-transform: uppercase; letter-spacing: 0.05em; }
 .till-waiter-total { font-size: 2rem; font-weight: 700; margin: 0; word-break: break-all; }
 .till-waiter-bill { font-size: 0.8em; opacity: 0.7; margin: 0; }
+/* Payroll. The total borrows the waiter screen's type scale on purpose: it is
+   the same job — one figure a person is about to act on, larger than anything
+   explaining it. The address on each row is monospaced and never truncated by
+   CSS, because a truncated address is the one an attacker picks. */
+.till-payroll { display: flex; flex-direction: column; gap: 0.6rem; }
+.till-payroll-head { margin: 0; font-weight: 600; }
+.till-payroll-total { display: flex; flex-direction: column; gap: 0.1rem; }
+.till-payroll-paste { width: 100%; min-height: 6rem; font-family: monospace; font-size: 0.8rem; }
+.till-payroll-add { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.till-payroll-add input { padding: 0.25rem 0.4rem; }
+.till-payroll-dupes { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.85em; }
+.till-payroll-rows { display: flex; flex-direction: column; gap: 0.3rem; }
+.till-payroll-row {
+  display: flex; flex-wrap: wrap; gap: 0.2rem 0.8rem; align-items: baseline;
+  padding: 0.3rem 0; border-bottom: 1px solid var(--border, #444);
+}
+.till-payroll-who { font-weight: 600; }
+.till-payroll-addr { font-family: monospace; font-size: 0.78em; opacity: 0.8; word-break: break-all; }
+.till-payroll-amount { margin-left: auto; font-variant-numeric: tabular-nums; }
+.till-payroll-state { font-size: 0.78em; color: var(--accent, #268bd2); }
 `;
