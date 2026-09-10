@@ -147,7 +147,7 @@ group("nothing is rendered as a symbol without its address");
     "a leg showed a guessed symbol with no address behind it");
   // chains.ts's TOKEN_HINT_NOTICE, allowances.ts's ALLOWANCE_NOTICE and this
   // app's two are all present: each is a claim the screen has to disclaim.
-  check(v.notices.length === 4, `got ${v.notices.length} notices`);
+  check(v.notices.length === 5, `got ${v.notices.length} notices`);
   check(v.notices.some((n) => /approval/i.test(n) && /unlimited/i.test(n)),
     "the exposure notice is missing");
   check(v.notices.some((n) => /not that you have none/i.test(n)),
@@ -201,6 +201,84 @@ group("no field ever carries an unavailable tone and a plain number");
         `${name}: unavailable field "${field.label}" rendered an amount: "${field.value}"`);
     }
   }
+}
+
+group("funding: a leg with enough balance and allowance renders as funded");
+{
+  // Four calls: registry slot, exposure allowance, funding balance, funding
+  // allowance — in the order fetchPortfolio -> readFunding issues them.
+  const node = fakeNode({
+    head: 100n,
+    logs: [shippedLog(MAKER, APP, HASH, "0xbeef"), pushedLog(MAKER, APP, HASH, USDC, 1000n)],
+    calls: [
+      encodeAggregate3Return([{ success: true, returnData: active(1000n) }]),
+      encodeAggregate3Return([{ success: true, returnData: `0x${w(5000n)}` }]),
+      encodeAggregate3Return([{ success: true, returnData: `0x${w(1000n)}` }]),
+      encodeAggregate3Return([{ success: true, returnData: `0x${w(1000n)}` }]),
+    ],
+  });
+  const v = portfolioView(await fetchPortfolio(node.request, POLYGON, MAKER, { fromBlock: 0n }));
+  const funding = v.positions[0]!.funding[0]!;
+  check(funding.tone === "normal", `funded leg got tone ${funding.tone}`);
+  check(/funded/i.test(funding.value), `funded leg said "${funding.value}"`);
+  check(v.notices.some((n) => /virtual balances alone/i.test(n)), "the funding notice is missing");
+}
+
+group("funding: a wallet balance below the commitment is underfunded-balance, not a plain danger tone with no story");
+{
+  const node = fakeNode({
+    head: 100n,
+    logs: [shippedLog(MAKER, APP, HASH, "0xbeef"), pushedLog(MAKER, APP, HASH, USDC, 1000n)],
+    calls: [
+      encodeAggregate3Return([{ success: true, returnData: active(1000n) }]),
+      encodeAggregate3Return([{ success: true, returnData: `0x${w(1_000_000n)}` }]),
+      encodeAggregate3Return([{ success: true, returnData: `0x${w(1n)}` }]), // wallet holds almost nothing
+      encodeAggregate3Return([{ success: true, returnData: `0x${w(1_000_000n)}` }]),
+    ],
+  });
+  const v = portfolioView(await fetchPortfolio(node.request, POLYGON, MAKER, { fromBlock: 0n }));
+  const funding = v.positions[0]!.funding[0]!;
+  check(funding.tone === "danger", `underfunded-balance leg got tone ${funding.tone}`);
+  check(/wallet balance/i.test(funding.value) && /dock or rebalance/i.test(funding.value),
+    `underfunded-balance leg said "${funding.value}"`);
+}
+
+group("funding: enough balance but not enough allowance is underfunded-allowance, and says so distinctly");
+{
+  const node = fakeNode({
+    head: 100n,
+    logs: [shippedLog(MAKER, APP, HASH, "0xbeef"), pushedLog(MAKER, APP, HASH, USDC, 1000n)],
+    calls: [
+      encodeAggregate3Return([{ success: true, returnData: active(1000n) }]),
+      encodeAggregate3Return([{ success: true, returnData: `0x${w(1_000_000n)}` }]),
+      encodeAggregate3Return([{ success: true, returnData: `0x${w(1_000_000n)}` }]), // plenty in the wallet
+      encodeAggregate3Return([{ success: true, returnData: `0x${w(1n)}` }]), // but barely any approval
+    ],
+  });
+  const v = portfolioView(await fetchPortfolio(node.request, POLYGON, MAKER, { fromBlock: 0n }));
+  const funding = v.positions[0]!.funding[0]!;
+  check(funding.tone === "danger", `underfunded-allowance leg got tone ${funding.tone}`);
+  check(/allowance/i.test(funding.value) && /raise the approval/i.test(funding.value),
+    `underfunded-allowance leg said "${funding.value}"`);
+}
+
+group("funding: a failed balance or allowance read renders as unknown, never as funded");
+{
+  const node = fakeNode({
+    head: 100n,
+    logs: [shippedLog(MAKER, APP, HASH, "0xbeef"), pushedLog(MAKER, APP, HASH, USDC, 1000n)],
+    calls: [
+      encodeAggregate3Return([{ success: true, returnData: active(1000n) }]),
+      encodeAggregate3Return([{ success: true, returnData: `0x${w(1_000_000n)}` }]),
+      encodeAggregate3Return([{ success: false, returnData: "0x" }]), // the balance call reverted
+      encodeAggregate3Return([{ success: true, returnData: `0x${w(1_000_000n)}` }]),
+    ],
+  });
+  const v = portfolioView(await fetchPortfolio(node.request, POLYGON, MAKER, { fromBlock: 0n }));
+  const funding = v.positions[0]!.funding[0]!;
+  check(funding.tone === "unavailable", `a failed balance read got tone ${funding.tone}`);
+  check(funding.tone !== "normal", "a failed balance read was rendered as funded");
+  check(!/funded/i.test(funding.value), `a failed balance read said "${funding.value}"`);
 }
 
 console.log(failures === 0 ? "\nall ok" : `\n${failures} failure(s)`);

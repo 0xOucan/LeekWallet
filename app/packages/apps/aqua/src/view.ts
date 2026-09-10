@@ -22,6 +22,7 @@ import {
   type Portfolio, type TokenExposure,
 } from "./portfolio.ts";
 import { AQUA_REGISTRY } from "./registry.ts";
+import { FUNDING_NOTICE, type FundingState } from "./funding.ts";
 
 /**
  * How a value should read, and therefore how it should look.
@@ -46,6 +47,12 @@ export interface PositionRow {
   /** Present only when the `Shipped` log fell inside the scanned window. */
   strategyBytes?: string;
   legs: Field[];
+  /**
+   * One `Field` per leg, same order as `legs`, saying whether that leg's real
+   * balance and allowance still cover what it is virtually committed to. See
+   * funding.ts — the protocol will keep quoting prices against it regardless.
+   */
+  funding: Field[];
 }
 
 export interface ExposureRow {
@@ -108,6 +115,37 @@ function legField(chainId: number, leg: LegReading): Field {
     value: amountText(chainId, leg.token, leg.amount),
     tone: leg.amount === 0n ? "zero" : "normal",
   };
+}
+
+/**
+ * A leg's funding state as a field. `funded` is silent on tone (normal), not
+ * on text — a maker checking one leg among many should not have to guess
+ * whether "normal" tone means "checked and fine" or "not checked at all".
+ */
+function fundingField(chainId: number, token: string, state: FundingState): Field {
+  const label = tokenLabel(chainId, token);
+  const detail = tokenHint(chainId, token) ? token : undefined;
+  const base = { label: `Funding — ${label}`, ...(detail === undefined ? {} : { detail }) };
+  switch (state) {
+    case "funded":
+      return { ...base, value: "funded — balance and allowance cover this strategy", tone: "normal" };
+    case "underfunded-balance":
+      return {
+        ...base,
+        value: "underfunded — wallet balance is below what this strategy is committed to; " +
+          "pull() will revert until you dock or rebalance",
+        tone: "danger",
+      };
+    case "underfunded-allowance":
+      return {
+        ...base,
+        value: "underfunded — allowance to the Aqua registry is below this strategy's " +
+          "commitment; raise the approval",
+        tone: "danger",
+      };
+    case "unknown":
+      return { ...base, value: "unavailable — balance or allowance did not answer", tone: "unavailable" };
+  }
 }
 
 function exposureRow(chainId: number, exposure: TokenExposure): ExposureRow {
@@ -217,13 +255,20 @@ export function portfolioView(portfolio: Portfolio): PortfolioView {
     headline,
     scanned,
     exposures: portfolio.exposures.map((e) => exposureRow(chainId, e)),
-    positions: portfolio.positions.map((p) => ({
-      app: p.app,
-      strategyHash: p.strategyHash,
-      ...(p.strategy === undefined ? {} : { strategyBytes: p.strategy }),
-      legs: p.legs.map((leg) => legField(chainId, leg)),
-    })),
-    notices: [EXPOSURE_NOTICE, DISCOVERY_NOTICE, ALLOWANCE_NOTICE, TOKEN_HINT_NOTICE],
+    positions: portfolio.positions.map((p, i) => {
+      const funding = portfolio.funding[i];
+      return {
+        app: p.app,
+        strategyHash: p.strategyHash,
+        ...(p.strategy === undefined ? {} : { strategyBytes: p.strategy }),
+        legs: p.legs.map((leg) => legField(chainId, leg)),
+        // `funding[i]` lines up with `positions[i]` — `fetchPortfolio` builds
+        // both from the same `positions` array in the same order. A missing
+        // entry (should not happen) renders as nothing rather than guessing.
+        funding: (funding?.legs ?? []).map((leg) => fundingField(chainId, leg.token, leg.state)),
+      };
+    }),
+    notices: [EXPOSURE_NOTICE, DISCOVERY_NOTICE, ALLOWANCE_NOTICE, TOKEN_HINT_NOTICE, FUNDING_NOTICE],
   };
 }
 
@@ -305,6 +350,7 @@ export function renderPortfolio(root: HTMLElement, view: PortfolioView): void {
         }));
       }
       for (const leg of position.legs) section.append(fieldElement(leg));
+      for (const funding of position.funding) section.append(fieldElement(funding));
       root.append(section);
     }
   }

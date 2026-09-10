@@ -40,6 +40,7 @@ import { AQUA_REGISTRY, isAquaChain } from "./registry.ts";
 import {
   discoverPositions, readPositions, type Discovery, type PositionReading, type ScanOptions,
 } from "./positions.ts";
+import { readFunding, type PositionFunding } from "./funding.ts";
 
 /**
  * A token's real exposure to Aqua on one chain.
@@ -68,6 +69,12 @@ export interface Portfolio {
   positions: PositionReading[];
   /** One per distinct token across all positions. The headline figures. */
   exposures: TokenExposure[];
+  /**
+   * One entry per position, same order as `positions`, each carrying one
+   * `FundingState` per leg in the same order as that position's legs. See
+   * funding.ts's header for why the protocol itself does not compute this.
+   */
+  funding: PositionFunding[];
 }
 
 /**
@@ -88,7 +95,7 @@ export async function fetchPortfolio(
   if (!isAquaChain(chainId)) throw new Error(`Aqua is not deployed on chain ${chainId}`);
 
   const discovery = await discoverPositions(request, maker, options);
-  if (!discovery.ok) return { chainId, maker, discovery, positions: [], exposures: [] };
+  if (!discovery.ok) return { chainId, maker, discovery, positions: [], exposures: [], funding: [] };
 
   const positions = await readPositions(request, chainId, maker, discovery.positions);
 
@@ -132,7 +139,13 @@ export async function fetchPortfolio(
     };
   });
 
-  return { chainId, maker, discovery, positions, exposures };
+  // Read last, and independently of the exposure computation above: funding
+  // needs only `positions`, and reads it in its own batched calls rather than
+  // reusing `allowances` — that allowance was queried against the *sum* of
+  // committed legs, while funding.ts compares each leg's own amount.
+  const funding = await readFunding(request, chainId, maker, positions);
+
+  return { chainId, maker, discovery, positions, exposures, funding };
 }
 
 /* ------------------------------------------------------------- the verdict */
