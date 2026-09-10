@@ -4,7 +4,8 @@ Contract: `src/AtsEscrowMarket.sol` · Solidity 0.8.30 · Cancun
 Reviewed 2026-09-10 against the ethskills **security** and **audit** skills.
 Spec: `../docs/SECONDARY-MARKET-SPEC.md`.
 
-**Status: not yet deployed.** Two items below must be closed first (§5).
+**Status: not yet deployed.** Slither is clean (§5). One item remains before
+deployment and it cannot be closed locally (§6).
 
 ## 1. Scope and threat model
 
@@ -71,15 +72,28 @@ Invariants proved:
 
 Gas: `list` 187k, `fill` 110k, `cancel` 55k.
 
-## 5. Outstanding before deployment
+## 5. Static analysis — Slither 0.11.6
 
-1. **Slither has not been run** — it is not installed in this environment.
-   `pip install slither-analyzer && slither .`, and resolve every reentrancy,
-   unchecked-return, and unprotected-state-change finding. The audit skill
-   requires it; this report does not claim it passed.
-2. **The HTS association path is untested.** Local chains have no code at
+`slither . --filter-paths "lib|test"` — 9 contracts, 102 detectors,
+**4 results, all informational.**
+
+**None of the three the security skill says never to ignore appeared:** no
+reentrancy, no unchecked returns, no unprotected state changes, and no
+arbitrary delegatecall.
+
+| Detector | Location | Disposition |
+|---|---|---|
+| `incorrect-equality` | `escrowed == 0` in `list` | **False positive here.** The detector targets strict equality against a *balance*, where a donation can break the comparison. This compares a **measured delta** to zero and rejects a transfer that moved nothing. `>= 0` would be meaningless on a `uint256` and `> 0` inverted is identical. Kept. |
+| `low-level-calls` | HTS `associateToken` in the constructor | **Deliberate, documented in the source.** A typed call reverts on the empty return from a chain where `0x167` has no code, which would make the contract untestable locally. The response code is decoded and asserted when one comes back. |
+| `naming-convention` ×2 | `PAYMENT_TOKEN`, `PAYMENT_DECIMALS` | **Convention conflict, not a defect.** Both are `immutable`, and Foundry's own linter requires SCREAMING_SNAKE_CASE for immutables — it flags the opposite of what Slither wants. Following the toolchain the project builds with. |
+
+## 6. Outstanding before deployment
+
+1. **The HTS association path is untested.** Local chains have no code at
    `0x167`, so `test_*` exercises the tolerated no-op branch, **not** a real
    association. It must be confirmed on Hedera testnet: deploy, then verify the
    contract can receive USDC before any listing is made. This is the single most
    likely cause of a first-run failure.
-3. Verify the source on HashScan after deployment — the track asks for it.
+2. Verify the source on HashScan after deployment — the track asks for it.
+
+See `RUNBOOK.md` for the deployment sequence, which leads with item 1.
