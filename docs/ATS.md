@@ -9,18 +9,82 @@ what has and has not been done on a chain.
 | Milestone | State |
 |---|---|
 | C1 — chain support | done |
-| C1 — a deployed asset | **NOT DONE.** No security has been deployed. |
+| C1 — a deployed asset | **one equity deployed, and it cannot be minted.** See below. |
 | C2 — issuer dashboard | done, exercised against a fixture only |
 | C3 — dividend declaration and reconciliation | done, never run against a chain |
+| Secondary market contract | written, 21 tests green, Slither-clean, **not deployed** |
+| Secondary market deployment path | scripted and dry-run against the live chain, **not broadcast** |
 
-**Nothing in this app has touched Hedera.** The console's only data is
-`FIXTURE_ADDRESS`, and every figure it draws carries `FIXTURE_NOTICE`:
+**One thing in this app has touched Hedera: a single equity, deployed and then
+found to be inert.** Everything else the console draws is `FIXTURE_ADDRESS`,
+and every figure carries `FIXTURE_NOTICE`:
 
 > Fixture data. This is a constructed example, not a security read from a chain
 > — no figure on this screen came from Hedera.
 
-That notice is not decoration. Until an equity is deployed
-(`docs/ATS-DEPLOY-C1.md`), it is the honest description of every number here.
+That notice is not decoration. Until securities are deployed *and minted*
+(`app/packages/apps/ats/contracts/RUNBOOK.md`), it is the honest description of
+every number here.
+
+### The one deployed equity, and what is wrong with it
+
+| | |
+|---|---|
+| Address | `0x651e73ebcf18ef7e050c90af0461d91d640635bb` (`0.0.10461772`) |
+| Name / symbol | `LeekWallet` / `LEEK`, 6 decimals |
+| Max supply | 1,000,000 shares (`1e12` base units) |
+| Total supply | **0** |
+| Admin | `0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45` (`0.0.7307292`) |
+| Compliance / Identity registry | both zero — correct, see below |
+| `isControllable` | true |
+| `isInternalKycActivated` | false |
+
+**It was deployed with `DEFAULT_ADMIN_ROLE` and nothing else, so `mint`
+reverts.** Verified by `eth_call` on 2026-09-10:
+
+```
+hasRole(ROLE_ISSUER, 0x9c77c6…) -> false
+mint(0xbDEB…, 1000000)          -> AccountHasNoRole(caller, [ROLE_ISSUER, ROLE_AGENT])
+```
+
+The admin can grant itself `ROLE_ISSUER` and recover it. The deployment scripts
+take the other path and grant all twelve roles the console's privileged surface
+needs at birth, because a security that has to be repaired before it can be used
+is a security somebody will forget to repair.
+
+### Deployment facts, re-derived 2026-09-10
+
+Against the chain, not from documentation. Full derivation in
+`app/packages/apps/ats/contracts/RUNBOOK.md` §0.
+
+| Fact | Value |
+|---|---|
+| `deployEquity` selector | `0x837b37b6` |
+| `deployBond` selector | `0x29002951` |
+| Equity facet config | key `bytes32(1)`, version 1 |
+| Bond facet config | key `bytes32(2)`, version 1 |
+| Factory EVM alias (what appears in logs) | `0xd1f118a40f3b02883d35909ef2517e7edd78379d` |
+
+**`docs/ATS-DEPLOY-C1.md` records `0x29002951` as `deployEquity`. That is
+wrong — it is `deployBond`.** Both were re-derived with `cast sig` from the
+canonical signatures and then confirmed by ABI-decoding live calldata of each
+shape off the mirror node: the `0x837b37b6` call decoded to this project's own
+LEEK equity, a `0x29002951` call to somebody else's `Demo Bond 2026`. The equity
+deploy that document describes did happen; it is recorded under the wrong
+selector. `script/IAtsFactory.sol` asserts both selectors at run time.
+
+### Why ERC-3643 stays off
+
+`compliance` and `identityRegistry` are zero on every security here, and
+`internalKycActivated` is false, and that is a decision rather than an omission.
+`_validateIdentifiedAccount` staticcalls `isVerified` on the identity registry;
+the package's `LowLevelCall.functionStaticCall` returns empty for a zero target
+and the check passes, and `verifyKycStatus` short-circuits to true while
+internal KYC is deactivated. Point either field at a contract that does not
+exist and **every mint and every transfer reverts**. `ROLE_KYC` and
+`ROLE_INTERNAL_KYC_MANAGER` are granted anyway, so the issuer can turn internal
+KYC on later from the console — as a deliberate act, on the device, with a
+screen in front of it.
 
 ## Facts
 
@@ -163,14 +227,77 @@ the run rather than retrying it, and a throw out of `propose` is recorded as
 *uncertain*, not as a failure to pay — retrying an uncertain payment is how a
 holder gets paid twice.
 
+## The secondary market
+
+`app/packages/apps/ats/contracts/` holds `AtsEscrowMarket`, a market that does
+not check whether a trade is allowed: it attempts both legs and lets the
+security's own guards revert it. Design and rationale in
+`app/packages/apps/ats/docs/SECONDARY-MARKET-SPEC.md`; the review in
+`contracts/AUDIT-REPORT.md`. 21 tests, 10,000-run fuzz, Slither-clean.
+
+It settles in **native HBAR** by default (`PAYMENT_TOKEN == address(0)`), and
+the reason is worth recording: on Hedera an HTS token cannot be received by an
+account that has not associated with it, and none of this project's accounts
+holds any HTS token — the Circle faucet delivered nothing. HBAR needs no
+association. A token leg still exists and the constructor associates through the
+system contract at `0x167`, but **no test covers that path and none can**: a
+local chain has no code at `0x167`. The runbook makes proving it a step.
+
+`priceTotal` on the native leg is in **weibar** (1 HBAR = 1e18), not tinybar —
+`msg.value` is 18-decimal on Hedera's EVM while HBAR itself has 8. The listing
+script takes whole HBAR and does the multiplication, so that number is never
+typed by hand.
+
+## Running one round of deployments
+
+`app/packages/apps/ats/contracts/RUNBOOK.md` is the single procedure, from key
+import to a filled trade. In outline:
+
+```bash
+cd app/packages/apps/ats/contracts
+cast wallet import hedera-deployer --interactive
+cast wallet import buyer --interactive
+
+N=3 forge script script/DeploySecurities.s.sol:DeploySecurities --rpc-url $RPC --account hedera-deployer --broadcast --slow
+./script/addresses.sh                       # the REAL addresses, from receipts
+
+SECURITY=$SEC HOLDERS=0xbDEB…,0xe7df…,$ISSUER SHARES=1200,800,500 \
+  forge script script/MintAndDistribute.s.sol:MintAndDistribute --rpc-url $RPC --account hedera-deployer --broadcast --slow
+
+PAYMENT_TOKEN=0x0 forge script script/DeployMarket.s.sol:DeployMarket --rpc-url $RPC --account hedera-deployer --broadcast
+
+MARKET=$MARKET SECURITY=$SEC SHARES=100 PRICE_HBAR=25 \
+  forge script script/ListAndFill.s.sol:ListLot --rpc-url $RPC --account hedera-deployer --broadcast
+MARKET=$MARKET LISTING_ID=1 \
+  forge script script/ListAndFill.s.sol:FillLot --rpc-url $RPC --account buyer --broadcast
+```
+
+`N=3` plus the bond dry-ran successfully against a fork of the live chain on
+2026-09-10 — the structs, the resolver, the facet config keys and the ISIN check
+digits are all confirmed by that run. It was **not broadcast**: the estimate was
+~11.1M gas per security, ~105 HBAR for the four, against a deployer holding 141.
+Choosing the account and the value of `N` is the operator's call, and the runbook
+says so rather than assuming.
+
 ## What must happen before any of this is evidence
 
-1. Deploy one equity — `docs/ATS-DEPLOY-C1.md`.
-2. Paste its address into **Read register**; the fixture notice should vanish
-   because the figures are real.
-3. Grant a role, then revoke it, photographing the device screen each time.
-4. Declare one dividend against a real snapshot and reconcile it.
-5. Record the equity address, transaction hashes and the admin account here.
+1. Broadcast the deployments — `contracts/RUNBOOK.md` §4.
+2. Mint, so the register has holders — §5. Then paste an address into
+   **Read register**; the fixture notice should vanish because the figures are
+   real.
+3. Deploy the market and prove a trade end to end — §6 to §8.
+4. Grant a role, then revoke it, photographing the device screen each time.
+5. Declare one dividend against a real snapshot and reconcile it.
+6. **Record every deployed address, transaction hash and the admin account in
+   the table below.** A deployment nobody wrote down is a deployment nobody can
+   reproduce.
 
-Until step 1, this document describes a console that works and has never been
+### Deployed securities
+
+| Symbol | Address | Hedera id | Tx hash | Admin |
+|---|---|---|---|---|
+| `LEEK` | `0x651e73ebcf18ef7e050c90af0461d91d640635bb` | `0.0.10461772` | `0x80c31d518c29f7203da71c631ded2ebfdf57bde46af51963cf3ef91f27f3ba7f` | `0x9c77c6…6e45` |
+
+Nothing else has been deployed. Until this table grows, this document describes
+a console that works, a market that is tested, and one token that has never been
 used.

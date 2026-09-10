@@ -16,14 +16,14 @@ tutorial:
 | Chain id | `296` (`0x128`) | `eth_chainId` on `https://testnet.hashio.io/api` |
 | Factory | `0.0.9213391` = `0x00000000000000000000000000000000008c95cf` | `eth_getCode` returns a diamond proxy |
 | **Resolver** | `0xba2d5fc2083a0b8f164c50e65d782087fba18e0a` | see below |
-| `deployEquity` selector | **`0x837b37b6`** | see the correction below |
-| `deployBond` selector | **`0x29002951`** | |
+| `deployEquity` selector | **`0x837b37b6`** | **corrected 2026-09-10** — this row read `0x29002951` until then, which is `deployBond`. Re-derived with `cast sig` and confirmed by ABI-decoding live calldata of each shape; see the correction below and `app/packages/apps/ats/contracts/RUNBOOK.md` §0 |
+| `deployBond` selector | **`0x29002951`** | same derivation |
 | Contracts pkg licence | Apache-2.0 | `package.json` — compatible, unlike the Aqua SDK |
 
 **The resolver address is not published in the npm package.** It was recovered
 empirically: the mirror node
 (`/api/v1/contracts/0.0.9213391/results`) was asked for the factory's recent
-calls, the `0x29002951` ones were ABI-decoded, and `SecurityData.resolver` —
+calls, the `deployEquity` and `deployBond` ones were ABI-decoded, and `SecurityData.resolver` —
 the first field of the first struct — read out. **Six independent deployments
 all name the same resolver**, and that address has code. That is why it is
 written here as a fact rather than a guess. Re-derive it the same way if a
@@ -31,7 +31,8 @@ deploy ever starts failing:
 
 ```bash
 curl -s "https://testnet.mirrornode.hedera.com/api/v1/contracts/0.0.9213391/results?limit=25&order=desc"
-# decode the 0x837b37b6 entries; SecurityData.resolver is the first field
+# decode the 0x837b37b6 (equity) or 0x29002951 (bond) entries;
+# SecurityData.resolver is the first field of the first struct either way
 ```
 
 ### Correction, 2026-09-10 — the selectors were swapped here
