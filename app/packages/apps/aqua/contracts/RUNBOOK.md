@@ -510,3 +510,33 @@ been shipped on a live chain, and this runbook does not ship it.** See
 STRATEGIES.md §4 for why the alternative (a modified SwapVM router) was
 rejected even though it measurably fits under EIP-170, and for the economics,
 which do not work at 2 USDC and are not claimed to.
+
+
+---
+
+## Base RPC: pick one that answers historical state
+
+`cast send` makes one archive-style lookup (`eth_getBalance` at a specific
+block). Several public Base endpoints serve `latest` happily and refuse that
+one, which surfaces as an HTTP 403 mid-send:
+
+```
+Error: HTTP error 403 ... {"message":"Archive requests require a personal token"}
+```
+
+Measured 2026-09-10 against the seven methods a send needs — `eth_chainId`,
+`eth_getTransactionCount`, `eth_gasPrice`, `eth_feeHistory`,
+`eth_getBlockByNumber`, `eth_estimateGas`, and `eth_getBalance` **at an old
+block**:
+
+| Endpoint | Result |
+|---|---|
+| `https://mainnet.base.org` | **all seven OK** — use this |
+| `https://developer-access-mainnet.base.org` | all seven OK — fallback |
+| `https://base-rpc.publicnode.com` | fails `eth_getBalance` at a block only |
+| `https://base.meowrpc.com` | fails five of seven |
+| `https://base.llamarpc.com` | returns HTML, not JSON |
+
+Latency rankings on public RPC lists are not a guide here: the fastest endpoint
+measured was also one that cannot answer a send. publicnode remains fine for
+reads, and every `eth_call` in this project has used it without trouble.
