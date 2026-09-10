@@ -18,9 +18,20 @@ fill on Hedera testnet proved it: 25 HBAR sent as a transaction `value` of
 `25e18` arrived inside the contract as `msg.value = 2_500_000_000` and reverted
 `WrongPayment(2500000000, 25000000000000000000)` — exactly 1e10 apart.
 
-**Hedera's relay converts the value on the way in, so `msg.value` is TINYBAR
-(8 dp).** A `priceTotal` on the native leg is in tinybar. `PAYMENT_DECIMALS`
-now reports 8, and the script multiplies by 1e8.
+**Both units are real, on opposite sides of the relay**, and it took a second
+failure to see the whole picture. Sending a transaction value of `2.5e9` was
+then refused by the relay before reaching the contract at all: *"Value can't be
+non-zero and less than 10_000_000_000 wei which is 1 tinybar"*.
+
+```
+tx value field   25e18 weibar     <- what a caller signs
+     relay / 1e10
+msg.value        2.5e9 tinybar    <- what the contract compares
+```
+
+So `priceTotal` is in TINYBAR (`PAYMENT_DECIMALS` reports 8, the listing script
+multiplies by 1e8), and a filler must send a transaction value of
+`priceTotal * 1e10`.
 
 Two things worth recording about why it survived to a live network. The unit
 test asserted 18, so **the test agreed with the bug** — a local EVM has no

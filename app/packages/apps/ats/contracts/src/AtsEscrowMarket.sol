@@ -53,17 +53,32 @@ import { IHederaTokenService, HTS_PRECOMPILE, HTS_SUCCESS, HTS_ALREADY_ASSOCIATE
  * cannot be received by an account that has not associated with it, which
  * silently defeats faucets and fresh contracts alike. HBAR needs none of that.
  *
- * **A decimals trap, corrected 2026-09-10 by a real reverted fill.** The
- * transaction's `value` field is weibar (18 dp), but Hedera's relay converts it
- * on the way in, so **`msg.value` inside the contract is TINYBAR (8 dp)**.
+ * **Two HBAR units, on opposite sides of the relay.** This took two failures
+ * to pin down and both halves are true:
  *
- * A `priceTotal` for the native leg is therefore in TINYBAR. 1 HBAR = 1e8 here.
+ *   tx `value` field   25e18 weibar    <- what a caller signs and sends
+ *        Hedera's relay divides by 1e10
+ *   `msg.value`        2.5e9 tinybar   <- what THIS CONTRACT compares
  *
- * This file previously said the opposite. A fill sending 25 HBAR arrived as
- * `msg.value = 2_500_000_000` against a `priceTotal` of `25e18` and reverted
- * `WrongPayment(2500000000, 25000000000000000000)` -- exactly 1e10 apart. The
- * guard cost 0.046 HBAR of gas and stranded nothing, which is the argument for
- * comparing exactly rather than accepting "close enough".
+ * So a `priceTotal` for the native leg is in **TINYBAR** (1 HBAR = 1e8),
+ * because it is compared against `msg.value` -- while a caller must send a
+ * transaction value of `priceTotal * 1e10`.
+ *
+ * How each half was found, since neither is guessable and a local EVM has no
+ * relay to reveal either:
+ *
+ *   1. Pricing a lot at `25e18` reverted `WrongPayment(2500000000,
+ *      25000000000000000000)` -- exactly 1e10 apart. That gave us msg.value's
+ *      unit.
+ *   2. Then sending a transaction value of `2.5e9` was refused by the relay
+ *      before it reached the contract at all: "Value can't be non-zero and
+ *      less than 10_000_000_000 wei which is 1 tinybar". That gave us the
+ *      transaction field's unit.
+ *
+ * The exact-value comparison is what made the first one cheap: 0.046 HBAR of
+ * gas, nothing stranded, and both numbers named in the error so the ratio was
+ * legible. An "approximately equal" check would have filled the lot at 1e-10
+ * of its price.
  *
  * ---------------------------------------------------------------------------
  * What is deliberately absent

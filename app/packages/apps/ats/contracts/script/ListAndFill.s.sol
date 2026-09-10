@@ -8,6 +8,11 @@ import { IERC20 } from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol"
 import { AtsEscrowMarket } from "../src/AtsEscrowMarket.sol";
 import { IAtsSecurity } from "./IAtsSecurity.sol";
 
+// Hedera's relay denominates a transaction's value field in weibar and the
+// contract's msg.value in tinybar. This is the ratio between them.
+uint256 constant WEIBAR_PER_TINYBAR = 1e10;
+
+
 // Foundry's DefaultSender, which msg.sender becomes when a script runs without
 // --sender. It is never a real actor here, and every time it silently stood in
 // for one the failure arrived late and looked like something else: a mint that
@@ -148,7 +153,21 @@ contract FillLot is Script {
         if (market.IS_NATIVE()) {
             require(buyer.balance >= listing.priceTotal, "buyer cannot cover priceTotal in weibar");
             vm.startBroadcast();
-            market.fill{ value: listing.priceTotal }(listingId);
+            /* priceTotal is TINYBAR, because that is what msg.value will be
+             * inside the contract. But the transaction's own value field is
+             * WEIBAR, and Hedera's relay rejects any non-zero value below
+             * 1e10 wei -- one tinybar. So convert on the way out.
+             *
+             * Both units are real; they sit on opposite sides of the relay:
+             *
+             *   tx value    25e18 weibar   -- what we sign and send
+             *        relay divides by 1e10
+             *   msg.value   2.5e9 tinybar  -- what the contract compares
+             *
+             * Sending priceTotal raw asks the relay to move 2.5e9 weibar,
+             * a quarter of one tinybar, and it refuses the request outright:
+             * "Value can't be non-zero and less than 10_000_000_000 wei". */
+            market.fill{ value: listing.priceTotal * WEIBAR_PER_TINYBAR }(listingId);
             vm.stopBroadcast();
         } else {
             IERC20 payment = market.PAYMENT_TOKEN();
