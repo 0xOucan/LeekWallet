@@ -16,7 +16,8 @@ tutorial:
 | Chain id | `296` (`0x128`) | `eth_chainId` on `https://testnet.hashio.io/api` |
 | Factory | `0.0.9213391` = `0x00000000000000000000000000000000008c95cf` | `eth_getCode` returns a diamond proxy |
 | **Resolver** | `0xba2d5fc2083a0b8f164c50e65d782087fba18e0a` | see below |
-| `deployEquity` selector | `0x29002951` | the factory's own recent successful calls |
+| `deployEquity` selector | **`0x837b37b6`** | see the correction below |
+| `deployBond` selector | **`0x29002951`** | |
 | Contracts pkg licence | Apache-2.0 | `package.json` — compatible, unlike the Aqua SDK |
 
 **The resolver address is not published in the npm package.** It was recovered
@@ -29,9 +30,25 @@ written here as a fact rather than a guess. Re-derive it the same way if a
 deploy ever starts failing:
 
 ```bash
-curl -s "https://testnet.mirrornode.hedera.com/api/v1/contracts/0.0.9213391/results?limit=10&order=desc"
-# decode the 0x29002951 entries; SecurityData.resolver is the first field
+curl -s "https://testnet.mirrornode.hedera.com/api/v1/contracts/0.0.9213391/results?limit=25&order=desc"
+# decode the 0x837b37b6 entries; SecurityData.resolver is the first field
 ```
+
+### Correction, 2026-09-10 — the selectors were swapped here
+
+An earlier version of this file recorded `0x29002951` as `deployEquity`. It is
+**`deployBond`**. `deployEquity` is **`0x837b37b6`**.
+
+The factory's recent history makes it obvious once counted: `0x837b37b6`
+appears **once** — this project's own LEEK equity — and `0x29002951` **24
+times**, other people's bonds. Decoding the single `0x837b37b6` call yields
+`maxSupply` `1000000000000` = 1,000,000 x 10^6, matching LEEK exactly.
+
+**The resolver address published above is nonetheless correct**, and it is worth
+being precise about why: `SecurityData` is the first field of both `EquityData`
+and `BondData`, so the offset arithmetic landed on the same field either way.
+The method was wrong and the answer was right by structural coincidence. It has
+since been re-derived from the real `deployEquity` call.
 
 ## 1. Prerequisites
 
