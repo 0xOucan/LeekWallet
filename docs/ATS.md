@@ -327,3 +327,62 @@ All 6 decimals. Transaction hashes are in
 deployed with `DEFAULT_ADMIN_ROLE` only, so it can never be minted and its
 supply is permanently 0. These four grant ISSUER at birth, which is why they
 can. Do not confuse the two: **LEEK is the dead pilot, LEEKA is the live one.**
+
+
+---
+
+## The secondary market is live, and a trade has settled (2026-09-10)
+
+**Market:** `0xCde9596fd89C5368b5Bd46c2B93544Cbb201f8DF`, native HBAR leg,
+`PAYMENT_DECIMALS = 8`.
+
+A full lifecycle ran on Hedera testnet: **issue → mint → list → settle.**
+
+| Step | Result |
+|---|---|
+| 4 securities deployed | LEEKA, VGF1, HRBR + LEEKB bond, ISSUER granted at birth |
+| 2,500 LEEKA minted | device 1,200 · funder 800 · issuer 500 |
+| 100 shares listed | 25 HBAR, escrowed in the market |
+| Filled by a second account | `0xde9d90634b56c0972f7327cb3dd7e5ededc94e70c491b1abae1cb0aa0059154e` |
+
+Verified from chain state afterwards, not from a script's log:
+
+```
+seller      400000000   (500 - 100)
+buyer       900000000   (800 minted + 100 bought)
+market         0        holds neither the security ...
+market HBAR    0        ... nor the payment
+listing     status 2    Filled
+```
+
+The last two lines are the invariant the fuzz suite pins, now true on a real
+network rather than in a local EVM.
+
+### What this cost to learn
+
+Four bugs, none of them logic errors in the market, all of them units or
+identity:
+
+1. `deployEquity` and `deployBond` selectors were recorded swapped.
+2. `mint` was declared `returns (bool)`; it returns nothing. The mint
+   **succeeded on chain and then reported failure** — the shape most likely to
+   cause a double-mint.
+3. `ISSUER`/`SELLER` silently became Foundry's `DefaultSender` three times.
+4. HBAR has two units either side of Hedera's relay: a transaction's `value`
+   field is weibar, `msg.value` is tinybar. Both halves took a separate failure
+   to establish.
+
+Every one was caught by a dry run, a guard, or the exact-value comparison.
+Total cost in gas for the failures: **under 0.1 HBAR**.
+
+**And 21 passing tests said nothing about #4**, because a local EVM has no
+relay. That is not a weak test suite; it is the limit of what a local runtime
+can tell you about a non-local one.
+
+### Not yet demonstrated
+
+A **refused** trade. The market never checks compliance — the security's own
+guards do — so the demo worth recording is: freeze or de-KYC the buyer in the
+LeekWallet console, signed on the device, and watch the same fill revert. Grant
+it back and it settles. That is the compliance story, and it has not been run
+on chain yet.
