@@ -4,6 +4,12 @@
 #   ./flash-both.sh provision   ERASES every wallet. Once, to get onto this
 #                               release. Do NOT run it again afterwards.
 #   ./flash-both.sh update      firmware only, seeds untouched. Every time after.
+#   ./flash-both.sh dev         firmware only, from .pio/build -- the working
+#                               tree's own build, for testing code that is not
+#                               in a release yet. Same chip guard, same 0x10000,
+#                               but NO checksum to verify against, because an
+#                               unreleased build has no published hash. Never
+#                               give a board flashed this way to anyone else.
 #
 # Detects which board is on which port by chip id, so the S3 image cannot be
 # written to the Pixie or the other way round -- a mismatch there gives a board
@@ -15,11 +21,14 @@ MODE="${1:-}"
 case "$MODE" in
   provision) OFFSET=0x0 ;;
   update)    OFFSET=0x10000 ;;
-  *) echo "usage: $0 provision|update" >&2; exit 2 ;;
+  dev)       OFFSET=0x10000 ;;
+  *) echo "usage: $0 provision|update|dev" >&2; exit 2 ;;
 esac
 
 REL="release/v0.1.0-chaak-pool"
-[[ -d "$REL" ]] || { echo "no $REL — run scripts/release.sh first" >&2; exit 2; }
+if [[ "$MODE" != dev ]]; then
+  [[ -d "$REL" ]] || { echo "no $REL — run scripts/release.sh first" >&2; exit 2; }
+fi
 
 if [[ "$MODE" == provision ]]; then
   echo
@@ -43,13 +52,23 @@ for PORT in "${PORTS[@]}"; do
     *) echo "   could not identify the chip on $PORT — skipping"; continue ;;
   esac
 
-  IMG="$REL/$ENV/leekwallet-${BOARD}-0.1.0-chaak-pool-${MODE}.bin"
-  [[ -f "$IMG" ]] || { echo "   missing $IMG"; continue; }
+  if [[ "$MODE" == dev ]]; then
+    # The working tree's own build. No SHA256SUMS exists for it and none is
+    # invented: the chip guard below still stops the S3 image reaching the
+    # Pixie, which is the failure that bricks a board silently. What is given
+    # up here is provenance, and that is why this mode says so out loud.
+    IMG=".pio/build/$ENV/firmware.bin"
+    [[ -f "$IMG" ]] || { echo "   missing $IMG — run: pio run -e $ENV"; continue; }
+    echo "   unreleased build, no published hash to check against"
+  else
+    IMG="$REL/$ENV/leekwallet-${BOARD}-0.1.0-chaak-pool-${MODE}.bin"
+    [[ -f "$IMG" ]] || { echo "   missing $IMG"; continue; }
 
-  # Verify the image against the release's own SHA256SUMS before writing it.
-  ( cd "$REL/$ENV" && sha256sum -c --ignore-missing SHA256SUMS 2>/dev/null \
-      | grep -q "$(basename "$IMG")" ) \
-    || { echo "   checksum mismatch for $(basename "$IMG") — refusing"; continue; }
+    # Verify the image against the release's own SHA256SUMS before writing it.
+    ( cd "$REL/$ENV" && sha256sum -c --ignore-missing SHA256SUMS 2>/dev/null \
+        | grep -q "$(basename "$IMG")" ) \
+      || { echo "   checksum mismatch for $(basename "$IMG") — refusing"; continue; }
+  fi
 
   echo "   $CHIP -> $(basename "$IMG") at $OFFSET"
   esptool.py --chip auto --port "$PORT" --baud 921600 write_flash "$OFFSET" "$IMG"
