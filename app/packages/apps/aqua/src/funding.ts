@@ -95,7 +95,7 @@ function fundingOfNonActiveLeg(token: string, ok: boolean): LegFunding {
 
 function fundingOfActiveLeg(
   token: string,
-  virtual: bigint,
+  committed: bigint,
   balance: TokenBalanceResult | undefined,
   allowance: AllowanceResult | undefined,
 ): LegFunding {
@@ -106,8 +106,8 @@ function fundingOfActiveLeg(
   // constraint — no allowance, however large, moves a token the wallet does
   // not hold — and because it names the whitepaper's own first-listed remedy
   // ("docking or rebalancing") before its second ("raise the approval").
-  if (balance.raw < virtual) return { token, state: "underfunded-balance" };
-  if (allowance.amount < virtual) return { token, state: "underfunded-allowance" };
+  if (balance.raw < committed) return { token, state: "underfunded-balance" };
+  if (allowance.amount < committed) return { token, state: "underfunded-allowance" };
   return { token, state: "funded" };
 }
 
@@ -152,13 +152,38 @@ export async function readFunding(
   const balanceByToken = new Map(tokens.map((token, i) => [token, balances[i]]));
   const allowanceByToken = new Map(tokens.map((token, i) => [token, allowances[i]]));
 
+  /* Sum every active leg's virtual amount per token, across ALL positions.
+   *
+   * This is the whole reason the check is not per-leg. Shared liquidity is
+   * Aqua's central claim — whitepaper §4.1, "the same wallet equity to back
+   * multiple strategies simultaneously" — so one wallet balance routinely
+   * backs several commitments at once. Comparing a single leg against the
+   * full balance would call two 100-USDC commitments "funded" against a
+   * 150-USDC wallet, when only one of them can actually pull. The maker
+   * would be over-committed and told they were fine, on exactly the risk the
+   * protocol's design creates.
+   *
+   * So every leg of an over-committed token reads as underfunded. That is not
+   * over-reporting: which leg wins the race is decided by whoever trades
+   * first, so no individual leg can honestly be called safe. */
+  const committedByToken = new Map<string, bigint>();
+  for (const position of positions) {
+    for (const leg of position.legs) {
+      if (!leg.ok || leg.state !== "active") continue;
+      committedByToken.set(leg.token, (committedByToken.get(leg.token) ?? 0n) + leg.amount);
+    }
+  }
+
   return positions.map((position) => ({
     app: position.app,
     strategyHash: position.strategyHash,
     legs: position.legs.map((leg): LegFunding => {
       if (!leg.ok || leg.state !== "active") return fundingOfNonActiveLeg(leg.token, leg.ok);
       return fundingOfActiveLeg(
-        leg.token, leg.amount, balanceByToken.get(leg.token), allowanceByToken.get(leg.token),
+        leg.token,
+        committedByToken.get(leg.token) ?? leg.amount,
+        balanceByToken.get(leg.token),
+        allowanceByToken.get(leg.token),
       );
     }),
   }));

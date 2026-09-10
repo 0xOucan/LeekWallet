@@ -65,6 +65,57 @@ group("balance is fine, allowance is not: underfunded-allowance");
   check(funding[0]!.legs[0]!.state === "underfunded-allowance", `got ${funding[0]!.legs[0]!.state}`);
 }
 
+group("THE PROPERTY: shared liquidity is summed, so over-commitment is not called funded");
+{
+  /* Aqua's central claim is that one wallet balance backs several strategies
+   * at once (whitepaper §4.1). So the dangerous case is not one leg exceeding
+   * the wallet -- it is several legs that each fit, and together do not.
+   *
+   * Two strategies commit 100 USDC each against a 150 USDC wallet. Per leg,
+   * both look fine. Together only one can ever pull. An earlier draft of this
+   * module compared each leg against the full balance and reported BOTH as
+   * funded, which is a false assurance on precisely the risk Aqua's design
+   * creates. */
+  const positions: PositionReading[] = [
+    { app: APP, strategyHash: HASH, legs: [{ token: USDC, ok: true, state: "active", amount: 100n, tokensCount: 1 }] },
+    { app: APP, strategyHash: HASH2, legs: [{ token: USDC, ok: true, state: "active", amount: 100n, tokensCount: 1 }] },
+  ];
+  const node = fakeNode({ calls: [okBalance(150n), okAllowance(1_000_000n)] });
+  const funding = await readFunding(node.request, POLYGON, MAKER, positions);
+  check(funding.length === 2, "a position was lost");
+  for (const [i, f] of funding.entries()) {
+    check(f.legs[0]!.state === "underfunded-balance",
+      `leg ${i} of an over-committed token reported ${f.legs[0]!.state}, not underfunded-balance`);
+  }
+}
+
+group("the same two legs ARE funded once the wallet covers the sum");
+{
+  const positions: PositionReading[] = [
+    { app: APP, strategyHash: HASH, legs: [{ token: USDC, ok: true, state: "active", amount: 100n, tokensCount: 1 }] },
+    { app: APP, strategyHash: HASH2, legs: [{ token: USDC, ok: true, state: "active", amount: 100n, tokensCount: 1 }] },
+  ];
+  const node = fakeNode({ calls: [okBalance(200n), okAllowance(1_000_000n)] });
+  const funding = await readFunding(node.request, POLYGON, MAKER, positions);
+  for (const [i, f] of funding.entries()) {
+    check(f.legs[0]!.state === "funded", `leg ${i} reported ${f.legs[0]!.state} at exactly the sum`);
+  }
+}
+
+group("allowance is summed too, not compared per leg");
+{
+  const positions: PositionReading[] = [
+    { app: APP, strategyHash: HASH, legs: [{ token: USDC, ok: true, state: "active", amount: 100n, tokensCount: 1 }] },
+    { app: APP, strategyHash: HASH2, legs: [{ token: USDC, ok: true, state: "active", amount: 100n, tokensCount: 1 }] },
+  ];
+  const node = fakeNode({ calls: [okBalance(1_000_000n), okAllowance(150n)] });
+  const funding = await readFunding(node.request, POLYGON, MAKER, positions);
+  for (const [i, f] of funding.entries()) {
+    check(f.legs[0]!.state === "underfunded-allowance",
+      `leg ${i} reported ${f.legs[0]!.state} with the approval short of the total`);
+  }
+}
+
 group("a failed read is never funded — balance side, allowance side, and both");
 {
   const positions: PositionReading[] = [
