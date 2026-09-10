@@ -404,3 +404,45 @@ against real state:
 | `script/DeployMarket.s.sol` | The escrow market, native or token leg |
 | `script/ListAndFill.s.sol` | `ListLot` (seller) and `FillLot` (buyer) — two keys, one trade |
 | `script/addresses.sh` | The real deployed addresses, out of the receipts |
+
+
+---
+
+## Gas: `cast send` under-estimates on Hedera, and the failure looks like a revert
+
+A `cast send` to these contracts can fail with:
+
+```
+status        0 (failed)
+gasUsed       290017
+revertReason  CONTRACT_REVERT_EXECUTED, data: "0x"
+```
+
+**That is out of gas, not a contract rejection.** Two tells:
+
+1. `gasUsed` equals the gas *limit* exactly — a transaction that exhausts its
+   gas consumes all of it. Seen identical to the byte across two attempts.
+2. The revert data is empty. Every error this market defines carries data
+   (`NotOpen`, `NotSeller`, `WrongPayment`, …), so `0x` is not ours.
+
+Confirm by simulating, which costs nothing and does not run out of gas:
+
+```bash
+cast call $MARKET "cancel(uint256)" 1 --from <seller> --rpc-url $RPC
+# returns 0x  => the call itself is fine; the send was starved
+```
+
+The cause is Hedera's resolver-proxy delegatecall chain: an ATS security routes
+every selector through `resolveResolverProxyCall` into a facet, which costs far
+more than the EVM estimator predicts. A `list` that succeeded used 579,330 gas
+where `cast` had estimated ~290,000 for a `cancel`.
+
+**Pass a limit explicitly on every `cast send` to these contracts.** Unused gas
+is not charged, so an over-generous limit is free:
+
+```bash
+cast send ... --gas-limit 2000000
+```
+
+`forge script` does its own estimation against the fork and has not needed this;
+it is `cast send` that comes up short.
