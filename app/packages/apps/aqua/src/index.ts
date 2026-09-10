@@ -45,6 +45,8 @@ export * from "./deploy.ts";
 export * from "./withdraw.ts";
 export * from "./run.ts";
 export * from "./manage.ts";
+export * from "./authoring.ts";
+export * from "./dca.ts";
 
 /**
  * This app's context: the shared one, plus a scan window.
