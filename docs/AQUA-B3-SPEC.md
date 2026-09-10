@@ -58,69 +58,68 @@ while (pcs < length) {
 The repo's working note is **correct on framing** and must be kept. It is
 **wrong on opcode numbers** (§3).
 
-## 3. The opcode table — RESOLVED
+## 3. The opcode table — SETTLED ON-CHAIN (2026-09-10)
 
-**Earlier drafts of this spec treated the opcode numbering as blocking. It is
-not, and the reason is in the prize rules:**
+**Two earlier answers in this file were wrong. This one is measured.**
 
-> Official Aqua/SwapVM contracts must be used (**redeployments of a modified
-> SwapVM contract is allowed**) … If you use SwapVM, you may modify SwapVM
-> opcodes and define your own instructions.
+The deployed `AquaSwapVMRouter` v1.0.2 uses the **dense-index** scheme, not the
+`Opcode` enum. Confirmed by decoding real `Shipped` events from the Aqua
+registry on **Base mainnet (8453)** — live maker strategies, not source and not
+documentation:
 
-So we do not have to discover what the *mainnet* router uses. We deploy
-`1inch/swap-vm` at a pinned commit ourselves, and the numbering is then a fact
-we control and can verify against the source we deployed.
-
-For commit `4918338`, the wire byte **is** the `Opcode` enum value. This is not
-inferred — `src/opcodes/AquaOpcodes.sol` dispatches by comparing the wire byte
-directly to the enum:
-
-```solidity
-     if (opcode == Jump.opcode.asU8())    Jump.exec(ctx, args);
-else if (opcode == XYCSwap.opcode.asU8()) XYCSwap.exec(ctx, args);
-...
-else revert UnknownOpcode(opcode);
+```
+op 18 (0x12) argslen 64   XYCConcentrateGrowLiquidity2D
+op 21 (0x15) argslen  4   flatFeeAmountInXD
+op 17 (0x11) argslen  0   xycSwapXD
+op 20 (0x14) argslen  8   salt
 ```
 
-The sixteen opcodes the Aqua router dispatches, extracted from
-`OpcodeList.sol` and `AquaOpcodes.sol` at that commit and cross-checked against
-the repo's own `test/OpcodeEnumCheck.t.sol`:
+1inch's own docs give the same table and document a real dApp program as
+`0x21 0x14 <20-byte KycNFT> 0x11 0x00`.
 
-| Byte | Name | In our supported set? |
-|---|---|---|
-| `0x02` | Salt | yes |
-| `0x03` | Jump | **no — control flow (§6.3)** |
-| `0x04` | Extruction | **no — control flow (§6.3)** |
-| `0x20` | Deadline | yes |
-| `0x23` | OnlyTakerTokenBalanceNonZero | yes |
-| `0x24` | OnlyTakerTokenBalanceGte | yes |
-| `0x25` | OnlyTakerTokenSupplyShareGte | yes |
-| `0x26` | OnlyTxOriginTokenBalanceNonZero | yes |
-| `0x31` | JumpIfTokenIn | **no — control flow (§6.3)** |
-| `0x32` | JumpIfTokenOut | **no — control flow (§6.3)** |
-| `0x50` | XYCSwap | yes |
-| `0x51` | XYCConcentrateSwap | yes |
-| `0x58` | PeggedSwap | yes |
-| `0x70` | FeeFlatIn | yes |
-| `0x80` | FeeProtocol | **no — variable-length args (§6.4)** |
-| `0x9c` | Decay | yes |
+| Byte | Dec | Name | args | Supported? |
+|---|---|---|---|---|
+| `0x0a` | 10 | jump | 2 | **no — control flow** |
+| `0x0b` | 11 | jumpIfTokenIn | 22 | **no — control flow** |
+| `0x0c` | 12 | jumpIfTokenOut | 22 | **no — control flow** |
+| `0x0d` | 13 | deadline | 5 | yes |
+| `0x0e` | 14 | onlyTakerTokenBalanceNonZero | 20 | yes |
+| `0x0f` | 15 | onlyTakerTokenBalanceGte | 52 | yes |
+| `0x10` | 16 | onlyTakerTokenSupplyShareGte | 28 | yes |
+| `0x11` | 17 | xycSwapXD | 0 | yes |
+| `0x12` | 18 | xycConcentrateGrowLiquidity2D | 64 | yes |
+| `0x13` | 19 | decayXD | 2 | yes |
+| `0x14` | 20 | salt | 8 (or any) | yes |
+| `0x15` | 21 | flatFeeAmountInXD | **4** | yes |
+| `0x1b` | 27 | protocolFeeAmountInXD | 24 | no — v1 sets it 0 |
+| `0x1c` | 28 | aquaProtocolFeeAmountInXD | 24 | no |
+| `0x1d` | 29 | dynamicProtocolFeeAmountInXD | 20 | no |
+| `0x1e` | 30 | aquaDynamicProtocolFeeAmountInXD | 20 | no |
+| `0x1f` | 31 | peggedSwapGrowPriceRange2D | 160 | yes |
+| `0x20` | 32 | extruction | 20+N | **no — external pricing** |
+| `0x21` | 33 | onlyTxOriginTokenBalanceNonZero | 20 | yes |
 
-Anything else on the Aqua router reverts `UnknownOpcode(opcode)` on chain, and
-must refuse in our decoder.
+Indices 0–9 and 22–26 are reserved and map to a no-op `_notInstruction`.
+An index past the table reverts with `Panic(0x32)`, **not** a named error.
 
-**The repo's old note was wrong in an instructive way.** It said
-`0x26 limitSwap1D`; `0x26` is a real opcode, but it is
-`OnlyTxOriginTokenBalanceNonZero`. And `0x17 staticBalances` is not an opcode at
-all — `StaticBalances` is `0x90`, and it is not even dispatched by the Aqua
-router. The numbers appear to have come from a dense array index in an older SDK
-build, written down as hex. **The SDK's `ixsSet` index is not the wire format**
-and must not be used as one.
+### 3a. Why the earlier answers were wrong
 
-### 3a. The table is pinned to a deployment
+The `Opcode` enum in `OpcodeList.sol` (`XYCSwap = 0x50`, `Decay = 0x9c`) is a
+*different version's* numbering. `AquaOpcodes.sol` at that commit dispatches on
+enum values; the deployed v1.0.2 dispatches on dense indices. Reading source at
+an arbitrary commit cannot settle what a deployed contract does — only the
+deployed contract, or bytes it has accepted, can.
 
-This table is valid for commit `4918338` deployed by us. If the router address
-in `registry.ts` changes, or the commit is bumped, the table must be
-re-extracted from the source actually deployed. Pin both, so a change is a diff.
+Bytecode disassembly does not settle it either: the router is 20,541 bytes with
+11 delegatecalls and no dispatch constants at that address (§10.10).
+
+**The method that works: decode a real `Shipped` event on a live Aqua chain.**
+
+### 3b. Do not trust 1inch's TypeScript enum
+
+Their docs warn that `test/utils/SwapVMHelpers.ts` lists two concentrate
+entries where the router registers one, shifting everything after it by one.
+Derive opcodes from the deployed set or from observed programs.
 
 ## 4. Where the program lives — CONFIRMED
 
