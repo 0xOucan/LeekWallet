@@ -9,7 +9,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/registry.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/positions.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/portfolio.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/deploy.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/program.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/sdk-parity.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/registry.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/positions.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/funding.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/portfolio.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/view.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/deploy.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/program.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/sdk-parity.test.ts"
   },
   "dependencies": {
     "@leekwallet/core": "workspace:*",
