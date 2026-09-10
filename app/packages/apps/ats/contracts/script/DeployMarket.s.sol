@@ -49,7 +49,9 @@ contract DeployMarket is Script {
 
         if (paymentToken == address(0)) {
             console2.log("payment leg : NATIVE HBAR");
-            console2.log("  priceTotal is denominated in WEIBAR (1 HBAR = 1e18).");
+            console2.log("  priceTotal is denominated in TINYBAR (1 HBAR = 1e8).");
+            console2.log("  The tx value field is weibar, but Hedera converts it:");
+            console2.log("  msg.value arrives in tinybar. PAYMENT_DECIMALS reports 8.");
             console2.log("  HTS association does not apply to HBAR and is skipped.");
         } else {
             // Fail loudly here rather than in the constructor: if this address is
