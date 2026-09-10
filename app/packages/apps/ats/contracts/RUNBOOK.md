@@ -446,3 +446,39 @@ cast send ... --gas-limit 2000000
 
 `forge script` does its own estimation against the fork and has not needed this;
 it is `cast send` that comes up short.
+
+
+---
+
+## forge script cannot simulate a payable call on Hedera
+
+`forge script` runs the contract's real bytecode in a **local EVM**, and a local
+EVM has no Hedera relay. So for a payable call the two disagree by 1e10 and the
+script aborts before it ever broadcasts:
+
+```
+locally     msg.value == tx value        == 25e18   -> WrongPayment
+on Hedera   msg.value == tx value / 1e10 == 2.5e9   -> matches
+```
+
+This is not a bug in the script or the contract. It is what a local simulation
+of a non-local runtime is worth, and it cannot be fixed by adjusting either
+number: making the simulation pass would make the real transaction fail.
+
+**Use `cast send` for payable calls.** It estimates through the relay rather
+than locally:
+
+```bash
+cast send $MARKET "fill(uint256)" $LISTING_ID \
+  --value 25000000000000000000 \
+  --rpc-url $RPC --account hedera-funder --gas-limit 2000000
+```
+
+`--value` is the transaction field, so **weibar**: `priceTotal * 1e10`.
+
+`forge script --skip-simulation` is the alternative if you want to keep the
+script, but it gives up the safety the simulation exists for. Prefer `cast send`
+for the one payable step and keep the scripts for everything else.
+
+Non-payable calls are unaffected -- `list`, `cancel`, `mint`, `deployEquity` all
+simulate correctly, and their dry runs have caught three real bugs.
