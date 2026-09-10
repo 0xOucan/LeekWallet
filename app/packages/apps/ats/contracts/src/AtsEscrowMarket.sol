@@ -53,10 +53,17 @@ import { IHederaTokenService, HTS_PRECOMPILE, HTS_SUCCESS, HTS_ALREADY_ASSOCIATE
  * cannot be received by an account that has not associated with it, which
  * silently defeats faucets and fresh contracts alike. HBAR needs none of that.
  *
- * **A decimals trap worth stating.** Native HBAR has 8 decimals on Hedera, but
- * `msg.value` in the EVM is denominated in weibar at 18 decimals. So a
- * `priceTotal` for the native leg is in WEIBAR, not tinybar and not HBAR.
- * 1 HBAR = 1e18 here. Getting this wrong is a 1e10 error in the price.
+ * **A decimals trap, corrected 2026-09-10 by a real reverted fill.** The
+ * transaction's `value` field is weibar (18 dp), but Hedera's relay converts it
+ * on the way in, so **`msg.value` inside the contract is TINYBAR (8 dp)**.
+ *
+ * A `priceTotal` for the native leg is therefore in TINYBAR. 1 HBAR = 1e8 here.
+ *
+ * This file previously said the opposite. A fill sending 25 HBAR arrived as
+ * `msg.value = 2_500_000_000` against a `priceTotal` of `25e18` and reverted
+ * `WrongPayment(2500000000, 25000000000000000000)` -- exactly 1e10 apart. The
+ * guard cost 0.046 HBAR of gas and stranded nothing, which is the argument for
+ * comparing exactly rather than accepting "close enough".
  *
  * ---------------------------------------------------------------------------
  * What is deliberately absent
@@ -155,7 +162,10 @@ contract AtsEscrowMarket is ReentrancyGuard {
              * wrong -- which is the entire reason this leg exists. 18 because
              * msg.value is weibar. */
             IS_NATIVE = true;
-            PAYMENT_DECIMALS = 18;
+            /* 8, not 18. msg.value arrives in tinybar on Hedera -- see the
+             * header. Reporting 18 here would tell every caller to price a lot
+             * 1e10 too high, which is precisely the fill that reverted. */
+            PAYMENT_DECIMALS = 8;
             return;
         }
 

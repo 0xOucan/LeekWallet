@@ -27,7 +27,7 @@ contract NativePaymentTest is Test {
     address buyer = makeAddr("buyer");
 
     uint256 constant LOT = 1_000_000;        // 1.0 share, 6 dp
-    uint256 constant PRICE = 3 ether;        // 3 HBAR, in WEIBAR (18 dp)
+    uint256 constant PRICE = 3 * 1e8;        // 3 HBAR, in TINYBAR (8 dp)
 
     function setUp() public {
         sec = new MockSecurity(6);
@@ -46,11 +46,16 @@ contract NativePaymentTest is Test {
         id = market.list(address(sec), LOT, PRICE);
     }
 
-    function test_nativeMarketNeedsNoTokenAndReports18Decimals() public view {
+    function test_nativeMarketNeedsNoTokenAndReportsTinybarDecimals() public view {
         assertTrue(market.IS_NATIVE(), "should be native");
         assertEq(address(market.PAYMENT_TOKEN()), address(0), "payment token should be unset");
-        // 18, not 8: msg.value is weibar.
-        assertEq(market.PAYMENT_DECIMALS(), 18, "native leg must report weibar decimals");
+        /* 8, not 18. The transaction's value field is weibar, but Hedera's
+         * relay converts it and msg.value arrives in TINYBAR. This assertion
+         * read 18 until a real fill on Hedera testnet reverted
+         * WrongPayment(2500000000, 25000000000000000000) -- exactly 1e10 apart.
+         * The test agreed with the bug, which is why it did not catch it: a
+         * local EVM has no relay to do the conversion. */
+        assertEq(market.PAYMENT_DECIMALS(), 8, "native leg must report tinybar decimals");
     }
 
     function test_fillSettlesBothLegsInHbar() public {

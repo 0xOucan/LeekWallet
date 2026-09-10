@@ -12,10 +12,23 @@ address(0)` selects native settlement. It exists because HTS association is a
 real obstacle: no account in this project holds an HTS token, and a faucet
 sending to an unassociated account simply fails. HBAR needs no association.
 
-The decimals trap is documented in the source and asserted in a test: native
-HBAR has **8** decimals on Hedera, but `msg.value` is weibar at **18**. A
-`priceTotal` on the native leg is in weibar. Getting that wrong is a 1e10 price
-error — precisely the hard-coded-scale anti-pattern the security skill names.
+**The decimals trap, and how it was actually resolved.** This report first
+stated that `msg.value` is weibar at 18 decimals. That was wrong, and a real
+fill on Hedera testnet proved it: 25 HBAR sent as a transaction `value` of
+`25e18` arrived inside the contract as `msg.value = 2_500_000_000` and reverted
+`WrongPayment(2500000000, 25000000000000000000)` — exactly 1e10 apart.
+
+**Hedera's relay converts the value on the way in, so `msg.value` is TINYBAR
+(8 dp).** A `priceTotal` on the native leg is in tinybar. `PAYMENT_DECIMALS`
+now reports 8, and the script multiplies by 1e8.
+
+Two things worth recording about why it survived to a live network. The unit
+test asserted 18, so **the test agreed with the bug** — a local EVM has no
+relay, so nothing there can distinguish the two. And the exact-value check is
+what turned a mispriced lot into a cheap revert: the guard cost 0.046 HBAR,
+stranded nothing, and named both numbers in the error, which is what made the
+1e10 ratio obvious at a glance. An "approximately equal" comparison would have
+filled at 1e-10 of the intended price.
 
 Native-leg rules applied: exact value only (an overpayment is refused rather
 than kept or refunded, so there is no second external call to an address that

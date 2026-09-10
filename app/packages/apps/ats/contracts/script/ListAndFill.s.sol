@@ -99,8 +99,11 @@ contract ListLot is Script {
         if (market.IS_NATIVE()) {
             uint256 priceHbar = vm.envUint("PRICE_HBAR");
             require(priceHbar > 0, "PRICE_HBAR must be positive");
-            /* 1e18, not 1e8: msg.value is weibar. See the header. */
-            return priceHbar * 1e18;
+            /* 1e8, not 1e18. The transaction's value field is weibar, but
+             * Hedera's relay converts it and msg.value arrives in TINYBAR.
+             * This line said 1e18 until a real fill reverted
+             * WrongPayment(2500000000, 25000000000000000000) -- 1e10 apart. */
+            return priceHbar * 1e8;
         }
 
         uint256 units = vm.envUint("PRICE_UNITS");
