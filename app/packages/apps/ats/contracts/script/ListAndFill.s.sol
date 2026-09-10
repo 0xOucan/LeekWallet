@@ -8,6 +8,26 @@ import { IERC20 } from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol"
 import { AtsEscrowMarket } from "../src/AtsEscrowMarket.sol";
 import { IAtsSecurity } from "./IAtsSecurity.sol";
 
+// Foundry's DefaultSender, which msg.sender becomes when a script runs without
+// --sender. It is never a real actor here, and every time it silently stood in
+// for one the failure arrived late and looked like something else: a mint that
+// "had no role", a seller that "did not hold that many shares". Refuse it by
+// name so the message says what is actually wrong.
+address constant FOUNDRY_DEFAULT_SENDER = 0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38;
+
+function requireRealActor(address who, string memory envName) pure {
+    require(
+        who != address(0) && who != FOUNDRY_DEFAULT_SENDER,
+        string.concat(
+            envName,
+            " is unset, so it fell back to Foundry's DefaultSender. Set ",
+            envName,
+            "=<address> and pass --sender <address>."
+        )
+    );
+}
+
+
 /**
  * The two halves of one secondary-market trade, as two scripts.
  *
@@ -35,6 +55,7 @@ contract ListLot is Script {
         IAtsSecurity security = IAtsSecurity(vm.envAddress("SECURITY"));
         uint256 shares = vm.envUint("SHARES");
         address seller = vm.envOr("SELLER", msg.sender);
+        requireRealActor(seller, "SELLER");
 
         require(shares > 0, "SHARES must be positive");
 
@@ -106,6 +127,7 @@ contract FillLot is Script {
         AtsEscrowMarket market = AtsEscrowMarket(payable(vm.envAddress("MARKET")));
         uint256 listingId = vm.envUint("LISTING_ID");
         address buyer = vm.envOr("BUYER", msg.sender);
+        requireRealActor(buyer, "BUYER");
 
         AtsEscrowMarket.Listing memory listing = market.getListing(listingId);
         require(listing.status == AtsEscrowMarket.Status.Open, "listing is not Open");

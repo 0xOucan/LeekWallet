@@ -6,6 +6,26 @@ import { console2 } from "forge-std/console2.sol";
 
 import { IAtsFactory, AtsRoles } from "./IAtsFactory.sol";
 
+// Foundry's DefaultSender, which msg.sender becomes when a script runs without
+// --sender. It is never a real actor here, and every time it silently stood in
+// for one the failure arrived late and looked like something else: a mint that
+// "had no role", a seller that "did not hold that many shares". Refuse it by
+// name so the message says what is actually wrong.
+address constant FOUNDRY_DEFAULT_SENDER = 0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38;
+
+function requireRealActor(address who, string memory envName) pure {
+    require(
+        who != address(0) && who != FOUNDRY_DEFAULT_SENDER,
+        string.concat(
+            envName,
+            " is unset, so it fell back to Foundry's DefaultSender. Set ",
+            envName,
+            "=<address> and pass --sender <address>."
+        )
+    );
+}
+
+
 /**
  * Deploy N equities and one bond through the Hedera ATS factory.
  *
@@ -105,6 +125,7 @@ contract DeploySecurities is Script {
         address factory = vm.envOr("FACTORY", DEFAULT_FACTORY);
         address resolver = vm.envOr("RESOLVER", DEFAULT_RESOLVER);
         address issuer = vm.envOr("ISSUER", msg.sender);
+        requireRealActor(issuer, "ISSUER");
         require(issuer != address(0), "ISSUER unset and no sender");
 
         /* Guard the one thing a hand-written interface can get wrong silently.

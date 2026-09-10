@@ -7,6 +7,26 @@ import { console2 } from "forge-std/console2.sol";
 import { IAtsSecurity } from "./IAtsSecurity.sol";
 import { AtsRoles } from "./IAtsFactory.sol";
 
+// Foundry's DefaultSender, which msg.sender becomes when a script runs without
+// --sender. It is never a real actor here, and every time it silently stood in
+// for one the failure arrived late and looked like something else: a mint that
+// "had no role", a seller that "did not hold that many shares". Refuse it by
+// name so the message says what is actually wrong.
+address constant FOUNDRY_DEFAULT_SENDER = 0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38;
+
+function requireRealActor(address who, string memory envName) pure {
+    require(
+        who != address(0) && who != FOUNDRY_DEFAULT_SENDER,
+        string.concat(
+            envName,
+            " is unset, so it fell back to Foundry's DefaultSender. Set ",
+            envName,
+            "=<address> and pass --sender <address>."
+        )
+    );
+}
+
+
 /**
  * Mint a security to its first holders.
  *
@@ -55,6 +75,7 @@ contract MintAndDistribute is Script {
         address[] memory holders = vm.envAddress("HOLDERS", ",");
         uint256[] memory shares = vm.envUint("SHARES", ",");
         address issuer = vm.envOr("ISSUER", msg.sender);
+        requireRealActor(issuer, "ISSUER");
 
         require(holders.length > 0, "HOLDERS is empty");
         require(holders.length == shares.length, "HOLDERS and SHARES differ in length");
