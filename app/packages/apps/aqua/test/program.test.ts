@@ -211,9 +211,12 @@ group("every one of the eleven supported opcodes decodes, with byte-exact fields
     check(byName("onlyTakerTokenBalanceNonZero").token === `0x${TOKEN_A}`, "taker token");
     check(byName("onlyTxOriginTokenBalanceNonZero").token === `0x${TOKEN_B}`, "tx.origin token");
     check(byName("onlyTakerTokenBalanceGte").token === `0x${TOKEN_A}`, "Gte token");
-    check(byName("onlyTakerTokenBalanceGte").amount === 7n, "Gte amount");
+    /* No threshold assertion for 15/16: the split between the address and the
+     * value is inferred, not observed, so the decoder deliberately does not
+     * produce it. Asserting a value we chose not to decode would re-introduce
+     * the claim through the test. */
     check(byName("onlyTakerTokenSupplyShareGte").token === `0x${TOKEN_B}`, "share token");
-    check(byName("onlyTakerTokenSupplyShareGte").share === 9n, "share value");
+
     check(byName("xycConcentrateGrowLiquidity2D").sqrtPriceMin === 1n << 96n, "sqrtPriceMin");
     check(byName("xycConcentrateGrowLiquidity2D").sqrtPriceMax === 2n << 96n, "sqrtPriceMax");
     const pegged = byName("peggedSwapGrowPriceRange2D");

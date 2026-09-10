@@ -162,8 +162,15 @@ export const AQUA_MAX_INSTRUCTIONS = 16;
 export type InstructionFields =
   | { readonly name: "deadline"; readonly deadline: bigint }
   | { readonly name: "onlyTakerTokenBalanceNonZero"; readonly token: string }
-  | { readonly name: "onlyTakerTokenBalanceGte"; readonly token: string; readonly amount: bigint }
-  | { readonly name: "onlyTakerTokenSupplyShareGte"; readonly token: string; readonly share: bigint }
+  /* 15 and 16 carry a token and then a threshold. The TOTAL length is known,
+   * so the program still walks safely -- but the split between the address and
+   * the value is inferred from documentation and no observed program exercises
+   * either. So the threshold is deliberately NOT decoded: a wrong split would
+   * put a plausible, wrong number on a screen the user relies on, and the
+   * firmware renders these name-only. The host must not claim more than the
+   * device shows. Add the field when a real program proves the layout. */
+  | { readonly name: "onlyTakerTokenBalanceGte"; readonly token: string }
+  | { readonly name: "onlyTakerTokenSupplyShareGte"; readonly token: string }
   | { readonly name: "onlyTxOriginTokenBalanceNonZero"; readonly token: string }
   | { readonly name: "xycSwapXD" }
   | {
@@ -234,9 +241,9 @@ function parseFields(name: string, args: Uint8Array): InstructionFields {
     case "onlyTxOriginTokenBalanceNonZero":
       return { name, token: addr(0) };
     case "onlyTakerTokenBalanceGte":
-      return { name, token: addr(0), amount: u(20, 52) };
+      return { name, token: addr(0) };   // threshold not decoded -- see the type
     case "onlyTakerTokenSupplyShareGte":
-      return { name, token: addr(0), share: u(20, 28) };
+      return { name, token: addr(0) };   // threshold not decoded -- see the type
     case "xycSwapXD":
       return { name };
     case "xycConcentrateGrowLiquidity2D":
