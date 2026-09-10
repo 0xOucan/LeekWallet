@@ -287,9 +287,9 @@ bool eth_aqua_amount(const EthCall *call, const uint8_t *data, size_t len,
                      int i, EthQuantity *out);
 
 /**
- * The name of SwapVM program instruction `i` ("Deadline", "XYCSwap", ...),
+ * The name of SwapVM program instruction `i` ("deadline", "xycSwapXD", ...),
  * into `out`. Empty string if `i` is out of range or the opcode byte at
- * `data[call->aqua_instr_off[i]]` no longer matches one of the nine this
+ * `data[call->aqua_instr_off[i]]` no longer matches one of the eleven this
  * device draws -- re-read from `data` rather than cached at decode time, for
  * the same reason every other `eth_arg_*`/`eth_aqua_*` accessor is (see
  * eth_arg_word()). Only meaningful when `call->aqua_is_swapvm` is true.
@@ -299,10 +299,12 @@ void eth_aqua_instr_name(const EthCall *call, const uint8_t *data, size_t len,
 
 /**
  * Instruction `i`'s one headline figure, formatted for a screen: a
- * `uint40`/`uint24`/`uint16` as a decimal integer (Deadline, FeeFlatIn,
- * Decay), an address (the two balance-check opcodes), or the empty string for
- * an opcode with no single figure worth a dedicated page (XYCSwap, Salt,
- * XYCConcentrateSwap, PeggedSwap -- their args are shown as raw hex instead,
+ * `uint40`/`uint32`/`uint16` as a decimal integer (deadline,
+ * flatFeeAmountInXD -- raw, against a 1e9 = 100% base, never "bps" -- and
+ * decayXD), an address (the two non-zero balance guards), or the empty string
+ * for an opcode with no single figure worth a dedicated page (xycSwapXD,
+ * salt, the two Gte guards, xycConcentrateGrowLiquidity2D,
+ * peggedSwapGrowPriceRange2D -- their args are shown as raw hex instead,
  * see eth_aqua_instr_hex()). Re-reads `data`/`len` for the reason every other
  * `eth_arg_*`/`eth_aqua_*` accessor does: this runs at render time against a
  * buffer the renderer owns.

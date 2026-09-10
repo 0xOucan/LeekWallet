@@ -21,71 +21,77 @@
  * zero-padded.
  *
  * ---------------------------------------------------------------------------
- * The opcode table (spec §3, RESOLVED)
+ * The opcode table (spec §3, SETTLED ON-CHAIN 2026-09-10)
  *
- * Pinned to commit `4918338` of `1inch/swap-vm`, deployed by us — the wire
- * byte IS the `Opcode` enum value at that commit, verified against
- * `src/opcodes/AquaOpcodes.sol`'s own dispatch chain. If the deployed
- * router's commit or address ever changes, this table must be re-extracted
- * before it is trusted again (spec §3a, §11).
+ * The deployed `AquaSwapVMRouter` v1.0.2 numbers its instructions by DENSE
+ * INDEX, not by the `Opcode` enum in `OpcodeList.sol` (`XYCSwap = 0x50`,
+ * `Decay = 0x9c`) — that enum is a different version's numbering, and an
+ * earlier version of this table shipped it. It was wrong, and it refused every
+ * real Aqua strategy on Base.
  *
- * Every argument width below was read out of the individual
- * `src/instructions/*.sol` file that builds and parses it — not guessed, not
- * inferred from a name:
+ * What settles it is not source at an arbitrary commit but bytes the deployed
+ * router has accepted: two live maker strategies read back from `Shipped`
+ * events on Base mainnet (8453) both walk as
  *
- *   Salt (0x02)                          - opaque; `exec()` never reads args,
- *                                          so no width claim is made at all.
- *                                          Controls.sol.
- *   Deadline (0x20)                      - [uint40 deadline], 5 bytes.
- *                                          Controls.sol.
- *   OnlyTakerTokenBalanceNonZero (0x23)  - [address token], 20 bytes.
- *                                          TokenValidators.sol.
- *   OnlyTxOriginTokenBalanceNonZero(0x26)- [address token], 20 bytes.
- *                                          TokenValidators.sol.
- *   XYCSwap (0x50)                       - no args, 0 bytes. XYCSwap.sol.
- *   XYCConcentrateSwap (0x51)            - [uint256 sqrtPriceMin,
- *                                          uint256 sqrtPriceMax], 64 bytes.
- *                                          XYCConcentrate.sol.
- *   PeggedSwap (0x58)                    - [uint256 x0, uint256 y0,
- *                                          uint256 linearWidth,
- *                                          uint256 rateA, uint256 rateB],
- *                                          160 bytes. PeggedSwap.sol.
- *   FeeFlatIn (0x70)                     - [uint24 feeBps], 3 bytes, against
- *                                          a denominator of 1e7 (not the usual
- *                                          1e4). FeeFlat.sol.
- *   Decay (0x9c)                         - [uint16 period], 2 bytes.
- *                                          Decay.sol.
+ *   op 18 (0x12) argslen 64   xycConcentrateGrowLiquidity2D
+ *   op 21 (0x15) argslen  4   flatFeeAmountInXD
+ *   op 17 (0x11) argslen  0   xycSwapXD
+ *   op 20 (0x14) argslen  8   salt
  *
- * `OnlyTakerTokenBalanceGte` (0x24) and `OnlyTakerTokenSupplyShareGte` (0x25)
- * are real opcodes the Aqua router dispatches, but they are deliberately NOT
- * in this table — the nine names in spec §6.4 are the whole initial set. A
- * program using them is refused as `unknown-opcode`, exactly like a byte the
- * router itself would revert on, because "in the router's dispatch set" and
- * "in the set this wallet renders" are different claims and only the second
- * one is what this module promises.
+ * and 1inch's documented dApp program is `0x21 0x14 <20-byte KycNFT> 0x11
+ * 0x00` — opcode 33 then opcode 17. Both are in the shared calldata vectors,
+ * so a regression to any other numbering fails the suite rather than shipping.
  *
- * `FeeProtocol` (0x80) is excluded on purpose (spec §6.4): its args are
- * variable-length, conditional on per-receiver flag bits this pass does not
- * decode, and that is exactly the shape that reads plausibly while being
- * wrong.
+ * The table this module renders, with the argument width each opcode's own
+ * parser reads (spec §3):
  *
- * `Jump` (0x03), `Extruction` (0x04), `JumpIfTokenIn` (0x31) and
- * `JumpIfTokenOut` (0x32) are control flow: real opcodes the router
- * dispatches, deliberately refused rather than added to the table at all
- * (spec §6.3). A jump means the linear list this module would produce is not
- * the list that executes, and `Extruction` hands the swap registers to
- * arbitrary maker-chosen bytecode this module cannot read by construction.
- * They get their own refusal kind, `has-control-flow`, distinct from
- * `unknown-opcode`, because a reviewer should be able to tell "we know
- * exactly what this is and still won't render it" apart from "we have never
- * heard of this byte".
+ *   13 (0x0d) deadline                        5 bytes  [uint40]
+ *   14 (0x0e) onlyTakerTokenBalanceNonZero   20 bytes  [address]
+ *   15 (0x0f) onlyTakerTokenBalanceGte       52 bytes  [address, uint256]
+ *   16 (0x10) onlyTakerTokenSupplyShareGte   28 bytes  [address, uint64]
+ *   17 (0x11) xycSwapXD                       0 bytes
+ *   18 (0x12) xycConcentrateGrowLiquidity2D  64 bytes  [uint256, uint256]
+ *   19 (0x13) decayXD                         2 bytes  [uint16]
+ *   20 (0x14) salt                           any       opaque, never read
+ *   21 (0x15) flatFeeAmountInXD               4 bytes  [uint32], base 1e9
+ *   31 (0x1f) peggedSwapGrowPriceRange2D    160 bytes  [5 × uint256]
+ *   33 (0x21) onlyTxOriginTokenBalanceNonZero 20 bytes [address]
+ *
+ * `flatFeeAmountInXD` is FOUR bytes, not three, and its denominator is 1e9 —
+ * 1e9 is 100%, so 0.30% is 3_000_000. It is never labelled "bps": a 1e9-base
+ * number called bps is off by five orders of magnitude, which is precisely the
+ * plausible-but-wrong render this module exists to refuse.
+ *
+ * `salt` carries no width claim at all, because its `exec()` never reads its
+ * args — there is no field being interpreted, only bytes carried for
+ * uniqueness.
+ *
+ * Deliberately NOT in the table, and refused:
+ *
+ *   27–30  protocolFeeAmountInXD and its three variants — v1 sets them zero,
+ *          and their args are conditional on per-receiver flag bits this pass
+ *          does not decode (spec §6.4). Exactly the shape that reads
+ *          plausibly while being wrong.
+ *   10 (0x0a) jump, 11 (0x0b) jumpIfTokenIn, 12 (0x0c) jumpIfTokenOut and
+ *   32 (0x20) extruction — control flow and external pricing (spec §6.3). A
+ *          jump means the linear list this module would produce is not the
+ *          list that executes; `extruction` hands the swap registers to
+ *          arbitrary maker-chosen bytecode this module cannot read by
+ *          construction. They get their own refusal kind,
+ *          `has-control-flow`, distinct from `unknown-opcode`, so a reviewer
+ *          can tell "we know exactly what this is and still won't render it"
+ *          apart from "we have never heard of this byte".
+ *
+ * Indices 0–9 and 22–26 are reserved no-ops on the router and are unknown
+ * here. Anything past the table reverts `Panic(0x32)` on chain; here it is an
+ * `unknown-opcode` refusal, which is the same answer with a better message.
  *
  * ---------------------------------------------------------------------------
  * "Understood" (spec §6.2)
  *
  * An instruction is understood only when its opcode is in the table above,
  * its `args_len` equals that opcode's fixed width EXACTLY (never "at least"
- * — a `Deadline` with six bytes is refused, not truncated to five), and
+ * — a `deadline` with six bytes is refused, not truncated to five), and
  * every field this module renders is derived by its own arithmetic. A
  * program is understood only when every instruction in it is understood,
  * the stream consumes the program's bytes exactly, and it contains no
@@ -104,7 +110,7 @@ interface OpcodeSpec {
   readonly name: string;
   /**
    * Exact required `args_len`, or `null` when the opcode's own `exec()` never
-   * reads its args at all (Salt) — in which case any length is understood,
+   * reads its args at all (salt) — in which case any length is understood,
    * because there is no field being interpreted, only bytes carried for
    * uniqueness.
    */
@@ -113,23 +119,25 @@ interface OpcodeSpec {
 
 /** The closed, literal allowlist. See the file header for how each width was verified. */
 const OPCODES: Readonly<Record<number, OpcodeSpec>> = {
-  0x02: { name: "Salt", argsLen: null },
-  0x20: { name: "Deadline", argsLen: 5 },
-  0x23: { name: "OnlyTakerTokenBalanceNonZero", argsLen: 20 },
-  0x26: { name: "OnlyTxOriginTokenBalanceNonZero", argsLen: 20 },
-  0x50: { name: "XYCSwap", argsLen: 0 },
-  0x51: { name: "XYCConcentrateSwap", argsLen: 64 },
-  0x58: { name: "PeggedSwap", argsLen: 160 },
-  0x70: { name: "FeeFlatIn", argsLen: 3 },
-  0x9c: { name: "Decay", argsLen: 2 },
+  13: { name: "deadline", argsLen: 5 },
+  14: { name: "onlyTakerTokenBalanceNonZero", argsLen: 20 },
+  15: { name: "onlyTakerTokenBalanceGte", argsLen: 52 },
+  16: { name: "onlyTakerTokenSupplyShareGte", argsLen: 28 },
+  17: { name: "xycSwapXD", argsLen: 0 },
+  18: { name: "xycConcentrateGrowLiquidity2D", argsLen: 64 },
+  19: { name: "decayXD", argsLen: 2 },
+  20: { name: "salt", argsLen: null },
+  21: { name: "flatFeeAmountInXD", argsLen: 4 },
+  31: { name: "peggedSwapGrowPriceRange2D", argsLen: 160 },
+  33: { name: "onlyTxOriginTokenBalanceNonZero", argsLen: 20 },
 };
 
 /** Real Aqua-dispatched opcodes, deliberately excluded — see file header. */
 const CONTROL_FLOW: Readonly<Record<number, string>> = {
-  0x03: "Jump",
-  0x04: "Extruction",
-  0x31: "JumpIfTokenIn",
-  0x32: "JumpIfTokenOut",
+  10: "jump",
+  11: "jumpIfTokenIn",
+  12: "jumpIfTokenOut",
+  32: "extruction",
 };
 
 /**
@@ -152,19 +160,37 @@ export const AQUA_MAX_INSTRUCTIONS = 16;
 /* ------------------------------------------------------------- instructions */
 
 export type InstructionFields =
-  | { readonly name: "Salt"; readonly salt: Uint8Array }
-  | { readonly name: "Deadline"; readonly deadline: bigint }
-  | { readonly name: "OnlyTakerTokenBalanceNonZero"; readonly token: string }
-  | { readonly name: "OnlyTxOriginTokenBalanceNonZero"; readonly token: string }
-  | { readonly name: "XYCSwap" }
-  | { readonly name: "XYCConcentrateSwap"; readonly sqrtPriceMin: bigint; readonly sqrtPriceMax: bigint }
+  | { readonly name: "deadline"; readonly deadline: bigint }
+  | { readonly name: "onlyTakerTokenBalanceNonZero"; readonly token: string }
+  /* 15 and 16 carry a token and then a threshold. The TOTAL length is known,
+   * so the program still walks safely -- but the split between the address and
+   * the value is inferred from documentation and no observed program exercises
+   * either. So the threshold is deliberately NOT decoded: a wrong split would
+   * put a plausible, wrong number on a screen the user relies on, and the
+   * firmware renders these name-only. The host must not claim more than the
+   * device shows. Add the field when a real program proves the layout. */
+  | { readonly name: "onlyTakerTokenBalanceGte"; readonly token: string }
+  | { readonly name: "onlyTakerTokenSupplyShareGte"; readonly token: string }
+  | { readonly name: "onlyTxOriginTokenBalanceNonZero"; readonly token: string }
+  | { readonly name: "xycSwapXD" }
   | {
-      readonly name: "PeggedSwap";
+      readonly name: "xycConcentrateGrowLiquidity2D";
+      readonly sqrtPriceMin: bigint; readonly sqrtPriceMax: bigint;
+    }
+  | { readonly name: "decayXD"; readonly period: number }
+  | { readonly name: "salt"; readonly salt: Uint8Array }
+  /**
+   * `fee` is a raw uint32 against a denominator of 1e9, where 1e9 is 100% —
+   * so 3_000_000 is 0.30%. It is deliberately not called `feeBps`: this is
+   * not a basis-point number and naming it one would be wrong by five orders
+   * of magnitude. Callers that want a percentage should divide by 1e7.
+   */
+  | { readonly name: "flatFeeAmountInXD"; readonly fee: number }
+  | {
+      readonly name: "peggedSwapGrowPriceRange2D";
       readonly x0: bigint; readonly y0: bigint; readonly linearWidth: bigint;
       readonly rateA: bigint; readonly rateB: bigint;
-    }
-  | { readonly name: "FeeFlatIn"; readonly feeBps: number }
-  | { readonly name: "Decay"; readonly period: number };
+    };
 
 export interface Instruction {
   /** The wire byte, so a caller need not re-derive it from `fields.name`. */
@@ -209,28 +235,31 @@ function parseFields(name: string, args: Uint8Array): InstructionFields {
   const addr = (from: number) => "0x" + toHex(args.subarray(from, from + 20));
 
   switch (name) {
-    case "Salt":
-      return { name, salt: args };
-    case "Deadline":
+    case "deadline":
       return { name, deadline: u(0, 5) };
-    case "OnlyTakerTokenBalanceNonZero":
+    case "onlyTakerTokenBalanceNonZero":
+    case "onlyTxOriginTokenBalanceNonZero":
       return { name, token: addr(0) };
-    case "OnlyTxOriginTokenBalanceNonZero":
-      return { name, token: addr(0) };
-    case "XYCSwap":
+    case "onlyTakerTokenBalanceGte":
+      return { name, token: addr(0) };   // threshold not decoded -- see the type
+    case "onlyTakerTokenSupplyShareGte":
+      return { name, token: addr(0) };   // threshold not decoded -- see the type
+    case "xycSwapXD":
       return { name };
-    case "XYCConcentrateSwap":
+    case "xycConcentrateGrowLiquidity2D":
       return { name, sqrtPriceMin: u(0, 32), sqrtPriceMax: u(32, 64) };
-    case "PeggedSwap":
+    case "decayXD":
+      return { name, period: Number(u(0, 2)) };
+    case "salt":
+      return { name, salt: args };
+    case "flatFeeAmountInXD":
+      return { name, fee: Number(u(0, 4)) };
+    case "peggedSwapGrowPriceRange2D":
       return {
         name,
         x0: u(0, 32), y0: u(32, 64), linearWidth: u(64, 96),
         rateA: u(96, 128), rateB: u(128, 160),
       };
-    case "FeeFlatIn":
-      return { name, feeBps: Number(u(0, 3)) };
-    case "Decay":
-      return { name, period: Number(u(0, 2)) };
     default:
       /* Unreachable: every name that reaches here came out of OPCODES above. */
       throw new Error(`no field parser for ${name}`);

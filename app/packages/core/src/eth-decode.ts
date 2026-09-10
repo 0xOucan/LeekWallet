@@ -205,22 +205,25 @@ export const AQUA_MAX_INSTRUCTIONS = 16;
 const AQUA_SWAPVM_ROUTER = "0x111111338c5091e8440b67b168bae16a668ac0de";
 
 /** One row of the closed opcode allowlist — the mirror of `AQUA_OPCODES` in
- * eth-decode.c, which is itself the mirror of `OPCODES` in program.ts. `null`
- * argsLen means any length is understood (Salt). */
+ * eth-decode.c, which is itself the mirror of `OPCODES` in program.ts. These
+ * are the dense indices the deployed AquaSwapVMRouter v1.0.2 dispatches on
+ * (docs/AQUA-B3-SPEC.md §3), not the `Opcode` enum an earlier version of this
+ * table carried. `null` argsLen means any length is understood (salt). */
 const AQUA_OPCODES: Readonly<Record<number, { name: string; argsLen: number | null }>> = {
-  0x02: { name: "Salt", argsLen: null },
-  0x20: { name: "Deadline", argsLen: 5 },
-  0x23: { name: "OnlyTakerTokenBalanceNonZero", argsLen: 20 },
-  0x26: { name: "OnlyTxOriginTokenBalanceNonZero", argsLen: 20 },
-  0x50: { name: "XYCSwap", argsLen: 0 },
-  0x51: { name: "XYCConcentrateSwap", argsLen: 64 },
-  0x58: { name: "PeggedSwap", argsLen: 160 },
-  0x70: { name: "FeeFlatIn", argsLen: 3 },
-  0x9c: { name: "Decay", argsLen: 2 },
+  13: { name: "deadline", argsLen: 5 },
+  14: { name: "onlyTakerTokenBalanceNonZero", argsLen: 20 },
+  15: { name: "onlyTakerTokenBalanceGte", argsLen: 52 },
+  16: { name: "onlyTakerTokenSupplyShareGte", argsLen: 28 },
+  17: { name: "xycSwapXD", argsLen: 0 },
+  18: { name: "xycConcentrateGrowLiquidity2D", argsLen: 64 },
+  19: { name: "decayXD", argsLen: 2 },
+  20: { name: "salt", argsLen: null },
+  21: { name: "flatFeeAmountInXD", argsLen: 4 },
+  31: { name: "peggedSwapGrowPriceRange2D", argsLen: 160 },
+  33: { name: "onlyTxOriginTokenBalanceNonZero", argsLen: 20 },
 };
 
-/** Jump, JumpIfTokenIn, JumpIfTokenOut, Extruction — refused, not tabled. */
-const AQUA_CONTROL_FLOW = new Set([0x03, 0x04, 0x31, 0x32]);
+const AQUA_CONTROL_FLOW = new Set([10, 11, 12, 32]);
 
 /** One SwapVM program instruction, as decoded from a ship's strategy. */
 export interface AquaInstruction {

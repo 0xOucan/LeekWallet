@@ -390,14 +390,14 @@ milestone's headline claim and it costs one unit test.
 
 | # | Claim | Status | How to settle it |
 |---|---|---|---|
-| 10.1 | Which opcode numbering applies | **RESOLVED — §3** | The rules permit redeploying SwapVM, so we deploy commit `4918338` and the enum value is the wire byte by construction, as its own dispatcher and `OpcodeEnumCheck.t.sol` both show. Re-extract if the commit or router address changes. |
+| 10.1 | Which opcode numbering applies | **RESOLVED — §3, dense indices** | Settled by decoding real `Shipped` events from the Aqua registry on Base mainnet: the deployed v1.0.2 router dispatches on dense indices, not the `Opcode` enum. The earlier answer here — "we deploy commit `4918338`, so the enum value is the wire byte by construction" — described a deployment we do not control and shipped a table that refused every live strategy. Re-run the same probe if the router address changes. |
 | 10.2 | The 16-opcode dispatch set matches the deployment | UNCONFIRMED | Same probe, one instruction per candidate opcode. The SDK claiming 29 is direct evidence of drift. |
 | 10.3 | Commit `4918338` is what is deployed | UNCONFIRMED | Compare deployed bytecode against a local build. |
 | 10.4 | The SwapVM licence carries the same bundling bar | UNCONFIRMED | Read `swap-vm/LICENSES/SwapVM-1.1.txt` clause by clause; record in `THIRD-PARTY-LICENSES.md`. Presume encumbered until read. |
 | 10.5 | Every SwapVM strategy has the `0x20` head | Confirmed *for this app* | `abi.encode(Order)` with `bytes data` is a dynamic tuple. But see 10.6. |
 | 10.6 | Non-SwapVM Aqua apps also have a `0x20` head | **UNCONFIRMED — counter-evidence** | The `aqua-sdk` README's XYCSwap example encodes an **all-static** tuple, which viem inlines with **no** head word; `readStrategy` would refuse it as `not-a-tuple`. Safe failure, but B2 may already refuse a legitimate shape. Track as a B2 follow-up, not a B3 blocker. |
 | 10.7 | `programStart = (traits >> 208) & 0xffff` | Derived, not executed | Assert in `program.test.ts` against an SDK-built `Order`, both directions. |
-| 10.8 | Aqua is deployed on Sepolia | UNCONFIRMED | Confirm before §9 layer 3. |
+| 10.8 | Aqua is deployed on Sepolia | **NO** | Sepolia is not an Aqua chain and has been removed from `AQUA_CHAIN_IDS`. The registry-shaped code at the shared address is what deterministic deployment leaves on any chain; it is evidence of an address, not of the protocol. §9 layer 3 needs a different plan. |
 | 10.9 | No program-level version declaration | Confirmed by absence | Nothing in `runLoop` or `Order` carries a version. Versioning is per router deployment (EIP-712 domain), invisible to a program's bytes. |
 | 10.10 | The mainnet router can be disassembled for the dispatch constants | **DISPROVED — measured** | `eth_getCode` on `0x111111338c5091e8440b67b168bae16a668ac0de` returns **20,541 bytes** containing **no opcode dispatch constants** (the only `PUSH1 x EQ` values are `0x02`, `0x20`, `0x40` — ABI/memory constants) and **11 `DELEGATECALL`s**. Its EIP-1967 implementation slot is **zero**, so it is not a standard proxy. The dispatch lives behind a delegation this scan does not follow. Resolve the delegation targets first if this route is retried; otherwise use 10.1's Sepolia probe. |
 
