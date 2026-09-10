@@ -29,7 +29,19 @@ interface IAtsSecurity {
     function paused() external view returns (bool);
 
     /* Mint -- requires ROLE_ISSUER or ROLE_AGENT. */
-    function mint(address to, uint256 amount) external returns (bool);
+    /* Returns NOTHING. `IMint.mint(address,uint256) external;` in
+     * @hashgraph/asset-tokenization-contracts 8.0.0 -- no return value.
+     *
+     * This was declared `returns (bool)` and the failure was invisible in the
+     * worst way: the mint SUCCEEDED on chain, emitting Transfer,
+     * TransferByPartition and Issued, and then Solidity tried to decode a bool
+     * from empty return data and reverted with no message. A broadcast would
+     * have minted and then reported failure.
+     *
+     * The selector is the same either way, so the calldata was never wrong --
+     * only the decode was. Declare the return type from the interface, not
+     * from what an ERC-20 habit expects. */
+    function mint(address to, uint256 amount) external;
 
     /* AccessControl */
     function hasRole(bytes32 role, address account) external view returns (bool);
