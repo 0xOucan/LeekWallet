@@ -13,8 +13,8 @@ check that can stop the deployment, and it is step 0 below.**
 
 | Role | Address | Holds |
 |---|---|---|
-| **Funder / deployer / taker** | `0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45` | 0.002 ETH, 2.04 USDC, 0.000201 WETH on Base |
-| **Maker** — the LeekWallet device | `0xbDEB381a7c77040bf2a99E2990C116774CCb339f` | **nothing on Base yet** |
+| **Funder / deployer / taker** | `0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45` | 0.005 ETH · 4.04 USDC · 0.0002 WETH · **0 cbBTC** |
+| **Maker** — the LeekWallet device | `0xbDEB381a7c77040bf2a99E2990C116774CCb339f` | 0.002 ETH · 2.50 USDC · **0.004 WETH · 0.00012 cbBTC** |
 | Aqua registry | `0x1111113ccf1426a8e30e2bff5e005d929bf6a90a` | — |
 | SwapVM router (the `app`) | `0x111111338c5091e8440b67b168bae16a668ac0de` | — |
 | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | 6 decimals |
@@ -30,11 +30,12 @@ A key in `argv` is a key in your shell history, in the process table, and in
 whatever your shell logs. Import once, then reference by name:
 
 ```bash
-cast wallet import base-deployer --interactive
+# Already imported if you ran the Hedera runbook -- `cast wallet list` to check.
+cast wallet import monad-deployer --interactive
 # paste the deployer's key at the prompt; it goes into ~/.foundry/keystores
 ```
 
-Every command below uses `--account base-deployer`. **The maker never appears
+Every command below uses `--account monad-deployer`. **The maker never appears
 in a `cast` command at all** — the maker is the device, and its transactions
 are approved by pressing a button.
 
@@ -58,7 +59,18 @@ anything else, stop — every address above is Base-only.
 
 ---
 
-## Step 0 — the check that can stop everything
+## Step 0 — RESOLVED 2026-09-10, skip it
+
+**This check has been run and it passed.** A real opcode-18 program on Base
+carries `4.685e13` and `5.179e13`, which under the documented reading is a band
+of ~2,190–2,680 USDC per ETH — the predicted magnitude for WETH/USDC. A
+raw-for-sqrt error would move the number ~1e4 and a human-for-raw error ~1e6,
+so either would land nowhere near. Recorded in `../docs/STRATEGIES.md`.
+
+The tiers are shippable. **Go to step 1.** The original instructions are kept
+below only so the method is reproducible if the router address ever changes.
+
+<details><summary>original step 0</summary>
 
 **Do not skip this.** STRATEGIES.md §6.1 / AUDIT-REPORT §6.1: the *width* of
 opcode 18's arguments is settled on-chain (64 bytes), but the claim that they
@@ -90,69 +102,65 @@ pair around `3e16` (STRATEGIES.md §3.3). If instead they are around `4e18` or
   `xycSwap` (opcode 17, zero args, nothing to get wrong), and shelve the tiers.
   Record what you saw in STRATEGIES.md §6.1 before anything is deployed.
 
+</details>
+
 ---
 
-## Step 1 — funding
+## Step 1 — funding  ✅ ALREADY DONE (verified 2026-09-10)
 
-The maker holds nothing. The funder holds 0.002 ETH, 2.04 USDC and 0.000201
-WETH, and that is the entire budget.
+**Skip the transfers below unless a balance check disagrees.** The maker was
+funded directly and holds more than this section originally planned for:
 
-### What the maker needs, and why
-
-| Item | Amount | Why exactly this |
-|---|---|---|
-| ETH (gas) | **0.0008 ETH** | the maker signs 4 transactions: 2 approvals, 2 ships, plus 2 docks later = 6. Base is cheap; 0.0008 is generous headroom for six sub-$0.01 transactions and leaves the funder able to pay for its own deploy and fills. |
-| USDC | **2.000000** (`2000000` raw) | 1.00 into P1, 1.00 into P2 |
-| WETH | **0.0002** (`200000000000000` raw) | the whole WETH balance, into P1 |
-
-That is the *entire* USDC balance minus dust and the *entire* WETH balance. The
-funder keeps ~0.04 USDC and ~0.0012 ETH for gas on the deploy and the fills.
-
-### Can all three tiers be funded? No.
-
-**No. Fund one tier.** 2 USDC across three tiers is 0.66 USDC per tier per
-pair, and each tier is a separate strategy needing its own ship transaction and
-its own share of a fixed approval. Splitting the budget three ways produces
-three positions too small for anyone to fill and triples the gas.
-
-**Order of preference, if you want to see more than one:**
-
-1. **`medium` on P1 (USDC/WETH)** — the only two-sided position, the only one
-   with a real market on both legs, and the one whose band a person can check
-   by eye against a price they know. **Fund this first. If you fund only one
-   thing, fund this.**
-2. **`medium` on P2 (USDC/cbBTC)** — one-sided (the maker holds no cbBTC), so
-   it is a valid position that decodes and renders but is not a market. Worth
-   shipping to show the second pair.
-3. **`high` on P1** — only if you want a second tier visibly on chain to
-   compare bands. Take its USDC from P2's allocation, not from P1's.
-
-`low` is not recommended at this size: a band from half the mid to double it,
-over 1 USDC, is indistinguishable in behaviour from an unconcentrated position.
-
-### Commands
-
-```bash
-# ETH for gas
-cast send --rpc-url "$BASE_RPC" --account base-deployer \
-  "$MAKER" --value 0.0008ether
-
-# USDC: 2.000000
-cast send --rpc-url "$BASE_RPC" --account base-deployer \
-  "$USDC" "transfer(address,uint256)" "$MAKER" 2000000
-
-# WETH: 0.0002
-cast send --rpc-url "$BASE_RPC" --account base-deployer \
-  "$WETH" "transfer(address,uint256)" "$MAKER" 200000000000000
+```
+device / maker    0.002 ETH   2.50 USDC   0.004 WETH   0.00012 cbBTC
+deployer / taker  0.005 ETH   4.04 USDC   0.0002 WETH  0 cbBTC
 ```
 
-**Verify — from chain state, not from our UI:**
+Confirm before relying on it:
 
 ```bash
-cast balance "$MAKER" --rpc-url "$BASE_RPC"                                    # >= 800000000000000
-cast call "$USDC" "balanceOf(address)(uint256)" "$MAKER" --rpc-url "$BASE_RPC" # 2000000
-cast call "$WETH" "balanceOf(address)(uint256)" "$MAKER" --rpc-url "$BASE_RPC" # 200000000000000
+cast balance "$MAKER" --rpc-url "$BASE_RPC"
+cast call "$USDC"  "balanceOf(address)(uint256)" "$MAKER" --rpc-url "$BASE_RPC"   # 2500000
+cast call "$WETH"  "balanceOf(address)(uint256)" "$MAKER" --rpc-url "$BASE_RPC"   # 4000000000000000
+cast call "$CBBTC" "balanceOf(address)(uint256)" "$MAKER" --rpc-url "$BASE_RPC"   # 12000
 ```
+
+### What changed, and why it matters
+
+This section used to say the maker held nothing and that **P2 (USDC/cbBTC)
+would be one-sided**. That is no longer true: the maker holds 0.00012 cbBTC, so
+**both pairs can be shipped two-sided.**
+
+That is not a cosmetic improvement. A one-sided position can only trade in one
+direction — the maker gives what it shipped and receives the other token — so a
+USDC-only P2 would have required the **taker** to pay cbBTC, and the taker holds
+none. It would have been unfillable. Two-sided, the taker pays USDC on either
+pair, which is the direction it is funded for.
+
+### Does the taker need more?
+
+**No.** It fills by paying USDC and holds 4.04, against a fill of ~0.25. Its
+0.005 ETH covers the gate deploy, an approval and a swap several times over on
+Base.
+
+It would only need cbBTC or WETH to fill in the *other* direction — buying USDC
+from the maker rather than selling it. Nothing in this runbook does that.
+
+### Which tier to fund
+
+Unchanged, and still the important judgement: **fund one tier per pair, not
+three.** 2.5 USDC split three ways is three positions too small for anyone to
+fill, each needing its own ship transaction and its own slice of a fixed
+approval.
+
+1. **`medium` on P1 (USDC/WETH)** — the band is checkable by eye against a price
+   you know. If you ship only one thing, ship this.
+2. **`medium` on P2 (USDC/cbBTC)** — now genuinely two-sided, so it is a real
+   market rather than a demonstration.
+3. **`high` on P1** — only to put a second band on chain for comparison.
+
+`low` remains not worth it at this size: half-the-mid to double-the-mid over
+1 USDC behaves indistinguishably from an unconcentrated position.
 
 ---
 
@@ -167,7 +175,7 @@ forge test                       # 21 passed, 20,000 fuzz runs, before you deplo
 
 export GATE_HOLDER="$DEPLOYER"
 forge script script/DeployGateToken.s.sol \
-  --rpc-url "$BASE_RPC" --account base-deployer \
+  --rpc-url "$BASE_RPC" --account monad-deployer \
   --broadcast --verify
 ```
 
@@ -248,8 +256,10 @@ export SHIP=0xf50b870f...  # the ship calldata
 export SHASH=0x...         # strategyHash -- you need this to dock
 ```
 
-For P2, the same with `--pair usdc-cbbtc --mid 110000 --leg usdc:1000000`
-(one-sided: the maker holds no cbBTC).
+For P2, the same with `--pair usdc-cbbtc --mid 110000 --leg usdc:1000000
+--leg cbbtc:6000` — **two-sided**, since the maker now holds cbBTC. Note the
+decimals: cbBTC is 8, so `6000` is 0.00006 cbBTC. The same digits in WETH units
+would be 6000 wei, effectively nothing.
 
 ---
 
@@ -379,7 +389,7 @@ The taker must first approve the router for what it is spending:
 
 ```bash
 # Filling with 0.25 USDC of the deployer's own funds
-cast send --rpc-url "$BASE_RPC" --account base-deployer \
+cast send --rpc-url "$BASE_RPC" --account monad-deployer \
   "$USDC" "approve(address,uint256)" "$ROUTER" 250000
 ```
 
@@ -408,7 +418,7 @@ word 2 is `traits`, and `data` begins at word 5).
   the band contains the price. Send it:
 
   ```bash
-  cast send --rpc-url "$BASE_RPC" --account base-deployer "$ROUTER" \
+  cast send --rpc-url "$BASE_RPC" --account monad-deployer "$ROUTER" \
     "swap((address,uint256,bytes),uint256,bytes)" \
     "($MAKER,<traits>,<data>)" 250000 "$TT"
   ```
