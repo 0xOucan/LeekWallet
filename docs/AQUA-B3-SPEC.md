@@ -294,7 +294,21 @@ Plus the refusal kind in plain words ("instruction `0xNN` at byte 12 is not one
 of the nine this wallet reads") and the program's hex, so it can be inspected
 elsewhere.
 
-On success, one row per instruction, in program order:
+On success, one row per instruction, **in program order**. The SwapVM
+whitepaper (§5.5, *Canonical instruction ordering*) is explicit about why that
+is not a presentation choice:
+
+> Instruction order within a program is security-critical. The same
+> instructions in a different order can change pricing, settlement amounts,
+> and economic outcomes.
+
+So the list is never sorted, grouped, or deduplicated for readability. It is
+the program's own order or it is wrong. The same section notes the instruction
+set "is designed to grow continuously, with new instructions being added",
+which is the whitepaper confirming §11: an outdated decoder must refuse an
+unfamiliar opcode, because new ones will keep arriving.
+
+On success, one row per instruction:
 
 ```
   XYCSwap            constant product, x·y=k
