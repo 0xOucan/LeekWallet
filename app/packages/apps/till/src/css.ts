@@ -93,5 +93,9 @@ export const TILL_CSS = `
 .till-payroll-who { font-weight: 600; }
 .till-payroll-addr { font-family: monospace; font-size: 0.78em; opacity: 0.8; word-break: break-all; }
 .till-payroll-amount { margin-left: auto; font-variant-numeric: tabular-nums; }
+/* The salary and tips subtotals: smaller than the grand total, because the
+   grand total is what leaves the account — but on the screen above it, so the
+   parts are read before the sum rather than as a footnote to it. */
+.till-payroll-subtotal { font-size: 1.1rem; font-variant-numeric: tabular-nums; }
 .till-payroll-state { font-size: 0.78em; color: var(--accent, #268bd2); }
 `;

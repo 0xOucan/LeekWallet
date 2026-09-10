@@ -15,19 +15,25 @@
  * as one thing and pays another. Three concrete versions of it, and what stops
  * each one:
  *
- *  1. **Columns in an order the reader assumed.** `name,role,address,amount`
- *     and `name,role,amount,address` are both plausible files, and a parser
- *     that guessed by position would read the amount as an address on one of
- *     them — or, worse, an address as an amount. So a HEADER IS REQUIRED, the
- *     four names are matched by name, and an unknown, missing or repeated
- *     column fails the import. Nothing here infers a layout.
+ *  1. **Columns in an order the reader assumed.** `name,role,address,salary`
+ *     and `name,role,salary,address` are both plausible files, and a parser
+ *     that guessed by position would read the salary as an address on one of
+ *     them — or, worse, an address as a salary. Adding a second amount column
+ *     makes this sharper, not softer: `…,salary,tips` and `…,tips,salary` are
+ *     the same five cells paying two different figures. So a HEADER IS
+ *     REQUIRED, every column is matched by name, and an unknown or repeated
+ *     column — or a missing required one — fails the import. Nothing here
+ *     infers a layout, and `tips` is optional in the HEADER only, never in
+ *     the ordering.
  *
  *  2. **An amount that is not the number it looks like.** `1e3`, `0x10`,
  *     `1,000`, ` 12 `, `12.3456789` in a 6-decimal token, `-5`. Every one of
  *     those has a "reasonable" coercion and every coercion is somebody being
- *     paid a figure nobody typed. The shape is pinned by a regular expression,
- *     the arithmetic is integer (core's `parseUnits`), and a scale the token
- *     cannot hold is refused rather than truncated.
+ *     paid a figure nobody typed. Both amount columns go through the one
+ *     validator, so a tips cell can never hold a shape a salary cell could
+ *     not. The shape is pinned by a regular expression, the arithmetic is
+ *     integer (core's `parseUnits`), and a scale the token cannot hold is
+ *     refused rather than truncated.
  *
  *  3. **A name that lies about the row.** A right-to-left override or a
  *     newline inside a quoted field can make a rendered line read as a
@@ -51,6 +57,38 @@
  *
  * So the return type is "everything, or a line number and a sentence". There
  * is no partial success in this module.
+ *
+ * ---------------------------------------------------------------------------
+ * Why salary and tips are two columns, and two transactions
+ *
+ * A row carries two amounts, not one, and they are never added together. This
+ * is not a workaround for the absence of a batch call (payroll.ts explains that
+ * absence separately, and a batch would not change this decision):
+ *
+ *   - **They are different money.** Salary is payroll. Tips are, in most of the
+ *     jurisdictions a restaurant operates in, held in trust for the staff who
+ *     earned them, pooled by a rule the employer does not get to invent, and
+ *     taxed and declared on a different footing. An employer who blends them is
+ *     not being tidy; they are erasing the fact that distinguishes them.
+ *   - **On-chain, blending is permanent.** A single transfer of 1,412.50 to Ana
+ *     is a number no ledger can ever separate again into 1,250.00 of wage and
+ *     162.50 of tips. Two transfers are two entries, each with its own hash,
+ *     its own timestamp and its own amount, and an accountant, a labour
+ *     inspector or Ana herself can read them apart a year later. The split is
+ *     the accountability; it cannot be reconstructed afterwards.
+ *   - **Two amounts approved separately are auditable; one blended number is
+ *     not.** The device draws each amount on its own screen and a human presses
+ *     for each. Approving "1,412.50" tells you nothing about whether the tips
+ *     inside it were right. Approving "1,250.00 salary" and then "162.50 tips"
+ *     is two decisions, each about a figure somebody can check against
+ *     something — a contract, and a shift's takings.
+ *
+ * So the schema is `name,role,address,salary,tips`, the two go through the same
+ * amount validator, and the run proposes them as separate transfers. Tips may
+ * be zero or the column may be absent entirely — an establishment that does not
+ * pool tips still has a payroll. Salary may NOT be zero: a row that pays no
+ * wage is a row somebody meant to fill in, and the screen is not the place to
+ * discover that. A row with neither is a refusal like any other.
  *
  * ---------------------------------------------------------------------------
  * Why CSV and not PDF
@@ -90,11 +128,14 @@ import { checksumAddress } from "@leekwallet/core/tx-interpret.ts";
 /**
  * The most people one payroll run may carry.
  *
- * This is a count of BUTTON PRESSES ON THE DEVICE, not a rendering limit: the
- * shell has no batch call (see payroll.ts), so a run of N people is N
- * proposals and N hardware confirmations. Thirty-two is already a long sitting;
- * beyond it nobody reads the screens, which turns hardware confirmation into a
- * clicking exercise and removes the only defence that matters.
+ * This is a count of PEOPLE, and it bounds BUTTON PRESSES ON THE DEVICE rather
+ * than rendering: the shell has no batch call (see payroll.ts), so a run of N
+ * people is up to 2N proposals and 2N hardware confirmations — a salary leg
+ * for everybody and a tips leg for everybody who earned any. Thirty-two people
+ * is already a long sitting; beyond it nobody reads the screens, which turns
+ * hardware confirmation into a clicking exercise and removes the only defence
+ * that matters. The cap stayed at thirty-two when the tips leg arrived: the
+ * ceiling on attention did not double because the schema gained a column.
  *
  * A file above the cap is REFUSED, never truncated. Truncation would pay the
  * first 32 people and silently drop the rest.
@@ -132,8 +173,22 @@ export interface StaffMember {
   readonly role: string;
   /** EIP-55 checksummed, 20 bytes, non-zero. */
   readonly address: string;
-  /** The amount exactly as written, validated. Scaled to units in payroll.ts. */
-  readonly amount: DecimalAmount;
+  /**
+   * The wage, exactly as written, validated. Never zero. Scaled in payroll.ts.
+   *
+   * Deliberately not called `amount` any more: the old name invited a reader
+   * to think a row had one figure, which is the conflation the file header
+   * exists to refuse.
+   */
+  readonly salary: DecimalAmount;
+  /**
+   * The tips for this person, or `undefined` for none.
+   *
+   * `undefined` and "0" mean the same thing here and both collapse to
+   * `undefined`, so that "is there a tips transfer" is one check with one
+   * answer. Nobody is asked to approve a transfer of nothing.
+   */
+  readonly tips: DecimalAmount | undefined;
 }
 
 /**
@@ -231,9 +286,24 @@ const TEXT_SHAPE = /^[ -~]*$/;
  */
 const FORMULA_LEAD = /^[=+\-@\t\r]/;
 
-/** The four columns, and the only four. */
-const COLUMNS = ["name", "role", "address", "amount"] as const;
+/** The five columns, and the only five. */
+const COLUMNS = ["name", "role", "address", "salary", "tips"] as const;
 type Column = (typeof COLUMNS)[number];
+
+/** The four a file must name. `tips` is the one a payroll may legitimately lack. */
+const REQUIRED_COLUMNS: readonly Column[] = ["name", "role", "address", "salary"];
+
+/**
+ * Header names accepted as another spelling of a column.
+ *
+ * Exactly one entry, and it is a rename rather than a guess: this app's files
+ * used to say `amount` when a row had one figure, and those files are payrolls
+ * that still mean a wage. An alias is safe where a POSITIONAL guess is not —
+ * the column is still being matched BY NAME, which is rule (1) — but a file
+ * that names both `amount` and `salary` is a file whose author changed their
+ * mind halfway, and it is refused below rather than resolved by precedence.
+ */
+const ALIASES: Readonly<Record<string, Column>> = { amount: "salary" };
 
 /* -------------------------------------------------------------- CSV lexing */
 
@@ -378,6 +448,30 @@ export function checkAmount(value: string): { ok: true; amount: DecimalAmount } 
 }
 
 /**
+ * A tips figure, which may be absent — or the reason it is not one.
+ *
+ * The ONLY difference from `checkAmount` is that an empty cell and a zero are
+ * permitted, and both answer `undefined`: no tips this shift is an ordinary
+ * fact about a payroll, and it must not become an approval screen showing a
+ * transfer of nothing. Every other rule is `checkAmount` itself, called
+ * directly rather than re-stated, so a tips cell can never be a shape a salary
+ * cell could not have been: no exponent, no sign, no separators, no hex, and a
+ * scale the token cannot hold is still refused at scaling time.
+ */
+export function checkTips(value: string): { ok: true; tips: DecimalAmount | undefined } | { ok: false; reason: string } {
+  const text = value.trim();
+  if (text === "") return { ok: true, tips: undefined };
+  /* A written zero is accepted and normalised away. A written zero is somebody
+   * saying "none this shift" in a column they filled in for everybody, which
+   * is a different act from leaving it blank and deserves the same result
+   * rather than a refusal. */
+  if (AMOUNT_SHAPE.test(text) && /^0*(\.0*)?$/.test(text)) return { ok: true, tips: undefined };
+  const amount = checkAmount(text);
+  if (!amount.ok) return { ok: false, reason: `tips: ${amount.reason}` };
+  return { ok: true, tips: amount.amount };
+}
+
+/**
  * Raw token units for a row, or the reason this token cannot pay it.
  *
  * Integer arithmetic throughout — core's `parseUnits`, which refuses a
@@ -435,23 +529,37 @@ export function importStaffCsv(input: string, options: ImportOptions = {}): Impo
   const header = rows[0] as { fields: string[]; line: number };
   const names = header.fields.map((f) => f.trim().toLowerCase());
   const index: Partial<Record<Column, number>> = {};
+  /** How the file spelled each column it named, for the duplicate message. */
+  const spelling: Partial<Record<Column, string>> = {};
   for (let i = 0; i < names.length; i++) {
-    const name = names[i] as string;
+    const raw = names[i] as string;
+    const name = ALIASES[raw] ?? raw;
     if (!(COLUMNS as readonly string[]).includes(name)) {
       return {
         ok: false,
         line: header.line,
         reason:
-          `the header names a column this app does not know: "${name.slice(0, 24)}". ` +
-          `The header must be name, role, address and amount, in any order.`,
+          `the header names a column this app does not know: "${raw.slice(0, 24)}". ` +
+          `The header must be name, role, address and salary, with an optional ` +
+          `tips column, in any order.`,
       };
     }
     if (index[name as Column] !== undefined) {
-      return { ok: false, line: header.line, reason: `the header names "${name}" twice` };
+      /* Both spellings are named, so `amount,salary` in one header reads as
+       * the two-names-for-one-thing that it is rather than as a puzzle. */
+      const first = spelling[name as Column] as string;
+      return {
+        ok: false,
+        line: header.line,
+        reason: first === raw
+          ? `the header names "${raw}" twice`
+          : `the header names the ${name} column twice, as "${first}" and as "${raw}"`,
+      };
     }
     index[name as Column] = i;
+    spelling[name as Column] = raw;
   }
-  for (const column of COLUMNS) {
+  for (const column of REQUIRED_COLUMNS) {
     if (index[column] === undefined) {
       return {
         ok: false,
@@ -471,7 +579,8 @@ export function importStaffCsv(input: string, options: ImportOptions = {}): Impo
       line: (body[MAX_STAFF] as { line: number }).line,
       reason:
         `${body.length} people, and this app pays at most ${MAX_STAFF} in one run — ` +
-        `every payment is a separate confirmation on the device. Split the file.`,
+        `salary and tips are separate transactions, so that is up to ` +
+        `${MAX_STAFF * 2} confirmations on the device already. Split the file.`,
     };
   }
 
@@ -491,12 +600,20 @@ export function importStaffCsv(input: string, options: ImportOptions = {}): Impo
     if (!role.ok) return { ok: false, line, reason: role.reason };
     const address = checkAddress(fields[index.address as number] as string);
     if (!address.ok) return { ok: false, line, reason: address.reason };
-    const amount = checkAmount(fields[index.amount as number] as string);
-    if (!amount.ok) return { ok: false, line, reason: amount.reason };
+    const salary = checkAmount(fields[index.salary as number] as string);
+    if (!salary.ok) return { ok: false, line, reason: salary.reason };
+    /* An absent tips COLUMN and an empty tips CELL are the same statement, so
+     * the column's absence is read as an empty cell rather than special-cased
+     * into a second code path that could drift from the first. */
+    const tips = checkTips(index.tips === undefined ? "" : (fields[index.tips] as string));
+    if (!tips.ok) return { ok: false, line, reason: tips.reason };
 
     const key = address.address.toLowerCase();
     seen.set(key, [...(seen.get(key) ?? []), line]);
-    staff.push({ line, name: name.text, role: role.text, address: address.address, amount: amount.amount });
+    staff.push({
+      line, name: name.text, role: role.text, address: address.address,
+      salary: salary.amount, tips: tips.tips,
+    });
   }
 
   const duplicates: Duplicate[] = [...seen.entries()]
@@ -526,7 +643,7 @@ export function importStaffCsv(input: string, options: ImportOptions = {}): Impo
  * plumbing.
  */
 export function staffFromFields(
-  fields: { name: string; role: string; address: string; amount: string },
+  fields: { name: string; role: string; address: string; salary: string; tips?: string },
 ): { ok: true; member: StaffMember } | { ok: false; reason: string } {
   const name = checkText(fields.name, "the name", MAX_NAME);
   if (!name.ok) return { ok: false, reason: name.reason };
@@ -534,11 +651,16 @@ export function staffFromFields(
   if (!role.ok) return { ok: false, reason: role.reason };
   const address = checkAddress(fields.address);
   if (!address.ok) return { ok: false, reason: address.reason };
-  const amount = checkAmount(fields.amount);
-  if (!amount.ok) return { ok: false, reason: amount.reason };
+  const salary = checkAmount(fields.salary);
+  if (!salary.ok) return { ok: false, reason: salary.reason };
+  const tips = checkTips(fields.tips ?? "");
+  if (!tips.ok) return { ok: false, reason: tips.reason };
   return {
     ok: true,
-    member: { line: 0, name: name.text, role: role.text, address: address.address, amount: amount.amount },
+    member: {
+      line: 0, name: name.text, role: role.text, address: address.address,
+      salary: salary.amount, tips: tips.tips,
+    },
   };
 }
 

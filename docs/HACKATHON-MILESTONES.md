@@ -131,32 +131,80 @@ product" on its own.
 ### A3 — Roles and shift accountability
 
 Three roles: **admin** (device), **cashier** (terminal), **waiter** (terminal,
-own staff id). Every request carries the staff id. A shift closes into a
-settlement the admin approves on the device — one signature, one screen, a
-readable list.
+own staff id). Every request carries the staff id. A shift closes into a payroll
+run the admin approves on the device: a CSV of who is owed what, three totals on
+screen before anything is signed, and **salary and tips paid as two separate
+transactions per person**.
 
 ```
-  CLOSE SHIFT · Tacos del Parque
-  Sales     42 orders    1,284.50 USDC
-  Tips                      96.00 USDC
-  Staff     4 recipients
-  [ REJECT ]              [ APPROVE ]
+  PAYROLL · Tacos del Parque
+  6 people · 10 transactions · USDC on Arc
+  Salary                 8,750.00
+  Tips                     556.00
+  TOTAL TO SEND          9,306.00
+  [ CLEAR ]                [ REVIEW AND SEND ]
 ```
 
-**Done.** Tips split across four staff addresses in one approved transaction.
+**Done.** A `name,role,address,salary,tips` file imports; the run proposes each
+person's salary and then their tips as separate calls, each drawn and confirmed
+on the device; every leg's outcome is shown separately.
+
+#### Two transactions per person, on purpose
+
+**This milestone previously said "tips split across four staff addresses in one
+approved transaction". That was not achievable and it is not what we want.**
+
+It was not achievable: `AppProposal` in `core/app-proposal.ts` is one `to` and
+one `data` per proposal, and `DEVICE_DRAWN_KINDS` is a closed set pinned by
+`app/test/apps.test.ts`. Batching would need either a batching contract — which
+the user has ruled out for the POS and payroll — or new firmware. No host-side
+mini-app can do it, and leaving the claim standing would have been a milestone
+asserting something the architecture forbids.
+
+It is also not what we want, and that is the more important half:
+
+- **Salary and tips are different money.** Salary is payroll. Tips are, in most
+  places a restaurant operates, held in trust for the staff who earned them,
+  pooled by a house rule, and taxed and declared on a different footing.
+- **Blending is permanent.** One transfer of 1,412.50 to Ana is a number no
+  ledger can ever separate again into 1,250.00 of wage and 162.50 of tips. Two
+  transfers are two entries with two hashes, two timestamps and two amounts, and
+  an accountant — or a labour inspector, or Ana — can read them apart a year
+  later.
+- **Two amounts approved separately are auditable; one blended number is not.**
+  Approving "1,412.50" says nothing about whether the tips inside it were right.
+  Approving "1,250.00 salary" and then "162.50 tips" is two decisions, each
+  about a figure that can be checked against something: a contract, and a
+  shift's takings.
+- **The device draws each amount itself.** With one transfer per proposal the
+  hardware decodes a real recipient and a real amount for every payment. A batch
+  is one press over a blob the device cannot enumerate — worse UX traded for a
+  strictly worse guarantee, on the largest sums this product moves.
+
+So if the shell grew a batch call tomorrow, these would still be two
+transactions. The split is the accountability, not a workaround for the plumbing.
+
+The cost is honest and stated on screen: N people is up to 2N confirmations, and
+the run is **not atomic**. Tips of zero produce no second transaction — nobody
+is asked to approve a transfer of nothing.
 
 **Audit gate A3.**
-- Works: batch settlement pays every recipient, amounts reconcile to the orders
-- **Refuses: a settlement whose recipient list does not match the shift's
-  orders must refuse.** The device shows totals; the reconciliation must be
-  checkable, not asserted
-- Renders: the close-shift screen, photographed
-- Recovers: partial batch failure is detectable and re-runnable without
-  double-paying
-- Written: `docs/ARC.md` — reconciliation rules
+- Works: the run pays every leg of every row; the three totals are computed from
+  the parsed rows and reconcile to the file
+- **Refuses: a payroll file whose rows do not parse exactly must refuse whole.**
+  No partial import, no repaired amount, no inferred column order — a payroll
+  that quietly pays five of six people is worse than one that will not load
+- Renders: the payroll screen and two consecutive device screens for one
+  person — the salary amount, then the tips amount — photographed
+- Recovers: per-person AND per-leg outcomes are visible, so "Ana: salary sent,
+  tips declined" is readable off the screen; a finished run cannot be re-armed
+  over the same registry without a deliberate clear or re-import
+- Written: `docs/ARC.md` — reconciliation rules;
+  `app/packages/apps/till/examples/` — a worked CSV and the column reference
 
-**Ships if we stop here.** A complete POS with accountability. The strongest
-Arc submission we can make.
+**Ships if we stop here.** A complete POS with accountability, and a payroll
+whose on-chain record an accountant can actually use. The strongest Arc
+submission we can make.
 
 ### A4 *(stretch)* — App Kit unified balance
 
