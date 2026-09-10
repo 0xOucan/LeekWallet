@@ -270,11 +270,29 @@ const AMOUNT_SHAPE = /^\d{1,12}(?:\.\d{1,18})?$/;
  * The exclusion is the point rather than the inclusion: C0/C1 control codes,
  * the bidi overrides (U+202A..U+202E, U+2066..U+2069) and the zero-width marks
  * can all make a rendered row read as a different row than the one that pays.
- * A restaurant with accented names in its payroll will hit this and can widen
- * it — deliberately, in a diff, with somebody looking at what a widened set
- * lets a row do to a line of text.
+ *
+ * WIDENED 2026-09-10, deliberately, for the reason the previous note predicted:
+ * ASCII-only rejects Beltrán, Marín, Muñoz, Ortíz. A payroll app for a
+ * restaurant that cannot spell its own staff's names is broken for its actual
+ * use, and stripping the accents in the example file was papering over that.
+ *
+ * The added ranges are LETTERS ONLY and chosen as an allowlist, never as
+ * "everything except the dangerous parts":
+ *
+ *   U+00C0..U+00FF  Latin-1 Supplement — á é í ó ú ü ñ and their capitals
+ *   U+0100..U+017F  Latin Extended-A — the rest of Latin Europe
+ *
+ * Every character that made ASCII-only worth having stays out, because it sits
+ * outside those ranges: the control codes, every bidi override, every
+ * zero-width mark, and the whole of the general-punctuation block.
+ *
+ * What widening does NOT weaken: a name is a label, and money is routed by the
+ * address, which is validated separately and checksummed. Duplicate detection
+ * keys on the address too, so two visually identical names cannot collapse a
+ * row or redirect a transfer. The worst a confusable name can do here is
+ * mislabel a payee on a screen whose address the user can still read.
  */
-const TEXT_SHAPE = /^[ -~]*$/;
+const TEXT_SHAPE = /^[ -~\u00C0-\u00FF\u0100-\u017F]*$/;
 
 /**
  * Leading characters a spreadsheet treats as the start of a formula.
@@ -393,7 +411,7 @@ function checkText(value: string, what: string, max: number): { ok: true; text: 
   if (text === "") return { ok: false, reason: `${what} is empty` };
   if (text.length > max) return { ok: false, reason: `${what} is longer than ${max} characters` };
   if (!TEXT_SHAPE.test(text)) {
-    return { ok: false, reason: `${what} contains a character that is not printable ASCII` };
+    return { ok: false, reason: `${what} contains a character that is not a printable Latin letter, digit or symbol` };
   }
   if (FORMULA_LEAD.test(text)) {
     return { ok: false, reason: `${what} starts with a character a spreadsheet reads as a formula` };
