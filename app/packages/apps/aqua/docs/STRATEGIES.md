@@ -449,3 +449,40 @@ enough.
    error costs almost nothing and would therefore not be noticed by the loss.
    The order-of-magnitude assertions in §3.3 exist precisely because the money
    is too small to be the alarm.
+
+
+---
+
+## RESOLVED 2026-09-10 — opcode 18's argument semantics, measured on Base
+
+The runbook's blocking step 0 has been executed. **`sqrt(P) x 1e18` with
+`P = tokenGt / tokenLt` in RAW token units is CONFIRMED.** The tiers may ship.
+
+Evidence — a live strategy shipped to the Aqua router on Base, opcode 18 with
+its 64 argument bytes read straight off the `Shipped` event:
+
+```
+word0 = 46,846,589,139,445   ~4.685e13
+word1 = 51,790,852,976,177   ~5.179e13
+```
+
+Working it back under the documented reading: `P = (w / 1e18)^2` gives
+`2.195e-9 .. 2.682e-9`. For WETH/USDC on Base the address ordering puts
+**WETH as tokenLt** (`0x4200...`) and **USDC as tokenGt** (`0x8335...`), so
+`P = USDC_raw / WETH_raw`, and that range is an implied band of roughly
+**2,190 to 2,680 USDC per ETH** — a plausible real position.
+
+The magnitude is what makes this conclusive. A raw-price-for-sqrt-price mistake
+moves the number by ~1e4 and a human-for-raw mistake by ~1e6; either would land
+nowhere near 5e13. The observed value sits right where the documented reading
+predicts (~6e13).
+
+Corroboration: a second live strategy from the same maker carries a **band width
+identical to four decimal places** (1.2222x) at a different price level — a
+systematic maker running one fixed tier, which is precisely the shape our tier
+design produces.
+
+**Honest limit of this evidence.** The second strategy's words (~2.6e14) do not
+match the ~3e16 predicted for USDC/BTC, so it is a pair this analysis cannot
+identify from the event alone. It neither confirms nor contradicts. The first
+strategy alone carries the conclusion.
