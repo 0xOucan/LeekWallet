@@ -1,0 +1,21 @@
+# Scoped to the Aqua mini-app, per app/packages/apps/README.md: a contract that
+# serves one mini-app lives in that mini-app's contracts/ directory, so deleting
+# the app takes the Solidity with it.
+#
+# Matched to the ATS app's profile deliberately. Two apps in one repository
+# compiling their Solidity under different solc versions or EVM targets is a
+# difference nobody chose, and it surfaces first as a bytecode diff nobody can
+# explain.
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+solc = "0.8.30"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+fs_permissions = [{ access = "read", path = "./" }]
+
+[fuzz]
+runs = 10000
