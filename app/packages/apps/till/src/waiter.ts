@@ -42,7 +42,8 @@
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 import { formatUnits } from "@leekwallet/core/chains.ts";
 import { formatCents, payableUnits } from "./order.ts";
-import { acceptRequest, REQUEST_PREFIX, type SealedRequest } from "./request.ts";
+import { acceptRequest, decodeRequest, REQUEST_PREFIX, type SealedRequest } from "./request.ts";
+import { browserMerchantStore, loadMerchant, saveMerchant } from "./merchant.ts";
 import { TILL_CSS } from "./css.ts";
 import { deploymentFor, railFor, TILL_CHAIN_IDS } from "./rails.ts";
 import { buildPaymentUri, shareMessage, whatsappLink } from "./uri.ts";
@@ -341,19 +342,44 @@ export const TILL_WAITER_APP: MiniApp = {
     error.className = "till-error";
     panel.append(error);
 
-    /* The precondition, said out loud at mount rather than discovered at the
-     * scan. Without a merchant address this terminal refuses every request it
-     * is shown — correctly, since that check is the only thing stopping a
-     * forged request paying somebody else — but a refusal that only appears
-     * after a scan reads as a broken scanner. The shell hands "" before a
-     * device is connected (main.ts remountApps), which is exactly when a
-     * waiter is most likely to try. */
-    if (!/^0x[0-9a-fA-F]{40}$/.test(context.address)) {
-      error.textContent =
-        "This terminal has no merchant address yet, so it cannot check a " +
-        "request against one and will refuse every request it is shown. " +
-        "Connect the device and select the account the restaurant is paid into.";
-    }
+    /* The restaurant this terminal has learned, and the line that shows it.
+     *
+     * A waiter configures nothing: the first well-formed request teaches the
+     * terminal who it works for, and every request after that is checked
+     * against it. The address is on screen because a check nobody can see is a
+     * check nobody can verify — a manager can glance at it, and a waiter
+     * carrying the wrong phone finds out from the line rather than from a
+     * refusal they cannot explain. */
+    let merchantStore = browserMerchantStore();
+    let merchant = loadMerchant(merchantStore);
+
+    const whose = document.createElement("p");
+    whose.className = "till-waiter-whose";
+    const forget = document.createElement("button");
+    forget.type = "button";
+    forget.textContent = "Forget this restaurant";
+    forget.addEventListener("click", () => {
+      merchant = saveMerchant(merchantStore, "");
+      sealed = undefined;
+      error.textContent = "";
+      redraw();
+      syncWatcher();
+      drawWhose();
+    });
+
+    const drawWhose = () => {
+      whose.replaceChildren();
+      if (merchant === "") {
+        whose.textContent =
+          "New terminal. The first bill you scan sets the restaurant this " +
+          "terminal collects for; every bill after that must pay the same address.";
+        return;
+      }
+      whose.textContent = `Collecting for ${merchant}. `;
+      whose.append(forget);
+    };
+    panel.append(whose);
+    drawWhose();
 
     const output = document.createElement("div");
     panel.append(output);
@@ -419,7 +445,18 @@ export const TILL_WAITER_APP: MiniApp = {
         error.textContent = "";
         return;
       }
-      const accepted = acceptRequest(text, context.address);
+      /* Trust on first use. A terminal that knows nobody adopts the first
+       * request that is well-formed AND passes its own checksum — decodeRequest
+       * settles both — so a corrupted scan cannot install a bad address. From
+       * then on acceptRequest does what it always did. */
+      if (merchant === "") {
+        const first = decodeRequest(text);
+        if (first.ok) {
+          merchant = saveMerchant(merchantStore, first.sealed.request.recipient);
+          drawWhose();
+        }
+      }
+      const accepted = acceptRequest(text, merchant);
       if (!accepted.ok) {
         /* A refused request leaves the previous one on screen. Blanking it
          * would lose the bill a customer is standing in front of because a

@@ -126,7 +126,34 @@ const makeNode = (tagName: string): Node => {
 (globalThis as Record<string, unknown>).document = {
   createElement: (tag: string) => makeNode(tag),
   createElementNS: (_ns: string, tag: string) => makeNode(tag),
+  /* Text nodes render as their text and carry no tag, so the assertions that
+     read `textContent` off a parent see them exactly as a browser would. */
+  createTextNode: (text: string) => {
+    const node = makeNode("#text");
+    node.textContent = text;
+    return node;
+  },
 };
+
+/* Each mount gets a clean terminal unless a test says otherwise: trust on
+   first use is per-terminal state, and a test that inherited the previous
+   test's restaurant would pass for the wrong reason. */
+const memoryStore = (): Record<string, unknown> => {
+  const map = new Map<string, string>();
+  return {
+    getItem: (k: string) => map.get(k) ?? null,
+    setItem: (k: string, v: string) => { map.set(k, v); },
+    removeItem: (k: string) => { map.delete(k); },
+  };
+};
+/* A terminal that already knows who it collects for — the state every
+   terminal is in after its first bill, and the one these tests are about. */
+const seedTerminal = (address: string): void => {
+  const store = memoryStore() as { setItem: (k: string, v: string) => void };
+  if (address !== "") store.setItem("leek.till.merchant", address);
+  (globalThis as Record<string, unknown>).localStorage = store;
+};
+seedTerminal(MERCHANT);
 
 const context = {
   chainId: 84532,
@@ -231,26 +258,63 @@ group("switching the chain shown changes the chain and nothing else");
 
 (globalThis as Record<string, unknown>).Event = class FakeEvent { type = ""; };
 
-group("a terminal with no merchant address says so before anything is scanned");
+group("a new terminal learns its restaurant from the first bill, and says which");
 {
+  /* THE PROPERTY the waiter actually needs: no setup. A phone out of the box
+     takes a bill and shows it. The address it adopted is on screen, because a
+     check nobody can see is a check nobody can verify. */
+  seedTerminal("");
   const from = nodes.length;
-  const blank = makeNode("div");
-  await TILL_WAITER_APP.mount(blank as unknown as HTMLElement,
+  const fresh = makeNode("div");
+  await TILL_WAITER_APP.mount(fresh as unknown as HTMLElement,
     { ...context, address: "" } as never);
-  const errors = nodes.slice(from).filter((n) => n.className === "till-error")
-    .map((n) => n.textContent);
-  check(errors.some((t) => /no merchant address/.test(t)),
-    `a terminal with no address stayed silent: ${JSON.stringify(errors)}`);
 
-  /* And a genuine request scanned into it is still refused — visibly. The
-     refusal is the security property; only the silence was the bug. */
+  const before = nodes.slice(from).filter((n) => n.className === "till-waiter-whose")
+    .map((n) => n.textContent);
+  check(before.some((t) => /first bill you scan/i.test(t)),
+    `a new terminal did not say it was new: ${JSON.stringify(before)}`);
+
   const input = nodes.slice(from).find((n) => n.attributes["aria-label"] === "Scan the cashier's request") as Node;
   input.value = sealed.text;
   for (const [, fn] of input.listeners) fn();
-  const after = nodes.slice(from).filter((n) => n.className === "till-error").map((n) => n.textContent);
-  check(after.some((t) => t !== ""), "the refusal was not shown");
+
+  /* Accepted with no device, no account and no configuration — the whole
+     point. `context.address` is "" here and must not matter. */
+  const shown = nodes.slice(from).filter((n) => n.className === "till-amount").map((n) => n.textContent);
+  check(shown.length > 0, "a new terminal refused the first bill it was ever shown");
+  const whose = nodes.slice(from).filter((n) => n.className === "till-waiter-whose")
+    .map((n) => n.textContent);
+  check(whose.some((t) => t.toLowerCase().includes(MERCHANT.toLowerCase())),
+    `the terminal did not show whose bills it now takes: ${JSON.stringify(whose)}`);
+}
+
+group("having learned one restaurant, it refuses another");
+{
+  /* The cost of learning is that the FIRST code teaches it. What must still
+     hold is everything after: a phone in service refuses the venue next door,
+     and says which address it would have paid. That is the misconfiguration
+     this check exists to catch. */
+  seedTerminal(MERCHANT);
+  const from = nodes.length;
+  const inService = makeNode("div");
+  await TILL_WAITER_APP.mount(inService as unknown as HTMLElement,
+    { ...context, address: "" } as never);
+
+  const input = nodes.slice(from).find((n) => n.attributes["aria-label"] === "Scan the cashier's request") as Node;
+  input.value = sealRequest({ ...request, recipient: "0x00112233445566778899aabbccddeeff00112233" }).text;
+  for (const [, fn] of input.listeners) fn();
+
+  const errors = nodes.slice(from).filter((n) => n.className === "till-error").map((n) => n.textContent);
+  check(errors.some((t) => /not this restaurant's address/.test(t)),
+    `another restaurant's bill was not refused: ${JSON.stringify(errors)}`);
   check(nodes.slice(from).filter((n) => n.className === "till-amount").length === 0,
-    "a request was displayed by a terminal with no address to check it against");
+    "another restaurant's bill reached the screen");
+  /* And the learned address is unchanged — a refusal must not re-teach it. */
+  const whose = nodes.slice(from).filter((n) => n.className === "till-waiter-whose")
+    .map((n) => n.textContent);
+  check(whose.some((t) => t.toLowerCase().includes(MERCHANT.toLowerCase())),
+    "a refused bill changed which restaurant the terminal collects for");
+  seedTerminal(MERCHANT);
 }
 
 group("a camera code the terminal refuses is reported, not swallowed");

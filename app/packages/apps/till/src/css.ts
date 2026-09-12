@@ -71,6 +71,17 @@ export const TILL_CSS = `
    above it says what it is; everything else is smaller than the number. */
 .till-waiter { display: flex; flex-direction: column; gap: 0.5rem; }
 .till-waiter-merchant { font-size: 1rem; font-weight: 600; margin: 0; }
+/* Whose bills this terminal takes. Quiet, and always present: a manager
+   glances at it, a waiter with the wrong phone reads it instead of meeting a
+   refusal they cannot explain. The address must wrap rather than widen the
+   panel on a phone. */
+.till-waiter-whose {
+  font-size: 0.8rem; color: var(--muted, #666); margin: 0 0 0.5rem;
+  overflow-wrap: anywhere;
+}
+.till-waiter-whose button {
+  font-size: 0.75rem; margin-left: 0.25rem;
+}
 .till-waiter-label { font-size: 0.8em; opacity: 0.75; margin: 0; text-transform: uppercase; letter-spacing: 0.05em; }
 .till-waiter-total { font-size: 2rem; font-weight: 700; margin: 0; word-break: break-all; }
 .till-waiter-bill { font-size: 0.8em; opacity: 0.7; margin: 0; }
