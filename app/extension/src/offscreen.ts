@@ -523,7 +523,13 @@ async function signTransaction(cmd: Extract<OwnerCommand, { cmd: "signTransactio
   const value = cmd.tx.value === undefined ? 0n : BigInt(cmd.tx.value);
   const data = cmd.tx.data as Hex | undefined;
 
-  const nonce = cmd.tx.nonce ?? (await rpc.getTransactionCount({ address: from as Address }));
+  /* `pending`, not `latest`. A dapp that sends two transactions in a row --
+   * approve then swap is the commonest pair in crypto -- has the second built
+   * while the first is still in the mempool, and a nonce counted from mined
+   * blocks alone gives it the nonce the first one already took. The node then
+   * refuses it with "nonce too low", which reads as a wallet fault. */
+  const nonce = cmd.tx.nonce
+    ?? (await rpc.getTransactionCount({ address: from as Address, blockTag: "pending" }));
 
   let maxFeePerGas = cmd.tx.maxFeePerGas === undefined ? undefined : BigInt(cmd.tx.maxFeePerGas);
   let maxPriorityFeePerGas =

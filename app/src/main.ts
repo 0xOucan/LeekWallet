@@ -3561,7 +3561,23 @@ async function sign(): Promise<void> {
     log(`fetching nonce and fees via ${new URL(failover.order()[0] as string).host}…`);
 
     const [nonce, fees] = await Promise.all([
-      rpc.getTransactionCount({ address: from }),
+      /* `pending`, not the default `latest`.
+       *
+       * `latest` counts only MINED transactions, so a second transaction built
+       * while the first is still in the mempool asks for the nonce the first
+       * one already took, and the node refuses it: "nonce too low: next nonce
+       * 16, tx nonce 15". That is not an edge case here -- every flow this app
+       * has is a sequence. Aqua is approve, approve, ship; a batched payroll
+       * is approve, salaries, tips. It has looked fine on fast chains only
+       * because the first transaction usually mines before a human finishes
+       * reading the second on the device screen, which is a race, not a
+       * design.
+       *
+       * The cost of `pending` is the opposite failure: if a pending
+       * transaction is dropped rather than mined, the next nonce leaves a gap
+       * and the transaction after it waits. That is recoverable by resending,
+       * and it is rarer than the one above. */
+      rpc.getTransactionCount({ address: from, blockTag: "pending" }),
       rpc.estimateFeesPerGas(),
     ]);
     const maxFeePerGas = fees.maxFeePerGas ?? 30000000000n;
@@ -3795,7 +3811,12 @@ async function signPlannedTransaction(tx: PlannedTx, broadcast: boolean): Promis
   const rpc = createPublicClient({ chain: viemDef, transport });
 
   const from = addresses[index] as Address;
-  const nonce = tx.nonce ?? (await rpc.getTransactionCount({ address: from }));
+  /* `pending` for the same reason as the send path: a nonce read from the
+   * latest block ignores anything this wallet has already broadcast and not
+   * yet had mined, which is precisely the state a dapp's second request
+   * arrives in. */
+  const nonce = tx.nonce
+    ?? (await rpc.getTransactionCount({ address: from, blockTag: "pending" }));
 
   let maxFeePerGas = tx.maxFeePerGas;
   let maxPriorityFeePerGas = tx.maxPriorityFeePerGas;
@@ -3980,10 +4001,13 @@ async function signApprovalCap(
   const from = addresses[addressIndex(tx.from)];
   if (!from) throw new Error("that address is not one this device has derived");
 
+  /* This one SEQUENCES: `base + i` per step below. Reading it from the latest
+   * block means the first step's own broadcast is invisible to a later retry
+   * of this function, and every step after it collides. */
   const base = tx.nonce ?? await (async () => {
     const { chain: viemDef, transport } = rpcFor(info);
     return createPublicClient({ chain: viemDef, transport })
-      .getTransactionCount({ address: from as Address });
+      .getTransactionCount({ address: from as Address, blockTag: "pending" });
   })();
 
   let last = "";
