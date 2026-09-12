@@ -587,6 +587,34 @@ static const uint8_t AQUA_APP_ADDR[20] = {
  * from `selector_sig` -- which the tamper test points at a mutated signature.
  * Returns 0 for any other row, which is the caller's cue to fall back to the
  * all-zero static block. */
+/* deployEquity/deployBond(string,string) -- the canonical encoding, which is
+ * the only one the decoder accepts: two offsets, then the two tails back to
+ * back, each padded to a word with zeros. */
+static size_t build_two_strings(uint8_t *out, size_t cap, const char *sig,
+                                const char *name, const char *symbol)
+{
+    size_t nlen = strlen(name), slen = strlen(symbol);
+    size_t npad = (nlen + 31) / 32 * 32, spad = (slen + 31) / 32 * 32;
+    size_t len = 4 + 2 * 32 + 32 + npad + 32 + spad;
+    if (len > cap) return 0;
+    memset(out, 0, len);
+
+    uint8_t hash[32];
+    keccak_256((const uint8_t *)sig, strlen(sig), hash);
+    memcpy(out, hash, 4);
+
+    uint8_t *args = out + 4;
+    size_t off_s = 2 * 32 + 32 + npad;
+    amount_u64(args, 2 * 32);          /* offset of `name` */
+    amount_u64(args + 32, off_s);      /* offset of `symbol` */
+
+    amount_u64(args + 2 * 32, nlen);
+    memcpy(args + 2 * 32 + 32, name, nlen);
+    amount_u64(args + off_s, slen);
+    memcpy(args + off_s + 32, symbol, slen);
+    return len;
+}
+
 static size_t aqua_probe(uint8_t *out, size_t cap, const char *selector_sig,
                          const char *row_sig)
 {
@@ -605,6 +633,12 @@ static size_t aqua_probe(uint8_t *out, size_t cap, const char *selector_sig,
     if (strcmp(row_sig, "dock(address,bytes32,address[])") == 0) {
         return build_aqua_dock(out, cap, selector_sig, AQUA_APP_ADDR,
                                hash32, tokens, 1);
+    }
+    /* The ATS rows are dynamic too, so an all-zero block is not a legal call
+     * for them either. */
+    if (strcmp(row_sig, "deployEquity(string,string)") == 0 ||
+        strcmp(row_sig, "deployBond(string,string)") == 0) {
+        return build_two_strings(out, cap, selector_sig, "Leek Capital", "LEEKA");
     }
     return 0;
 }
@@ -1147,8 +1181,22 @@ static const char *kind_json_name(EthCallKind k)
         case ETH_CALL_GENERIC:             return "generic";
         case ETH_CALL_AQUA_SHIP:           return "aqua-ship";
         case ETH_CALL_AQUA_DOCK:           return "aqua-dock";
-        default:                           return "unknown";
+        case ETH_CALL_ATS_DEPLOY_EQUITY:   return "ats-deploy-equity";
+        case ETH_CALL_ATS_DEPLOY_BOND:     return "ats-deploy-bond";
+        case ETH_CALL_UNKNOWN:             return "unknown";
     }
+    /* No `default:`, deliberately, and no fallback string.
+     *
+     * This used to end in `default: return "unknown"`, which meant a kind
+     * added to the enum and NOT added here was emitted into the vector file as
+     * "unknown" -- a vector asserting that the device refuses a call it
+     * actually accepts, handed to the mirror as ground truth. That is the
+     * precise failure the vectors exist to catch, reproduced inside the thing
+     * that catches it. Without the default, the compiler names the missing
+     * case; if one is somehow still missed, this abort is louder than a wrong
+     * file. */
+    fprintf(stderr, "kind_json_name: unmapped EthCallKind %d\n", (int)k);
+    abort();
 }
 
 /* The declared type string a generic argument was parsed from ("uint16",
@@ -1338,6 +1386,25 @@ static void emit_case(FILE *out, const char *name, const uint8_t *data, size_t l
         } else {
             fprintf(out, "null");
         }
+        fprintf(out, " }");
+    } else {
+        fprintf(out, "null");
+    }
+    fprintf(out, ",\n");
+
+    /* The two strings, recorded for the same reason the SwapVM program above
+     * is: pinning only "accepted" would let the two decoders agree to accept a
+     * call while disagreeing about what it SAYS -- and for an issuance, what
+     * it says is the entire decision. */
+    fprintf(out, "    \"ats\": ");
+    if (kind == ETH_CALL_ATS_DEPLOY_EQUITY || kind == ETH_CALL_ATS_DEPLOY_BOND) {
+        char nm[ETH_ATS_MAX_NAME + 1], sy[ETH_ATS_MAX_SYMBOL + 1];
+        bool okn = eth_ats_string(&call, data, len, ETH_ATS_NAME, nm, sizeof(nm));
+        bool oks = eth_ats_string(&call, data, len, ETH_ATS_SYMBOL, sy, sizeof(sy));
+        fprintf(out, "{ \"name\": ");
+        if (okn) fprintf(out, "\"%s\"", nm); else fprintf(out, "null");
+        fprintf(out, ", \"symbol\": ");
+        if (oks) fprintf(out, "\"%s\"", sy); else fprintf(out, "null");
         fprintf(out, " }");
     } else {
         fprintf(out, "null");
@@ -1636,12 +1703,224 @@ static int emit_vectors(const char *path)
     amount_u64(data + 4 + 64, 4 * 32);   /* offT moved off 3*32 */
     CASE("aqua dock, tokens offset moved off the canonical slot", data, len);
 
+    /* -------------------------------------------------- the escrow market */
+
+    {
+        uint8_t w[ETH_MAX_ARGS][32];
+        memset(w, 0, sizeof(w));
+        amount_u64(w[0], 3);
+        len = build_sig_call(data, sizeof(data), "fill(uint256)", w, 1);
+        CASE("market fill(listingId)", data, len);
+
+        len = build_sig_call(data, sizeof(data), "cancel(uint256)", w, 1);
+        CASE("market cancel(listingId)", data, len);
+
+        memcpy(w[0] + 12, SPENDER, 20);
+        amount_u64(w[1], 500000000);
+        amount_u64(w[2], 100000000);
+        len = build_sig_call(data, sizeof(data), "list(address,uint256,uint256)", w, 3);
+        CASE("market list(security,amount,priceTotal)", data, len);
+    }
+
+    /* ------------------------------------------------------ ATS issuance */
+
+    len = build_two_strings(data, sizeof(data), "deployEquity(string,string)",
+                            "Leek Capital Ordinary Shares", "LEEKA");
+    CASE("ats deployEquity", data, len);
+
+    len = build_two_strings(data, sizeof(data), "deployBond(string,string)",
+                            "Leek Capital 2027 Senior Note", "LEEKB");
+    CASE("ats deployBond", data, len);
+
+    /* One character each, which is the shortest thing the bounds allow and the
+     * shape most likely to be off by one on either side. */
+    len = build_two_strings(data, sizeof(data), "deployEquity(string,string)",
+                            "A", "B");
+    CASE("ats deployEquity, one-character strings", data, len);
+
+    /* Exactly on the bounds: 64 and 12. The vector matters because these are
+     * the numbers the factory enforces too, so an off-by-one here would refuse
+     * a call that is valid on chain. */
+    {
+        char nm[ETH_ATS_MAX_NAME + 1], sy[ETH_ATS_MAX_SYMBOL + 1];
+        memset(nm, 'N', ETH_ATS_MAX_NAME);   nm[ETH_ATS_MAX_NAME] = '\0';
+        memset(sy, 'S', ETH_ATS_MAX_SYMBOL); sy[ETH_ATS_MAX_SYMBOL] = '\0';
+        len = build_two_strings(data, sizeof(data), "deployEquity(string,string)", nm, sy);
+        CASE("ats deployEquity, both strings at the bound", data, len);
+    }
+
+    /* Refusals. Each is a way the screen and the calldata could disagree. */
+    len = build_two_strings(data, sizeof(data), "deployEquity(string,string)",
+                            "Leek\x01Capital", "LEEKA");
+    CASE("ats deployEquity, control character in the name", data, len);
+
+    len = build_two_strings(data, sizeof(data), "deployEquity(string,string)",
+                            "Leek Capital", "LEEK\xE2\x80\xAE");
+    CASE("ats deployEquity, non-ascii in the symbol", data, len);
+
+    len = build_two_strings(data, sizeof(data), "deployEquity(string,string)",
+                            " Leek Capital", "LEEKA");
+    CASE("ats deployEquity, leading space", data, len);
+
+    {
+        char toolong[ETH_ATS_MAX_NAME + 2];
+        memset(toolong, 'A', ETH_ATS_MAX_NAME + 1);
+        toolong[ETH_ATS_MAX_NAME + 1] = '\0';
+        len = build_two_strings(data, sizeof(data), "deployEquity(string,string)",
+                                toolong, "LEEKA");
+        CASE("ats deployEquity, name one over the bound", data, len);
+    }
+
+    len = build_two_strings(data, sizeof(data), "deployEquity(string,string)",
+                            "Leek", "LEEKA");
+    data[4 + 63] += 32;
+    CASE("ats deployEquity, gap between the two tails", data, len);
+
+    len = build_two_strings(data, sizeof(data), "deployEquity(string,string)",
+                            "Leek", "LEEKA");
+    data[4 + 2 * 32 + 32 + 4] = 0xFF;
+    CASE("ats deployEquity, non-zero padding after the name", data, len);
+
+    len = build_two_strings(data, sizeof(data), "deployEquity(string,string)",
+                            "Leek", "LEEKA");
+    data[len] = 0x01;
+    CASE("ats deployEquity, trailing byte", data, len + 1);
+
 #undef CASE
     fprintf(out, "\n]\n");
     fclose(out);
 
     printf("wrote %d eth-decode vectors to %s\n", i, path);
     return 0;
+}
+
+
+/* ------------------------------------------------------- ATS issuance */
+
+static void test_ats_deploy_decodes(void)
+{
+    printf("an ATS issuance decodes its name and symbol, and nothing else\n");
+
+    for (int bond = 0; bond < 2; bond++) {
+        const char *sig = bond ? "deployBond(string,string)"
+                               : "deployEquity(string,string)";
+        EthCallKind want = bond ? ETH_CALL_ATS_DEPLOY_BOND
+                                : ETH_CALL_ATS_DEPLOY_EQUITY;
+        uint8_t data[600];
+        size_t len = build_two_strings(data, sizeof(data), sig,
+                                       "Leek Capital Ordinary Shares", "LEEKA");
+        CHECK(len > 0, "could not build %s", sig);
+
+        EthCall call;
+        CHECK(eth_decode_call(data, len, &call) == want, "%s: wrong kind", sig);
+
+        char out[ETH_ATS_MAX_NAME + 1];
+        CHECK(eth_ats_string(&call, data, len, ETH_ATS_NAME, out, sizeof(out)),
+              "%s: name unreadable", sig);
+        CHECK(strcmp(out, "Leek Capital Ordinary Shares") == 0,
+              "%s: name came back as '%s'", sig, out);
+        CHECK(eth_ats_string(&call, data, len, ETH_ATS_SYMBOL, out, sizeof(out)),
+              "%s: symbol unreadable", sig);
+        CHECK(strcmp(out, "LEEKA") == 0, "%s: symbol came back as '%s'", sig, out);
+    }
+
+    /* The whole point of the wrapper: it fits what the device will hold. */
+    uint8_t data[600];
+    size_t len = build_two_strings(data, sizeof(data),
+                                   "deployEquity(string,string)",
+                                   "Leek Capital Ordinary Shares", "LEEKA");
+    CHECK(len <= ETH_MAX_DATA, "a deploy of %zu bytes exceeds ETH_MAX_DATA", len);
+}
+
+static void test_ats_refuses_undrawable_strings(void)
+{
+    printf("a string the screen cannot draw faithfully refuses the whole call\n");
+
+    const char *sig = "deployEquity(string,string)";
+    uint8_t data[600];
+    EthCall call;
+
+    /* A control character can blank or move what follows it, so the string on
+     * screen would not be the string on chain. */
+    size_t len = build_two_strings(data, sizeof(data), sig, "Leek\x01Capital", "LEEKA");
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_UNKNOWN,
+          "a control character in the name was accepted");
+
+    /* High bytes: a UTF-8 sequence can carry a right-to-left override that
+     * reverses a symbol on screen while the calldata says otherwise. */
+    len = build_two_strings(data, sizeof(data), sig, "Leek Capital", "LEEK\xE2\x80\xAE");
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_UNKNOWN,
+          "a non-ASCII byte in the symbol was accepted");
+
+    /* Invisible on screen, present on chain. */
+    len = build_two_strings(data, sizeof(data), sig, " Leek Capital", "LEEKA");
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_UNKNOWN,
+          "a leading space was accepted");
+    len = build_two_strings(data, sizeof(data), sig, "Leek Capital ", "LEEKA");
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_UNKNOWN,
+          "a trailing space was accepted");
+
+    /* Empty is not a name anybody can check. */
+    len = build_two_strings(data, sizeof(data), sig, "", "LEEKA");
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_UNKNOWN,
+          "an empty name was accepted");
+
+    /* The factory's own bounds, enforced here so a call that would revert on
+     * chain never costs a press. */
+    char long_name[ETH_ATS_MAX_NAME + 2];
+    memset(long_name, 'A', sizeof(long_name) - 1);
+    long_name[sizeof(long_name) - 1] = '\0';
+    len = build_two_strings(data, sizeof(data), sig, long_name, "LEEKA");
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_UNKNOWN,
+          "a name over MAX_NAME_BYTES was accepted");
+
+    char long_symbol[ETH_ATS_MAX_SYMBOL + 2];
+    memset(long_symbol, 'A', sizeof(long_symbol) - 1);
+    long_symbol[sizeof(long_symbol) - 1] = '\0';
+    len = build_two_strings(data, sizeof(data), sig, "Leek Capital", long_symbol);
+    CHECK(eth_decode_call(data, len, &call) == ETH_CALL_UNKNOWN,
+          "a symbol over MAX_SYMBOL_BYTES was accepted");
+}
+
+static void test_ats_refuses_non_canonical_encodings(void)
+{
+    printf("only the canonical encoding of an issuance is accepted\n");
+
+    const char *sig = "deployEquity(string,string)";
+    uint8_t data[600];
+    EthCall call;
+    size_t base = build_two_strings(data, sizeof(data), sig, "Leek", "LEEKA");
+    CHECK(eth_decode_call(data, base, &call) == ETH_CALL_ATS_DEPLOY_EQUITY,
+          "the canonical baseline did not decode");
+
+    /* A gap between the two tails encodes the same two strings and is a
+     * different set of bytes to reason about. Refused, not normalised. */
+    uint8_t gapped[600];
+    memcpy(gapped, data, base);
+    gapped[4 + 63] += 32;                 /* push `symbol` one word later */
+    CHECK(eth_decode_call(gapped, base, &call) == ETH_CALL_UNKNOWN,
+          "a gap between the tails was accepted");
+
+    /* Padding a host can choose is padding a host can put a message in. */
+    uint8_t padded[600];
+    memcpy(padded, data, base);
+    padded[4 + 2 * 32 + 32 + 4] = 0xFF;   /* inside `name`'s zero padding */
+    CHECK(eth_decode_call(padded, base, &call) == ETH_CALL_UNKNOWN,
+          "non-zero padding after the name was accepted");
+
+    /* Trailing bytes are data left for a reader other than this one. */
+    uint8_t trailing[600];
+    memcpy(trailing, data, base);
+    trailing[base] = 0x01;
+    CHECK(eth_decode_call(trailing, base + 1, &call) == ETH_CALL_UNKNOWN,
+          "trailing bytes were accepted");
+
+    /* The first tail must sit immediately after the head. */
+    uint8_t moved[600];
+    memcpy(moved, data, base);
+    moved[4 + 31] = 0x60;
+    CHECK(eth_decode_call(moved, base, &call) == ETH_CALL_UNKNOWN,
+          "a name offset other than 0x40 was accepted");
 }
 
 int main(int argc, char **argv)
@@ -1669,6 +1948,9 @@ int main(int argc, char **argv)
     test_generic_arguments_are_validated();
     test_unlimited_follows_the_declared_width();
     test_dynamic_types_stay_refused();
+    test_ats_deploy_decodes();
+    test_ats_refuses_undrawable_strings();
+    test_ats_refuses_non_canonical_encodings();
     test_tx_level();
 
     if (failures) {

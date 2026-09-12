@@ -74,6 +74,12 @@ typedef enum {
                                 * never what it does; see EthCall::entry */
     ETH_CALL_AQUA_SHIP,        /* Aqua ship(address app, bytes strategy,
                                 * address[] tokens, uint256[] amounts) */
+    /* ATS issuance through LeekSecurityFactory. Two strings and nothing else,
+     * which is the entire reason these are drawable: the factory freezes the
+     * 3,748-byte template on chain, so the only values that vary are the two
+     * on the screen. See src/LeekSecurityFactory.sol. */
+    ETH_CALL_ATS_DEPLOY_EQUITY, /* deployEquity(string name, string symbol) */
+    ETH_CALL_ATS_DEPLOY_BOND,   /* deployBond(string name, string symbol)   */
     ETH_CALL_AQUA_DOCK,        /* Aqua dock(address app, bytes32 strategyHash,
                                 * address[] tokens) */
     ETH_CALL_UNKNOWN           /* not in the decodable set — refuse it */
@@ -98,6 +104,12 @@ typedef enum {
  * identical rather than trust two numbers to stay in the right order by hand.
  * Real strategies use at most six instructions (spec §5), so both bounds have
  * the same headroom above real usage. */
+/* The factory's own bounds (MAX_NAME_BYTES / MAX_SYMBOL_BYTES). Enforcing the
+ * same numbers here means a call that would revert on chain is refused before
+ * a press is spent on it, and the screen never has to elide. */
+#define ETH_ATS_MAX_NAME   64
+#define ETH_ATS_MAX_SYMBOL 12
+
 #define ETH_AQUA_MAX_INSTRUCTIONS 16
 
 /* The static ABI types a generic argument may have. Deliberately only the ones
@@ -209,6 +221,26 @@ typedef struct {
      * renderer reads the opcode and its args back out of that buffer with
      * aqua_instr_field(). */
     uint16_t    aqua_instr_off[ETH_AQUA_MAX_INSTRUCTIONS];
+
+    /* ------------------------------------------- ATS issuance (two strings)
+     *
+     * Byte offsets into the SAME calldata buffer, like the Aqua fields above:
+     * the decoder resolves and bounds-checks them once and the renderer reads
+     * the bytes back out, so nothing is copied twice and there is one source
+     * of truth for what was signed.
+     *
+     * Both strings are validated at decode time to be printable ASCII within
+     * the bounds the factory itself enforces (64 and 12). That is stricter
+     * than "it is a valid ABI string" on purpose, twice over: a name carrying
+     * control characters, or right-to-left overrides, or an empty run of
+     * padding, is a name that does not read on screen the way it reads in the
+     * calldata -- and that is the whole attack against a device whose only job
+     * is to show you what you are signing. A string this device cannot draw
+     * faithfully is refused, not truncated. */
+    uint16_t    ats_name_off;
+    uint8_t     ats_name_len;
+    uint16_t    ats_symbol_off;
+    uint8_t     ats_symbol_len;
 } EthCall;
 
 /**
@@ -269,6 +301,27 @@ bool eth_arg_quantity(const EthCall *call, const uint8_t *data, size_t len,
  */
 bool eth_arg_unlimited(const EthCall *call, const uint8_t *data, size_t len,
                        int i);
+
+/* ------------------------------------------------------- ATS issuance */
+
+/** Which of the two strings an ATS deploy call carries. */
+typedef enum { ETH_ATS_NAME = 0, ETH_ATS_SYMBOL } EthAtsString;
+
+/**
+ * Copy `which` string out of `data` into `out` as a NUL-terminated C string.
+ *
+ * Re-bounds-checked against the caller's length, exactly as eth_aqua_token()
+ * is and for the same reason: this runs at render time from a buffer the
+ * renderer owns, and decode time and render time have been out of step before.
+ *
+ * Returns false — and writes an empty string — when the call is not an ATS
+ * deploy, when the offsets do not fit `len`, or when `out_size` cannot hold
+ * the string and its terminator. A renderer that gets false must print that it
+ * is unavailable rather than print nothing, or the screen quietly loses a
+ * field that was signed.
+ */
+bool eth_ats_string(const EthCall *call, const uint8_t *data, size_t len,
+                    EthAtsString which, char *out, size_t out_size);
 
 /* ------------------------------------------------------------ Aqua (Q2) */
 

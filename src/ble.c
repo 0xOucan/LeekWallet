@@ -86,6 +86,36 @@ static const ble_uuid128_t tx_chr_uuid = LEEK_UUID(0x03);   /* device → host *
 
 static uint8_t  addr_type;
 static uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
+
+/*
+ * How long the device stays discoverable with nobody connecting.
+ *
+ * The radio was the largest continuous power draw on the board, and a wallet
+ * that advertises forever is warm in the hand for no benefit: LeekWallet is
+ * used for an operation and put down, not carried connected. Two minutes is
+ * long enough to open the companion, pick the device and pair; past that,
+ * advertising is serving nobody.
+ *
+ * This is a power measure that happens to reduce attack surface, and not the
+ * other way round -- nothing here touches pairing, the session key or the
+ * encryption. A device that is not advertising is simply not discoverable,
+ * which is strictly less exposure than advertising into an empty room.
+ *
+ * NimBLE takes the window as `ble_gap_adv_start`'s duration and ends it with
+ * BLE_GAP_EVENT_ADV_COMPLETE, so the timing lives in the controller rather
+ * than in a task of ours that would have to be woken to check a clock.
+ */
+#define BLE_ADV_WINDOW_MS 120000
+
+/*
+ * Whether the controller is advertising right now.
+ *
+ * Distinct from `running`: `running` is "the transport is enabled", this is
+ * "somebody could find us". They differ for exactly the case this exists for --
+ * enabled, but the window has closed. A press re-opens it
+ * (ble_transport_advertise_again), so a lapsed window is never a dead end.
+ */
+static bool advertising;
 static uint16_t tx_val_handle;
 static bool     running;
 static bool     host_task_started;
@@ -336,11 +366,15 @@ static void ble_advertise(void)
     adv_params.itvl_min = 160;   /* 100 ms */
     adv_params.itvl_max = 160;
 
-    rc = ble_gap_adv_start(addr_type, NULL, BLE_HS_FOREVER, &adv_params,
+    rc = ble_gap_adv_start(addr_type, NULL, BLE_ADV_WINDOW_MS, &adv_params,
                            on_gap_event, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "adv_start failed: %d", rc);
+        advertising = false;
+        return;
     }
+    advertising = true;
+    ESP_LOGI(TAG, "Advertising for %d s", BLE_ADV_WINDOW_MS / 1000);
 }
 
 static int on_gap_event(struct ble_gap_event *event, void *arg)
@@ -364,9 +398,22 @@ static int on_gap_event(struct ble_gap_event *event, void *arg)
                  * larger than the link MTU is truncated silently and reaches
                  * the host as a corrupt frame. */
                 ESP_LOGI(TAG, "Connected; MTU %d", ble_att_mtu(conn_handle));
+                /* The controller stops advertising on connect. Recording it
+                 * keeps `advertising` honest, so a button press during a live
+                 * session does not try to re-open a window that is not open
+                 * and does not need to be. */
+                advertising = false;
             } else if (running) {
                 ble_advertise();
             }
+            return 0;
+
+        case BLE_GAP_EVENT_ADV_COMPLETE:
+            /* The window closed with nobody connecting. Not an error and not a
+             * fault: it is the whole point. The transport stays enabled, so a
+             * press re-opens it without a reboot or a menu. */
+            advertising = false;
+            ESP_LOGI(TAG, "Advertising window closed; press a button to advertise again");
             return 0;
 
         case BLE_GAP_EVENT_DISCONNECT:
@@ -389,8 +436,45 @@ static int on_gap_event(struct ble_gap_event *event, void *arg)
     }
 }
 
+/*
+ * Drop the radio to 0 dBm once the controller is up.
+ *
+ * The build's PHY ceiling is 20 dBm (100 mW) and nothing lowered it, which is a
+ * setting for reaching across a building. This device is held in one hand and
+ * talks to a laptop on the same desk; 0 dBm still covers several metres. The
+ * radio was the board's largest continuous draw and the Pixie is a small sealed
+ * handheld, so the same watts are felt directly in the hand.
+ *
+ * It is worth being clear that this is not a security trade. Nothing here
+ * touches pairing, the session key or the encryption; the only thing that
+ * shrinks is the distance from which the device can be heard at all, which
+ * moves in the safe direction.
+ *
+ * ESP32-C3 only: `esp_ble_tx_power_set` is not provided for the S3 in this
+ * IDF, and the S3 devkit is mains-powered on an open board with room to shed
+ * heat -- it is not the one anybody is holding.
+ */
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+#include "esp_bt.h"
+static void ble_lower_tx_power(void)
+{
+    esp_err_t err = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_N0);
+    if (err != ESP_OK) {
+        /* Not fatal: a radio at full power still works, it is just warm. Say
+         * so rather than fail a transport the user is waiting on. */
+        ESP_LOGW(TAG, "Could not lower BLE TX power: %d", err);
+        return;
+    }
+    ESP_LOGI(TAG, "BLE TX power set to 0 dBm");
+}
+#else
+static void ble_lower_tx_power(void) { }
+#endif
+
 static void on_sync(void)
 {
+    ble_lower_tx_power();
+
     if (ble_hs_util_ensure_addr(0) != 0) {
         ESP_LOGE(TAG, "No usable BLE address");
         return;
@@ -493,6 +577,29 @@ void ble_transport_refresh_name(void)
     ble_advertise();
 }
 
+/*
+ * Re-open the advertising window after it has lapsed.
+ *
+ * Safe to call at any time and does nothing unless it is needed: not while a
+ * peer is connected (there is nothing to advertise for, and NimBLE would
+ * refuse), not while already advertising, and not while the transport is
+ * stopped. That means a caller may wire it to "any button press" without
+ * knowing the radio's state, which is what ui.c does.
+ */
+void ble_transport_advertise_again(void)
+{
+    if (!running || advertising || conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        return;
+    }
+    ESP_LOGI(TAG, "Advertising window re-opened by a button press");
+    ble_advertise();
+}
+
+bool ble_transport_advertising(void)
+{
+    return advertising;
+}
+
 void ble_transport_stop(void)
 {
     if (!running) {
@@ -500,6 +607,7 @@ void ble_transport_stop(void)
     }
 
     running = false;
+    advertising = false;
     ble_gap_adv_stop();
     if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
         ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
@@ -526,10 +634,33 @@ bool ble_transport_running(void)
  * assert that selecting USB leaves BLE off. The chunking and dispatch this file
  * wraps are tested directly — see sim/test_ble_chunk.c. */
 static bool running;
+/*
+ * The advertising window, modelled rather than real.
+ *
+ * There is no radio here, but the STATE is what ui.c drives: any button press
+ * calls ble_transport_advertise_again(), so the host suite can assert that a
+ * lapsed window re-opens on a press and that a press does nothing when the
+ * transport is off. Modelling it as "advertising whenever running" keeps the
+ * stand-in honest for every case except the lapse itself, which only the
+ * controller's timer can produce.
+ */
+static bool advertising;
 
-bool ble_transport_start(void)   { running = true;  return true; }
-void ble_transport_stop(void)    { running = false; }
+bool ble_transport_start(void)   { running = true;  advertising = true;  return true; }
+void ble_transport_stop(void)    { running = false; advertising = false; }
 bool ble_transport_running(void) { return running; }
+bool ble_transport_advertising(void) { return advertising; }
+void ble_transport_advertise_again(void)
+{
+    if (!running) return;      /* a press cannot start a stopped transport */
+    advertising = true;
+}
+
+/* Host suite only: close the window, which on real hardware only the
+ * controller's timer can do. Declared where it is used (sim/test_ui.c) rather
+ * than in ble.h, so no firmware caller can reach it. */
+void ble_test_close_window(void);
+void ble_test_close_window(void) { advertising = false; }
 /* No radio to re-advertise on; the name itself is real and tested directly
  * (src/ble-name.c, sim/test_protocol.c). */
 void ble_transport_refresh_name(void) { }
@@ -545,6 +676,11 @@ void ble_transport_write_frame(const uint8_t *frame, size_t len)
 bool ble_transport_start(void)   { return false; }
 void ble_transport_stop(void)    { }
 bool ble_transport_running(void) { return false; }
+/* The advertising window has no meaning without a radio, but the symbols must
+ * exist or every caller needs its own #if. Saying "not advertising" is also the
+ * true answer on a board that cannot advertise. */
+void ble_transport_advertise_again(void) { }
+bool ble_transport_advertising(void)     { return false; }
 void ble_transport_refresh_name(void) { }
 void ble_transport_write_frame(const uint8_t *frame, size_t len)
 {

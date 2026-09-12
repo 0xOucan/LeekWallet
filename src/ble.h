@@ -30,6 +30,21 @@ bool ble_transport_start(void);
 /** Stop advertising, drop any connection, and shut the stack down. */
 void ble_transport_stop(void);
 
+/**
+ * Re-open the advertising window after it lapsed (see BLE_ADV_WINDOW_MS).
+ *
+ * The device stops advertising after two minutes with nobody connecting,
+ * because the radio was the board's largest continuous draw and a wallet
+ * nobody is pairing with has no reason to be discoverable. This re-opens it.
+ *
+ * Does nothing when it would be wrong to act: transport stopped, already
+ * advertising, or a peer connected. Callers may therefore invoke it blindly.
+ */
+void ble_transport_advertise_again(void);
+
+/** Whether the controller is advertising right now. Not the same as running. */
+bool ble_transport_advertising(void);
+
 /** True while the radio is up. False means not advertising, not connectable. */
 bool ble_transport_running(void);
 

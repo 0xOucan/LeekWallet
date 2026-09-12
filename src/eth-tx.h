@@ -43,9 +43,22 @@ typedef struct {
  * it further means raising that first, and then the two RLP buffers in
  * eth-tx.c, which are stack locals on the protocol task.
  *
+ * 640 -> 768, measured 2026-09-10. A two-leg Aqua `ship` is 676 bytes of
+ * calldata and was refused outright at 640 -- the position could not be
+ * shipped from this device at all. The three consequences, each checked:
+ *
+ *   frame  ~120 bytes of CBOR overhead sit above the calldata, so 768 gives a
+ *          ~888-byte request against PROTOCOL_MAX_FRAME's 1024. Still bounded
+ *          by the frame, so that does NOT have to move.
+ *   stack  EthTx grows 128, and eth_tx_encode's body and eth_tx_hash's payload
+ *          grow 128 each and nest -- roughly 384 bytes on the protocol task's
+ *          10 KB, against the 2 KB margin warn_on_thin_stack() watches.
+ *   room   768 clears the 676-byte two-leg ship by 92 bytes. A three-leg ship
+ *          would exceed it again, and would need the frame raised first.
+ *
  * Refusing anything longer stays the honest answer: the device never held those
  * bytes, so it could not hash or display what it would be signing. */
-#define ETH_MAX_DATA 640
+#define ETH_MAX_DATA 768
 
 typedef struct {
     uint64_t     chain_id;

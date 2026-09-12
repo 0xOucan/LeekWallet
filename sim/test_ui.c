@@ -688,6 +688,49 @@ static void test_settings_selects_one_transport(void)
     CHECK(fake_protocol_rx_enabled(), "the cable stayed deaf after being chosen");
 }
 
+static void test_advertising_window_reopens_on_a_press(void)
+{
+    printf("== a lapsed BLE advertising window re-opens on any button press\n");
+
+    /* The radio stops advertising after two minutes with nobody connecting
+     * (ble.c, BLE_ADV_WINDOW_MS) because it was the board's largest continuous
+     * draw and the Pixie was uncomfortably warm to hold. The cost of that is a
+     * device nobody can find, so the way back must be something a user does
+     * without being told. This pins that it is any press, and that the press
+     * still does its normal job. */
+    boot_unlocked_with_seed();
+    go(SCREEN_SETTINGS);
+    transport_init();
+
+    bool found = false;
+    for (int i = 0; i < 40 && !found; i++) {
+        found = fake_oled_contains("> Link USB");
+        if (!found) press(BUTTON_DOWN);
+    }
+    CHECK(found, "no transport entry in the settings menu");
+    if (!found) return;
+    press(BUTTON_ACCEPT);
+    CHECK(ble_transport_running(), "BLE was selected but is not up");
+    CHECK(ble_transport_advertising(), "BLE came up without advertising");
+
+    /* Only the controller's timer can close the window, so the stand-in is
+     * closed by hand -- the behaviour under test is the re-opening. */
+    ble_transport_stop();
+    ble_transport_start();
+    extern void ble_test_close_window(void);
+    ble_test_close_window();
+    CHECK(!ble_transport_advertising(), "the window did not close");
+
+    press(BUTTON_DOWN);
+    CHECK(ble_transport_advertising(), "a press did not re-open the window");
+
+    /* And a press must never start a transport the user switched off. */
+    ble_transport_stop();
+    press(BUTTON_DOWN);
+    CHECK(!ble_transport_running(), "a press started a stopped transport");
+    CHECK(!ble_transport_advertising(), "a press advertised on a stopped transport");
+}
+
 /* ============================================================================
  * T61 - one job per button on the entropy screen
  * ============================================================================ */
@@ -2887,6 +2930,7 @@ int main(void)
     test_temp_seed_does_not_become_a_stored_wallet();
     test_temp_seed_every_clearing_path();
     test_temp_seed_autolock_is_scoped_to_the_mode();
+    test_advertising_window_reopens_on_a_press();
 
     /* ---------------------------------------------------------------------
      * Seed creation talks to nothing.

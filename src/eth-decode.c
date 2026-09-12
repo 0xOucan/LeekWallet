@@ -22,7 +22,8 @@ typedef enum {
     ARGS_UINT,          /* withdraw(uint256) / mint(uint256)            */
     ARGS_FROM_SIGNATURE,/* read the types out of `sig` itself           */
     ARGS_AQUA_SHIP,     /* Aqua ship: see aqua_decode_ship()            */
-    ARGS_AQUA_DOCK      /* Aqua dock: see aqua_decode_dock()            */
+    ARGS_AQUA_DOCK,     /* Aqua dock: see aqua_decode_dock()            */
+    ARGS_TWO_STRINGS    /* ATS deployEquity/deployBond: ats_decode()     */
 } ArgShape;
 
 /* One row of the table.
@@ -110,6 +111,47 @@ static const struct EthAbiEntry KNOWN[] = {
       ETH_CALL_AQUA_SHIP, ARGS_AQUA_SHIP },
     { "dock(address,bytes32,address[])",         "app,strategyHash,tokens",
       ETH_CALL_AQUA_DOCK, ARGS_AQUA_DOCK },
+
+    /* The ATS escrow market's three calls.
+     *
+     * Every argument is static, so the generic signature path reads them and
+     * the screen draws one page each -- no bespoke decoder, unlike Aqua's or
+     * the issuance above. They are here because without them the DEVICE
+     * refuses a fill outright ("cannot display this request"), which is the
+     * correct behaviour for a call it cannot read and a dead end for a market
+     * meant to be used from the wallet. A host-side ERC-7730 descriptor does
+     * not help: it satisfies the companion's own gate, and the device still
+     * has to decode what it is being asked to sign.
+     *
+     * `fill` is the one that moves value: it carries HBAR in the transaction
+     * value, and the amount page for that comes from the transaction itself,
+     * not from these arguments. */
+    { "fill(uint256)",                   "listingId",
+      ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+    { "cancel(uint256)",                 "listingId",
+      ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+    { "list(address,uint256,uint256)",   "security,amount,priceTotal",
+      ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+
+    /* ATS issuance, through LeekSecurityFactory.
+     *
+     * `string` is a dynamic type, so the generic path refuses these on the
+     * same principle it refuses every dynamic signature, and they get a
+     * hand-written decoder for the same reason Aqua's two did.
+     *
+     * What makes these safe to draw where the ATS factory's own
+     * `deployEquity` is not: that one takes a seventeen-field nested struct
+     * and 3,748 bytes of calldata, far past ETH_MAX_DATA and far past what a
+     * 240x240 screen can put in front of a person honestly. The wrapper
+     * freezes that whole template in verified on-chain code, so these two
+     * strings are the complete set of things that vary. The screen showing
+     * name and symbol is therefore showing ALL of the decision, not a summary
+     * of it -- which is the only condition under which drawing a call is not
+     * a polite form of blind signing. */
+    { "deployEquity(string,string)", "name,symbol",
+      ETH_CALL_ATS_DEPLOY_EQUITY, ARGS_TWO_STRINGS },
+    { "deployBond(string,string)",   "name,symbol",
+      ETH_CALL_ATS_DEPLOY_BOND,   ARGS_TWO_STRINGS },
 };
 #define KNOWN_COUNT (sizeof(KNOWN) / sizeof(KNOWN[0]))
 
@@ -604,6 +646,120 @@ static bool aqua_swapvm_program(const uint8_t *data, size_t strategy_off,
                              data_len - program_start, out);
 }
 
+/* ---------------------------------------------------------- ATS issuance */
+
+bool eth_ats_string(const EthCall *call, const uint8_t *data, size_t len,
+                    EthAtsString which, char *out, size_t out_size)
+{
+    if (out && out_size) out[0] = '\0';
+    if (!call || !data || !out || out_size == 0) return false;
+    if (call->kind != ETH_CALL_ATS_DEPLOY_EQUITY &&
+        call->kind != ETH_CALL_ATS_DEPLOY_BOND) {
+        return false;
+    }
+
+    size_t off = (which == ETH_ATS_NAME) ? call->ats_name_off
+                                         : call->ats_symbol_off;
+    size_t n   = (which == ETH_ATS_NAME) ? call->ats_name_len
+                                         : call->ats_symbol_len;
+    if (n == 0) return false;
+    if (off > len || n > len - off) return false;   /* no overflow in the sum */
+    if (n + 1 > out_size) return false;
+
+    memcpy(out, data + off, n);
+    out[n] = '\0';
+    return true;
+}
+
+
+/**
+ * Is every byte of this string one a 240x240 screen draws faithfully?
+ *
+ * Printable ASCII only: 0x20 (space) to 0x7E (~). Not a style rule -- it is
+ * the difference between the string in the calldata and the string a person
+ * reads off the glass. A control character can blank or reposition what
+ * follows; a UTF-8 sequence can carry a right-to-left override that reverses
+ * a symbol; a byte the font has no glyph for draws as nothing at all and
+ * silently shortens the name being approved. Any of those makes the screen
+ * disagree with what is signed, which is the one failure this device exists
+ * to prevent, so the whole call is refused rather than the string cleaned.
+ *
+ * A leading or trailing space is refused for the same reason: it is invisible
+ * on screen and is part of the name on chain.
+ */
+static bool ats_string_is_drawable(const uint8_t *p, size_t len)
+{
+    if (len == 0) return false;
+    if (p[0] == ' ' || p[len - 1] == ' ') return false;
+    for (size_t i = 0; i < len; i++) {
+        if (p[i] < 0x20 || p[i] > 0x7E) return false;
+    }
+    return true;
+}
+
+/**
+ * deployEquity(string,string) / deployBond(string,string).
+ *
+ * Canonical encoding only, exactly as the Aqua decoders insist: the head is
+ * two offsets, the first tail sits immediately after the head, the second
+ * immediately after the first, and every pad byte is zero. Anything that is
+ * merely a valid ABI encoding of the same two strings -- reordered tails,
+ * surplus padding, a gap between them -- is refused rather than normalised,
+ * because a second encoding of "the same" call is a second thing to have to
+ * reason about on a screen.
+ */
+static bool ats_decode_two_strings(const uint8_t *data, size_t len, EthCall *out)
+{
+    if (len < 4 + 2 * 32) return false;
+    const uint8_t *args = data + 4;
+    size_t         span = len - 4;
+
+    size_t off_n, off_s;
+    if (!word_as_size(args, span, &off_n) ||
+        !word_as_size(args + 32, span, &off_s)) {
+        return false;
+    }
+    /* Where solc puts the first tail, and nowhere else. */
+    if (off_n != 2 * 32) return false;
+
+    /* name */
+    if (off_n + 32 > span) return false;
+    size_t len_n, padded_n;
+    if (!word_as_size(args + off_n, span, &len_n)) return false;
+    if (len_n == 0 || len_n > ETH_ATS_MAX_NAME) return false;
+    if (!padded_length(len_n, span, &padded_n)) return false;
+    if (off_n + 32 + padded_n > span) return false;
+    const uint8_t *name = args + off_n + 32;
+    for (size_t i = len_n; i < padded_n; i++) {
+        if (name[i] != 0) return false;
+    }
+    if (!ats_string_is_drawable(name, len_n)) return false;
+
+    /* symbol, which must begin exactly where the name's tail ended */
+    if (off_s != off_n + 32 + padded_n) return false;
+    if (off_s + 32 > span) return false;
+    size_t len_s, padded_s;
+    if (!word_as_size(args + off_s, span, &len_s)) return false;
+    if (len_s == 0 || len_s > ETH_ATS_MAX_SYMBOL) return false;
+    if (!padded_length(len_s, span, &padded_s)) return false;
+    if (off_s + 32 + padded_s > span) return false;
+    const uint8_t *symbol = args + off_s + 32;
+    for (size_t i = len_s; i < padded_s; i++) {
+        if (symbol[i] != 0) return false;
+    }
+    if (!ats_string_is_drawable(symbol, len_s)) return false;
+
+    /* Nothing may follow. Trailing bytes are data somebody put there for a
+     * reader other than this one. */
+    if (off_s + 32 + padded_s != span) return false;
+
+    out->ats_name_off   = (uint16_t)(name - data);
+    out->ats_name_len   = (uint8_t)len_n;
+    out->ats_symbol_off = (uint16_t)(symbol - data);
+    out->ats_symbol_len = (uint8_t)len_s;
+    return true;
+}
+
 /* ship(address,bytes,address[],uint256[]) -- canonical encoding only. */
 static bool aqua_decode_ship(const uint8_t *data, size_t len, EthCall *out)
 {
@@ -763,6 +919,18 @@ EthCallKind eth_decode_call(const uint8_t *data, size_t len, EthCall *out)
         goto done;
     }
 
+    if (known->shape == ARGS_TWO_STRINGS) {
+        if (!ats_decode_two_strings(data, len, &call)) {
+            /* Same rule as Aqua's: half a decode is nothing. */
+            memzero(&call, sizeof(call));
+            call.kind = ETH_CALL_UNKNOWN;
+            goto done;
+        }
+        call.entry = known;
+        call.kind  = known->kind;
+        goto done;
+    }
+
     if (known->shape == ARGS_AQUA_SHIP || known->shape == ARGS_AQUA_DOCK) {
         bool ok = (known->shape == ARGS_AQUA_SHIP)
                       ? aqua_decode_ship(data, len, &call)
@@ -878,6 +1046,8 @@ const char *eth_call_name(EthCallKind kind)
         case ETH_CALL_MINT_TOKEN_TO:        return "mint token to";
         case ETH_CALL_MINT:                 return "mint";
         case ETH_CALL_GENERIC:              return "contract call";
+        case ETH_CALL_ATS_DEPLOY_EQUITY:    return "Issue equity";
+        case ETH_CALL_ATS_DEPLOY_BOND:      return "Issue bond";
         case ETH_CALL_AQUA_SHIP:            return "Aqua ship";
         case ETH_CALL_AQUA_DOCK:            return "Aqua dock";
         default:                            return "unknown call";

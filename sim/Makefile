@@ -232,8 +232,22 @@ PROTOCOL_SRC := test_protocol.c esp_stubs.c host_stubs.c fake_usb.c fake_wallet.
                 $(CRYPTO)/chacha20poly1305/poly1305-donna.c \
                 $(CRYPTO)/chacha20poly1305/rfc7539.c
 
-$(BUILD)/test_protocol: $(PROTOCOL_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST -o $@ $^
+# Headers are prerequisites too.
+#
+# These rules listed only .c files, so a header-only edit rebuilt nothing. That
+# is quietly wrong for the test binaries and actively harmful for `conformance`:
+# it re-recorded the vectors from a STALE binary, producing a fixture that
+# certifies behaviour the firmware no longer has. Found 2026-09-10, when
+# ETH_MAX_DATA 640 -> 768 (a #define, in a header) left test_protocol seven
+# hours old and the regenerated vectors still pinned the 640 refusal.
+#
+# Coarse on purpose: every header in src/ and sim/, so nothing is missed by
+# someone adding an #include. These binaries take seconds to build; a stale one
+# costs an afternoon.
+HEADERS := $(wildcard ../src/*.h) $(wildcard *.h)
+
+$(BUILD)/test_protocol: $(PROTOCOL_SRC) $(HEADERS) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST -o $@ $(PROTOCOL_SRC)
 
 # Sanitised build of the protocol suite, as a separate binary.
 #
@@ -249,9 +263,9 @@ $(BUILD)/test_protocol: $(PROTOCOL_SRC) | $(BUILD)
 # on both hosts we build for; it is not an ASan finding and not a leak.
 #
 #   make -C sim asan
-$(BUILD)/test_protocol_asan: $(PROTOCOL_SRC) | $(BUILD)
+$(BUILD)/test_protocol_asan: $(PROTOCOL_SRC) $(HEADERS) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -DLEEK_HOST_TEST \
-	      -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $^
+	      -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $(PROTOCOL_SRC)
 
 # The chunk layer gets the same treatment, for the same reason.
 $(BUILD)/test_ble_chunk_asan: test_ble_chunk.c ../src/ble-chunk.c | $(BUILD)

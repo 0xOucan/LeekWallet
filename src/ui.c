@@ -4356,6 +4356,9 @@ typedef enum {
     SIGN_PAGE_AQUA_AMOUNT,  /* Aqua ship: what that token is credited with */
     SIGN_PAGE_AQUA_INSTR,   /* Aqua ship to the SwapVM router: one SwapVM
                              * program instruction, in program order (B3) */
+    SIGN_PAGE_ATS_ACTION,   /* ATS: issuing a security, and what that means */
+    SIGN_PAGE_ATS_NAME,     /* ATS: the security's name, in full */
+    SIGN_PAGE_ATS_SYMBOL,   /* ATS: the security's symbol, in full */
     SIGN_PAGE_FROM          /* the address that will sign (T47) */
 } SignPageKind;
 
@@ -4630,6 +4633,24 @@ void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
                     sign_page_kind[n++] = SIGN_PAGE_AQUA_INSTR;
                 }
             }
+            sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
+            break;
+        case ETH_CALL_ATS_DEPLOY_EQUITY:
+        case ETH_CALL_ATS_DEPLOY_BOND:
+            /* Three pages, and they are the WHOLE call.
+             *
+             * Everything else about the security -- decimals, max supply,
+             * nominal value, regulation, the control-list polarity, and which
+             * twelve roles land where -- is frozen in the factory's verified
+             * on-chain code and cannot be varied by this transaction. So name
+             * and symbol are not a summary of what is being signed, they are
+             * all of it, which is the only condition under which drawing a
+             * call is not blind signing with better manners. The action page
+             * says the part that is NOT on the other two: that whoever signs
+             * becomes the issuer, holding every role. */
+            sign_page_kind[n++] = SIGN_PAGE_ATS_ACTION;
+            sign_page_kind[n++] = SIGN_PAGE_ATS_NAME;
+            sign_page_kind[n++] = SIGN_PAGE_ATS_SYMBOL;
             sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
             break;
         case ETH_CALL_AQUA_DOCK:
@@ -5351,6 +5372,48 @@ static void screen_sign_confirm_render(void)
             }
             break;
         }
+        case SIGN_PAGE_ATS_ACTION: {
+            /* What it creates, and the consequence nobody can read off the
+             * other two pages: the signer becomes the issuer, with every role
+             * on the register -- mint, freeze, force-transfer, pause. That is
+             * authority over other people's holdings, so it is said in those
+             * words rather than implied by the word "issue". */
+            oled_draw_string(1, 0, sign_call.kind == ETH_CALL_ATS_DEPLOY_EQUITY
+                                       ? "ISSUE equity" : "ISSUE bond");
+            oled_draw_string(3, 0, "Creates a NEW");
+            oled_draw_string(4, 0, "security. You get");
+            oled_draw_string(5, 0, "ALL roles: mint,");
+            oled_draw_string(6, 0, "freeze, transfer.");
+            break;
+        }
+        case SIGN_PAGE_ATS_NAME:
+        case SIGN_PAGE_ATS_SYMBOL: {
+            /* Wrapped over the free rows and never cut. The decoder refused
+             * anything that is not printable ASCII within the factory's own
+             * bounds, so what is here is the entire string that will be
+             * written on chain -- there is no elision to hide behind. */
+            bool is_name = (sign_page_kind[sign_page] == SIGN_PAGE_ATS_NAME);
+            char text[ETH_ATS_MAX_NAME + 1];
+            oled_draw_string(1, 0, is_name ? "Name" : "Symbol");
+            if (eth_ats_string(&sign_call, sign_tx.data, sign_tx.data_length,
+                               is_name ? ETH_ATS_NAME : ETH_ATS_SYMBOL,
+                               text, sizeof(text))) {
+                size_t tlen = strlen(text);
+                for (int row = 0; row < 5; row++) {
+                    size_t off = (size_t)row * 20;
+                    if (off >= tlen) break;
+                    char part[21];
+                    snprintf(part, sizeof(part), "%.20s", text + off);
+                    oled_draw_string(2 + row, 0, part);
+                }
+            } else {
+                /* Never silently blank: a field that was signed and could not
+                 * be read is a reason to reject, and the screen has to say so
+                 * rather than look like an empty name. */
+                oled_draw_string(2, 0, "(unavailable)");
+            }
+            break;
+        }
         case SIGN_PAGE_AQUA_ACTION: {
             /* What this does, in the words a maker would use, and the one
              * sentence that makes Aqua different from a pool: the tokens do
@@ -5530,6 +5593,8 @@ static void screen_sign_confirm_render(void)
             oled_draw_string(1, 0,
                 (sign_call.kind == ETH_CALL_GENERIC ||
                  sign_call.kind == ETH_CALL_AQUA_SHIP ||
+                 sign_call.kind == ETH_CALL_ATS_DEPLOY_EQUITY ||
+                 sign_call.kind == ETH_CALL_ATS_DEPLOY_BOND ||
                  sign_call.kind == ETH_CALL_AQUA_DOCK) ? "Contract"
                                                        : "Token contract");
             if (eth_format_address(sign_tx.to, addr, sizeof(addr))) {
@@ -5910,6 +5975,22 @@ screen_id_t ui_get_screen(void)
 
 void ui_handle_button(button_id_t btn)
 {
+    /* Any press re-opens the BLE advertising window if it has lapsed.
+     *
+     * The radio stops advertising after two minutes with nobody connecting
+     * (ble.c, BLE_ADV_WINDOW_MS) because it was the board's largest continuous
+     * power draw and the device was uncomfortably warm to hold. The cost of
+     * that is a device nobody can find, so the way back has to be something a
+     * user would do anyway without being told -- pressing a button -- rather
+     * than a menu they must first learn exists.
+     *
+     * It is deliberately not conditional on which button, and it does not
+     * consume the press: the call is a no-op unless the window is actually
+     * closed, so the button keeps whatever meaning the current screen gives
+     * it. A press that both wakes the radio and does its normal job is the
+     * behaviour somebody expects from a device that went quiet. */
+    ble_transport_advertise_again();
+
     if (screens[current_screen] && screens[current_screen]->on_button) {
         screens[current_screen]->on_button(btn);
     }
