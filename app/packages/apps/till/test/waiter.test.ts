@@ -103,6 +103,7 @@ interface Node {
   replaceChildren(...kids: Node[]): void;
   appendChild(kid: Node): void;
   addEventListener(event: string, fn: () => void): void;
+  dispatchEvent(event: unknown): void;
   setAttribute(key: string, value: string): void;
   classList: { add(): void };
 }
@@ -115,6 +116,7 @@ const makeNode = (tagName: string): Node => {
     replaceChildren(...kids) { node.children = kids; },
     appendChild(kid) { node.children.push(kid); },
     addEventListener(event, fn) { node.listeners.push([event, fn]); },
+    dispatchEvent() { for (const [, fn] of [...node.listeners]) fn(); },
     setAttribute(key, value) { node.attributes[key] = value; },
     classList: { add() {} },
   };
@@ -219,6 +221,80 @@ group("switching the chain shown changes the chain and nothing else");
     check(line === `327.2117 USDC to ${sealed.request.recipient}`,
       `showing another chain changed the bill: "${line}"`);
   }
+}
+
+/* ------------------------------------------------- the silent-failure cases
+ *
+ * Both of these were real: the waiter pressed scan, the code was genuine, and
+ * the screen said nothing at all. A refusal nobody can read is a bug even when
+ * the refusal itself is correct. */
+
+(globalThis as Record<string, unknown>).Event = class FakeEvent { type = ""; };
+
+group("a terminal with no merchant address says so before anything is scanned");
+{
+  const from = nodes.length;
+  const blank = makeNode("div");
+  await TILL_WAITER_APP.mount(blank as unknown as HTMLElement,
+    { ...context, address: "" } as never);
+  const errors = nodes.slice(from).filter((n) => n.className === "till-error")
+    .map((n) => n.textContent);
+  check(errors.some((t) => /no merchant address/.test(t)),
+    `a terminal with no address stayed silent: ${JSON.stringify(errors)}`);
+
+  /* And a genuine request scanned into it is still refused — visibly. The
+     refusal is the security property; only the silence was the bug. */
+  const input = nodes.slice(from).find((n) => n.attributes["aria-label"] === "Scan the cashier's request") as Node;
+  input.value = sealed.text;
+  for (const [, fn] of input.listeners) fn();
+  const after = nodes.slice(from).filter((n) => n.className === "till-error").map((n) => n.textContent);
+  check(after.some((t) => t !== ""), "the refusal was not shown");
+  check(nodes.slice(from).filter((n) => n.className === "till-amount").length === 0,
+    "a request was displayed by a terminal with no address to check it against");
+}
+
+group("a camera code the terminal refuses is reported, not swallowed");
+{
+  const from = nodes.length;
+  const elsewhere = sealRequest({ ...request, recipient: "0x00112233445566778899aabbccddeeff00112233" });
+  let offered: ((raw: string) => unknown) | undefined;
+  const camRoot = makeNode("div");
+  await TILL_WAITER_APP.mount(camRoot as unknown as HTMLElement, {
+    ...context,
+    scanQr: (accept: (raw: string) => unknown) => {
+      offered = accept;
+      /* What the shell's loop does: hand the decoded text to `accept` and
+         resolve with whatever it returns. */
+      return Promise.resolve(accept(elsewhere.text) ?? null);
+    },
+  } as never);
+  const button = nodes.slice(from).find((n) => n.tagName === "button" && n.textContent === "Scan with camera");
+  check(button !== undefined, "the camera button is missing when the shell offers a camera");
+  for (const [, fn] of button?.listeners ?? []) fn();
+  await Promise.resolve();
+  await Promise.resolve();
+  check(offered?.(elsewhere.text) !== undefined,
+    "the scan loop still rejects a decodable request, so it would never stop scanning");
+  const errors = nodes.slice(from).filter((n) => n.className === "till-error").map((n) => n.textContent);
+  check(errors.some((t) => /not this restaurant's address/.test(t)),
+    `a camera-scanned refusal was swallowed: ${JSON.stringify(errors)}`);
+  check(nodes.slice(from).filter((n) => n.className === "till-amount").length === 0,
+    "a request paying somebody else reached the screen");
+}
+
+group("a camera that closes with nothing says so");
+{
+  const from = nodes.length;
+  const quietRoot = makeNode("div");
+  await TILL_WAITER_APP.mount(quietRoot as unknown as HTMLElement,
+    { ...context, scanQr: () => Promise.resolve(null) } as never);
+  const button = nodes.slice(from).find((n) => n.tagName === "button" && n.textContent === "Scan with camera");
+  for (const [, fn] of button?.listeners ?? []) fn();
+  await Promise.resolve();
+  await Promise.resolve();
+  const errors = nodes.slice(from).filter((n) => n.className === "till-error").map((n) => n.textContent);
+  check(errors.some((t) => /camera closed without reading a request/.test(t)),
+    `a camera that read nothing stayed silent: ${JSON.stringify(errors)}`);
 }
 
 console.log(failures === 0 ? "\nall ok" : `\n${failures} failure(s)`);

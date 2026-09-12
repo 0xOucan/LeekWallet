@@ -42,7 +42,7 @@
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 import { formatUnits } from "@leekwallet/core/chains.ts";
 import { formatCents, payableUnits } from "./order.ts";
-import { acceptRequest, type SealedRequest } from "./request.ts";
+import { acceptRequest, REQUEST_PREFIX, type SealedRequest } from "./request.ts";
 import { TILL_CSS } from "./css.ts";
 import { deploymentFor, railFor, TILL_CHAIN_IDS } from "./rails.ts";
 import { buildPaymentUri, shareMessage, whatsappLink } from "./uri.ts";
@@ -295,13 +295,32 @@ export const TILL_WAITER_APP: MiniApp = {
       camera.type = "button";
       camera.textContent = "Scan with camera";
       camera.addEventListener("click", () => {
+        error.textContent = "";
         void context.scanQr?.((raw) => {
-          /* The same gate the pasted field goes through, so the camera cannot
-             become a second, laxer way in. A code that is not a request this
-             terminal would accept is left in shot rather than filled in. */
-          return acceptRequest(raw.trim(), context.address).ok ? raw.trim() : undefined;
+          /* A DECODE test, not a trust decision: does this code even claim to
+           * be one of our requests? The trust decision is acceptRequest, below,
+           * and it still refuses anything that does not pay this terminal's own
+           * address — nothing here weakens it.
+           *
+           * It used to be acceptRequest itself, and that was the bug: a request
+           * the terminal refuses returned undefined, the scan loop went on
+           * looking, and a waiter holding a phone at a valid QR saw the camera
+           * stay open and nothing else happen — no bill, no refusal, no clue.
+           * A refusal the user cannot see is indistinguishable from a broken
+           * scanner. Recognise it here, refuse it where the refusal has a place
+           * to be printed. */
+          const text = raw.trim();
+          return text.startsWith(`${REQUEST_PREFIX}|`) ? text : undefined;
         }).then((raw) => {
-          if (raw === null) return;
+          if (raw === null) {
+            /* Closed without a code, or no camera to open. Both are silent
+             * from here and both used to leave the screen exactly as it was. */
+            error.textContent =
+              "The camera closed without reading a request. Hold the cashier's " +
+              "code steady and fill the frame, or paste the request text into " +
+              "the box instead.";
+            return;
+          }
           scan.value = raw;
           scan.dispatchEvent(new Event("input"));
         });
@@ -314,6 +333,20 @@ export const TILL_WAITER_APP: MiniApp = {
     const error = document.createElement("p");
     error.className = "till-error";
     panel.append(error);
+
+    /* The precondition, said out loud at mount rather than discovered at the
+     * scan. Without a merchant address this terminal refuses every request it
+     * is shown — correctly, since that check is the only thing stopping a
+     * forged request paying somebody else — but a refusal that only appears
+     * after a scan reads as a broken scanner. The shell hands "" before a
+     * device is connected (main.ts remountApps), which is exactly when a
+     * waiter is most likely to try. */
+    if (!/^0x[0-9a-fA-F]{40}$/.test(context.address)) {
+      error.textContent =
+        "This terminal has no merchant address yet, so it cannot check a " +
+        "request against one and will refuse every request it is shown. " +
+        "Connect the device and select the account the restaurant is paid into.";
+    }
 
     const output = document.createElement("div");
     panel.append(output);
