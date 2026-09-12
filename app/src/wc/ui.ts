@@ -20,7 +20,7 @@
  */
 
 import { DeviceError, ErrorCode } from "../../packages/core/src/transport.ts";
-import { getChain } from "../../packages/core/src/chains.ts";
+import { getChain, txUrl } from "../../packages/core/src/chains.ts";
 import { interpretTransaction } from "../../packages/core/src/tx-interpret.ts";
 import {
   APPROVAL_EDIT_NOTICE, inspectApproval, parseCapAmount,
@@ -262,6 +262,23 @@ export function initWalletConnect(bridge: WalletBridge): {
     },
     log: bridge.log,
   });
+
+  /**
+   * "sent <hash>", with an explorer link when the chain has one.
+   *
+   * The hash stays in the line rather than being replaced by an anchor: this
+   * log is plain text that gets pasted into diagnostics reports, where a link
+   * element would paste as nothing and the hash is what someone chasing a
+   * transaction actually needs. The URL is appended, so both survive the copy.
+   *
+   * Falls back to the bare hash for a chain with no explorer, and for one whose
+   * explorer we would have to guess at.
+   */
+  const sentText = (hash: string): string => {
+    const chain = getChain(bridge.chainId());
+    const url = chain === undefined ? undefined : txUrl(chain, hash);
+    return url === undefined ? `sent ${hash}` : `sent ${hash} — ${url}`;
+  };
 
   /* -------------------------------------------------------------- project id */
 
@@ -867,13 +884,14 @@ export function initWalletConnect(bridge: WalletBridge): {
          * any allowance is found out: by reading it. */
         await head.respond(result);
         bridge.log(
-          `${request.name}: approval capped and ${plan.broadcast ? `sent ${result}` : "signed"}`,
+          `${request.name}: approval capped and ` +
+          `${plan.broadcast ? sentText(result) : "signed"}`,
         );
       } else if (plan.kind === "transaction") {
         bridge.deviceAttention(`${request.name}: check every page on the device, then approve`);
         const result = await bridge.signTransaction(plan.tx, plan.broadcast);
         await head.respond(result);
-        bridge.log(`${request.name}: ${plan.broadcast ? `sent ${result}` : "signed"}`);
+        bridge.log(`${request.name}: ${plan.broadcast ? sentText(result) : "signed"}`);
       } else if (plan.kind === "message") {
         bridge.deviceAttention(`${request.name}: confirm the message on the device`);
         const signature = await bridge.signMessage(plan.address, plan.message);

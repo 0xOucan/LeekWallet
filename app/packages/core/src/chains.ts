@@ -88,8 +88,19 @@ export interface ChainInfo {
    * move funds.
    */
   rpcUrls: readonly string[];
-  /** Base URL, no trailing slash. `${explorerUrl}/tx/${hash}` is a valid link. */
+  /** Base URL, no trailing slash. Build transaction links with `txUrl`. */
   explorerUrl: string;
+  /**
+   * The path segment a transaction lives under, when it is not `tx`.
+   *
+   * Every Etherscan-family explorer uses `/tx/<hash>`, so this is absent for
+   * almost all of them. HashScan does not: a Hedera transaction is at
+   * `/transaction/<...>`, and a link built from the Etherscan assumption is a
+   * 404 with the user's hash in it — which reads as "the transaction did not
+   * happen" rather than "the link is wrong". Hence a field rather than a
+   * special case at each call site.
+   */
+  txPath?: string;
   /** Testnet money is worthless, and the UI should say so before you sign. */
   testnet: boolean;
 }
@@ -299,6 +310,7 @@ const CURATED: readonly CuratedEntry[] = [
      * needs an API key, which is what makes them usable from a shipped app. */
     rpcUrls: ["https://testnet.hashio.io/api", "https://296.rpc.thirdweb.com"],
     explorerUrl: "https://hashscan.io/testnet",
+    txPath: "transaction",
     testnet: true,
   },
   {
@@ -475,6 +487,24 @@ export function chainName(chainId: number | bigint): string | undefined {
  */
 export function chainLabel(chainId: number | bigint): string {
   return chainName(chainId) ?? `chain ${Number(chainId)}`;
+}
+
+/**
+ * A link to a transaction on the chain's block explorer, or undefined.
+ *
+ * Undefined rather than a best-effort URL when the chain has no explorer: an
+ * anchor that 404s tells the user their money went nowhere, which is a worse
+ * lie than offering no link at all. Callers render the hash either way — the
+ * hash is the fact, the link is the convenience.
+ *
+ * `hash` is not validated here beyond being hex. This builds a URL; it does not
+ * claim the transaction exists, and it is reachable before the broadcast is
+ * even confirmed.
+ */
+export function txUrl(chain: ChainInfo, hash: string): string | undefined {
+  if (chain.explorerUrl === "") return undefined;
+  if (!/^0x[0-9a-fA-F]+$/.test(hash)) return undefined;
+  return `${chain.explorerUrl.replace(/\/+$/, "")}/${chain.txPath ?? "tx"}/${hash}`;
 }
 
 /**

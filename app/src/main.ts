@@ -22,7 +22,7 @@ import { createPublicClient, custom, defineChain, parseEther, serializeTransacti
          isAddress, type Chain, type Hex, type Address } from "viem";
 import {
   addCustomChain, allChains, CHAINS, chainLabelDetailed, CUSTOM_CHAIN_NOTICE, formatUnits,
-  getChain, loadCustomChains, removeCustomChain, resolveChain, type ChainInfo,
+  getChain, loadCustomChains, removeCustomChain, resolveChain, txUrl, type ChainInfo,
   type CustomChainInput, type TokenHint,
 } from "../packages/core/src/chains.ts";
 import {
@@ -3508,7 +3508,11 @@ async function sign(): Promise<void> {
     log("broadcasting…");
     const hash = await rpc.sendRawTransaction({ serializedTransaction: raw });
 
-    log(`sent: ${hash}`);
+    /* The link is built from the chain, not assumed: HashScan puts a
+     * transaction under /transaction/, and an Etherscan-shaped link there is a
+     * 404 carrying the user's own hash — which reads as "it did not happen". */
+    const explorer = txUrl(chain, hash);
+    log(explorer === undefined ? `sent: ${hash}` : `sent: ${hash} — ${explorer}`);
     /* Only once it is actually on the wire, and only the address the user was
      * paying: the poisoning rule compares against addresses this person really
      * transacted with, so remembering an abandoned draft would seed the
@@ -3517,8 +3521,18 @@ async function sign(): Promise<void> {
     rememberRecipient(interpretTransaction({
       chainId: chain.id, to: toValue, value, ...(data !== undefined ? { data } : {}),
     }).recipient ?? toValue);
-    $("txresult").innerHTML =
-      `Sent. <a href="${chain.explorerUrl}/tx/${hash}" target="_blank" rel="noreferrer">View on explorer</a>`;
+    /* No explorer, no anchor: a link that 404s is a worse answer than the hash
+     * alone, which is shown either way. */
+    $("txresult").textContent = "";
+    $("txresult").append(document.createTextNode(`Sent. ${hash} `));
+    if (explorer !== undefined) {
+      const a = document.createElement("a");
+      a.href = explorer;
+      a.target = "_blank";
+      a.rel = "noreferrer";
+      a.textContent = "View on explorer";
+      $("txresult").append(a);
+    }
 
     /* Whatever is on screen is now certainly wrong — one of these balances
      * just changed. This is the one automatic refresh in the app, and it is
@@ -4131,6 +4145,9 @@ applyTheme(currentTheme());
  * precisely the bug this button exists to report. The user agent is included
  * because "which Android" is the first question anyone will ask.
  */
+/** A well-formed hash used only to render the explorer link TEMPLATE. */
+const ZERO_HASH = `0x${"0".repeat(64)}`;
+
 function diagnosticsReport(): string {
   const L: string[] = [];
   const chain = activeChain();
@@ -4182,6 +4199,16 @@ function diagnosticsReport(): string {
   // Which path the request took decides what it could reach at all, so a bug
   // report saying "my network does not work" is unreadable without it.
   L.push(`RPC path: ${viaProxy ? "backend proxy" : "webview fetch (CSP-bound)"}`);
+  /* The link TEMPLATE, not a link: a report is written when something went
+   * wrong, and "my transaction is not on the explorer" is unanswerable without
+   * knowing which explorer and which path shape the app would have sent them
+   * to. HashScan's /transaction/ versus Etherscan's /tx/ is exactly the kind of
+   * difference that hides here. */
+  L.push(
+    `Explorer: ${
+      txUrl(chain, ZERO_HASH)?.replace(ZERO_HASH, "0x<hash>") ?? "none for this chain"
+    }`,
+  );
   L.push(`Custom networks: ${loadCustomChains().length}`);
   L.push("");
 

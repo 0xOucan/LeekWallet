@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import {
   addCustomChain, allChains, CHAINS, chainLabel, chainLabelDetailed, chainName,
   CUSTOM_CHAIN_NOTICE, CUSTOM_CHAINS_KEY, formatUnits, getChain, loadCustomChains,
-  removeCustomChain, resolveChain, rpcOrigins, TOKEN_HINT_NOTICE, tokenHint,
+  removeCustomChain, resolveChain, rpcOrigins, TOKEN_HINT_NOTICE, tokenHint, txUrl,
   validateCustomChain,
 } from "../src/chains.ts";
 import type { ChainStore, CustomChainInput } from "../src/chains.ts";
@@ -480,6 +480,52 @@ group("raw units scale exactly, with no floating point");
     `precision boundary: ${formatUnits(9007199254740993n, 18)}`,
   );
   check(formatUnits(-1500000n, 6) === "-1.5", `negative: ${formatUnits(-1500000n, 6)}`);
+}
+
+{
+  console.log("== a transaction link is built per chain, not per assumption");
+
+  const H = "0x31099ba28ee13d31ceb5bdb37b1e1c230922194d5f9743cd8065d8a92eececba";
+
+  /* The three the user actually links from, written out rather than derived,
+   * so a change to explorerUrl or txPath has to be made deliberately here too. */
+  const expected: ReadonlyArray<readonly [number, string]> = [
+    [8453, `https://basescan.org/tx/${H}`],
+    [5042002, `https://testnet.arcscan.app/tx/${H}`],
+    /* HashScan is the reason txPath exists: /tx/ here is a 404 carrying the
+     * user's own hash, which reads as "the transaction did not happen". */
+    [296, `https://hashscan.io/testnet/transaction/${H}`],
+  ];
+  for (const [id, want] of expected) {
+    const chain = getChain(id);
+    check(chain !== undefined, `chain ${id} is not in the table`);
+    if (chain === undefined) continue;
+    const got = txUrl(chain, H);
+    check(got === want, `chain ${id}: got ${String(got)}, want ${want}`);
+  }
+
+  /* Every other curated chain is Etherscan-shaped, and a link must never be
+   * built for a chain with no explorer. */
+  for (const chain of CHAINS) {
+    const url = txUrl(chain, H);
+    if (chain.explorerUrl === "") {
+      check(url === undefined, `${chain.name} has no explorer but produced ${String(url)}`);
+      continue;
+    }
+    check(url !== undefined, `${chain.name} has an explorer but produced no link`);
+    check(url?.startsWith(chain.explorerUrl) === true,
+      `${chain.name}: ${String(url)} does not start with its explorer`);
+    check(url?.endsWith(`/${H}`) === true, `${chain.name}: ${String(url)} does not end in the hash`);
+  }
+
+  /* Not a hash, not a link: this builds URLs and must not be a way to put
+   * arbitrary text into an href. */
+  const arc = getChain(5042002);
+  if (arc !== undefined) {
+    check(txUrl(arc, "not-a-hash") === undefined, "a non-hex hash produced a link");
+    check(txUrl(arc, "0xdead/../../evil") === undefined, "a path-traversing hash produced a link");
+    check(txUrl(arc, "") === undefined, "an empty hash produced a link");
+  }
 }
 
 if (failures) {
