@@ -81,7 +81,14 @@ export interface WalletBridge {
    * send the device something other than what was previewed.
    */
   signTypedData(address: string, request: Record<string, unknown>): Promise<string>;
-  log(line: string): void;
+  /**
+   * A line for the device log, and optionally ONE url to hyperlink from it.
+   *
+   * The link is a separate argument on purpose: `line` carries dapp- and
+   * app-authored text, and nothing scans it for URLs. Only a URL the wallet
+   * itself built ever becomes an anchor.
+   */
+  log(line: string, link?: string): void;
   /**
    * The local facts the Layer A rules compare against (rules.ts).
    *
@@ -274,10 +281,9 @@ export function initWalletConnect(bridge: WalletBridge): {
    * Falls back to the bare hash for a chain with no explorer, and for one whose
    * explorer we would have to guess at.
    */
-  const sentText = (hash: string): string => {
+  const sentLink = (hash: string): string | undefined => {
     const chain = getChain(bridge.chainId());
-    const url = chain === undefined ? undefined : txUrl(chain, hash);
-    return url === undefined ? `sent ${hash}` : `sent ${hash} — ${url}`;
+    return chain === undefined ? undefined : txUrl(chain, hash);
   };
 
   /* -------------------------------------------------------------- project id */
@@ -885,13 +891,17 @@ export function initWalletConnect(bridge: WalletBridge): {
         await head.respond(result);
         bridge.log(
           `${request.name}: approval capped and ` +
-          `${plan.broadcast ? sentText(result) : "signed"}`,
+          `${plan.broadcast ? `sent ${result}` : "signed"}`,
+          plan.broadcast ? sentLink(result) : undefined,
         );
       } else if (plan.kind === "transaction") {
         bridge.deviceAttention(`${request.name}: check every page on the device, then approve`);
         const result = await bridge.signTransaction(plan.tx, plan.broadcast);
         await head.respond(result);
-        bridge.log(`${request.name}: ${plan.broadcast ? sentText(result) : "signed"}`);
+        bridge.log(
+          `${request.name}: ${plan.broadcast ? `sent ${result}` : "signed"}`,
+          plan.broadcast ? sentLink(result) : undefined,
+        );
       } else if (plan.kind === "message") {
         bridge.deviceAttention(`${request.name}: confirm the message on the device`);
         const signature = await bridge.signMessage(plan.address, plan.message);

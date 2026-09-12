@@ -432,6 +432,12 @@ button.danger { color: var(--danger); border-color: var(--danger); }
   color: var(--muted); white-space: pre-wrap;
   max-height: 160px; overflow-y: auto;
 }
+/* Each entry is its own element so a line can carry an anchor. `pre-wrap` on
+ * the parent already preserves the spacing inside a line; the rows supply the
+ * breaks that the old newline-joined text did. A long explorer URL must wrap
+ * rather than widen the panel and push the rest of the column sideways. */
+.log-line { overflow-wrap: anywhere; }
+.log-line a { color: inherit; }
 
 /* Inputs. Monospace on the address field for the same reason addresses are
  * displayed that way: l and 1 must not look alike in a string that decides

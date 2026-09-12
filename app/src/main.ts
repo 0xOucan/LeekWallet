@@ -78,11 +78,95 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return el as T;
 };
 
-const log = (line: string): void => {
+/**
+ * A line in the device log, newest first, optionally carrying one link.
+ *
+ * `link` is built by us — `txUrl` from the chain record — and never parsed out
+ * of `line`. Scanning app- or dapp-authored text for URLs and turning what it
+ * finds into anchors is how a log becomes an attack surface; the URL arrives
+ * as its own argument or there is no anchor.
+ *
+ * Each line is an element rather than appended text because an anchor cannot
+ * live in a textContent assignment. The anchor's own text is the full URL, so
+ * `logText()` still reconstructs exactly what the old plain-text log produced
+ * and a pasted diagnostics report is unchanged.
+ */
+const log = (line: string, link?: string): void => {
   const el = $("log");
+  if (el.firstChild !== null && el.textContent === "Nothing yet.") el.textContent = "";
   const stamp = new Date().toLocaleTimeString();
-  el.textContent = `${stamp}  ${line}\n${el.textContent === "Nothing yet." ? "" : el.textContent}`;
+  const row = document.createElement("div");
+  row.className = "log-line";
+  row.append(document.createTextNode(`${stamp}  ${line}`));
+  if (link !== undefined) {
+    row.append(document.createTextNode(" — "));
+    /* The anchor's text is the whole URL, so `logText()` reproduces exactly
+     * what the old plain-text log produced and a pasted report is unchanged. */
+    row.append(explorerAnchor(link, link));
+  }
+  el.prepend(row);
 };
+
+/**
+ * The log as plain text, newest first — what the diagnostics report pastes.
+ *
+ * Not `$("log").textContent`: that concatenates the line elements with no
+ * separator, which would run every entry of a bug report into one line.
+ */
+const logText = (): string =>
+  Array.from($("log").querySelectorAll(".log-line"))
+    .map((row) => row.textContent ?? "")
+    .join("\n");
+
+/**
+ * An anchor to an explorer that works in all four clients.
+ *
+ * A plain `target="_blank"` is enough in a browser tab and in the extension,
+ * and is NOT enough in the Tauri desktop or Android webview: this app
+ * registers no opener plugin (`src-tauri/tauri.conf.json` has an empty
+ * `plugins`), so a request for a new window is simply dropped and the click
+ * does nothing at all. A link that silently does nothing is the failure this
+ * function exists to avoid.
+ *
+ * So the click is handled: try to open, and when the webview refuses, put the
+ * URL on the clipboard through the same three-route `copyText` the diagnostics
+ * button uses and say so out loud. Either way the user ends up somewhere they
+ * can reach the transaction, and never at a link that just sits there.
+ */
+function explorerAnchor(url: string, label: string): HTMLAnchorElement {
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noreferrer";
+  a.textContent = label;
+  a.addEventListener("click", (ev) => {
+    /* `window.open` returns null when the window was blocked or ignored; in a
+     * webview that drops it, that is the signal to fall back rather than leave
+     * the user clicking a dead link. */
+    let opened: Window | null = null;
+    try {
+      opened = window.open(url, "_blank", "noreferrer");
+    } catch { opened = null; }
+    if (opened !== null) {
+      ev.preventDefault();
+      return;
+    }
+    ev.preventDefault();
+    void copyText(url).then(
+      (route) => {
+        announce(
+          route === "manual"
+            ? "This window cannot open links or reach the clipboard. The explorer URL is in the log — copy it by hand."
+            : "This window would not open the link, so the explorer URL was copied to the clipboard.",
+        );
+      },
+      () => {
+        announce("This window would not open the link and the copy failed. The explorer URL is in the log.");
+      },
+    );
+  });
+  return a;
+}
 
 /**
  * Say something out loud, once, to whoever is listening with a screen reader.
@@ -3512,7 +3596,7 @@ async function sign(): Promise<void> {
      * transaction under /transaction/, and an Etherscan-shaped link there is a
      * 404 carrying the user's own hash — which reads as "it did not happen". */
     const explorer = txUrl(chain, hash);
-    log(explorer === undefined ? `sent: ${hash}` : `sent: ${hash} — ${explorer}`);
+    log(`sent: ${hash}`, explorer);
     /* Only once it is actually on the wire, and only the address the user was
      * paying: the poisoning rule compares against addresses this person really
      * transacted with, so remembering an abandoned draft would seed the
@@ -3526,12 +3610,7 @@ async function sign(): Promise<void> {
     $("txresult").textContent = "";
     $("txresult").append(document.createTextNode(`Sent. ${hash} `));
     if (explorer !== undefined) {
-      const a = document.createElement("a");
-      a.href = explorer;
-      a.target = "_blank";
-      a.rel = "noreferrer";
-      a.textContent = "View on explorer";
-      $("txresult").append(a);
+      $("txresult").append(explorerAnchor(explorer, "View on explorer"));
     }
 
     /* Whatever is on screen is now certainly wrong — one of these balances
@@ -4254,7 +4333,7 @@ function diagnosticsReport(): string {
   L.push("");
 
   L.push("== Device log (newest first)");
-  L.push($("log").textContent ?? "");
+  L.push(logText());
 
   return L.join("\n");
 }
