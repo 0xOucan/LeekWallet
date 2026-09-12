@@ -68,6 +68,14 @@ export const KNOWN_SECURITIES: readonly KnownSecurity[] = [
     address: "0x512988f3e1a2fc5da6fa65daffd35bb7437a3c84",
     symbol: "LEEKB", name: "LeekWallet Bond 2026", decimals: 6, kind: "bond",
   },
+  /* The first security issued FROM THE DEVICE, through LeekSecurityFactory —
+   * tx 0x9785048b…, ISIN ZZ0000000008, minted to 15 shares on 2026-09-11. The
+   * four above were deployed by a Foundry key, which is why this wallet holds
+   * no issuer role on them and does on this one. */
+  {
+    address: "0x2869130daf7fc0aee4b0a777cbf0fd6e2c69fff2",
+    symbol: "RKTPKT", name: "ROCKETPOCKET", decimals: 6, kind: "equity",
+  },
 ];
 
 /** A security this console will read but will not present as usable. */

@@ -178,7 +178,13 @@ group("descriptors are offered for nothing else");
 
 group("the securities table");
 {
-  check(KNOWN_SECURITIES.length === 4, `${KNOWN_SECURITIES.length} securities, expected 4`);
+  /* Five since 2026-09-11: RKTPKT was issued from the DEVICE through
+   * LeekSecurityFactory, where the four before it came from a Foundry key.
+   * The count is pinned so the table cannot grow by accident — an address in
+   * here is one this app will offer to act on. */
+  check(KNOWN_SECURITIES.length === 5, `${KNOWN_SECURITIES.length} securities, expected 5`);
+  check(KNOWN_SECURITIES.some((s) => s.symbol === "RKTPKT"),
+    "the security issued from the device is not in the table");
   for (const s of KNOWN_SECURITIES) {
     check(/^0x[0-9a-f]{40}$/.test(s.address), `${s.symbol}: not a lower-case address`);
     check(s.decimals === 6, `${s.symbol}: decimals are not 6`);

@@ -386,3 +386,152 @@ guards do — so the demo worth recording is: freeze or de-KYC the buyer in the
 LeekWallet console, signed on the device, and watch the same fill revert. Grant
 it back and it settles. That is the compliance story, and it has not been run
 on chain yet.
+
+---
+
+## Issuing from the device — `LeekSecurityFactory` (2026-09-11)
+
+The console can now issue a security, find what this wallet has issued, read
+what it holds, mint, and send — the four panels above the register. What each
+one can and cannot do is below, stated the way the rest of this file states
+things.
+
+### The factory
+
+| | |
+|---|---|
+| Address | `0x3a56974075d734afa5bf7f63e34f9c3237408aed` |
+| Chain | 296, Hedera testnet |
+| Deploy tx | `0x15ec3da4b3601a4e11ef58210991b33e1773961254b1d150f8623c01186e0353` |
+| Deploy block | 40,397,299 |
+| Verification | sourcify `exact_match` (runtime `exact_match`) |
+| Source | `app/packages/apps/ats/contracts/src/LeekSecurityFactory.sol` |
+| Console constant | `LEEK_SECURITY_FACTORY` in `app/packages/apps/ats/src/issue.ts` |
+| Scan start | `FACTORY_DEPLOY_BLOCK` in `app/packages/apps/ats/src/discover.ts` |
+
+Confirmed by `eth_call` rather than read out of the broadcast file: `FACTORY()`
+is `0x00000000000000000000000000000000008c95cf`, `RESOLVER()` is
+`0xba2d5fc2083a0b8f164c50e65d782087fba18e0a`, `MAX_SUPPLY_SHARES()` is
+1,000,000, `MAX_BOND_NOTES()` is 100,000, `BOND_TERM()` is 31,536,000 seconds.
+
+Why the contract exists at all: the ATS factory's own `deployEquity` carries
+3,748 bytes of calldata and the device holds `ETH_MAX_DATA` (768). The template
+moved on chain so the call became `deployEquity(string,string)` — 228 bytes at
+this console's maximum name and symbol — and the screen shows the only two
+things that vary.
+
+### Signing a deploy — the firmware work, done 2026-09-11
+
+This section previously said a deploy **could not** be signed, and it was right
+at the time: `screenProposal` signs a call only when a bundled ERC-7730
+descriptor renders every argument, or the firmware draws the call itself
+(`DEVICE_DRAWN_KINDS`). `deployEquity(string,string)` can have no descriptor —
+`parseSignature` refuses every signature containing a dynamic type, correctly —
+so the only route was the firmware one. It has now been taken:
+
+| part | where |
+|---|---|
+| Firmware decoder | `ats_decode_two_strings()`, `src/eth-decode.c` |
+| String accessor | `eth_ats_string()`, same file |
+| Device pages | `SIGN_PAGE_ATS_ACTION` / `_NAME` / `_SYMBOL`, `src/ui.c` |
+| Host mirror | `decodeTwoStrings()`, `packages/core/src/eth-decode.ts` |
+| Admission | `CallKind.AtsDeployEquity` / `AtsDeployBond` in `DEVICE_DRAWN_KINDS` |
+
+**Why this call is drawable when the ATS factory's own is not.** The wrapper
+freezes the 3,748-byte template in verified on-chain code, so the name and the
+symbol are not a *summary* of what is being signed — they are all of it.
+Decimals, max supply, nominal value, regulation, control-list polarity and
+which twelve roles land where cannot be varied by the caller. That is the only
+condition under which drawing a call is not blind signing with better manners,
+and it is why admitting these two kinds does not widen what a mini-app may ask
+for in any general way.
+
+**Three pages, in this order:** what it creates and that the signer becomes
+issuer holding every role (mint, freeze, force-transfer, pause — said in those
+words, because that is authority over other people's holdings); the name in
+full; the symbol in full. Then the contract page, as every call has.
+
+**Both strings must be drawable or the whole call is refused.** Printable ASCII
+only, no leading or trailing space, and within the factory's own bounds (64 and
+12), enforced identically on both sides. This is stricter than "a valid ABI
+string" on purpose: a control byte can blank or reposition what follows, a
+UTF-8 right-to-left override can reverse a symbol on screen, a byte with no
+glyph draws as nothing and silently shortens the name being approved, and a
+space at either end is invisible on glass and present on chain. Each of those
+makes the screen disagree with what is signed, which is the one failure a
+hardware wallet exists to prevent. The string is refused, never cleaned or
+truncated. Enforcing the factory's bounds here also means a call that would
+revert on chain costs no press.
+
+**Only the canonical encoding is accepted** — two offsets, the tails back to
+back, every pad byte zero, nothing trailing — the same rule the Aqua decoders
+apply, because a second encoding of "the same" call is a second thing to reason
+about on a screen somebody is about to trust.
+
+**Proof the two decoders agree:** 11 shared vectors in
+`packages/core/test/eth-decode-vectors.json`, emitted from the firmware by
+`make -C sim eth-decode-conformance` and replayed by the TS suite — 4
+acceptances compared on the decoded *name and symbol*, not merely on
+"accepted", and 7 refusals (control byte, non-ASCII, leading space, over-bound
+name, a gap between the tails, non-zero padding, a trailing byte). A mirror
+that accepted any of those would render a call the device rejects.
+
+While adding these, `kind_json_name()` in `sim/test_eth_decode.c` was found to
+end in `default: return "unknown"`, which meant a newly added kind would be
+emitted into the vector file as *refused* — a vector asserting the device
+rejects a call it actually accepts, handed to the mirror as ground truth. That
+is the exact failure the vectors exist to catch, reproduced inside the thing
+that catches it. The default is gone; the switch is now exhaustive and aborts
+loudly if a kind is ever missed.
+
+**A board flashed before 2026-09-11 cannot sign an issuance** and will refuse
+it as an undecodable call. There is no version string in the protocol, so the
+only check is behavioural.
+
+holdings, mint, send — works against securities that already exist.
+
+### Discovery: what a failed scan says
+
+`discoverIssued` filters `EquityDeployed`/`BondDeployed` on the indexed `caller`
+topic, chunked at 1,000 blocks, bounded at 256 chunks, two retries per chunk.
+One failed chunk **refuses the whole scan**; a log it cannot decode refuses the
+whole scan. The view then renders the failure where the list would have been and
+shows the hard-coded table below it, labelled as the table. Nothing in that path
+can produce the sentence "you have issued nothing."
+
+The window is reported with every result. It starts at `FACTORY_DEPLOY_BLOCK`
+while the head is within 200,000 blocks of it, and clamps to the most recent
+200,000 after that — so **compare the window's start against the deployment
+block before reading the list as complete.** The chunk size is a guess biased
+towards working: it has not been measured against `testnet.hashio.io`, unlike
+the Base measurements the sibling log-scanning app records.
+
+### Mint and send
+
+`hasRole(ROLE_ISSUER, <this wallet>)` is **read** per security, never assumed —
+the retired pilot `0x651e73eb…` is exactly the case that makes this necessary.
+A mint form appears only where that read came back `ok: true`. A revert, an
+unreachable node and an absent row each get their own sentence (`mintRefusal`)
+and never a greyed-out button, because "we could not ask" and "you do not hold
+it" are different facts.
+
+`mint(address,uint256)` is 68 bytes and goes through the privileged descriptor
+table, so it gets a consequence line. `transfer(address,uint256)` is also 68
+bytes and is **not** privileged: it has its own descriptor
+(`securityTransferDescriptors`) rather than being folded into `ACTIONS`, which
+would owe it a consequence line about an authority it does not confer. Both were
+put through the real `screenProposal` gate in `test/holdings.test.ts`, including
+the negative cases — no descriptor refuses, and one security's descriptor does
+not describe another's call.
+
+The recipient book is a list of strings somebody typed. Nothing in it has been
+checked against a chain, a label is never rendered without its address, and the
+device shows the address and never the label.
+
+### Market
+
+The holdings panel reads this wallet's balance in every known and discovered
+security and says which of them have something to sell. Its "read register /
+sell in the market" button loads that security into the console, which is what
+puts the existing market panel's sell form in front of a register that has
+actually been read.

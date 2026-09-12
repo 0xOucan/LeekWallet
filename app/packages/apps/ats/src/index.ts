@@ -85,6 +85,10 @@ import {
 } from "./securities.ts";
 import { ATS_MARKET, marketDescriptors, securityApproveDescriptors } from "./market.ts";
 import { renderMarketPanel } from "./market-view.ts";
+import { renderDiscoverPanel, renderIssuePanel } from "./issue-view.ts";
+import { renderHoldingsPanel } from "./mint-view.ts";
+import { securityTransferDescriptors } from "./holdings.ts";
+import { mergeSecurities, type SecurityChoice } from "./discover.ts";
 
 export * from "./abi.ts";
 export * from "./roles.ts";
@@ -100,6 +104,13 @@ export * from "./dividend-view.ts";
 export * from "./securities.ts";
 export * from "./market.ts";
 export * from "./market-view.ts";
+export * from "./market-app.ts";
+export * from "./issue.ts";
+export * from "./discover.ts";
+export * from "./holdings.ts";
+export * from "./recipients.ts";
+export * from "./issue-view.ts";
+export * from "./mint-view.ts";
 
 /** The chain this app is about. Hedera testnet; see chains.ts for the entry. */
 export const ATS_CHAIN_ID = 296;
@@ -113,45 +124,7 @@ export const ATS_CHAIN_ID = 296;
  * the CSS with it; a rule left in the shell's styles.css would be dead weight
  * nobody could attribute to anything.
  */
-const CSS = `
-.ats-panel { display: flex; flex-direction: column; gap: 0.5rem; }
-.ats-panel h3 { margin: 0.75rem 0 0; }
-.ats-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; }
-.ats-label { min-width: 11rem; opacity: 0.75; }
-.ats-address { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.ats-table { border-collapse: collapse; width: 100%; }
-.ats-table th, .ats-table td {
-  text-align: left; padding: 0.3rem 0.5rem;
-  border-bottom: 1px solid var(--border, #444);
-}
-.ats-muted { opacity: 0.7; font-size: 0.9em; }
-.ats-privileged { font-weight: 700; }
-/* "Unavailable" must not be mistakable for a value at a glance, which is
-   exactly what a greyed-out zero would be. It gets an italic, dotted treatment
-   no real figure ever has, so the difference survives a quick read. */
-.ats-uncertain {
-  color: var(--warn, #b58900); font-style: italic;
-  border-bottom: 2px dotted currentColor;
-}
-.ats-alarm { color: var(--danger, #dc322f); font-weight: 700; }
-.ats-notice {
-  border: 1px solid var(--danger, #dc322f); border-radius: 6px;
-  padding: 0.4rem 0.6rem; font-size: 0.9em;
-}
-/* The preview of what the device is about to draw. Framed so it reads as a
-   quotation of another screen rather than as this one's own assertion — it is
-   host text, and the notice inside it says so. */
-.ats-screen {
-  border: 1px solid var(--border, #444); border-radius: 6px;
-  padding: 0.6rem 0.8rem; margin: 0.5rem 0;
-}
-.ats-screen-title { font-weight: 700; letter-spacing: 0.03em; margin-bottom: 0.4rem; }
-/* The chooser. The fixture sits in the same list as the real securities and is
-   labelled in the list itself, not only once it is loaded — a demo that looks
-   like the others until you have clicked it is a demo somebody quotes. */
-.ats-chooser { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; }
-.ats-demo { font-style: italic; }
-`;
+import { ATS_CSS } from "./css.ts";
 
 /**
  * State the panel holds between renders.
@@ -240,7 +213,15 @@ export function buildPanel(root: HTMLElement, context: AppContext): void {
     retired.hidden = dead === undefined;
     retired.textContent = dead === undefined ? "" : `${dead.symbol} ${dead.address}: ${dead.why}`;
   };
-  root.append(controls, labels, retired, out);
+  /* The issue / discover / holdings half sits ABOVE the register controls,
+   * because it is where a user arrives: "what can I act on, and what do I
+   * hold". The register, the privileged form, the distribution panel and the
+   * market all hang off one address, and choosing that address is what this
+   * half is for. It is filled in below, once `read` exists — a row in it can
+   * load a security into the console, and that is the console's own function. */
+  const top = document.createElement("div");
+  top.className = "ats-panel";
+  root.append(top, controls, labels, retired, out);
   paintRetired();
 
   const paint = (): void => {
@@ -315,6 +296,22 @@ export function buildPanel(root: HTMLElement, context: AppContext): void {
     paint();
   };
 
+  /* The merged list, held here rather than inside either panel: the discovery
+   * panel produces it and the holdings panel consumes it, and neither should
+   * own a copy the other cannot see. It starts as the hard-coded table alone —
+   * never as an empty list, which would read as "nothing to act on". */
+  let choices: readonly SecurityChoice[] = mergeSecurities(
+    { ok: false, reason: "logs-unavailable", why: "not scanned yet" },
+  );
+  const select = (address: string): void => {
+    input.value = address;
+    chooser.value = address;
+    void read(address, context.request, false);
+  };
+  renderIssuePanel(top, context);
+  renderDiscoverPanel(top, context, select, (next) => { choices = next; });
+  renderHoldingsPanel(top, context, () => choices, select);
+
   load.addEventListener("click", () => void read(input.value.trim(), context.request, false));
   demo.addEventListener("click", () => {
     input.value = FIXTURE_ADDRESS;
@@ -331,7 +328,7 @@ export const ATS_APP: MiniApp = {
     "The register of a Hedera Asset Tokenization Studio security: holders, " +
     "supply, roles, KYC, control list and snapshots.",
   chainIds: [ATS_CHAIN_ID],
-  css: CSS,
+  css: ATS_CSS,
   /* Evidence, not authority. Every ATS security is a fresh diamond at a fresh
    * address, so its descriptors cannot be a constant in core and have to be
    * built around the address in front of the user — which is the case
@@ -347,7 +344,14 @@ export const ATS_APP: MiniApp = {
   descriptors: (chainId, to) =>
     to.toLowerCase() === ATS_MARKET
       ? marketDescriptors(chainId, to)
-      : [...atsDescriptors(chainId, to), ...securityApproveDescriptors(chainId, to)],
+      : [
+          ...atsDescriptors(chainId, to),
+          ...securityApproveDescriptors(chainId, to),
+          /* A plain `transfer` of shares. Not privileged, so not in the ATS
+           * table — holdings.ts says why — and it still needs a descriptor,
+           * because without one `screenProposal` refuses and nothing is sent. */
+          ...securityTransferDescriptors(chainId, to),
+        ],
   async mount(root, context) {
     if (context.chainId !== ATS_CHAIN_ID) {
       /* Refused rather than rendered empty. Reading an ATS security over a
