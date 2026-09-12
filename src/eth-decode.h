@@ -80,6 +80,9 @@ typedef enum {
      * on the screen. See src/LeekSecurityFactory.sol. */
     ETH_CALL_ATS_DEPLOY_EQUITY, /* deployEquity(string name, string symbol) */
     ETH_CALL_ATS_DEPLOY_BOND,   /* deployBond(string name, string symbol)   */
+    /* Disperse: one token, many recipients, one transaction.
+     * disperseToken(address token, address[] recipients, uint256[] values) */
+    ETH_CALL_DISPERSE_TOKEN,
     ETH_CALL_AQUA_DOCK,        /* Aqua dock(address app, bytes32 strategyHash,
                                 * address[] tokens) */
     ETH_CALL_UNKNOWN           /* not in the decodable set — refuse it */
@@ -107,6 +110,19 @@ typedef enum {
 /* The factory's own bounds (MAX_NAME_BYTES / MAX_SYMBOL_BYTES). Enforcing the
  * same numbers here means a call that would revert on chain is refused before
  * a press is spent on it, and the screen never has to elide. */
+/*
+ * Recipients this device will draw for a disperse.
+ *
+ * Nine is where the calldata stops fitting, not a taste: the encoding is
+ * 164 + 64N bytes and ETH_MAX_DATA is 768, so N=9 is 740 and N=10 is 804. The
+ * bound is stated here and enforced in the decoder, so a tenth recipient is
+ * refused as a call this device cannot hold rather than drawn short.
+ *
+ * A payroll larger than nine is two runs. That is worse than one press and far
+ * better than a screen that shows eight of ten payments.
+ */
+#define ETH_DISPERSE_MAX_RECIPIENTS 9
+
 #define ETH_ATS_MAX_NAME   64
 #define ETH_ATS_MAX_SYMBOL 12
 
@@ -237,6 +253,18 @@ typedef struct {
      * calldata -- and that is the whole attack against a device whose only job
      * is to show you what you are signing. A string this device cannot draw
      * faithfully is refused, not truncated. */
+    /* ------------------------------------------------- disperse (many legs)
+     *
+     * Byte offsets into the SAME calldata buffer, like the Aqua and ATS fields
+     * above: resolved and bounds-checked once by the decoder, read back by the
+     * renderer from the buffer it owns. `disperse_token` is the ERC-20 being
+     * sent, not the disperse contract -- the contract is the transaction's
+     * `to` and is drawn on the contract page like every other call. */
+    uint8_t     disperse_token[20];
+    uint8_t     disperse_count;
+    uint16_t    disperse_to_off[ETH_DISPERSE_MAX_RECIPIENTS];
+    uint16_t    disperse_amount_off[ETH_DISPERSE_MAX_RECIPIENTS];
+
     uint16_t    ats_name_off;
     uint8_t     ats_name_len;
     uint16_t    ats_symbol_off;
@@ -301,6 +329,22 @@ bool eth_arg_quantity(const EthCall *call, const uint8_t *data, size_t len,
  */
 bool eth_arg_unlimited(const EthCall *call, const uint8_t *data, size_t len,
                        int i);
+
+/* ---------------------------------------------------------- disperse */
+
+/**
+ * Recipient `i` of a disperse, read back out of `data`.
+ *
+ * Re-bounds-checked against the caller's length, for the same reason
+ * eth_aqua_token() is: this runs at render time from a buffer the renderer
+ * owns, and decode time and render time have been out of step before.
+ */
+bool eth_disperse_to(const EthCall *call, const uint8_t *data, size_t len,
+                     int i, uint8_t out[20]);
+
+/** Amount `i` of a disperse, in the token's own raw units. */
+bool eth_disperse_amount(const EthCall *call, const uint8_t *data, size_t len,
+                         int i, EthQuantity *out);
 
 /* ------------------------------------------------------- ATS issuance */
 

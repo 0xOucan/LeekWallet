@@ -180,6 +180,19 @@ export const DEVICE_DRAWN_KINDS: ReadonlySet<string> = new Set<string>([
    * chain. */
   CallKind.AtsDeployEquity,
   CallKind.AtsDeployBond,
+  /* Disperse: many ERC-20 transfers in one transaction.
+   *
+   * `address[]` and `uint256[]` are dynamic, so no ERC-7730 descriptor can
+   * cover this — parseSignature refuses every dynamic type, correctly. Admitted
+   * here on the same test the others passed: the arrays ARE the payload, and
+   * the device draws one page per recipient with its own amount. Nothing is
+   * summarised and there is deliberately no total page, because a total is the
+   * number somebody checks INSTEAD of the list.
+   *
+   * The device bounds it at nine recipients, which is where the calldata stops
+   * fitting ETH_MAX_DATA. A tenth is refused as a call it cannot hold rather
+   * than drawn short. */
+  CallKind.DisperseToken,
 ]);
 
 /** The shell-owned facts a proposal is screened against. */

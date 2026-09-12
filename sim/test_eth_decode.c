@@ -615,6 +615,37 @@ static size_t build_two_strings(uint8_t *out, size_t cap, const char *sig,
     return len;
 }
 
+/* disperseToken(address,address[],uint256[]) -- canonical encoding. */
+static size_t build_disperse(uint8_t *out, size_t cap, const char *sig,
+                             const uint8_t token[20],
+                             const uint8_t recipients[][20],
+                             const uint64_t *values, size_t n, size_t n_values)
+{
+    size_t off_r = 3 * 32;
+    size_t off_v = off_r + 32 + n * 32;
+    size_t len   = 4 + off_v + 32 + n_values * 32;
+    if (len > cap) return 0;
+    memset(out, 0, len);
+
+    uint8_t hash[32];
+    keccak_256((const uint8_t *)sig, strlen(sig), hash);
+    memcpy(out, hash, 4);
+
+    uint8_t *args = out + 4;
+    memcpy(args + 12, token, 20);
+    amount_u64(args + 32, off_r);
+    amount_u64(args + 64, off_v);
+    amount_u64(args + off_r, n);
+    for (size_t i = 0; i < n; i++) {
+        memcpy(args + off_r + 32 + i * 32 + 12, recipients[i], 20);
+    }
+    amount_u64(args + off_v, n_values);
+    for (size_t i = 0; i < n_values; i++) {
+        amount_u64(args + off_v + 32 + i * 32, values[i]);
+    }
+    return len;
+}
+
 static size_t aqua_probe(uint8_t *out, size_t cap, const char *selector_sig,
                          const char *row_sig)
 {
@@ -639,6 +670,12 @@ static size_t aqua_probe(uint8_t *out, size_t cap, const char *selector_sig,
     if (strcmp(row_sig, "deployEquity(string,string)") == 0 ||
         strcmp(row_sig, "deployBond(string,string)") == 0) {
         return build_two_strings(out, cap, selector_sig, "Leek Capital", "LEEKA");
+    }
+    if (strcmp(row_sig, "disperseToken(address,address[],uint256[])") == 0) {
+        uint8_t rs[1][20];
+        memcpy(rs[0], SPENDER, 20);
+        uint64_t vs[1] = { 1000000 };
+        return build_disperse(out, cap, selector_sig, OTHER, rs, vs, 1, 1);
     }
     return 0;
 }
@@ -1181,6 +1218,7 @@ static const char *kind_json_name(EthCallKind k)
         case ETH_CALL_GENERIC:             return "generic";
         case ETH_CALL_AQUA_SHIP:           return "aqua-ship";
         case ETH_CALL_AQUA_DOCK:           return "aqua-dock";
+        case ETH_CALL_DISPERSE_TOKEN:      return "disperse-token";
         case ETH_CALL_ATS_DEPLOY_EQUITY:   return "ats-deploy-equity";
         case ETH_CALL_ATS_DEPLOY_BOND:     return "ats-deploy-bond";
         case ETH_CALL_UNKNOWN:             return "unknown";
@@ -1387,6 +1425,36 @@ static void emit_case(FILE *out, const char *name, const uint8_t *data, size_t l
             fprintf(out, "null");
         }
         fprintf(out, " }");
+    } else {
+        fprintf(out, "null");
+    }
+    fprintf(out, ",\n");
+
+    /* The legs, recorded so the two decoders are compared on WHERE THE MONEY
+     * GOES and not merely on "accepted". A batch that both sides accept while
+     * disagreeing about one recipient is the whole risk of this call. */
+    fprintf(out, "    \"disperse\": ");
+    if (kind == ETH_CALL_DISPERSE_TOKEN) {
+        fprintf(out, "{ \"token\": ");
+        write_addr(out, call.disperse_token);
+        fprintf(out, ", \"legs\": [");
+        for (int i = 0; i < call.disperse_count; i++) {
+            uint8_t to[20];
+            EthQuantity q;
+            char text[80];
+            fprintf(out, "%s{ \"to\": ", i == 0 ? "" : ", ");
+            if (eth_disperse_to(&call, data, len, i, to)) write_addr(out, to);
+            else fprintf(out, "null");
+            fprintf(out, ", \"amount\": ");
+            if (eth_disperse_amount(&call, data, len, i, &q) &&
+                eth_format_integer(&q, text, sizeof(text))) {
+                fprintf(out, "\"%s\"", text);
+            } else {
+                fprintf(out, "null");
+            }
+            fprintf(out, " }");
+        }
+        fprintf(out, "] }");
     } else {
         fprintf(out, "null");
     }
@@ -1720,6 +1788,56 @@ static int emit_vectors(const char *path)
         amount_u64(w[2], 100000000);
         len = build_sig_call(data, sizeof(data), "list(address,uint256,uint256)", w, 3);
         CASE("market list(security,amount,priceTotal)", data, len);
+    }
+
+    /* ---------------------------------------------------------- disperse */
+
+    {
+        uint8_t rs[3][20];
+        memcpy(rs[0], SPENDER, 20);
+        memcpy(rs[1], OTHER, 20);
+        memcpy(rs[2], AQUA_APP_ADDR, 20);
+        uint64_t vs[3] = { 1100000, 1100000, 2500000 };
+
+        len = build_disperse(data, sizeof(data), "disperseToken(address,address[],uint256[])",
+                             OTHER, rs, vs, 1, 1);
+        CASE("disperse, one recipient", data, len);
+
+        len = build_disperse(data, sizeof(data), "disperseToken(address,address[],uint256[])",
+                             OTHER, rs, vs, 3, 3);
+        CASE("disperse, three recipients", data, len);
+
+        /* Unequal arrays: refused, never truncated to the shorter. Drawing
+         * three recipients for four amounts is a lie about where money goes. */
+        len = build_disperse(data, sizeof(data), "disperseToken(address,address[],uint256[])",
+                             OTHER, rs, vs, 3, 2);
+        CASE("disperse, more recipients than values", data, len);
+
+        len = build_disperse(data, sizeof(data), "disperseToken(address,address[],uint256[])",
+                             OTHER, rs, vs, 2, 3);
+        CASE("disperse, more values than recipients", data, len);
+
+        /* Empty is not a payment. */
+        len = build_disperse(data, sizeof(data), "disperseToken(address,address[],uint256[])",
+                             OTHER, rs, vs, 0, 0);
+        CASE("disperse, no recipients", data, len);
+
+        /* A gap between the two tails encodes the same payload differently. */
+        len = build_disperse(data, sizeof(data), "disperseToken(address,address[],uint256[])",
+                             OTHER, rs, vs, 2, 2);
+        data[4 + 95] += 32;
+        CASE("disperse, gap between the arrays", data, len);
+
+        len = build_disperse(data, sizeof(data), "disperseToken(address,address[],uint256[])",
+                             OTHER, rs, vs, 2, 2);
+        data[len] = 0x01;
+        CASE("disperse, trailing byte", data, len + 1);
+
+        /* A padded address whose high bytes are not zero is not an address. */
+        len = build_disperse(data, sizeof(data), "disperseToken(address,address[],uint256[])",
+                             OTHER, rs, vs, 2, 2);
+        data[4 + 3 * 32 + 32] = 0xFF;
+        CASE("disperse, dirty high bytes in a recipient", data, len);
     }
 
     /* ------------------------------------------------------ ATS issuance */

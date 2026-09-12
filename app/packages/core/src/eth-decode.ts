@@ -39,6 +39,8 @@ export const CallKind = {
   AtsDeployEquity: "ats-deploy-equity",
   /** ATS `deployBond(string,string)` through LeekSecurityFactory. */
   AtsDeployBond: "ats-deploy-bond",
+  /** Disperse `disperseToken(address,address[],uint256[])`. */
+  DisperseToken: "disperse-token",
   Unknown: "unknown",
 } as const;
 
@@ -69,7 +71,27 @@ export interface DecodedCall {
   aqua?: AquaCall;
   /** Present only for the two ATS deploy kinds. */
   ats?: AtsDeploy;
+  /** Present only for a disperse. */
+  disperse?: DisperseCall;
 }
+
+/**
+ * A disperse, decoded — the mirror of the `disperse_*` fields on the C struct.
+ *
+ * `token` is the ERC-20 being sent, NOT the disperse contract: the contract is
+ * the transaction's `to`. Amounts stay raw, because neither side can call
+ * decimals() and a scale nobody read is the bug this project keeps refusing to
+ * ship.
+ */
+export interface DisperseCall {
+  token: string;
+  legs: ReadonlyArray<{ to: string; amount: bigint }>;
+}
+
+/** `ETH_DISPERSE_MAX_RECIPIENTS` in src/eth-decode.h. Nine is where the
+ * calldata stops fitting ETH_MAX_DATA: 164 + 64N bytes, so N=9 is 740 and
+ * N=10 is 804. */
+export const DISPERSE_MAX_RECIPIENTS = 9;
 
 /**
  * An ATS issuance, decoded — the mirror of the `ats_*` fields on the C struct.
@@ -154,10 +176,11 @@ const Shape = {
   AquaShip: 6,
   AquaDock: 7,
   TwoStrings: 8,
+  Disperse: 9,
 } as const;
 type Shape = (typeof Shape)[keyof typeof Shape];
 
-const WORDS: Record<Shape, number> = { 0: 0, 1: 1, 2: 2, 3: 2, 4: 3, 5: 0, 6: 0, 7: 0, 8: 0 };
+const WORDS: Record<Shape, number> = { 0: 0, 1: 1, 2: 2, 3: 2, 4: 3, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0 };
 
 /* The same table as src/eth-decode.c, in the same order, with the same
  * argument shapes and - this is the part that matters - the same signature
@@ -208,6 +231,10 @@ const KNOWN: ReadonlyArray<{
    * set of things this transaction decides. */
   { sig: "deployEquity(string,string)", names: "name,symbol", kind: CallKind.AtsDeployEquity, shape: Shape.TwoStrings },
   { sig: "deployBond(string,string)", names: "name,symbol", kind: CallKind.AtsDeployBond, shape: Shape.TwoStrings },
+  /* Disperse. Two dynamic arrays, so the generic path refuses it and it takes
+   * the hand-written route Aqua's ship does. Drawable because the arrays ARE
+   * the payload — a recipient and an amount each, one device page per pair. */
+  { sig: "disperseToken(address,address[],uint256[])", names: "token,recipients,values", kind: CallKind.DisperseToken, shape: Shape.Disperse },
 ];
 
 /** keccak256(signature)[0:4], lower-case hex. Computed once per row. */
@@ -357,6 +384,7 @@ export function decodeCall(data: unknown): DecodedCall {
   if (index < 0) return { kind: CallKind.Unknown };
   const known = KNOWN[index]!;
 
+  if (known.shape === Shape.Disperse) return decodeDisperse(bytes);
   if (known.shape === Shape.TwoStrings) return decodeTwoStrings(bytes, known.kind);
   if (known.shape === Shape.AquaShip) return decodeAquaShip(bytes);
   if (known.shape === Shape.AquaDock) return decodeAquaDock(bytes);
@@ -752,6 +780,50 @@ function decodeTwoStrings(bytes: Uint8Array, kind: CallKind): DecodedCall {
   if (span !== offS + 32 + paddedS) return UNKNOWN;
 
   return { kind, ats: { name, symbol } };
+}
+
+/**
+ * `disperseToken(address,address[],uint256[])`.
+ *
+ * Canonical encoding only — token, two offsets, the recipients tail
+ * immediately after the head, the values tail immediately after it, equal
+ * lengths, nothing trailing — matching `disperse_decode_token()` check for
+ * check. Unequal lengths are refused rather than truncated to the shorter:
+ * rendering three recipients for a call carrying four amounts is a lie about
+ * where the money goes, and the contract would revert on it anyway.
+ */
+function decodeDisperse(bytes: Uint8Array): DecodedCall {
+  if (bytes.length < 4 + 3 * 32) return UNKNOWN;
+  const span = bytes.length - 4;
+  const at = (off: number) => 4 + off;
+
+  const token = addressFrom(bytes, 4);
+  if (token === null) return UNKNOWN;
+
+  const offR = wordAsSize(bytes, at(32), span);
+  const offV = wordAsSize(bytes, at(64), span);
+  if (offR === null || offV === null) return UNKNOWN;
+  if (offR !== 3 * 32) return UNKNOWN;
+
+  if (offR + 32 > span) return UNKNOWN;
+  const n = wordAsSize(bytes, at(offR), span);
+  if (n === null || n === 0 || n > DISPERSE_MAX_RECIPIENTS) return UNKNOWN;
+  if (offR + 32 + n * 32 > span) return UNKNOWN;
+
+  if (offV !== offR + 32 + n * 32) return UNKNOWN;
+  if (offV + 32 > span) return UNKNOWN;
+  const m = wordAsSize(bytes, at(offV), span);
+  if (m === null || m !== n) return UNKNOWN;
+  if (span !== offV + 32 + m * 32) return UNKNOWN;
+
+  const legs: Array<{ to: string; amount: bigint }> = [];
+  for (let i = 0; i < n; i++) {
+    const to = addressFrom(bytes, at(offR + 32 + i * 32));
+    if (to === null) return UNKNOWN;
+    const amount = BigInt("0x" + toHex(bytes.subarray(at(offV + 32 + i * 32), at(offV + 64 + i * 32))));
+    legs.push({ to, amount });
+  }
+  return { kind: CallKind.DisperseToken, disperse: { token, legs } };
 }
 
 function decodeAquaDock(bytes: Uint8Array): DecodedCall {

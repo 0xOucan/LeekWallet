@@ -4356,6 +4356,8 @@ typedef enum {
     SIGN_PAGE_AQUA_AMOUNT,  /* Aqua ship: what that token is credited with */
     SIGN_PAGE_AQUA_INSTR,   /* Aqua ship to the SwapVM router: one SwapVM
                              * program instruction, in program order (B3) */
+    SIGN_PAGE_DISPERSE_ACTION, /* Disperse: how many payments, and the token */
+    SIGN_PAGE_DISPERSE_LEG,    /* Disperse: one recipient and its amount */
     SIGN_PAGE_ATS_ACTION,   /* ATS: issuing a security, and what that means */
     SIGN_PAGE_ATS_NAME,     /* ATS: the security's name, in full */
     SIGN_PAGE_ATS_SYMBOL,   /* ATS: the security's symbol, in full */
@@ -4373,9 +4375,16 @@ typedef enum {
 #define SIGN_TYPED_PAGES   (EIP712_MAX_RENDER_FIELDS + 2)
 #define SIGN_GENERIC_PAGES (ETH_MAX_ARGS + 3)
 #define SIGN_AQUA_PAGES    (2 * ETH_AQUA_MAX_LEGS + ETH_AQUA_MAX_INSTRUCTIONS + 6)
+/* Action, one page per recipient, contract, source. Stated rather than left to
+ * happen to fit under the Aqua figure: the two bounds move for unrelated
+ * reasons, and a page plan that silently truncated would drop a payment from a
+ * batch -- the one screen where a missing row is money going somewhere nobody
+ * was shown. */
+#define SIGN_DISPERSE_PAGES (ETH_DISPERSE_MAX_RECIPIENTS + 3)
 #define SIGN_MAX2(a, b) ((a) > (b) ? (a) : (b))
 #define SIGN_MAX_PAGES \
-    SIGN_MAX2(SIGN_AQUA_PAGES, SIGN_MAX2(SIGN_TYPED_PAGES, SIGN_GENERIC_PAGES))
+    SIGN_MAX2(SIGN_DISPERSE_PAGES, \
+    SIGN_MAX2(SIGN_AQUA_PAGES, SIGN_MAX2(SIGN_TYPED_PAGES, SIGN_GENERIC_PAGES)))
 
 static EthTx        sign_tx;
 static EthCall      sign_call;
@@ -4632,6 +4641,22 @@ void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
                     sign_page_field[n] = ins;
                     sign_page_kind[n++] = SIGN_PAGE_AQUA_INSTR;
                 }
+            }
+            sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
+            break;
+        case ETH_CALL_DISPERSE_TOKEN:
+            /* One page per recipient, never a total.
+             *
+             * A batch is the easiest call on this device to misread as one
+             * payment when it is nine, so the count leads and every leg gets
+             * its own screen. There is deliberately no "total" page: a total
+             * is the number somebody checks INSTEAD of the list, and the list
+             * is what actually leaves the wallet. */
+            sign_page_kind[n++] = SIGN_PAGE_DISPERSE_ACTION;
+            for (int leg = 0; leg < sign_call.disperse_count &&
+                              n < SIGN_MAX_PAGES - 2; leg++) {
+                sign_page_field[n] = leg;
+                sign_page_kind[n++] = SIGN_PAGE_DISPERSE_LEG;
             }
             sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
             break;
@@ -5372,6 +5397,52 @@ static void screen_sign_confirm_render(void)
             }
             break;
         }
+        case SIGN_PAGE_DISPERSE_ACTION: {
+            char head[24];
+            char addr[43];
+            snprintf(head, sizeof(head), "DISPERSE to %u",
+                     (unsigned)sign_call.disperse_count);
+            oled_draw_string(1, 0, head);
+            oled_draw_string(2, 0, "addresses, of:");
+            if (eth_format_address(sign_call.disperse_token, addr, sizeof(addr))) {
+                sign_draw_address(3, addr);
+            } else {
+                oled_draw_string(3, 0, "(token unavailable)");
+            }
+            /* The count is the thing to check, so it is said twice and in
+             * words: the pages that follow are the payments, one each. */
+            oled_draw_string(6, 0, "Check every page.");
+            break;
+        }
+        case SIGN_PAGE_DISPERSE_LEG: {
+            int leg = sign_page_field[sign_page];
+            uint8_t to[20];
+            char addr[43];
+            char heading[32];
+            char text[80];
+            EthQuantity q;
+            snprintf(heading, sizeof(heading), "Payment %d of %u", leg + 1,
+                     (unsigned)sign_call.disperse_count);
+            oled_draw_string(1, 0, heading);
+            if (eth_disperse_to(&sign_call, sign_tx.data, sign_tx.data_length, leg, to) &&
+                eth_format_address(to, addr, sizeof(addr))) {
+                sign_draw_address(2, addr);
+            } else {
+                oled_draw_string(2, 0, "(unavailable)");
+            }
+            /* Raw units, like every other token amount on this device: it
+             * cannot call decimals() and must not imply a scale it does not
+             * know. */
+            if (eth_disperse_amount(&sign_call, sign_tx.data, sign_tx.data_length,
+                                    leg, &q) &&
+                eth_format_integer(&q, text, sizeof(text))) {
+                oled_draw_string(5, 0, "Raw units:");
+                oled_draw_string(6, 0, text);
+            } else {
+                oled_draw_string(5, 0, "(amount unavailable)");
+            }
+            break;
+        }
         case SIGN_PAGE_ATS_ACTION: {
             /* What it creates, and the consequence nobody can read off the
              * other two pages: the signer becomes the issuer, with every role
@@ -5593,6 +5664,7 @@ static void screen_sign_confirm_render(void)
             oled_draw_string(1, 0,
                 (sign_call.kind == ETH_CALL_GENERIC ||
                  sign_call.kind == ETH_CALL_AQUA_SHIP ||
+                 sign_call.kind == ETH_CALL_DISPERSE_TOKEN ||
                  sign_call.kind == ETH_CALL_ATS_DEPLOY_EQUITY ||
                  sign_call.kind == ETH_CALL_ATS_DEPLOY_BOND ||
                  sign_call.kind == ETH_CALL_AQUA_DOCK) ? "Contract"

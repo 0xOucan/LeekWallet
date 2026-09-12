@@ -47,7 +47,7 @@ import {
   importStaffCsv, staffFromFields, MAX_STAFF, type Duplicate, type StaffMember,
 } from "./staff.ts";
 import {
-  PAYROLL_CSV_TEMPLATE, PAYROLL_TOKENS, planPayroll, runPayroll,
+  PAYROLL_CSV_TEMPLATE, PAYROLL_TOKENS, disperseFor, planPayroll, runPayroll,
   type PayrollPlan, type PayrollToken, type PaymentState, type RunProgress,
 } from "./payroll.ts";
 
@@ -402,12 +402,27 @@ export const TILL_PAYROLL_APP: MiniApp = {
       }
     });
 
+    /* Batching is opt-in, and off by default.
+     *
+     * The per-payment route is the one this app argues for: one screen per
+     * recipient is the thing no software wallet does, and "slow" is the
+     * security property. Batching is for the payroll where twenty presses is
+     * the difference between using this and not — so it is offered, explained,
+     * and never the default. Both routes pay the same people the same amounts;
+     * `disperseFor` builds from the same plan so they cannot diverge. */
+    const batch = el("input") as HTMLInputElement;
+    batch.type = "checkbox";
+    batch.setAttribute("aria-label", "Send as two batched transactions");
+    const batchLabel = el("label", "till-payroll-dupes");
+    batchLabel.append(batch, document.createTextNode(
+      " batch via Disperse (3 confirmations instead of 2 per person)"));
+
     const duplicates = el("input");
     duplicates.type = "checkbox";
     duplicates.setAttribute("aria-label", "Allow an address to be paid twice");
     const duplicateLabel = el("label", "till-payroll-dupes");
     duplicateLabel.append(duplicates, document.createTextNode(" allow a repeated address"));
-    controls.append(duplicateLabel);
+    controls.append(duplicateLabel, batchLabel);
     panel.append(controls);
 
     const paste = el("textarea");
@@ -547,12 +562,56 @@ export const TILL_PAYROLL_APP: MiniApp = {
     });
 
     const run = async (plan: PayrollPlan) => {
-      await runPayroll(plan, propose, (progress) => {
-        state.progress = progress;
-        redraw();
-      });
+      if (batch.checked) {
+        await runBatched(plan);
+      } else {
+        await runPayroll(plan, propose, (progress) => {
+          state.progress = progress;
+          redraw();
+        });
+      }
       state.running = false;
       redraw();
+    };
+
+    /**
+     * Approve, then salaries, then tips — three presses whatever the headcount.
+     *
+     * Stops at the first refusal and says where it stopped, because this run is
+     * no more atomic than the other one: an approval that lands with no batch
+     * behind it is a standing allowance, and a salaries batch that lands
+     * without its tips batch is half a payday. Both are recoverable and
+     * neither is invisible, which is the most this can honestly offer.
+     */
+    const runBatched = async (plan: PayrollPlan): Promise<void> => {
+      const built = disperseFor(plan);
+      if (!("approval" in built)) {
+        error.textContent =
+          `${built.reason} The per-payment route below still works: uncheck ` +
+          `the batch option and send as one transaction per leg.`;
+        return;
+      }
+      const steps = [
+        { call: built.approval, what: "approval" },
+        ...(built.salaries ? [{ call: built.salaries, what: "salaries" }] : []),
+        ...(built.tips ? [{ call: built.tips, what: "tips" }] : []),
+      ];
+      for (const step of steps) {
+        error.textContent = `Check every page on the device — ${step.what}.`;
+        redraw();
+        const outcome = await propose({
+          to: step.call.to, data: step.call.data, value: step.call.value,
+          label: step.call.label,
+        } as never);
+        if (!outcome.ok) {
+          error.textContent =
+            `Stopped at the ${step.what}. Anything already sent stays sent: ` +
+            `if the approval landed, Disperse holds a standing allowance with ` +
+            `no batch behind it, and revoking it is a separate act.`;
+          return;
+        }
+      }
+      error.textContent = "Sent. Salaries and tips went as two transactions.";
     };
 
     redraw();

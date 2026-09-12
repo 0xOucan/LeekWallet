@@ -91,6 +91,9 @@
  */
 
 import { describeTokenAmount, encodeErc20Transfer, hintMeta, type TokenAmountView } from "@leekwallet/core/balances.ts";
+import {
+  planDisperse, type DisperseLeg, type DispersePlan, type DisperseRefusal,
+} from "./disperse.ts";
 import { trackedTokenAddress } from "@leekwallet/core/all-chain-balances.ts";
 import { tokenHint } from "@leekwallet/core/chains.ts";
 import type { AppProposal, ProposalOutcome } from "@leekwallet/core/app-proposal.ts";
@@ -380,6 +383,28 @@ function reasonFor(plan: PayrollPlan, index: number): string {
  * it, and marching on to propose the next eleven is how a wallet trains
  * somebody to press the button without reading.
  */
+/**
+ * The same payroll as three transactions instead of 2N.
+ *
+ * Built from the plan rather than beside it, so the two routes can never
+ * disagree about who is owed what: the legs handed to Disperse are exactly the
+ * legs `planPayroll` produced, grouped by salary and tips and nothing else.
+ *
+ * Returns a refusal, not an exception, when the payroll is larger than the
+ * device will draw (nine recipients per batch) — at which point the per-payment
+ * route is still there and still correct. Batching is an optimisation of a
+ * working flow, never a replacement for it, and a payroll that cannot be
+ * batched must not become a payroll that cannot be paid.
+ */
+export function disperseFor(plan: PayrollPlan): DispersePlan | DisperseRefusal {
+  const salaries: DisperseLeg[] = [];
+  const tips: DisperseLeg[] = [];
+  for (const p of plan.payments) {
+    (p.leg === "salary" ? salaries : tips).push({ to: p.member.address, units: p.units });
+  }
+  return planDisperse(plan.contract, salaries, tips);
+}
+
 export async function runPayroll(
   plan: PayrollPlan,
   propose: (proposal: AppProposal) => Promise<ProposalOutcome>,

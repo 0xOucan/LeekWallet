@@ -315,7 +315,12 @@ group("each app carries its own CSS, prefixed with its id");
 group("device-drawn kinds are a closed set");
 {
   const src = readFileSync(join(appRoot, "packages/core/src/app-proposal.ts"), "utf8");
-  const block = /DEVICE_DRAWN_KINDS[^=]*=\s*new Set<string>\(\[([^\]]*)\]/.exec(src);
+  /* Non-greedy up to the closing `]);`, not "everything that is not a `]`".
+   * The old pattern stopped at the FIRST `]` anywhere in the block, so a
+   * comment mentioning `address[]` truncated the capture mid-sentence and the
+   * failure message became prose fragments — a tripwire that fires correctly
+   * and then tells you nothing. */
+  const block = /DEVICE_DRAWN_KINDS[^=]*=\s*new Set<string>\(\[([\s\S]*?)\]\s*\)/.exec(src);
   check(block !== null, "DEVICE_DRAWN_KINDS is no longer a literal Set this test can read");
   /* Strip comments BEFORE splitting. The members are what this test is about;
    * a `/* ... *\/` block explaining why a member was admitted contains commas
@@ -337,11 +342,19 @@ group("device-drawn kinds are a closed set");
    * It is admissible at all because the LeekSecurityFactory wrapper freezes a
    * 3,748-byte template on chain, so the two strings the screen shows are the
    * complete set of values the transaction chooses — not a summary of them. */
+  /* Disperse added 2026-09-11. All three parts exist and were added together:
+   *   firmware decoder  disperse_decode_token()   src/eth-decode.c
+   *   host mirror       decodeDisperse()          packages/core/src/eth-decode.ts
+   *   device pages      SIGN_PAGE_DISPERSE_ACTION/_LEG   src/ui.c
+   * Admissible because the arrays ARE the payload: one page per recipient with
+   * its own amount, nothing summarised, and no total page. Bounded at nine
+   * recipients, where the calldata stops fitting ETH_MAX_DATA. */
   const expected = [
     "CallKind.AquaShip",
     "CallKind.AquaDock",
     "CallKind.AtsDeployEquity",
     "CallKind.AtsDeployBond",
+    "CallKind.DisperseToken",
   ];
   check(
     members.length === expected.length && expected.every((e) => members.includes(e)),

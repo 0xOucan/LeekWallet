@@ -379,6 +379,7 @@ interface EthDecodeVector {
   flag?: boolean | null;
   generic?: { signature: string; functionName: string; args: EthDecodeArgVector[] } | null;
   ats?: { name: string | null; symbol: string | null } | null;
+  disperse?: { token: string; legs: Array<{ to: string | null; amount: string | null }> } | null;
   aqua?: {
     app: string; maker: string | null; hash: string; legs: EthDecodeLegVector[];
     /** The walked SwapVM program, or null when the app is not the router. */
@@ -500,6 +501,30 @@ for (const v of ethDecodeVectors) {
    * could disagree (a control byte, a right-to-left override, an invisible
    * leading space, a string one byte over the factory's own bound), and a
    * mirror that accepted any of them would draw something the device rejects. */
+  /* A disperse, compared leg by leg.
+   *
+   * "Accepted" alone would let both decoders agree to render a batch while
+   * disagreeing about one recipient — which on this call is the difference
+   * between paying your chef and paying a stranger. The refusals matter as
+   * much: unequal arrays, an empty batch, a gap between the tails, a trailing
+   * byte, dirty high bytes in an address. Each is a way a screen could show
+   * something other than what executes. */
+  if (v.disperse) {
+    check(d.disperse?.token === v.disperse.token,
+      `${v.name}: disperse token ${d.disperse?.token} != firmware's ${v.disperse.token}`);
+    check(d.disperse?.legs.length === v.disperse.legs.length,
+      `${v.name}: ${d.disperse?.legs.length} legs, firmware has ${v.disperse.legs.length}`);
+    v.disperse.legs.forEach((leg, i) => {
+      const got = d.disperse?.legs[i];
+      check(got?.to === leg.to, `${v.name}: leg ${i} to ${got?.to} != ${leg.to}`);
+      check((got?.amount === undefined ? null : got.amount.toString()) === (leg.amount ?? null),
+        `${v.name}: leg ${i} amount ${got?.amount} != firmware's ${leg.amount}`);
+    });
+  } else {
+    check(d.disperse === undefined,
+      `${v.name}: TS produced a disperse field the firmware did not`);
+  }
+
   if (v.ats) {
     check(d.ats?.name === v.ats.name,
       `${v.name}: ats name ${d.ats?.name} != firmware's ${v.ats.name}`);

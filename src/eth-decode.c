@@ -23,7 +23,8 @@ typedef enum {
     ARGS_FROM_SIGNATURE,/* read the types out of `sig` itself           */
     ARGS_AQUA_SHIP,     /* Aqua ship: see aqua_decode_ship()            */
     ARGS_AQUA_DOCK,     /* Aqua dock: see aqua_decode_dock()            */
-    ARGS_TWO_STRINGS    /* ATS deployEquity/deployBond: ats_decode()     */
+    ARGS_TWO_STRINGS,   /* ATS deployEquity/deployBond: ats_decode()     */
+    ARGS_DISPERSE       /* disperseToken: disperse_decode_token()        */
 } ArgShape;
 
 /* One row of the table.
@@ -152,6 +153,19 @@ static const struct EthAbiEntry KNOWN[] = {
       ETH_CALL_ATS_DEPLOY_EQUITY, ARGS_TWO_STRINGS },
     { "deployBond(string,string)",   "name,symbol",
       ETH_CALL_ATS_DEPLOY_BOND,   ARGS_TWO_STRINGS },
+
+    /* Disperse: many ERC-20 transfers in one transaction.
+     *
+     * Two dynamic arrays, so the generic path refuses it and it gets a
+     * hand-written decoder like Aqua's ship. What makes it drawable is that
+     * the arrays are the WHOLE payload: a recipient and an amount each, and
+     * the device draws one page per pair. There is nothing summarised.
+     *
+     * This is the one place a device screen can drift furthest from what a
+     * user believes: a batch is easy to read as "one payment" when it is nine.
+     * The page count is therefore the recipient count, never a total. */
+    { "disperseToken(address,address[],uint256[])", "token,recipients,values",
+      ETH_CALL_DISPERSE_TOKEN, ARGS_DISPERSE },
 };
 #define KNOWN_COUNT (sizeof(KNOWN) / sizeof(KNOWN[0]))
 
@@ -646,6 +660,88 @@ static bool aqua_swapvm_program(const uint8_t *data, size_t strategy_off,
                              data_len - program_start, out);
 }
 
+/* ------------------------------------------------------------- disperse */
+
+/**
+ * disperseToken(address,address[],uint256[]) -- canonical encoding only.
+ *
+ * Head is three words: the token, then offsets to the two arrays. The
+ * recipients tail sits immediately after the head, the values tail immediately
+ * after it, both lengths equal, nothing trailing. Anything that merely encodes
+ * the same payload differently is refused rather than normalised -- the same
+ * rule the Aqua and ATS decoders apply, and for the same reason: a second
+ * encoding of "the same" call is a second thing to reason about on a screen
+ * somebody is about to trust.
+ *
+ * Unequal array lengths are refused rather than truncated to the shorter. The
+ * contract would revert on them anyway, but the screen is the point: drawing
+ * three recipients for a call carrying four amounts is a lie about where the
+ * money goes.
+ */
+static bool disperse_decode_token(const uint8_t *data, size_t len, EthCall *out)
+{
+    if (len < 4 + 3 * 32) return false;
+    const uint8_t *args = data + 4;
+    size_t         span = len - 4;
+
+    if (!word_is_address(args)) return false;
+    memcpy(out->disperse_token, args + 12, 20);
+
+    size_t off_r, off_v;
+    if (!word_as_size(args + 32, span, &off_r) ||
+        !word_as_size(args + 64, span, &off_v)) {
+        return false;
+    }
+    /* Where solc puts the first tail, and nowhere else. */
+    if (off_r != 3 * 32) return false;
+
+    if (off_r + 32 > span) return false;
+    size_t n;
+    if (!word_as_size(args + off_r, span, &n)) return false;
+    if (n == 0 || n > ETH_DISPERSE_MAX_RECIPIENTS) return false;
+    if (off_r + 32 + n * 32 > span) return false;
+
+    /* The values array must begin exactly where the recipients array ended. */
+    if (off_v != off_r + 32 + n * 32) return false;
+    if (off_v + 32 > span) return false;
+    size_t m;
+    if (!word_as_size(args + off_v, span, &m)) return false;
+    if (m != n) return false;                       /* never truncate to the shorter */
+    if (off_v + 32 + m * 32 != span) return false;  /* nothing may follow */
+
+    for (size_t i = 0; i < n; i++) {
+        const uint8_t *r = args + off_r + 32 + i * 32;
+        if (!word_is_address(r)) return false;
+        out->disperse_to_off[i]     = (uint16_t)((r + 12) - data);
+        out->disperse_amount_off[i] = (uint16_t)((args + off_v + 32 + i * 32) - data);
+    }
+    out->disperse_count = (uint8_t)n;
+    return true;
+}
+
+bool eth_disperse_to(const EthCall *call, const uint8_t *data, size_t len,
+                     int i, uint8_t out[20])
+{
+    if (!call || !data || !out) return false;
+    if (call->kind != ETH_CALL_DISPERSE_TOKEN) return false;
+    if (i < 0 || i >= (int)call->disperse_count) return false;
+    size_t off = call->disperse_to_off[i];
+    if (off > len || len - off < 20) return false;
+    memcpy(out, data + off, 20);
+    return true;
+}
+
+bool eth_disperse_amount(const EthCall *call, const uint8_t *data, size_t len,
+                         int i, EthQuantity *out)
+{
+    if (!call || !data || !out) return false;
+    if (call->kind != ETH_CALL_DISPERSE_TOKEN) return false;
+    if (i < 0 || i >= (int)call->disperse_count) return false;
+    size_t off = call->disperse_amount_off[i];
+    if (off > len || len - off < 32) return false;
+    return eth_quantity_set(out, data + off, 32);
+}
+
 /* ---------------------------------------------------------- ATS issuance */
 
 bool eth_ats_string(const EthCall *call, const uint8_t *data, size_t len,
@@ -919,6 +1015,17 @@ EthCallKind eth_decode_call(const uint8_t *data, size_t len, EthCall *out)
         goto done;
     }
 
+    if (known->shape == ARGS_DISPERSE) {
+        if (!disperse_decode_token(data, len, &call)) {
+            memzero(&call, sizeof(call));
+            call.kind = ETH_CALL_UNKNOWN;
+            goto done;
+        }
+        call.entry = known;
+        call.kind  = known->kind;
+        goto done;
+    }
+
     if (known->shape == ARGS_TWO_STRINGS) {
         if (!ats_decode_two_strings(data, len, &call)) {
             /* Same rule as Aqua's: half a decode is nothing. */
@@ -1046,6 +1153,7 @@ const char *eth_call_name(EthCallKind kind)
         case ETH_CALL_MINT_TOKEN_TO:        return "mint token to";
         case ETH_CALL_MINT:                 return "mint";
         case ETH_CALL_GENERIC:              return "contract call";
+        case ETH_CALL_DISPERSE_TOKEN:       return "Disperse";
         case ETH_CALL_ATS_DEPLOY_EQUITY:    return "Issue equity";
         case ETH_CALL_ATS_DEPLOY_BOND:      return "Issue bond";
         case ETH_CALL_AQUA_SHIP:            return "Aqua ship";
