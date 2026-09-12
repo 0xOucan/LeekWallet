@@ -13,7 +13,7 @@ check that can stop the deployment, and it is step 0 below.**
 
 | Role | Address | Holds |
 |---|---|---|
-| **Funder / deployer / taker** | `0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45` | 0.005 ETH · 4.04 USDC · 0.0002 WETH · **0 cbBTC** |
+| **Funder / deployer / taker** | `0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45` | 0.005 ETH · 4.04 USDC · 0.0002 WETH · 0.00000765 cbBTC |
 | **Maker** — the LeekWallet device | `0xbDEB381a7c77040bf2a99E2990C116774CCb339f` | 0.002 ETH · 2.50 USDC · **0.004 WETH · 0.00012 cbBTC** |
 | Aqua registry | `0x1111113ccf1426a8e30e2bff5e005d929bf6a90a` | — |
 | SwapVM router (the `app`) | `0x111111338c5091e8440b67b168bae16a668ac0de` | — |
@@ -113,7 +113,7 @@ funded directly and holds more than this section originally planned for:
 
 ```
 device / maker    0.002 ETH   2.50 USDC   0.004 WETH   0.00012 cbBTC
-deployer / taker  0.005 ETH   4.04 USDC   0.0002 WETH  0 cbBTC
+deployer / taker  0.005 ETH   4.04 USDC   0.0002 WETH  0.00000765 cbBTC
 ```
 
 Confirm before relying on it:
@@ -199,7 +199,7 @@ holder balance : 1000
 ```
 
 ```bash
-export GATE=0x<the address printed above>
+export GATE=0x8ed185f95d62a60cc3cf2688ffe3a250b3a8262b   # deployed+verified 2026-09-10
 # The only property with any on-chain effect:
 cast call "$GATE" "balanceOf(address)(uint256)" "$DEPLOYER" --rpc-url "$BASE_RPC"  # 1000, non-zero
 cast call "$GATE" "balanceOf(address)(uint256)" "$MAKER"    --rpc-url "$BASE_RPC"  # 0
@@ -216,6 +216,13 @@ There is no mint — redeploy.
 Nothing is signed in this step. It prints bytes and, more importantly, prints
 the band in units a person understands.
 
+> **The mids below are prices, not constants.** They were correct at
+> 2026-09-10 (ETH $2,462.02, BTC $77,218.10). Re-check spot before you plan.
+> A `medium` band is 0.7x to 1.43x the mid, so a mid that is stale by more
+> than ~30% puts spot *outside* the band, and the position becomes a standing
+> offer to trade at off-market prices — free money for the first arbitrageur.
+> The band line is the check; it only works if you compare it to today's price.
+
 Get a mid price from an **off-chain reference** — a DEX spot price is not an
 oracle, and a band centred on a manipulable number hands the manipulator the
 band (STRATEGIES.md §3.4).
@@ -223,9 +230,9 @@ band (STRATEGIES.md §3.4).
 ```bash
 node --experimental-strip-types --disable-warning=ExperimentalWarning \
   script/plan-position.mjs \
-  --pair weth-usdc --tier medium --mid 4000 \
+  --pair weth-usdc --tier medium --mid 2462 \
   --maker "$MAKER" --gate "$GATE" --deadline-hours 2 \
-  --leg usdc:1000000 --leg weth:200000000000000
+  --leg usdc:1000000 --leg weth:406168000000000
 ```
 
 Expected shape:
@@ -233,7 +240,7 @@ Expected shape:
 ```
 pair            weth-usdc  (tokenLt WETH, tokenGt USDC)
 tier            medium
-band            medium: 2800 to 5714.285714 USDC per WETH (mid 4000)
+band            medium: 1723.4 to 3517.142857 USDC per WETH (mid 2462)
                 ^ CHECK THIS BY EYE. ...
 deadline        1789066619  (2026-09-10T18:56:59.000Z)
 fee             0.30%  = 3000000 against 1e9, NOT bps
@@ -266,9 +273,9 @@ export SHIP=0xf50b870f...  # the ship calldata
 export SHASH=0x...         # strategyHash -- you need this to dock
 ```
 
-For P2, the same with `--pair usdc-cbbtc --mid 110000 --leg usdc:1000000
---leg cbbtc:6000` — **two-sided**, since the maker now holds cbBTC. Note the
-decimals: cbBTC is 8, so `6000` is 0.00006 cbBTC. The same digits in WETH units
+For P2, the same with `--pair usdc-cbbtc --mid 77218 --leg usdc:1000000
+--leg cbbtc:1295` — **two-sided**, since the maker now holds cbBTC. Note the
+decimals: cbBTC is 8, so `1295` is 0.00001295 cbBTC. At $77,218/BTC that is $1.00, matching the 1 USDC leg. The same digits in WETH units
 would be 6000 wei, effectively nothing.
 
 ---
@@ -280,10 +287,11 @@ to encode an unlimited approval and this step does not route around it.
 
 Exact numbers, for P1 + P2 together:
 
-| Token | Approve to registry | = |
-|---|---|---|
-| USDC | `2000000` | 2.000000 USDC |
-| WETH | `200000000000000` | 0.0002 WETH |
+| Token | Approve to registry | = | For |
+|---|---|---|---|
+| USDC | `2000000` | 2.000000 USDC | P1 + P2, 1 USDC each |
+| WETH | `406168000000000` | 0.000406168 WETH | P1, $1.00 at $2,462/ETH |
+| cbBTC | `1295` | 0.00001295 cbBTC | P2, $1.00 at $77,218/BTC |
 
 Note the arithmetic the portfolio states: exposure is `allowance × shipped
 strategies`, so a 2 USDC allowance is reachable by *either* position. It is
@@ -306,10 +314,10 @@ the raw strategy form (`src/author-view.ts`, planning in `src/tier-plan.ts`):
    exact figure above** — if it shows an unlimited or a different amount, reject
    it on the device and stop.
 
-The maker currently holds USDC and neither WETH nor cbBTC, so both pairs plan as
-ONE-SIDED, and the picker says so in those words rather than drawing a market
-that only exists in one direction without mentioning it. A pair with nothing on
-either side is refused outright: no plan, no button.
+The maker holds all three tokens (step 1), so **both pairs plan two-sided**.
+Were a side empty, the picker would say ONE-SIDED in those words rather than
+drawing a market that only exists in one direction without mentioning it. A
+pair with nothing on either side is refused outright: no plan, no button.
 
 Verify from chain state:
 
@@ -317,7 +325,9 @@ Verify from chain state:
 cast call "$USDC" "allowance(address,address)(uint256)" "$MAKER" "$REGISTRY" --rpc-url "$BASE_RPC"
 # 2000000 -- and NOT 115792089237316195423570985008687907853269984665640564039457584007913129639935
 cast call "$WETH" "allowance(address,address)(uint256)" "$MAKER" "$REGISTRY" --rpc-url "$BASE_RPC"
-# 200000000000000
+# 406168000000000
+cast call "$CBBTC" "allowance(address,address)(uint256)" "$MAKER" "$REGISTRY" --rpc-url "$BASE_RPC"
+# 1295
 ```
 
 ---
@@ -332,6 +342,16 @@ The `approve` step is an ordinary ERC-20 call, so it needs an ERC-7730
 descriptor or the wallet declines it before the device sees anything. Core
 bundles none for any Base mainnet token, so the app supplies one for these three
 addresses and no others (`src/tokens.ts`); core still judges it.
+
+> **Firmware floor: the ship must fit `ETH_MAX_DATA`.** A two-leg ship is 676
+> bytes of calldata; a one-leg ship is 612. The limit was 640 -- between the
+> two -- so hardware refused every two-sided position with `device error
+> 0x0001: calldata too large to display`, *after* the approvals had already
+> landed. Raised to 768 on 2026-09-10 (`src/eth-tx.h`, mirrored in
+> `mock-device.ts`). A board flashed before that cannot ship a two-sided
+> position, and the failure looks like a device refusal rather than a version
+> problem. A three-leg ship would exceed 768 and needs `PROTOCOL_MAX_FRAME`
+> raised first.
 
 **What the device must show, and what to do if it does not:**
 
@@ -417,39 +437,73 @@ This is the on-chain token transfer the prize asks for. It runs from the
 The taker must first approve the router for what it is spending:
 
 ```bash
-# Filling with 0.25 USDC of the deployer's own funds
+# Filling with ~0.23 USDC of the deployer's own funds.
+# The ROUTER, not the registry: with 0x0040 the router does the transferFrom.
 cast send --rpc-url "$BASE_RPC" --account monad-deployer \
   "$USDC" "approve(address,uint256)" "$ROUTER" 250000
 ```
 
-> ⚠️ **The taker-traits encoding below is NOT verified against the deployed
-> router.** It is derived from `1inch/swap-vm` at `afd99c4`
-> (`contracts/libs/TakerTraits.sol`): a 22-byte big-endian header whose low 16
-> bits are flags — `IS_EXACT_IN = 0x0001`, `IS_FIRST_TRANSFER_FROM_TAKER =
-> 0x0020`, `IS_A_TO_B = 0x0080` — followed by taker data (empty here, so all
-> four slice offsets are zero). **Always `quote` first.** `quote` is a
-> `staticcall`: it costs nothing and it reverts if any of this is wrong.
+> **VERIFIED ON CHAIN 2026-09-10.** The signature and encoding below were read
+> from the router's Sourcify-verified source and exercised in a real fill
+> (`0x8478c356…`). Three things this runbook previously got wrong, each of
+> which cost a failed attempt:
+>
+> 1. **`quote`/`swap` take `tokenIn` and `tokenOut` as explicit parameters.**
+>    The old 3-argument signature does not exist on the router: calling it
+>    reverts with no data, which looks like a program failure and is not.
+> 2. **The taker-traits header is `bytes22`, not 23.** `TakerTraits.parse`
+>    reads `bytes22(data)` and treats the rest as taker data, and the flags are
+>    the LAST TWO bytes of that header (`abi.encodePacked(uint160 slicesIndexes,
+>    uint16 flags, ...)`). A 23-byte value shifts every flag out of the header,
+>    so the router reads `0x0000` and every flag you set is silently ignored.
+> 3. **`USE_TRANSFER_FROM_AND_AQUA_PUSH = 0x0040` must be set.** Without it the
+>    router takes the branch that assumes the taker has ALREADY pushed into
+>    Aqua, and reverts `AquaBalanceInsufficientAfterTakerPush(bal, preBal,
+>    amount, 0)` — that trailing `0` is `amountNetPulled`, i.e. "nothing
+>    arrived". With `0x0040` the router does `transferFrom(taker -> router)`
+>    then `AQUA.push`, **so the taker's approval goes to the ROUTER, not the
+>    registry.**
+>
+> **`amount` is `amountOut`** unless `IS_EXACT_IN (0x0001)` is set. Setting
+> `0x0041` makes the router read your WETH figure as a USDC input and panic on
+> overflow.
+>
+> **`quote` does NOT prove a swap will succeed.** It is a staticcall over the
+> *program* — gate, band, deadline, arithmetic — and knows nothing about
+> allowances or the taker's ability to pay. It returned a clean, plausible
+> price through every one of the failures above. Gas estimation is what
+> actually caught them, which is why `cast send` is safe to attempt: a revert
+> at estimation costs nothing.
 
 ```bash
-# 0x0021 = exactIn | firstTransferFromTaker, B->A (spending USDC = tokenGt on P1)
-export TT=0x0000000000000000000000000000000000000000000021
+# 22 bytes = 44 hex chars. Flags in the last two: 0x0040 = useTransferFromAndAquaPush.
+export TT=0x00000000000000000000000000000000000000000040
 
-cast call --rpc-url "$BASE_RPC" "$ROUTER" \
-  "quote((address,uint256,bytes),uint256,bytes)(uint256,uint256,bytes32)" \
-  "($MAKER,<traits>,<data>)" 250000 "$TT"
+# amount is the WETH you want OUT. --from matters: the gate (opcode 14) checks
+# the CALLER's balance, and address zero holds no gate token.
+cast call --from "$DEPLOYER" --rpc-url "$BASE_RPC" "$ROUTER" \
+  "quote((address,uint256,bytes),address,address,uint256,bytes)(uint256,uint256,bytes32)" \
+  "$ORDER" "$USDC" "$WETH" 90000000000000 "$TT"
 ```
 
-`<traits>` and `<data>` are the second and third fields of the `Order` — read
-them out of the `strategy` blob printed in step 3 (spec §4 gives the offsets:
-word 2 is `traits`, and `data` begins at word 5).
+`<traits>` and `<data>` are the second and third fields of the `Order`. Do not
+count words by hand — `script/order-fields.mjs` does it and refuses if its
+parse does not re-encode to the input it was given:
+
+```bash
+node script/order-fields.mjs "$STRATEGY"
+# prints maker / traits / data, and the (maker,traits,data) tuple to paste
+```
+
+(Spec §4 gives the offsets it uses: word 2 is `traits`, `data` begins at word 5.)
 
 - **`quote` returns two non-zero amounts** → the program ran, the gate passed,
   the band contains the price. Send it:
 
   ```bash
   cast send --rpc-url "$BASE_RPC" --account monad-deployer "$ROUTER" \
-    "swap((address,uint256,bytes),uint256,bytes)" \
-    "($MAKER,<traits>,<data>)" 250000 "$TT"
+    "swap((address,uint256,bytes),address,address,uint256,bytes)" \
+    "$ORDER" "$USDC" "$WETH" 90000000000000 "$TT"
   ```
 
 - **`quote` reverts** → see step 9. Do not send a transaction to find out why;

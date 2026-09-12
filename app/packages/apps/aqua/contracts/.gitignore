@@ -2,3 +2,7 @@ out/
 cache/
 lib/
 broadcast/
+
+# plan captures -- deadline+salt specific, never reuse
+*.env
+*.plan.txt

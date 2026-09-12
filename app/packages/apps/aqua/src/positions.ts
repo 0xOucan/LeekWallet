@@ -42,12 +42,20 @@ import {
 /**
  * Blocks per `eth_getLogs`.
  *
- * Public providers cap the range and disagree about the cap; 10k is under the
- * lowest of the commonly-used ones. Chosen for the node, like
+ * Public providers cap the range and disagree about the cap. This was 10_000,
+ * which is over the cap of every Base provider we can actually reach, so every
+ * chunk was rejected and the whole scan failed -- measured 2026-09-10:
+ *
+ *   mainnet.base.org         -32614 "eth_getLogs is limited to a 2,000 range"
+ *                            (and rejects a span of exactly 2000: inclusive)
+ *   base-rpc.publicnode.com  answers at 1999, -32602 above it
+ *   base.drpc.org            "range" error above ~2000
+ *
+ * 1999 is under the lowest of them. Chosen for the node, like
  * MULTICALL_CHUNK_SIZE: too large and the request is rejected wholesale, which
  * under the all-or-nothing rule above costs the entire scan.
  */
-export const LOG_CHUNK_BLOCKS = 10_000n;
+export const LOG_CHUNK_BLOCKS = 1_999n;
 
 /**
  * How far back to look when the caller does not say.
@@ -58,11 +66,19 @@ export const LOG_CHUNK_BLOCKS = 10_000n;
  * window is reported back in the result, and DISCOVERY_NOTICE says out loud
  * that positions older than it were not looked for. A caller that knows the
  * deployment block should pass it.
+ *
+ * This is bounded by LOG_CHUNK_BLOCKS x MAX_LOG_CHUNKS, and the scan refuses
+ * up front rather than truncating silently when it is not: at a 1999-block
+ * chunk, 100_000 is 51 requests, inside the ceiling of 64. Raising this
+ * without raising MAX_LOG_CHUNKS turns every scan into `range-too-large`.
  */
-export const DEFAULT_SCAN_BLOCKS = 200_000n;
+export const DEFAULT_SCAN_BLOCKS = 100_000n;
 
 /** Ceiling on chunks per scan, so a bad `fromBlock` cannot become a flood. */
 export const MAX_LOG_CHUNKS = 64;
+
+/** Extra attempts per chunk before the scan gives up. See the loop below. */
+export const LOG_CHUNK_RETRIES = 2;
 
 export interface ScanOptions {
   /** First block to look at. Defaults to `toBlock - DEFAULT_SCAN_BLOCKS`. */
@@ -174,22 +190,43 @@ export async function discoverPositions(
   for (let start = fromBlock; start <= toBlock; start += chunkBlocks) {
     const end = start + chunkBlocks - 1n > toBlock ? toBlock : start + chunkBlocks - 1n;
     let logs: unknown;
-    try {
-      logs = await request({
-        method: "eth_getLogs",
-        params: [{
-          address: AQUA_REGISTRY,
-          /* Topic position 0 as an array: "Shipped OR Pushed", one request
-           * instead of two per chunk. Docked is not asked for — the current
-           * `tokensCount` says whether a position is docked, and believing a
-           * log over live state would be believing history over now. */
-          topics: [[TOPIC_SHIPPED, TOPIC_PUSHED]],
-          fromBlock: hexQuantity(start),
-          toBlock: hexQuantity(end),
-        }],
-      });
-    } catch {
-      return { ok: false, reason: "logs-unavailable", window };
+    /* Retry a chunk before abandoning the scan.
+     *
+     * The scan is all-or-nothing on purpose -- a partial list of positions is
+     * worse than none, because the missing ones look like positions you do not
+     * have. But that rule combined with NO retry meant one transient 500 from a
+     * public node discarded every other chunk's work. At 1999 blocks per chunk
+     * a 100k window is 51 requests, so on Base (measured 2026-09-10:
+     * base.drpc.org returns intermittent HTTP 500 and 408, publicnode
+     * intermittent 403) the odds of all 51 succeeding first try are poor, and
+     * the portfolio failed continuously. A failed scan is not cosmetic: the
+     * dock UI is built from the portfolio, so a position that cannot be listed
+     * cannot be withdrawn through this app at all.
+     *
+     * Retries are per chunk and bounded. The request is a read with no side
+     * effects, so repeating it cannot double anything. */
+    for (let attempt = 0; ; attempt++) {
+      try {
+        logs = await request({
+          method: "eth_getLogs",
+          params: [{
+            address: AQUA_REGISTRY,
+            /* Topic position 0 as an array: "Shipped OR Pushed", one request
+             * instead of two per chunk. Docked is not asked for — the current
+             * `tokensCount` says whether a position is docked, and believing a
+             * log over live state would be believing history over now. */
+            topics: [[TOPIC_SHIPPED, TOPIC_PUSHED]],
+            fromBlock: hexQuantity(start),
+            toBlock: hexQuantity(end),
+          }],
+        });
+        break;
+      } catch {
+        if (attempt >= LOG_CHUNK_RETRIES) {
+          return { ok: false, reason: "logs-unavailable", window };
+        }
+        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+      }
     }
     if (!Array.isArray(logs)) return { ok: false, reason: "undecodable", window };
 
