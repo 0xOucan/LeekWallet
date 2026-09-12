@@ -741,7 +741,16 @@ function sitesSection(s: WalletState): HTMLElement {
         });
         boxes.push(check);
         picker.append(el("li", { class: "account" }, check,
-          el("label", { for: `c${i}` }, el("code", {}, address))));
+          el("label", { for: `c${i}` }, el("code", {}, address)),
+          /* Switching accounts is the common case and it is one decision, not
+           * ten: ticking the one you want and unticking every other is the
+           * same intent expressed as busywork. The checkboxes stay for the
+           * genuinely multi-address case. */
+          button("Only this", () => {
+            granted.clear();
+            granted.add(address.toLowerCase());
+            render();
+          }, "link")));
       });
       if (s.addresses.length > 0) {
         picker.append(el("li", {},
@@ -878,7 +887,15 @@ function approvalSection(s: WalletState): HTMLElement {
     });
     boxes.push(check);
     list.append(
-      el("li", { class: "account" }, check, el("label", { for: `a${i}` }, el("code", {}, address))),
+      el("li", { class: "account" }, check,
+        el("label", { for: `a${i}` }, el("code", {}, address)),
+        /* Same shortcut as the per-site picker: connecting one address is what
+         * nearly every site wants, and it should not cost ten clicks. */
+        button("Only this", () => {
+          ticks.clear();
+          ticks.add(i);
+          render();
+        }, "link")),
     );
   });
 

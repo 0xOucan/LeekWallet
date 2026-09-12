@@ -216,3 +216,9 @@ li.receive { list-style: none; }
   font-size: var(--text-xs, 0.75rem);
   margin: 0;
 }
+
+/* "Only this" sits at the end of an account row and must not push the address
+   off the line. The address is the thing being read; the shortcut is not. */
+li.account { flex-wrap: wrap; }
+li.account code { word-break: break-all; }
+li.account button.link { margin-left: auto; white-space: nowrap; }
