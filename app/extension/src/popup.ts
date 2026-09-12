@@ -36,7 +36,20 @@ import { allChains, chainLabel } from "../../packages/core/src/chains.ts";
 import { addressQr } from "./receive.ts";
 import type { PopupCommand, WalletState } from "./protocol.ts";
 
-const root = document.getElementById("root") as HTMLElement;
+/**
+ * The popup's root, or null when this module is running somewhere else.
+ *
+ * It should never run anywhere else, and it did. The bundler placed a shared
+ * helper inside the popup ENTRY chunk and had `offscreen.js` import it, so
+ * opening the hidden offscreen document executed this whole file: no `#root`,
+ * a 500ms timer calling `render()`, and a TypeError every tick. The visible
+ * symptom was not an error message — it was the popup's checkboxes and buttons
+ * appearing not to work.
+ *
+ * So this file no longer assumes the document it is in. The check is two lines
+ * and it makes a chunking decision unable to break the wallet again.
+ */
+const root = document.getElementById("root");
 
 /**
  * The approval window and the toolbar popup differ by one query parameter.
@@ -328,6 +341,7 @@ let sending: {
 } | null = null;
 
 function render(): void {
+  if (root === null) return;
   root.textContent = "";
   if (!state) {
     root.append(el("p", { class: "muted" }, lastError ?? "Loading…"));
@@ -946,7 +960,8 @@ function reject(id: string): void {
  * popup has no way to be told. Polling twice a second is coarse and it is the
  * honest fit for a surface that only exists while someone is looking at it.
  */
-setInterval(() => {
+/* Nothing below runs outside the popup document. See `root` above. */
+if (root !== null) setInterval(() => {
   if (busyWith !== null) return;
   /* A render rebuilds the whole panel, which destroys the element the user is
    * typing into and takes the caret with it. Twice a second that makes a text
@@ -963,4 +978,4 @@ setInterval(() => {
   void refresh();
 }, 500);
 
-void refresh();
+if (root !== null) void refresh();

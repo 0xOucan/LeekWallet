@@ -53,6 +53,15 @@ async function buildModules() {
           entryFileNames: "[name].js",
           chunkFileNames: "chunks/[name]-[hash].js",
           assetFileNames: "assets/[name]-[hash][extname]",
+          /* NOTE: offscreen.js imports the CommonJS interop runtime out of
+           * popup.js, because `qrcode-generator` is CJS and the runtime landed
+           * in the first entry that needed it. That makes opening the hidden
+           * offscreen document execute the whole popup module. Asking for
+           * `hoistTransitiveImports: false` did not move it, so the fix lives
+           * in popup.ts instead: it checks for its own `#root` and does
+           * nothing when it is somewhere else. Worth revisiting if the popup
+           * ever grows side effects that a guard cannot cover. */
+
         },
       },
     },
