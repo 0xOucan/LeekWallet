@@ -91,12 +91,19 @@ awk '
         print "    // variables and is never committed - gen/ is not tracked."
         print "    signingConfigs {"
         print "        create(\"release\") {"
-        print "            val p = java.util.Properties()"
+        # java.util.Properties() does NOT resolve here. Inside the android
+        # block Gradle puts a java EXTENSION accessor in scope, which shadows
+        # the java package, and the script fails to compile with
+        # "Unresolved reference: util". The import added after this awk run
+        # guarantees the short name, which is the one that works.
+        print "            val p = Properties()"
         print "            val f = rootProject.file(\"keystore.properties\")"
         print "            if (f.exists()) { f.inputStream().use { p.load(it) } }"
         print "            keyAlias = p.getProperty(\"keyAlias\")"
         print "            keyPassword = p.getProperty(\"password\")"
-        print "            storeFile = p.getProperty(\"storeFile\")?.let { file(it) }"
+        # Named rather than it: when the receiver above fails to resolve, the
+        # implicit it is reported as a second, more confusing error.
+        print "            storeFile = p.getProperty(\"storeFile\")?.let { path -> file(path) }"
         print "            storePassword = p.getProperty(\"storePassword\")"
         print "        }"
         print "    }"
@@ -119,4 +126,16 @@ if ! grep -q 'keystore.properties' "${TMP}"; then
     exit 1
 fi
 mv "${TMP}" "${GRADLE}"
+
+# `Properties()` above needs the import. Tauri's template has carried one for
+# its own versionCode for a long time, but "has always been there" is not a
+# guarantee about a file this script does not own and does not generate -- and
+# the failure is a Kotlin compile error at the end of a five-minute Android
+# build, which is an expensive way to find out.
+if ! grep -q '^import java.util.Properties' "${GRADLE}"; then
+    printf 'import java.util.Properties\n%s\n' "$(cat "${GRADLE}")" > "${GRADLE}.tmp"
+    mv "${GRADLE}.tmp" "${GRADLE}"
+    echo "   added the java.util.Properties import"
+fi
+
 echo "   added a release signingConfig to ${GRADLE}"
