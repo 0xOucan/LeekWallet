@@ -288,8 +288,25 @@ async function grantPort(opts: { unfiltered?: boolean } = {}): Promise<void> {
  */
 let changingOrigin: string | null = null;
 
+/** The ticks inside an open site editor. See `approvalTicks` for why. */
+let changingTicks: Set<string> | null = null;
+
 /** Which address's receive panel is open, or null. Popup-lifetime only. */
 let receiveIndex: number | null = null;
+
+/**
+ * Which addresses are ticked in the connection dialog.
+ *
+ * Held here, not in the DOM. The popup re-renders twice a second to notice
+ * that the device answered a PIN or a passkey, and `render()` rebuilds this
+ * list from scratch -- so a tick that lived only on the element was erased
+ * within 500ms of being made. The dialog looked like it refused every address
+ * except the first, because the first was the default the rebuild restored.
+ *
+ * `null` means "not asked yet"; the default is applied once, when the pending
+ * request appears, rather than on every pass.
+ */
+let approvalTicks: Set<number> | null = null;
 
 /**
  * The send form, if one is open.
@@ -694,6 +711,7 @@ function sitesSection(s: WalletState): HTMLElement {
       ),
       button(editing ? "Cancel" : "Change", () => {
         changingOrigin = editing ? null : grant.origin;
+        changingTicks = null;
         render();
       }, "link"),
       button("Revoke", () => void act("Revoking…", { pop: "revoke", origin: grant.origin }), "link"),
@@ -701,7 +719,13 @@ function sitesSection(s: WalletState): HTMLElement {
     list.append(row);
 
     if (editing) {
-      const granted = new Set(grant.accounts.map((a) => a.toLowerCase()));
+      /* Seeded from the grant once, then owned by the user. Re-reading the
+       * grant on every render would undo a tick 500ms after it was made --
+       * the same fault the connection dialog had. */
+      if (changingTicks === null) {
+        changingTicks = new Set(grant.accounts.map((a) => a.toLowerCase()));
+      }
+      const granted = changingTicks;
       const boxes: HTMLInputElement[] = [];
       const picker = el("ul", { class: "accounts" });
       if (s.addresses.length === 0) {
@@ -711,6 +735,10 @@ function sitesSection(s: WalletState): HTMLElement {
       s.addresses.forEach((address, i) => {
         const check = el("input", { type: "checkbox", id: `c${i}` }) as HTMLInputElement;
         check.checked = granted.has(address.toLowerCase());
+        check.addEventListener("change", () => {
+          if (check.checked) granted.add(address.toLowerCase());
+          else granted.delete(address.toLowerCase());
+        });
         boxes.push(check);
         picker.append(el("li", { class: "account" }, check,
           el("label", { for: `c${i}` }, el("code", {}, address))));
@@ -718,8 +746,9 @@ function sitesSection(s: WalletState): HTMLElement {
       if (s.addresses.length > 0) {
         picker.append(el("li", {},
           button("Save", () => {
-            const chosen = s.addresses.filter((_, i) => boxes[i]?.checked === true);
+            const chosen = s.addresses.filter((a) => granted.has(a.toLowerCase()));
             changingOrigin = null;
+            changingTicks = null;
             void act("Updating…", { pop: "setAccounts", origin: grant.origin, accounts: chosen });
           }),
           /* Said out loud because it is not obvious that a site finds out at
@@ -794,6 +823,9 @@ function logSection(s: WalletState): HTMLElement {
  */
 function approvalSection(s: WalletState): HTMLElement {
   if (s.pending === null) {
+    /* No request, no ticks. A second site asking later starts from the default
+     * rather than inheriting what was chosen for the first one. */
+    approvalTicks = null;
     return el(
       "section",
       {},
@@ -829,12 +861,21 @@ function approvalSection(s: WalletState): HTMLElement {
   /* First address pre-selected, the rest not. Most sites want one, and a
    * dialog that pre-ticks everything is a dialog that hands over more than the
    * person reading it intended. */
+  /* Seeded once per request, not per render: re-applying the default on every
+   * pass is what erased the user's choices. */
+  if (approvalTicks === null) approvalTicks = new Set(s.addresses.length > 0 ? [0] : []);
+  const ticks = approvalTicks;
+
   const boxes: HTMLInputElement[] = [];
   const list = el("ul", {});
   s.addresses.forEach((address, i) => {
     const check = el("input", { type: "checkbox", id: `a${i}` }) as HTMLInputElement;
-    check.checked = i === 0;
+    check.checked = ticks.has(i);
     check.value = address;
+    check.addEventListener("change", () => {
+      if (check.checked) ticks.add(i);
+      else ticks.delete(i);
+    });
     boxes.push(check);
     list.append(
       el("li", { class: "account" }, check, el("label", { for: `a${i}` }, el("code", {}, address))),
@@ -889,7 +930,20 @@ function reject(id: string): void {
  * honest fit for a surface that only exists while someone is looking at it.
  */
 setInterval(() => {
-  if (busyWith === null) void refresh();
+  if (busyWith !== null) return;
+  /* A render rebuilds the whole panel, which destroys the element the user is
+   * typing into and takes the caret with it. Twice a second that makes a text
+   * field impossible to use, so the poll stands down while a form is open. The
+   * device states this poll exists to notice -- a PIN answered, a passkey
+   * compared -- are not ones a user reaches mid-typing, and any of them will
+   * be picked up the moment the form closes.
+   *
+   * The approval dialog is deliberately NOT in this list: it has no text
+   * input, and it is the one screen that must keep showing what the device is
+   * doing. Its checkboxes survive a render because their state lives in
+   * `approvalTicks`, not in the DOM. */
+  if (sending !== null || changingOrigin !== null) return;
+  void refresh();
 }, 500);
 
 void refresh();
