@@ -77,6 +77,11 @@ the device, all on Base mainnet:
 | Fill | [`0x8478c356…`](https://basescan.org/tx/0x8478c356986936ee50ee8375dfece2610b16036af772c4ce8545049ce4028da6) |
 | Dock | [`0x274877aa…`](https://basescan.org/tx/0x274877aa875599d892dc870973e8258004d28ee34508ed1fb7aa599865385d42) |
 
+**The one contract we deployed is verified:** `GateToken` at
+[`0x8ed185f9…`](https://basescan.org/address/0x8ed185f95d62a60cc3cf2688ffe3a250b3a8262b#code)
+on Basescan *and* Sourcify. Aqua's registry and SwapVM router are 1inch's own
+deployments, which is what the track requires — we redeployed neither.
+
 **SwapVM is used, and used on the device.** The firmware decodes the program and
 draws one page per instruction in program order
 ([`src/eth-decode.c`](src/eth-decode.c),

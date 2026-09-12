@@ -154,7 +154,10 @@ export CBBTC=0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf
 **Gate token.** The gate is opcode 14: only an address holding a non-zero
 balance of the gate token can fill. The TAKER holds it, the maker does not.
 `LWGATE` is already deployed at `0x8ed185f95d62a60cc3cf2688ffe3a250b3a8262b`
-(taker 1000, maker 0). Redeploy only if you change takers:
+(taker 1000, maker 0) and is **verified on Basescan and Sourcify** -- worth
+showing on camera, because it is the one place the position's
+"permissionless" claim needs a qualifier and the source is how a viewer checks
+it rather than believing us. Redeploy only if you change takers:
 `forge script script/DeployGateToken.s.sol --rpc-url "$BASE_RPC" --account <key> --broadcast`
 
 **Firmware.** A two-leg ship is 676 bytes of calldata. A board flashed before

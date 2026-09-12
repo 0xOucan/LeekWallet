@@ -199,7 +199,7 @@ holder balance : 1000
 ```
 
 ```bash
-export GATE=0x8ed185f95d62a60cc3cf2688ffe3a250b3a8262b   # deployed+verified 2026-09-10
+export GATE=0x8ed185f95d62a60cc3cf2688ffe3a250b3a8262b   # verified: Sourcify + Basescan
 # The only property with any on-chain effect:
 cast call "$GATE" "balanceOf(address)(uint256)" "$DEPLOYER" --rpc-url "$BASE_RPC"  # 1000, non-zero
 cast call "$GATE" "balanceOf(address)(uint256)" "$MAKER"    --rpc-url "$BASE_RPC"  # 0

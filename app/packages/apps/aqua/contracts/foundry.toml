@@ -19,3 +19,17 @@ fs_permissions = [{ access = "read", path = "./" }]
 
 [fuzz]
 runs = 10000
+
+# ---------------------------------------------------------------------------
+# Etherscan verification (Base mainnet, chain 8453)
+#
+# The key comes from the environment, never from this file: foundry.toml is
+# committed and an API key in it is an API key in the git history forever.
+# Foundry auto-loads `.env` from this directory, and `.env` is gitignored
+# (*.env, line 7) -- so `ETHERSCAN_API_KEY=...` in that file is enough.
+#
+# One Etherscan v2 key covers every supported chain including Base; there is no
+# separate Basescan key to obtain. `chain = 8453` is what selects the network.
+# ---------------------------------------------------------------------------
+[etherscan]
+base = { key = "${ETHERSCAN_API_KEY}", chain = 8453, url = "https://api.etherscan.io/v2/api" }

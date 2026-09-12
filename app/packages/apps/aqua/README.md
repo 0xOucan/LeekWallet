@@ -30,6 +30,33 @@ and which part of the system is trusted.
 | SwapVM router | [`0x111111338c5091e8440b67b168bae16a668ac0de`](https://basescan.org/address/0x111111338c5091e8440b67b168bae16a668ac0de) |
 | SDK | [`@1inch/aqua-sdk`](https://www.npmjs.com/package/@1inch/aqua-sdk) `0.3.1`, as a **parity oracle** — see [`test/sdk-parity.test.ts`](test/sdk-parity.test.ts) |
 
+### The one contract we deployed, and it is verified
+
+| | |
+|---|---|
+| `GateToken` (`LWGATE`) | [`0x8ed185f95d62a60cc3cf2688ffe3a250b3a8262b`](https://basescan.org/address/0x8ed185f95d62a60cc3cf2688ffe3a250b3a8262b#code) |
+| Basescan (Etherscan v2) | **verified** — solc 0.8.30, optimizer 200 runs, cancun |
+| Sourcify | verified |
+| Source | [`contracts/src/GateToken.sol`](contracts/src/GateToken.sol) · 1,313 bytes |
+
+Verification matters here more than usual, and not as a formality. Anyone
+reading the SwapVM program sees **opcode 14** and a token address, and nothing
+on chain tells them whether that token is widely held. **It is not.** The entire
+supply is minted once, in the constructor, to the taker — 1000 to
+`0x9c77c6fa…`, zero to everybody else including the maker. Verified source is
+what lets a reader confirm that for themselves instead of taking this README's
+word for it.
+
+The gate exists because an Aqua position with no taker restriction is fillable
+by anyone, which on mainnet means by a bot, immediately, at the worst moment for
+the maker. Every other restriction Aqua offers costs somebody else's permission
+— a KycNFT gate needs 1inch's issuer, a resolver whitelist needs the resolver
+set. Opcode 14 accepts an arbitrary token and asks only that the taker's balance
+is non-zero, so the position stays permissionless *in the protocol sense* (no
+gate contract, no allowlist, no privileged caller) while in practice only a
+holder can fill. **That is a real centralisation and this app does not pretend
+otherwise.**
+
 The SDK is a devDependency used to prove our encoders agree with 1inch's byte
 for byte, at every leg count, rather than being trusted at runtime. Our
 strategy hash, topics and registry address are all asserted to be the SDK's.
