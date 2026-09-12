@@ -219,7 +219,17 @@ export type PopupCommand =
    * unprompted, so the site learns through accountsChanged like any wallet. */
   | { pop: "setAccounts"; origin: string; accounts: string[] }
   | { pop: "setOverride"; value: boolean }
-  | { pop: "setChain"; chainId: number };
+  | { pop: "setChain"; chainId: number }
+  /* Read a token's decimals and symbol from its own contract. Nothing is
+   * assumed about an address the user typed: a wrong `decimals` is a payment
+   * off by a factor of a thousand. */
+  | { pop: "tokenInfo"; token: string }
+  /* What one address holds, native or of one token, for the send screen. */
+  | { pop: "balanceOf"; address: string; token?: string }
+  /* Compose, sign on the device, broadcast. `amount` stays a decimal STRING
+   * all the way down: turning it into a number here is where 0.1 + 0.2 gets
+   * in, and core's parseUnits is the only thing that should scale it. */
+  | { pop: "send"; index: number; recipient: string; amount: string; token?: string };
 
 /**
  * EIP-1193 / EIP-1474 error codes.

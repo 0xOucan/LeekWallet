@@ -291,6 +291,25 @@ let changingOrigin: string | null = null;
 /** Which address's receive panel is open, or null. Popup-lifetime only. */
 let receiveIndex: number | null = null;
 
+/**
+ * The send form, if one is open.
+ *
+ * Held here rather than read off the DOM so a redraw cannot silently reset a
+ * half-typed recipient -- and a recipient that changes between being read and
+ * being sent is the failure this whole screen exists to avoid.
+ */
+let sending: {
+  index: number;
+  recipient: string;
+  amount: string;
+  /** Empty for the chain's native currency. */
+  token: string;
+  /** Filled in by a contract read, never assumed. */
+  meta?: { decimals: number; symbol: string } | undefined;
+  balance?: string | undefined;
+  note?: string | undefined;
+} | null = null;
+
 function render(): void {
   root.textContent = "";
   if (!state) {
@@ -463,9 +482,16 @@ function accountsSection(s: WalletState): HTMLElement {
           receiveIndex = showing ? null : i;
           render();
         }, "link"),
+        button(sending?.index === i ? "Close" : "Send", () => {
+          sending = sending?.index === i
+            ? null
+            : { index: i, recipient: "", amount: "", token: "" };
+          render();
+        }, "link"),
       ),
     );
     if (showing) list.append(el("li", { class: "receive" }, receivePanel(address, s)));
+    if (sending?.index === i) list.append(el("li", { class: "receive" }, sendPanel(address, s)));
   });
   box.append(list);
   return box;
@@ -506,6 +532,114 @@ function receivePanel(address: string, s: WalletState): HTMLElement {
       () => { lastError = "This window would not let the popup copy. Select the address instead."; render(); },
     );
   }, "link"));
+  return panel;
+}
+
+/**
+ * The send form.
+ *
+ * The one thing this screen must not do is look authoritative. Everything on
+ * it -- the balance, the symbol, the recipient the user pasted -- is rendered
+ * by software on a computer, and the guarantee a hardware wallet offers is
+ * that the DEVICE decides, not the browser. So the form composes a proposal
+ * and the last word on the screen is an instruction to read the device.
+ *
+ * `transfer(address,uint256)` is in the firmware's own decode table, so the
+ * device draws the recipient and the amount itself from the calldata. A
+ * tampered popup can ask to pay somebody else; it cannot make the device say
+ * it is paying you.
+ */
+function sendPanel(from: string, s: WalletState): HTMLElement {
+  const f = sending as NonNullable<typeof sending>;
+  const panel = el("div", { class: "receive-panel" });
+
+  const native = s.chainId;
+  panel.append(el("p", { class: "muted" },
+    `From ${short(from)} on ${chainLabel(native)}.`));
+
+  const recipient = el("input", {
+    type: "text", placeholder: "0x… recipient", value: f.recipient, class: "grow mono",
+  }) as HTMLInputElement;
+  recipient.addEventListener("input", () => { f.recipient = recipient.value; });
+  panel.append(el("label", {}, "To", recipient));
+
+  const token = el("input", {
+    type: "text", placeholder: "blank for the chain's own coin", value: f.token, class: "grow mono",
+  }) as HTMLInputElement;
+  token.addEventListener("input", () => { f.token = token.value; });
+  panel.append(el("label", {}, "Token contract", token));
+
+  panel.append(button("Read token", () => {
+    const address = f.token.trim();
+    if (address === "") {
+      f.meta = undefined;
+      f.note = "Sending the chain's own coin.";
+      render();
+      return;
+    }
+    void (async () => {
+      /* decimals() comes off the contract. Assuming 18 for a token that uses 6
+       * sends a million times the intended amount, and the mistake is
+       * irreversible the moment it is signed. */
+      const got = await send<{ decimals?: number; symbol?: string; error?: string }>(
+        { pop: "tokenInfo", token: address });
+      if (got.error !== undefined || got.decimals === undefined) {
+        f.meta = undefined;
+        f.note = got.error ?? "That address did not answer decimals().";
+      } else {
+        f.meta = { decimals: got.decimals, symbol: got.symbol ?? "TOKEN" };
+        f.note = `${f.meta.symbol}, ${f.meta.decimals} decimals — read from the contract.`;
+      }
+      render();
+    })();
+  }, "link"));
+
+  panel.append(button("Check balance", () => {
+    void (async () => {
+      const got = await send<{ units?: string; error?: string }>({
+        pop: "balanceOf", address: from,
+        ...(f.token.trim() === "" ? {} : { token: f.token.trim() }),
+      });
+      /* Reported, never defaulted to zero: "you hold nothing" and "we could not
+       * ask" are different facts, and showing the first for the second sends
+       * somebody to fund an address that is already funded. */
+      f.balance = got.error !== undefined ? got.error : got.units;
+      render();
+    })();
+  }, "link"));
+
+  if (f.balance !== undefined) {
+    panel.append(el("p", { class: "muted mono break" }, `balance: ${f.balance} raw units`));
+  }
+  if (f.note !== undefined) panel.append(el("p", { class: "muted" }, f.note));
+
+  const amount = el("input", {
+    type: "text", placeholder: "0.0", value: f.amount, class: "grow mono",
+  }) as HTMLInputElement;
+  amount.addEventListener("input", () => { f.amount = amount.value; });
+  panel.append(el("label", {}, "Amount", amount));
+  panel.append(el("p", { class: "muted" },
+    "In whole units, the way you would say it out loud. An amount with more "
+    + "decimal places than the token has is refused, not rounded."));
+
+  panel.append(button("Send", () => {
+    const tokenAddress = f.token.trim();
+    if (tokenAddress !== "" && f.meta === undefined) {
+      lastError = "Read the token first, so its decimals come from the contract rather than a guess.";
+      render();
+      return;
+    }
+    void act("Check the device…", {
+      pop: "send", index: f.index, recipient: f.recipient.trim(), amount: f.amount.trim(),
+      ...(tokenAddress === "" ? {} : { token: tokenAddress }),
+    });
+  }));
+
+  panel.append(el("p", { class: "warn" },
+    "The device draws the recipient and the amount from the transaction itself "
+    + "and signs only what it drew. Read them THERE, not here — this popup is "
+    + "software on a computer, and comparing the two is the whole point of the "
+    + "device."));
   return panel;
 }
 

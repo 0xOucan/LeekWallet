@@ -2,7 +2,8 @@
 
 The LeekWallet companion, as a Chromium MV3 extension. It announces an
 EIP-1193 provider over EIP-6963, talks to the device over Web Serial, and holds
-no keys.
+no keys. It can also send and receive on its own, which changes what a bad
+build could attempt — see below.
 
 It is the same protocol as the desktop and Android apps, over a different wire.
 `app/packages/core` is imported unchanged — CBOR, framing, the X25519
@@ -10,6 +11,55 @@ handshake, the session, the EIP-712 transcription, the chain registry, the RPC
 failover. The extension adds one file of real substance,
 `src/serial-transport.ts`, which is 180 lines and implements a two-method
 interface.
+
+## It composes transactions now, and that changes the claim
+
+This began as a bridge and nothing more: a dapp composed a transaction, the
+bytes crossed to the device, and the device decided. The extension never chose
+a recipient or an amount, so a tampered build could only forward something a
+dapp had already proposed.
+
+The send form makes the extension an author. It picks `to`, it picks `value`,
+it builds the ERC-20 calldata. That is a genuine enlargement of what a bad
+build could attempt and it is stated here rather than left for someone to
+discover.
+
+**What has not changed is who decides.** `transfer(address,uint256)` is in the
+firmware's own decode table, so the device reads this calldata itself — from
+the signature it hashed, not from anything the browser sent — and draws the
+recipient and the amount on a screen the browser cannot reach. It refuses what
+it cannot decode. Blind signing is off by default and can only be turned on
+from the device.
+
+So the worst a compromised popup can do is **ask** to pay somebody else. The
+device will show you where, in full, before anything is signed.
+
+### That protection is worth exactly as much as your attention
+
+It works only if you read the device screen. A person who approves whatever
+appears, without comparing it to what they meant to do, has a wallet that
+signs whatever it is asked to. **That is your responsibility and nothing in
+this software can take it on for you**, which is also why the rule is "connect
+only to dapps you trust": a hostile dapp cannot extract your key, but it can
+ask for approvals all day, and an approval you did not read is an approval you
+granted.
+
+Receiving is the one screen the device's guarantee does not cover, because
+there is no signature in an address. A tampered host can show you somebody
+else's. Before being paid anything that matters, check the address on the
+device itself — **Menu → View Address** — and compare.
+
+### Build it yourself
+
+Downloading a build means trusting whoever produced it. Building the firmware
+and the companions from source removes that link, and this repository is
+arranged so you can: the firmware is reproducible, `scripts/repro-verify.sh`
+checks a published binary against your own rebuild, and the extension is a
+`pnpm build` away from a directory you can read before you load it.
+
+That is not paranoia, it is the premise. No devices are sold here, so every
+irreversible step — the seed, the flash, the trust — is yours to take rather
+than one taken on your behalf.
 
 ## What it can and cannot do
 

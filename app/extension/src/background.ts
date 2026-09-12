@@ -43,6 +43,14 @@ import { getChain, allChains, type ChainStore } from "../../packages/core/src/ch
 import {
   FailoverRpc, fetchRpcSend, RpcResponseError,
 } from "../../packages/core/src/rpc.ts";
+/* The arithmetic and the ABI come from core, which the companion and the
+ * firmware conformance vectors already exercise. A second decimal parser in
+ * this file would be a second place for 1.1 to stop meaning 1.1. */
+import {
+  decodeDecimalsReturn, decodeQuantity, decodeSymbolReturn, decodeUint256Return,
+  encodeBalanceOf, encodeDecimals, encodeSymbol, sanitiseSymbol,
+} from "../../packages/core/src/balances.ts";
+import { planSend } from "./send.ts";
 import {
   EIP1193,
   type OwnerCommand, type OwnerEnvelope, type OwnerEvent, type OwnerReply,
@@ -860,6 +868,110 @@ async function handlePopup(command: PopupCommand): Promise<unknown> {
       if (!pending || pending.id !== command.id) return await walletState();
       pending.reject({ code: EIP1193.userRejected, message: "the user rejected the request" });
       return await walletState();
+    }
+
+    case "tokenInfo": {
+      const { chainId } = await readState();
+      /* Read from the contract, never from a list. A token the user pasted is
+       * one nothing has vouched for, and `decimals` is the field that decides
+       * whether "1" means a dollar or a millionth of one. */
+      const info = getChain(chainId);
+      if (!info) return { error: `chain ${chainId} has no endpoints` };
+      const rpc = new FailoverRpc({
+        chainId: info.id, rpcUrls: info.rpcUrls,
+        send: fetchRpcSend(), store: memoryStore(),
+      });
+      try {
+        const [dec, sym] = await Promise.all([
+          rpc.request({ method: "eth_call", params: [{ to: command.token, data: encodeDecimals() }, "latest"] }),
+          rpc.request({ method: "eth_call", params: [{ to: command.token, data: encodeSymbol() }, "latest"] }),
+        ]);
+        const decimals = decodeDecimalsReturn(dec);
+        if (decimals === undefined) {
+          /* No decimals() is the signature of an address that is not an ERC-20
+           * at all -- an EOA, or the wrong contract. Guessing 18 here is how a
+           * user sends a thousand times what they meant. */
+          return { error: "That address did not answer decimals(). It may not be a token." };
+        }
+        return { decimals, symbol: sanitiseSymbol(decodeSymbolReturn(sym) ?? "") ?? "TOKEN" };
+      } catch (e) {
+        return { error: `could not read that token: ${String((e as Error).message ?? e)}` };
+      }
+    }
+
+    case "balanceOf": {
+      const { chainId } = await readState();
+      const info = getChain(chainId);
+      if (!info) return { error: `chain ${chainId} has no endpoints` };
+      const rpc = new FailoverRpc({
+        chainId: info.id, rpcUrls: info.rpcUrls,
+        send: fetchRpcSend(), store: memoryStore(),
+      });
+      try {
+        const raw = command.token === undefined
+          ? await rpc.request({ method: "eth_getBalance", params: [command.address, "latest"] })
+          : await rpc.request({
+              method: "eth_call",
+              params: [{ to: command.token, data: encodeBalanceOf(command.address) }, "latest"],
+            });
+        const units = command.token === undefined
+          ? decodeQuantity(raw)
+          : decodeUint256Return(raw);
+        return { units: units.toString() };
+      } catch (e) {
+        /* Reported, never defaulted to zero. "You have nothing" and "we could
+         * not ask" are the same absence of evidence and completely different
+         * facts, and the first one invites a user to go and fund an address
+         * that is already funded. */
+        return { error: `could not read the balance: ${String((e as Error).message ?? e)}` };
+      }
+    }
+
+    case "send": {
+      const { chainId } = await readState();
+      await requireDevice();
+      const addresses = await ask<string[]>({ cmd: "derive", count: 10 });
+      const from = addresses[command.index];
+      if (from === undefined) return { error: "that address index is not derived" };
+
+      const token = command.token === undefined
+        ? undefined
+        : await (async () => {
+            const got = await handlePopup({ pop: "tokenInfo", token: command.token as string });
+            const g = got as { decimals?: number; error?: string };
+            return g.error !== undefined ? null : { address: command.token as string, decimals: g.decimals as number };
+          })();
+      if (token === null) return { error: "could not read that token's decimals; refusing to guess" };
+
+      const planned = planSend({
+        recipient: command.recipient,
+        amount: command.amount,
+        ...(token ? { token } : {}),
+      });
+      if (!planned.ok) return { error: planned.reason };
+
+      try {
+        /* The same path a dapp's transaction takes -- signed on the device,
+         * which decodes and draws it, and broadcast only after. Nothing here
+         * is a shortcut around the screen. */
+        const hash = await ask<string>({
+          cmd: "signTransaction",
+          index: command.index,
+          chainId,
+          tx: {
+            to: planned.plan.to,
+            /* Decimal strings, as everywhere else on this bridge: a bigint does
+             * not survive structured cloning to the offscreen document. */
+            ...(planned.plan.value > 0n ? { value: planned.plan.value.toString() } : {}),
+            ...(planned.plan.data !== undefined ? { data: planned.plan.data } : {}),
+          },
+          broadcast: true,
+        });
+        await appendLog(`sent ${planned.plan.units} to ${planned.plan.recipient}: ${hash}`);
+        return { hash };
+      } catch (e) {
+        return { error: String((e as Error).message ?? e) };
+      }
     }
 
     case "setAccounts": {

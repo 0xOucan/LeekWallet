@@ -774,6 +774,23 @@ derivation against a wallet you already trust, and move a token amount first.
 Anyone recommending otherwise about software this young, including us, should be
 ignored.
 
+### What is yours to do, and cannot be delegated
+
+The device draws every transaction it signs and refuses what it cannot decode.
+That protects you **only if you read the screen it draws on**. A person who
+approves whatever appears has a wallet that signs whatever it is asked to, and
+no amount of care in this firmware substitutes for the few seconds of
+comparison. Likewise, connect only to dapps you have reason to trust: a hostile
+dapp cannot reach your key, but it can ask for approvals all day, and an
+approval you did not read is one you granted.
+
+**Build it yourself.** Downloading a binary means trusting whoever produced it.
+The firmware is reproducible and `scripts/repro-verify.sh` checks a published
+image against your own rebuild; the companions and the extension build from
+this tree with `pnpm`. No devices are sold here, so every irreversible step —
+the seed, the flash, the trust — is yours to take rather than one taken on your
+behalf. That is the premise, not a disclaimer.
+
 LeekWallet is a work in progress and has **not** been independently audited. The self-audit in
 [AUDIT.md](AUDIT.md) tracks eight findings. Most are closed and covered by tests. One is not, and
 it is the one that matters:

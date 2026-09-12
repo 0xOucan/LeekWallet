@@ -8,7 +8,7 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/usb-framing.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning test/usb-framing.test.ts && node --experimental-strip-types --disable-warning=ExperimentalWarning test/send.test.ts"
   },
   "dependencies": {
     "@leekwallet/core": "workspace:*",
