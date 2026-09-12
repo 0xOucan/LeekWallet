@@ -26,10 +26,10 @@ git log --oneline --until=2026-09-05 | wc -l      # 344 commits
 git show 2cbcf62                                  # the last of them
 
 # What was built during it
-git log --oneline --since=2026-09-06 | wc -l      # 132 commits
-git diff --shortstat 2cbcf62 HEAD                 # 190 files, +41,421 lines
+git log --oneline --since=2026-09-06 | wc -l      # 140 commits
+git diff --shortstat 2cbcf62 HEAD                 # 222 files, +50,148 lines
 git diff --shortstat 2cbcf62 HEAD -- app/packages/apps/ats docs/ATS.md
-                                                  # 44 files, +11,365 lines — Hedera alone
+                                                  # 64 files, +16,717 lines — Hedera alone
 git log --diff-filter=A --format='%ad %h' --date=short -- app/packages/apps/ats | tail -1
                                                   # 2026-09-06 46c339c — the first line of it
 ```
