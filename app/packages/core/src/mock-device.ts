@@ -664,11 +664,20 @@ const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")
  * `ETH_MAX_DATA` in src/eth-tx.h — what the device can hold and describe.
  *
  * 640 since Aqua: a ship() is about 600 bytes and the old 256 refused it for
- * capacity while the screen could have drawn every field. Must not drift from
- * the firmware — a mock that accepts more than the device certifies broken
- * code, and a mock that accepts less refuses requests the device would take.
+ * capacity while the screen could have drawn every field.
+ *
+ * 768 since 2026-09-10, and the reason is a caution about that "about". A
+ * ONE-leg ship is 612 bytes; a TWO-leg ship is 676, and 640 sits between them.
+ * So the limit was set from the smaller of the two shapes this app actually
+ * builds, and the real position -- two-sided, the one the runbook calls a real
+ * market rather than a demonstration -- was refused on hardware with 0x0001.
+ * No test caught it because none pushed a two-leg ship through this mock.
+ *
+ * Must not drift from the firmware — a mock that accepts more than the device
+ * certifies broken code, and a mock that accepts less refuses requests the
+ * device would take.
  */
-const ETH_MAX_DATA = 640;
+const ETH_MAX_DATA = 768;
 
 /** Longest passphrase protocol.c will accept: 63 bytes plus its terminator. */
 const PASSPHRASE_MAX_BYTES = 63;

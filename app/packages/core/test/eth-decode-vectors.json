@@ -10,7 +10,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "erc20 transfer",
@@ -23,7 +24,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "erc20 approve, bounded",
@@ -36,7 +38,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "erc20 approve, unlimited",
@@ -49,7 +52,8 @@
     "unlimited": true,
     "flag": null,
     "generic": null,
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "erc20 transferFrom",
@@ -62,7 +66,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "setApprovalForAll, grant",
@@ -75,7 +80,8 @@
     "unlimited": false,
     "flag": true,
     "generic": null,
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "setApprovalForAll, revoke",
@@ -88,7 +94,8 @@
     "unlimited": false,
     "flag": false,
     "generic": null,
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "weth deposit()",
@@ -101,7 +108,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "weth withdraw(uint256)",
@@ -114,7 +122,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "mint(address,uint256)",
@@ -127,7 +136,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "mint(uint256)",
@@ -140,7 +150,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "aave supply, generic",
@@ -153,7 +164,8 @@
     "unlimited": false,
     "flag": null,
     "generic": { "signature": "supply(address,uint256,address,uint16)", "functionName": "supply", "args": [{ "name": "asset", "type": "address", "value": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "unlimited": false }, { "name": "amount", "type": "uint256", "value": "1000000", "unlimited": false }, { "name": "onBehalfOf", "type": "address", "value": "0x112233445566778899aabbccddeeff0102030405", "unlimited": false }, { "name": "referral", "type": "uint16", "value": "0", "unlimited": false }] },
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "safeTransferFrom, generic (not transferFrom)",
@@ -166,7 +178,8 @@
     "unlimited": false,
     "flag": null,
     "generic": { "signature": "safeTransferFrom(address,address,uint256)", "functionName": "safeTransferFrom", "args": [{ "name": "from", "type": "address", "value": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "unlimited": false }, { "name": "to", "type": "address", "value": "0x112233445566778899aabbccddeeff0102030405", "unlimited": false }, { "name": "tokenId", "type": "uint256", "value": "7", "unlimited": false }] },
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "permit2 approve, generic, unlimited amount not deadline",
@@ -179,7 +192,8 @@
     "unlimited": false,
     "flag": null,
     "generic": { "signature": "approve(address,address,uint160,uint48)", "functionName": "approve", "args": [{ "name": "token", "type": "address", "value": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "unlimited": false }, { "name": "spender", "type": "address", "value": "0x112233445566778899aabbccddeeff0102030405", "unlimited": false }, { "name": "amount", "type": "uint160", "value": "1461501637330902918203684832716283019655932542975", "unlimited": true }, { "name": "expiration", "type": "uint48", "value": "281474976710655", "unlimited": false }] },
-    "aqua": null
+    "aqua": null,
+    "ats": null
   },
   {
     "name": "aqua ship, two legs",
@@ -192,7 +206,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": { "app": "0x228e82831afac5dd9ebde3489e9e18ae9c7bcbf4", "maker": "0x112233445566778899aabbccddeeff0102030405", "hash": "0x0924ffc7f0f03de7eb810f08461608f7b1c736f12e053f4375a93cdca374a4bf", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": "1000000" }, { "token": "0x112233445566778899aabbccddeeff0102030405", "amount": "250" }], "program": null }
+    "aqua": { "app": "0x228e82831afac5dd9ebde3489e9e18ae9c7bcbf4", "maker": "0x112233445566778899aabbccddeeff0102030405", "hash": "0x0924ffc7f0f03de7eb810f08461608f7b1c736f12e053f4375a93cdca374a4bf", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": "1000000" }, { "token": "0x112233445566778899aabbccddeeff0102030405", "amount": "250" }], "program": null },
+    "ats": null
   },
   {
     "name": "aqua dock, one leg",
@@ -205,7 +220,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": { "app": "0x228e82831afac5dd9ebde3489e9e18ae9c7bcbf4", "maker": null, "hash": "0xabababababababababababababababababababababababababababababababab", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": null }], "program": null }
+    "aqua": { "app": "0x228e82831afac5dd9ebde3489e9e18ae9c7bcbf4", "maker": null, "hash": "0xabababababababababababababababababababababababababababababababab", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": null }], "program": null },
+    "ats": null
   },
   {
     "name": "swapvm program, three understood instructions",
@@ -218,7 +234,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": { "app": "0x111111338c5091e8440b67b168bae16a668ac0de", "maker": "0x112233445566778899aabbccddeeff0102030405", "hash": "0xb22ab13bf74d399d0e7d60ebe87758641eb5c5d9851895e18ad6b25dbf904c02", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": "1" }], "program": [{ "opcode": 17, "name": "xycSwapXD", "argsLen": 0, "value": null }, { "opcode": 19, "name": "decayXD", "argsLen": 2, "value": "300" }, { "opcode": 21, "name": "flatFeeAmountInXD", "argsLen": 4, "value": "3000000" }] }
+    "aqua": { "app": "0x111111338c5091e8440b67b168bae16a668ac0de", "maker": "0x112233445566778899aabbccddeeff0102030405", "hash": "0xb22ab13bf74d399d0e7d60ebe87758641eb5c5d9851895e18ad6b25dbf904c02", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": "1" }], "program": [{ "opcode": 17, "name": "xycSwapXD", "argsLen": 0, "value": null }, { "opcode": 19, "name": "decayXD", "argsLen": 2, "value": "300" }, { "opcode": 21, "name": "flatFeeAmountInXD", "argsLen": 4, "value": "3000000" }] },
+    "ats": null
   },
   {
     "name": "swapvm program, unknown opcode",
@@ -251,7 +268,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": { "app": "0x111111338c5091e8440b67b168bae16a668ac0de", "maker": "0x112233445566778899aabbccddeeff0102030405", "hash": "0x64083b9ba95e60ad8ef804be1d4b163c3ff9ce280b8834a7793399ac402e36ba", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": "1" }], "program": [{ "opcode": 18, "name": "xycConcentrateGrowLiquidity2D", "argsLen": 64, "value": null }, { "opcode": 21, "name": "flatFeeAmountInXD", "argsLen": 4, "value": "1000000" }, { "opcode": 17, "name": "xycSwapXD", "argsLen": 0, "value": null }, { "opcode": 20, "name": "salt", "argsLen": 8, "value": null }] }
+    "aqua": { "app": "0x111111338c5091e8440b67b168bae16a668ac0de", "maker": "0x112233445566778899aabbccddeeff0102030405", "hash": "0x64083b9ba95e60ad8ef804be1d4b163c3ff9ce280b8834a7793399ac402e36ba", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": "1" }], "program": [{ "opcode": 18, "name": "xycConcentrateGrowLiquidity2D", "argsLen": 64, "value": null }, { "opcode": 21, "name": "flatFeeAmountInXD", "argsLen": 4, "value": "1000000" }, { "opcode": 17, "name": "xycSwapXD", "argsLen": 0, "value": null }, { "opcode": 20, "name": "salt", "argsLen": 8, "value": null }] },
+    "ats": null
   },
   {
     "name": "swapvm program, real Base mainnet strategy B",
@@ -264,7 +282,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": { "app": "0x111111338c5091e8440b67b168bae16a668ac0de", "maker": "0x112233445566778899aabbccddeeff0102030405", "hash": "0x4b400175673334962a96c791752a787d34f8f91808c812dbb491b736e13f41d5", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": "1" }], "program": [{ "opcode": 18, "name": "xycConcentrateGrowLiquidity2D", "argsLen": 64, "value": null }, { "opcode": 21, "name": "flatFeeAmountInXD", "argsLen": 4, "value": "1000000" }, { "opcode": 17, "name": "xycSwapXD", "argsLen": 0, "value": null }, { "opcode": 20, "name": "salt", "argsLen": 8, "value": null }] }
+    "aqua": { "app": "0x111111338c5091e8440b67b168bae16a668ac0de", "maker": "0x112233445566778899aabbccddeeff0102030405", "hash": "0x4b400175673334962a96c791752a787d34f8f91808c812dbb491b736e13f41d5", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": "1" }], "program": [{ "opcode": 18, "name": "xycConcentrateGrowLiquidity2D", "argsLen": 64, "value": null }, { "opcode": 21, "name": "flatFeeAmountInXD", "argsLen": 4, "value": "1000000" }, { "opcode": 17, "name": "xycSwapXD", "argsLen": 0, "value": null }, { "opcode": 20, "name": "salt", "argsLen": 8, "value": null }] },
+    "ats": null
   },
   {
     "name": "swapvm program, 1inch documented dApp program",
@@ -277,7 +296,8 @@
     "unlimited": false,
     "flag": null,
     "generic": null,
-    "aqua": { "app": "0x111111338c5091e8440b67b168bae16a668ac0de", "maker": "0x112233445566778899aabbccddeeff0102030405", "hash": "0x3f9bc7bea3f9115afcc1f44204f52951da08cd1df9fd38fdc2395b0909a024ee", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": "1" }], "program": [{ "opcode": 33, "name": "onlyTxOriginTokenBalanceNonZero", "argsLen": 20, "value": "0x8A1C3A0a2B0e4D1F6377912cb50e77849A33d61B" }, { "opcode": 17, "name": "xycSwapXD", "argsLen": 0, "value": null }] }
+    "aqua": { "app": "0x111111338c5091e8440b67b168bae16a668ac0de", "maker": "0x112233445566778899aabbccddeeff0102030405", "hash": "0x3f9bc7bea3f9115afcc1f44204f52951da08cd1df9fd38fdc2395b0909a024ee", "legs": [{ "token": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "amount": "1" }], "program": [{ "opcode": 33, "name": "onlyTxOriginTokenBalanceNonZero", "argsLen": 20, "value": "0x8A1C3A0a2B0e4D1F6377912cb50e77849A33d61B" }, { "opcode": 17, "name": "xycSwapXD", "argsLen": 0, "value": null }] },
+    "ats": null
   },
   {
     "name": "unknown selector, otherwise well-formed",
@@ -347,6 +367,139 @@
   {
     "name": "aqua dock, tokens offset moved off the canonical slot",
     "dataHex": "28defc17000000000000000000000000228e82831afac5dd9ebde3489e9e18ae9c7bcbf4abababababababababababababababababababababababababababababababab00000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000001000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045",
+    "accepted": false
+  },
+  {
+    "name": "market fill(listingId)",
+    "dataHex": "3fda53890000000000000000000000000000000000000000000000000000000000000003",
+    "accepted": true,
+    "kind": "generic",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": { "signature": "fill(uint256)", "functionName": "fill", "args": [{ "name": "listingId", "type": "uint256", "value": "3", "unlimited": false }] },
+    "aqua": null,
+    "ats": null
+  },
+  {
+    "name": "market cancel(listingId)",
+    "dataHex": "40e58ee50000000000000000000000000000000000000000000000000000000000000003",
+    "accepted": true,
+    "kind": "generic",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": { "signature": "cancel(uint256)", "functionName": "cancel", "args": [{ "name": "listingId", "type": "uint256", "value": "3", "unlimited": false }] },
+    "aqua": null,
+    "ats": null
+  },
+  {
+    "name": "market list(security,amount,priceTotal)",
+    "dataHex": "dda342bb000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000001dcd65000000000000000000000000000000000000000000000000000000000005f5e100",
+    "accepted": true,
+    "kind": "generic",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": { "signature": "list(address,uint256,uint256)", "functionName": "list", "args": [{ "name": "security", "type": "address", "value": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "unlimited": false }, { "name": "amount", "type": "uint256", "value": "500000000", "unlimited": false }, { "name": "priceTotal", "type": "uint256", "value": "100000000", "unlimited": false }] },
+    "aqua": null,
+    "ats": null
+  },
+  {
+    "name": "ats deployEquity",
+    "dataHex": "4c40d0ee00000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000001c4c65656b204361706974616c204f7264696e617279205368617265730000000000000000000000000000000000000000000000000000000000000000000000054c45454b41000000000000000000000000000000000000000000000000000000",
+    "accepted": true,
+    "kind": "ats-deploy-equity",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": null,
+    "aqua": null,
+    "ats": { "name": "Leek Capital Ordinary Shares", "symbol": "LEEKA" }
+  },
+  {
+    "name": "ats deployBond",
+    "dataHex": "cd83ec8600000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000001d4c65656b204361706974616c20323032372053656e696f72204e6f746500000000000000000000000000000000000000000000000000000000000000000000054c45454b42000000000000000000000000000000000000000000000000000000",
+    "accepted": true,
+    "kind": "ats-deploy-bond",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": null,
+    "aqua": null,
+    "ats": { "name": "Leek Capital 2027 Senior Note", "symbol": "LEEKB" }
+  },
+  {
+    "name": "ats deployEquity, one-character strings",
+    "dataHex": "4c40d0ee000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000001410000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000014200000000000000000000000000000000000000000000000000000000000000",
+    "accepted": true,
+    "kind": "ats-deploy-equity",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": null,
+    "aqua": null,
+    "ats": { "name": "A", "symbol": "B" }
+  },
+  {
+    "name": "ats deployEquity, both strings at the bound",
+    "dataHex": "4c40d0ee000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000000404e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e000000000000000000000000000000000000000000000000000000000000000c5353535353535353535353530000000000000000000000000000000000000000",
+    "accepted": true,
+    "kind": "ats-deploy-equity",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": null,
+    "aqua": null,
+    "ats": { "name": "NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN", "symbol": "SSSSSSSSSSSS" }
+  },
+  {
+    "name": "ats deployEquity, control character in the name",
+    "dataHex": "4c40d0ee00000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000000a4c65656bca706974616c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000054c45454b41000000000000000000000000000000000000000000000000000000",
+    "accepted": false
+  },
+  {
+    "name": "ats deployEquity, non-ascii in the symbol",
+    "dataHex": "4c40d0ee00000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000000c4c65656b204361706974616c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000074c45454be280ae00000000000000000000000000000000000000000000000000",
+    "accepted": false
+  },
+  {
+    "name": "ats deployEquity, leading space",
+    "dataHex": "4c40d0ee00000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000000d204c65656b204361706974616c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000054c45454b41000000000000000000000000000000000000000000000000000000",
+    "accepted": false
+  },
+  {
+    "name": "ats deployEquity, name one over the bound",
+    "dataHex": "4c40d0ee000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000c0000000000000000000000000000000000000000000000000000000000000004141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141410000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000054c45454b41000000000000000000000000000000000000000000000000000000",
+    "accepted": false
+  },
+  {
+    "name": "ats deployEquity, gap between the two tails",
+    "dataHex": "4c40d0ee000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000000044c65656b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000054c45454b41000000000000000000000000000000000000000000000000000000",
+    "accepted": false
+  },
+  {
+    "name": "ats deployEquity, non-zero padding after the name",
+    "dataHex": "4c40d0ee0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000044c65656bff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000054c45454b41000000000000000000000000000000000000000000000000000000",
+    "accepted": false
+  },
+  {
+    "name": "ats deployEquity, trailing byte",
+    "dataHex": "4c40d0ee0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000044c65656b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000054c45454b4100000000000000000000000000000000000000000000000000000001",
     "accepted": false
   }
 ]

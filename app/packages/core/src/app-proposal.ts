@@ -164,6 +164,22 @@ export const declined = (): ProposalOutcome => ({ ok: false, text: PROPOSAL_DECL
 export const DEVICE_DRAWN_KINDS: ReadonlySet<string> = new Set<string>([
   CallKind.AquaShip,
   CallKind.AquaDock,
+  /* ATS issuance through LeekSecurityFactory.
+   *
+   * Admitted here for the one reason that justifies admitting anything: the
+   * screen shows ALL of the decision, not a summary of it. The factory freezes
+   * a 3,748-byte template in verified on-chain code, so a name and a symbol
+   * are the complete set of values this transaction chooses — everything else
+   * (decimals, supply, nominal value, regulation, and which twelve roles land
+   * where) is fixed and cannot be varied by the caller.
+   *
+   * The device draws three pages: what it creates and that the signer becomes
+   * issuer with every role, then the name in full, then the symbol in full.
+   * Both strings are refused unless they are printable ASCII within the
+   * factory's own bounds, on both sides, so what is on glass is what is on
+   * chain. */
+  CallKind.AtsDeployEquity,
+  CallKind.AtsDeployBond,
 ]);
 
 /** The shell-owned facts a proposal is screened against. */

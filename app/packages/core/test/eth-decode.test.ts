@@ -378,6 +378,7 @@ interface EthDecodeVector {
   unlimited?: boolean;
   flag?: boolean | null;
   generic?: { signature: string; functionName: string; args: EthDecodeArgVector[] } | null;
+  ats?: { name: string | null; symbol: string | null } | null;
   aqua?: {
     app: string; maker: string | null; hash: string; legs: EthDecodeLegVector[];
     /** The walked SwapVM program, or null when the app is not the router. */
@@ -488,6 +489,24 @@ for (const v of ethDecodeVectors) {
     }
   } else {
     check(d.aqua === undefined, `${v.name}: TS produced an aqua field the firmware did not`);
+  }
+
+  /* The two strings of an ATS issuance, compared for CONTENT.
+   *
+   * "Accepted" alone would let both decoders agree to render an issuance while
+   * disagreeing about what name it writes on chain -- and for this call the
+   * name and symbol are not a summary of the decision, they are all of it. The
+   * refusal cases matter as much: each is a way the glass and the calldata
+   * could disagree (a control byte, a right-to-left override, an invisible
+   * leading space, a string one byte over the factory's own bound), and a
+   * mirror that accepted any of them would draw something the device rejects. */
+  if (v.ats) {
+    check(d.ats?.name === v.ats.name,
+      `${v.name}: ats name ${d.ats?.name} != firmware's ${v.ats.name}`);
+    check(d.ats?.symbol === v.ats.symbol,
+      `${v.name}: ats symbol ${d.ats?.symbol} != firmware's ${v.ats.symbol}`);
+  } else {
+    check(d.ats === undefined, `${v.name}: TS produced an ats field the firmware did not`);
   }
 }
 

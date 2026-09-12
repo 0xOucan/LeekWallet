@@ -317,11 +317,32 @@ group("device-drawn kinds are a closed set");
   const src = readFileSync(join(appRoot, "packages/core/src/app-proposal.ts"), "utf8");
   const block = /DEVICE_DRAWN_KINDS[^=]*=\s*new Set<string>\(\[([^\]]*)\]/.exec(src);
   check(block !== null, "DEVICE_DRAWN_KINDS is no longer a literal Set this test can read");
+  /* Strip comments BEFORE splitting. The members are what this test is about;
+   * a `/* ... *\/` block explaining why a member was admitted contains commas
+   * and full stops, and splitting through it produced a "changed" list made of
+   * prose fragments — which is a tripwire that fires correctly and then tells
+   * you nothing. Removing comments does not weaken the check: it still
+   * compares the exact set of members and still fails on any addition. */
   const members = (block?.[1] ?? "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "")
     .split(",")
     .map((m) => m.trim())
-    .filter((m) => m.length > 0 && !m.startsWith("//"));
-  const expected = ["CallKind.AquaShip", "CallKind.AquaDock"];
+    .filter((m) => m.length > 0);
+  /* ATS issuance added 2026-09-11. All three parts exist and were added
+   * together, which is what admits a kind to this set:
+   *   firmware decoder  ats_decode_two_strings()  src/eth-decode.c
+   *   host mirror       decodeTwoStrings()        packages/core/src/eth-decode.ts
+   *   device pages      SIGN_PAGE_ATS_ACTION/_NAME/_SYMBOL  src/ui.c
+   * It is admissible at all because the LeekSecurityFactory wrapper freezes a
+   * 3,748-byte template on chain, so the two strings the screen shows are the
+   * complete set of values the transaction chooses — not a summary of them. */
+  const expected = [
+    "CallKind.AquaShip",
+    "CallKind.AquaDock",
+    "CallKind.AtsDeployEquity",
+    "CallKind.AtsDeployBond",
+  ];
   check(
     members.length === expected.length && expected.every((e) => members.includes(e)),
     `DEVICE_DRAWN_KINDS has changed: ${JSON.stringify(members)}. Every member needs a ` +

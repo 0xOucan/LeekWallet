@@ -391,29 +391,53 @@ async function main(): Promise<void> {
 
   group("oversized calldata is malformed, and is refused before decoding");
   {
-    /* ETH_MAX_DATA is 640 bytes. The bound comes *before* the decodability
+    /* ETH_MAX_DATA is 768 bytes. The bound comes *before* the decodability
      * check because that is the order protocol.c applies them: an oversized
      * blob is 0x0001, not 0x0202, and a host that distinguishes the two has to
-     * see the same code the device sends. */
+     * see the same code the device sends.
+     *
+     * This group used to test only the refusal, at 641. That is why the limit
+     * being too LOW went unnoticed until hardware refused a two-leg Aqua ship
+     * (676 bytes) with 0x0001: every assertion here passed while the device
+     * could not sign the app's own real transaction. The accepted case below
+     * is the half that was missing. */
     const dev = await connected({ startUnlocked: true });
     const to = new Uint8Array(20).fill(0xab);
     const before = dev.confirmations.length;
 
     const big = await call(dev, "signTransaction", {
-      index: 0, to, chainId: 1, data: new Uint8Array(641).fill(0xcc),
+      index: 0, to, chainId: 1, data: new Uint8Array(769).fill(0xcc),
     });
     check(big.error?.code === ErrorCode.MalformedFrame,
-      `641 bytes of calldata should be 0x0001, got ${JSON.stringify(big)}`);
+      `769 bytes of calldata should be 0x0001, got ${JSON.stringify(big)}`);
 
     // Same length, sent as a hex string: the bound is on bytes, not encoding.
     const bigHex = await call(dev, "signTransaction", {
-      index: 0, to, chainId: 1, data: "0x" + "cc".repeat(641),
+      index: 0, to, chainId: 1, data: "0x" + "cc".repeat(769),
     });
     check(bigHex.error?.code === ErrorCode.MalformedFrame,
       `hex calldata escaped the bound: ${JSON.stringify(bigHex)}`);
 
     check(dev.confirmations.length === before,
       "calldata the device cannot hold reached the confirmation screen");
+
+    /* The size of a real two-leg Aqua ship, which the device MUST accept.
+     * Asserted as a number rather than by building one, so this file keeps no
+     * dependency on the aqua app: 676 is measured, and the point is only that
+     * the bound sits above it. */
+    const twoLegShip = 676;
+    check(twoLegShip <= 768,
+      `ETH_MAX_DATA must clear a two-leg ship (${twoLegShip} bytes)`);
+    const ok = await call(dev, "signTransaction", {
+      index: 0, to, chainId: 1, data: new Uint8Array(twoLegShip).fill(0xcc),
+    });
+    /* Filler bytes are not a decodable call, so 0x0202 is the correct and
+     * expected answer here. What must NOT come back is 0x0001: that is the
+     * size bound, and at this length the device is refusing for capacity
+     * before it has looked at what the call does. Asserting "no error" would
+     * be asserting that filler decodes, which is a different and wrong claim. */
+    check(ok.error?.code !== ErrorCode.MalformedFrame,
+      `a ${twoLegShip}-byte ship hit the size bound: ${JSON.stringify(ok)}`);
   }
 
   group("an address index above 0x7FFFFFFF is refused");

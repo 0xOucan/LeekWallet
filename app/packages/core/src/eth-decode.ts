@@ -35,6 +35,10 @@ export const CallKind = {
   AquaShip: "aqua-ship",
   /** Aqua `dock(address,bytes32,address[])`. */
   AquaDock: "aqua-dock",
+  /** ATS `deployEquity(string,string)` through LeekSecurityFactory. */
+  AtsDeployEquity: "ats-deploy-equity",
+  /** ATS `deployBond(string,string)` through LeekSecurityFactory. */
+  AtsDeployBond: "ats-deploy-bond",
   Unknown: "unknown",
 } as const;
 
@@ -63,7 +67,31 @@ export interface DecodedCall {
   args?: DecodedArg[];
   /** Aqua only: everything the two write calls carry. */
   aqua?: AquaCall;
+  /** Present only for the two ATS deploy kinds. */
+  ats?: AtsDeploy;
 }
+
+/**
+ * An ATS issuance, decoded — the mirror of the `ats_*` fields on the C struct.
+ *
+ * Both strings are validated to be printable ASCII within the factory's own
+ * bounds, exactly as `ats_string_is_drawable()` does on the device. That is
+ * stricter than "a valid ABI string" on purpose: a name carrying control
+ * characters or a right-to-left override does not read on screen the way it
+ * reads in the calldata, and the device's whole job is that those two agree.
+ * The host must refuse everything the firmware refuses and no less, or it
+ * would render a call the device is about to reject — see MIRROR-GAP.md.
+ */
+export interface AtsDeploy {
+  name: string;
+  symbol: string;
+}
+
+/** `ETH_ATS_MAX_NAME` / `ETH_ATS_MAX_SYMBOL` in src/eth-tx.h's neighbour,
+ * src/eth-decode.h. The factory enforces the same two numbers, so a call that
+ * would revert on chain is refused before a press is spent on it. */
+export const ATS_MAX_NAME = 64;
+export const ATS_MAX_SYMBOL = 12;
 
 /**
  * An Aqua `ship` or `dock`, decoded — the mirror of the `aqua_*` fields on the
@@ -125,10 +153,11 @@ const Shape = {
   FromSignature: 5,
   AquaShip: 6,
   AquaDock: 7,
+  TwoStrings: 8,
 } as const;
 type Shape = (typeof Shape)[keyof typeof Shape];
 
-const WORDS: Record<Shape, number> = { 0: 0, 1: 1, 2: 2, 3: 2, 4: 3, 5: 0, 6: 0, 7: 0 };
+const WORDS: Record<Shape, number> = { 0: 0, 1: 1, 2: 2, 3: 2, 4: 3, 5: 0, 6: 0, 7: 0, 8: 0 };
 
 /* The same table as src/eth-decode.c, in the same order, with the same
  * argument shapes and - this is the part that matters - the same signature
@@ -164,6 +193,21 @@ const KNOWN: ReadonlyArray<{
    * decodeAquaShip() and the same argument, at length, in eth-decode.c. */
   { sig: "ship(address,bytes,address[],uint256[])", names: "app,strategy,tokens,amounts", kind: CallKind.AquaShip, shape: Shape.AquaShip },
   { sig: "dock(address,bytes32,address[])", names: "app,strategyHash,tokens", kind: CallKind.AquaDock, shape: Shape.AquaDock },
+  /* The ATS escrow market's three calls. All-static arguments, so the generic
+   * signature path reads them on both sides and the device draws one page per
+   * argument. Present here because the firmware has them: the host's accepted
+   * set must not be narrower than the device's, or this app refuses to render
+   * a call the device would happily show. */
+  { sig: "fill(uint256)", names: "listingId", kind: CallKind.Generic, shape: Shape.FromSignature },
+  { sig: "cancel(uint256)", names: "listingId", kind: CallKind.Generic, shape: Shape.FromSignature },
+  { sig: "list(address,uint256,uint256)", names: "security,amount,priceTotal", kind: CallKind.Generic, shape: Shape.FromSignature },
+  /* ATS issuance. `string` is dynamic, so these take the same hand-written
+   * route the Aqua rows do — and they are drawable for a reason the ATS
+   * factory's own deployEquity is not: the wrapper freezes a 3,748-byte
+   * template in verified on-chain code, so these two strings are the complete
+   * set of things this transaction decides. */
+  { sig: "deployEquity(string,string)", names: "name,symbol", kind: CallKind.AtsDeployEquity, shape: Shape.TwoStrings },
+  { sig: "deployBond(string,string)", names: "name,symbol", kind: CallKind.AtsDeployBond, shape: Shape.TwoStrings },
 ];
 
 /** keccak256(signature)[0:4], lower-case hex. Computed once per row. */
@@ -313,6 +357,7 @@ export function decodeCall(data: unknown): DecodedCall {
   if (index < 0) return { kind: CallKind.Unknown };
   const known = KNOWN[index]!;
 
+  if (known.shape === Shape.TwoStrings) return decodeTwoStrings(bytes, known.kind);
   if (known.shape === Shape.AquaShip) return decodeAquaShip(bytes);
   if (known.shape === Shape.AquaDock) return decodeAquaDock(bytes);
 
@@ -642,6 +687,71 @@ function decodeAquaShip(bytes: Uint8Array): DecodedCall {
       ...(program !== undefined ? { program } : {}),
     },
   };
+}
+
+/**
+ * Is every byte one the device will draw faithfully?
+ *
+ * Printable ASCII, no leading or trailing space — the mirror of
+ * `ats_string_is_drawable()`. A byte outside this range can blank, reposition
+ * or reverse what the screen shows without changing what is signed, and a
+ * space at either end is invisible on glass and present on chain.
+ */
+function atsStringIsDrawable(s: string): boolean {
+  if (s.length === 0) return false;
+  if (s.startsWith(" ") || s.endsWith(" ")) return false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x20 || c > 0x7e) return false;
+  }
+  return true;
+}
+
+/**
+ * `deployEquity(string,string)` / `deployBond(string,string)`.
+ *
+ * Canonical encoding only — two offsets, the tails back to back, every pad
+ * byte zero, nothing trailing — matching `ats_decode_two_strings()` check for
+ * check. Anything that merely encodes the same two strings differently is
+ * refused rather than normalised: a second encoding of "the same" call is a
+ * second thing to reason about on a screen somebody is about to trust.
+ */
+function decodeTwoStrings(bytes: Uint8Array, kind: CallKind): DecodedCall {
+  if (bytes.length < 4 + 2 * 32) return UNKNOWN;
+  const span = bytes.length - 4;
+  const at = (off: number) => 4 + off;
+
+  const offN = wordAsSize(bytes, at(0), span);
+  const offS = wordAsSize(bytes, at(32), span);
+  if (offN === null || offS === null) return UNKNOWN;
+  if (offN !== 2 * 32) return UNKNOWN;
+
+  const read = (off: number, max: number): string | null => {
+    if (off + 32 > span) return null;
+    const len = wordAsSize(bytes, at(off), span);
+    if (len === null || len === 0 || len > max) return null;
+    const padded = Math.ceil(len / 32) * 32;
+    if (off + 32 + padded > span) return null;
+    const start = at(off + 32);
+    for (let i = len; i < padded; i++) {
+      if (bytes[start + i] !== 0) return null;
+    }
+    let out = "";
+    for (let i = 0; i < len; i++) out += String.fromCharCode(bytes[start + i]!);
+    return atsStringIsDrawable(out) ? out : null;
+  };
+
+  const name = read(offN, ATS_MAX_NAME);
+  if (name === null) return UNKNOWN;
+  const paddedN = Math.ceil(name.length / 32) * 32;
+  if (offS !== offN + 32 + paddedN) return UNKNOWN;
+
+  const symbol = read(offS, ATS_MAX_SYMBOL);
+  if (symbol === null) return UNKNOWN;
+  const paddedS = Math.ceil(symbol.length / 32) * 32;
+  if (span !== offS + 32 + paddedS) return UNKNOWN;
+
+  return { kind, ats: { name, symbol } };
 }
 
 function decodeAquaDock(bytes: Uint8Array): DecodedCall {
