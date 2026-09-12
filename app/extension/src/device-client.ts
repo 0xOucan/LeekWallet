@@ -193,6 +193,31 @@ export class DeviceClient {
       this.pending = r;
     });
 
+    /* The deadline covers the SEND as well as the wait, and it is armed before
+     * a byte goes out.
+     *
+     * It used to start only once `transport.send()` had resolved, which
+     * assumed that handing bytes to the link is prompt. Over Web Serial it is
+     * not: `writer.write()` resolves on the stream's backpressure, so a device
+     * that has just rebooted — which is every connect, because opening the
+     * port resets the ESP32-S3 — can leave that promise pending with nothing
+     * above it to give up. Nothing did: `handshake()` has no timer of its own,
+     * the ERR_BUSY retry only consults its deadline after a rejection,
+     * `connect()` has no ceiling and neither does the message hop to the
+     * popup. One unresolved write therefore wedged the whole client — `call()`
+     * serialises on `this.queue`, so every later request queued behind it for
+     * ever — and the user saw "Connecting…" with no error, for ever. */
+    let expired = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        expired = true;
+        reject(new Error(
+          `the device did not answer within ${timeoutMs}ms; disconnect and reconnect`,
+        ));
+      }, timeoutMs);
+    });
+
     /* Flat, per PROTOCOL.md section 4: fields sit beside `method` rather than
      * inside a `params` object. The firmware looks for them at the top level,
      * so a nested request would have had its arguments silently ignored. */
@@ -201,34 +226,42 @@ export class DeviceClient {
       ? [FrameType.EncryptedRequest, this.session.encrypt(body)]
       : [FrameType.Request, body];
 
+    /* Before each request, exactly as `FrameDecoder::reset()` is called in
+     * `app/transport-serial/src/transport.rs`. The protocol has no request
+     * IDs, so anything still buffered when a request goes out cannot be an
+     * answer to it — it is console text, or the tail of a reply whose caller
+     * has already given up — and keeping it risks matching it to this request.
+     * The Rust transport has done this since the day a device that was
+     * correctly silent on USB looked like it was answering; requests are
+     * serialised here, so the same reasoning and the same safety apply. */
+    this.decoder.reset();
+
     try {
-      await this.transport.send(encodeUsbFrame(type, payload));
+      await Promise.race([this.transport.send(encodeUsbFrame(type, payload)), deadline]);
     } catch (e) {
+      clearTimeout(timer);
       this.session = null;
       this.pending = null;
+      /* A timeout on the send is still a timeout, and its message already says
+       * so; only a real transport failure needs the session warning added. */
+      if (expired) throw e;
       throw new Error(
         `${(e as Error).message}. The session is no longer usable; disconnect and reconnect.`,
       );
     }
 
-    /* The deadline lives here rather than in the transport because Web Serial
-     * has no per-read timeout to hand it to, and a promise that never settles
-     * is a popup that says "waiting for the device" for ever. Losing the race
-     * still poisons the session — see above — so this rejects AND kills it,
+    /* Losing the race poisons the session — the device may still answer a
+     * request nobody is waiting for any more — so this rejects AND kills it,
      * rather than pretending the next call can carry on. */
-    const timer = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(
-        `the device did not answer within ${timeoutMs}ms; disconnect and reconnect`,
-      )), timeoutMs);
-    });
-
     let settled: { ok?: Record<string, CborValue>; err?: DeviceError };
     try {
-      settled = await Promise.race([reply, timer]);
+      settled = await Promise.race([reply, deadline]);
     } catch (e) {
       this.pending = null;
       this.session = null;
       throw e;
+    } finally {
+      clearTimeout(timer);
     }
     if (settled.err) throw settled.err;
     return settled.ok ?? {};
