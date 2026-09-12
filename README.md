@@ -68,13 +68,15 @@ refuses to sign.
 | **Physical dice** | Optional at seed creation, worth exactly **log2(6) = 2.585 bits** per roll, counted on screen. Mixed with the RNG, never substituted — physical dice only, never a phone app |
 | **Temporary seed** | Type a phrase, sign with it, and the device stores **nothing**: no slot, no ciphertext, no wallet count. Gone on lock |
 | **Transaction signing** | EIP-1559, re-serialised and re-hashed on-device, displayed page by page, signed only as rendered |
-| **Decodable set** | 15 signatures: native transfer, ERC-20 `transfer`/`approve`/`transferFrom`, Permit2 `approve`, ERC-721 `safeTransferFrom`/`setApprovalForAll`, Aave `supply`/`borrow`/`repay`/`withdraw`, WETH `deposit`/`withdraw`, three `mint` shapes. Anything else — including contract creation — is **refused**. The table in `src/eth-decode.c` is the authority; it is checked by hashing, not trusted |
+| **Decodable set** | 23 signatures: native transfer, ERC-20 `transfer`/`approve`/`transferFrom`, Permit2 `approve`, ERC-721 `safeTransferFrom`/`setApprovalForAll`, Aave `supply`/`borrow`/`repay`/`withdraw`, WETH `deposit`/`withdraw`, three `mint` shapes, 1inch Aqua `ship`/`dock`, Hedera ATS `deployEquity`/`deployBond` and `list`/`fill`/`cancel`, and Disperse `disperseToken` for batched payroll. Anything else — including contract creation — is **refused**. The table in `src/eth-decode.c` is the authority; it is checked by hashing, not trusted. Host and firmware are held together by **60 shared conformance vectors, 31 of them refusals** |
 | **Blind signing** | Off by default, set on the device only, five presses past a warning screen. No command can turn it on |
 | **Link** | USB CDC-ACM **or** BLE GATT, one at a time, chosen on the device (Settings → Link) |
 | **BLE name** | User-set, 1-29 printable ASCII, refused rather than truncated — an over-long name would silently stop advertising |
 | **Session** | X25519 with a commit-then-reveal nonce exchange, passkey bound to the whole transcript and compared on the device's own screen; ChaCha20-Poly1305 frames |
 | **QR codes** | Display addresses as scannable QR codes |
 | **Companion app** | Tauri v2 on Linux/macOS/Windows and an Android APK, with WalletConnect v2 for real dapps |
+| **Browser extension** | Chromium MV3, an EIP-1193 provider announced over **EIP-6963** so it sits beside other wallets rather than fighting for `window.ethereum`. Talks to the board over Web Serial with **no relay and no QR**. It holds no key and ships no descriptors: a dapp's calldata goes straight to the device, which decodes it. Verified against a live `app.aave.com` session. Connecting resets the board — Web Serial cannot suppress the DTR toggle — so the PIN is re-entered each time |
+| **Mini apps** | Three, in `app/packages/apps/`: **La Caja** (point of sale, payroll, and a waiter terminal that needs no wallet), **Issuer console + Share market** (Hedera ATS securities), **Aqua** (1inch positions on Base mainnet) |
 
 ### Also runs on the Firefly Pixie
 

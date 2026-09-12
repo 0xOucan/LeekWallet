@@ -59,11 +59,25 @@ did exactly that. **Transport changes need a board.**
   that `espflash`'s `Port` is a concrete `TTYPort`/`COMPort` taken by value, so
   there is no seam to hand it an Android file descriptor; the Android path is
   its own implementation and must be exercised on a phone before it is claimed.
-- **Chrome extension** — EIP-1193 + EIP-6963 provider, popup connects over Web
-  Serial. **Known open defect:** the offscreen document reports "the device did
-  not answer within 5000 ms". The serial chooser itself was fixed (Chrome
-  anchors it to a *tab*, and an extension popup has none). Not release-blocking
-  for the firmware, but it blocks calling the extension shipped.
+- **Chrome extension** — EIP-1193 + EIP-6963 provider, connects over Web Serial.
+  **Working, verified on hardware**: a live `app.aave.com` session signed and
+  broadcast a transaction from the device over USB. The "did not answer within
+  5000 ms" defect is closed, and it was three faults wearing one message:
+  1. **The wrong wire format.** The device frames USB as `'L' 'K' | len | type`
+     and BLE as `len | type`; `device-client.ts` imported the BLE framing and
+     read two bytes of console log as a length — hence `invalid frame length
+     18720`, which is `0x4920`, ASCII `"I "`. Nothing caught it because the
+     desktop companion reaches serial through Rust, where `wire.rs` has had the
+     marker and the resync all along.
+  2. **An unbounded send.** The deadline was armed *after* `transport.send()`
+     resolved, and Web Serial's `writer.write()` resolves on backpressure, not
+     delivery. One pending write wedged the whole serialised queue: "Connecting…"
+     for ever, no error, no recovery.
+  3. **A settle window too short for a boot.** Opening the port raises DTR,
+     which resets the S3, so the handshake was landing in a booting chip.
+  **Known limitation, not a defect:** connecting reboots the board, so the PIN
+  must be re-entered each time. Web Serial cannot suppress the DTR toggle. The
+  desktop companion is unaffected — its Rust transport sets `dtr_on_open(false)`.
 
 ## 4. Website
 

@@ -39,8 +39,11 @@ harness, and the companion shell.
 - **Hedera ATS mini-app** — four securities, a secondary market, and issuance from the device
 - **`LeekSecurityFactory`** — a new contract that makes ATS issuance signable on a 240×240 screen
 - **Arc payments and payroll mini-app**
-- **Firmware decoders** for Aqua `ship`/`dock` and ATS `deployEquity`/`deployBond`
-- **Shared firmware↔host calldata vectors**, closing a drift gap the repo had documented against itself
+- **Firmware decoders** for Aqua `ship`/`dock`, ATS `deployEquity`/`deployBond`/`list`/`fill`/`cancel`, and Disperse `disperseToken`
+- **Batched payroll through the canonical Disperse contract** — a payday is three confirmations instead of two per person, and the device draws every recipient itself
+- **Shared firmware↔host calldata vectors** — now 60, 31 of them refusals, closing a drift gap the repo had documented against itself
+- **A waiter terminal that needs no wallet at all**, proven across three devices: desktop cashier, Android scanner, and an unmodified Rabby paying the bill
+- **The Chrome extension made to work** — it shipped broken in the previous tag, and the cause was a wire-format mismatch nobody could have found without hardware
 - **A collapsible companion shell**, replacing push-and-Back navigation
 
 ---
@@ -211,6 +214,23 @@ Firmware: `pio run -e esp32s3` / `pio run -e pixie`, flashed with
 ## Honest limitations
 
 - **No demo video yet** at the time of writing.
-- **Arc has no recorded on-chain run yet.**
 - The companion tracks testnet balances; Base mainnet work is driven from the Aqua panel and scripts.
+- **Connecting the Chrome extension reboots the board**, so the PIN is re-entered
+  every time. Web Serial gives no way to suppress the DTR toggle that `open()`
+  raises, and on the ESP32-S3 that line is wired to reset. The desktop companion
+  is unaffected — its Rust transport sets `dtr_on_open(false)`.
+- **The waiter terminal learns its restaurant from the first bill it is shown.**
+  That is a misconfiguration and outsider-forgery check, not a defence against
+  whoever holds the terminal: nothing on a till can be, because there is no key
+  there to sign a policy with and the digest in a request is a checksum, not a
+  signature. Stated in `merchant.ts` rather than implied.
 - Not independently audited. [`AUDIT.md`](AUDIT.md) is our own list of findings against ourselves, and it is not short.
+
+### What ran on-chain
+
+Arc testnet: a four-payment payroll twice per-payment, then the same payroll
+batched through Disperse — approve, salaries, tips — signed on both boards.
+Hedera testnet: nine equities and a bond from `LeekSecurityFactory`, two issued
+from the device, eight market listings, and shares bought from the device.
+Base mainnet: a full Aqua position lifecycle. Base Sepolia: a La Caja bill paid
+from an unmodified Rabby and detected by the waiter terminal unaided.

@@ -22,7 +22,23 @@ request; the customer pays from whatever they already use.
 
 - Request building and EIP-681 URIs: [`src/uri.ts`](src/uri.ts), [`src/request.ts`](src/request.ts)
 - Waiter mode, reachable **before** any device is connected: [`src/waiter.ts`](src/waiter.ts)
+- Which restaurant a terminal collects for: [`src/merchant.ts`](src/merchant.ts)
 - Settlement watcher: [`src/watch.ts`](src/watch.ts)
+
+The waiter configures nothing. The terminal learns the restaurant from the
+first well-formed bill it is shown, remembers it, and refuses any later bill
+that pays a different address — with the address it would have paid on screen.
+`merchant.ts` is explicit that this is a **misconfiguration and outsider-forgery
+check, not a defence against whoever holds the terminal**: the first code
+teaches it, and nothing on a till can do better, because there is no key there
+to sign a policy with and the digest in a request is a checksum, not a
+signature.
+
+**Proven on three devices**: the desktop cashier issued a bill, the Android APK
+scanned it, an unmodified Rabby wallet paid it, and the terminal noticed by
+itself — `PAID — 2.4287 USDC received, block 46732732, 13 confirmation(s)` on
+Base Sepolia, while the other eight chains reported *checked and nothing has
+arrived* with their block ranges and endpoints named.
 
 The economics are stated in [`src/rails.ts`](src/rails.ts) rather than implied: Mexican card
 acquiring is 3.5% + IVA = **4.06%**; ours is gas. On Arc that is a rounding
