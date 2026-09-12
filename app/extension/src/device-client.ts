@@ -245,12 +245,23 @@ export class DeviceClient {
    * value that makes both screens agree — it is down to one online guess at
    * 1 in 10^6, which is a mismatch the user sees.
    */
-  async handshake(): Promise<string> {
+  /**
+   * @param helloTimeoutMs How long to wait for the FIRST reply.
+   *
+   * Its own parameter, and much longer than the 5000ms default, because this
+   * call is the one that can land while a person is busy with the board.
+   * Opening the port resets the ESP32-S3 (see serial-transport.ts), so the
+   * device comes back at its PIN screen and `hello` arrives while the user is
+   * still typing — and a PIN takes longer than five seconds. Timing out there
+   * reports "the device did not answer" about a device that is working
+   * perfectly and waiting for its owner.
+   */
+  async handshake(helloTimeoutMs = 90_000): Promise<string> {
     const { privateKey, publicKey } = generateKeypair();
     const ack = await this.call("hello", {
       version: PROTOCOL_VERSION,
       hostPubkey: publicKey,
-    });
+    }, helloTimeoutMs);
 
     const theirVersion = ack["version"];
     if (theirVersion !== PROTOCOL_VERSION) {

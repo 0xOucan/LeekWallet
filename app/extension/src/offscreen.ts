@@ -200,6 +200,37 @@ function teardown(why: string): void {
   pushState();
 }
 
+/** The device's "I am mid-question, ask again" code. `ERR_BUSY` in protocol.c. */
+const ERR_BUSY = 0x0401;
+
+/**
+ * Handshake, waiting out a device that is busy with its owner.
+ *
+ * Opening the port resets the board, so it comes back at its PIN screen and
+ * the first `hello` lands while the user is still typing. The firmware answers
+ * that with ERR_BUSY and the words "retry" — it deliberately defers rather
+ * than refusing, so the outstanding commitment survives and the SAME reveal
+ * succeeds once the user has answered. Treating that as a failure threw away a
+ * handshake the device was holding open for us.
+ *
+ * A busy reply is a clean, complete answer, so retrying after one cannot
+ * desynchronise the stream. That is not true of a timeout, which is why this
+ * loops only on ERR_BUSY and lets everything else through untouched.
+ */
+async function handshakeWaitingForTheUser(c: DeviceClient): Promise<string> {
+  const deadline = Date.now() + 120_000;
+  for (;;) {
+    try {
+      return await c.handshake();
+    } catch (e) {
+      const busy = e instanceof DeviceError && e.code === ERR_BUSY;
+      if (!busy || Date.now() >= deadline) throw e;
+      log("the device is asking its owner something — waiting");
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+}
+
 /**
  * Open the port the user already granted, and handshake.
  *
@@ -236,7 +267,7 @@ async function connect(): Promise<Record<string, unknown>> {
   confirmed = false;
 
   try {
-    passkey = await c.handshake();
+    passkey = await handshakeWaitingForTheUser(c);
   } catch (e) {
     await link.close().catch(() => {});
     client = null;
