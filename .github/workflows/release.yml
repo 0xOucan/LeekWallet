@@ -275,6 +275,13 @@ jobs:
           if ! grep -q 'android.permission.CAMERA' "$M"; then
             sed -i 's|<application|<uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n    <application|' "$M"
           fi
+          # USB is the second set of hand-edits `tauri android init` discards,
+          # and it was missing here: the camera half was restored inline while
+          # the USB half was only ever applied by this script, so the check
+          # below failed every tagged build on res/xml/device_filter.xml. The
+          # script is idempotent and owns both the manifest entries and the
+          # filter file, which is why it is called rather than copied from.
+          ./scripts/android-usb-host.sh
           # Re-checked rather than assumed: the same script CI runs on every
           # push, so "the edit took" is a check and not a belief.
           ./scripts/check-android-manifest.sh
@@ -369,10 +376,48 @@ jobs:
   # maintainer signs the published manifest afterwards and uploads the
   # signature - see docs/RELEASE.md.
   # --------------------------------------------------------------------------
+  # --------------------------------------------------------------------------
+  # The browser extension.
+  #
+  # A zip of `extension/dist`, which is what "Load unpacked" wants and what a
+  # Chrome Web Store upload wants. Not signed into a .crx: a .crx is bound to a
+  # key we do not publish, and an unsigned zip anyone can unpack and read is a
+  # better match for a wallet whose whole argument is that you can check it.
+  # --------------------------------------------------------------------------
+  extension:
+    name: Chrome extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pnpm --dir app install --frozen-lockfile
+      - run: pnpm --dir app --filter @leekwallet/extension build
+      - name: Check something was actually produced
+        run: |
+          set -euo pipefail
+          test -f app/extension/dist/manifest.json
+          test -f app/extension/dist/background.js
+      - name: Zip it
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          mkdir -p out
+          (cd app/extension/dist && zip -qr "../../../out/leekwallet-extension-${V}.zip" .)
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension
+          path: out/*
+
   publish:
     name: Publish release
     runs-on: ubuntu-latest
-    needs: [firmware, desktop, android]
+    needs: [firmware, desktop, android, extension]
     permissions:
       contents: write
     steps:
