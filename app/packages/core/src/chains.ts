@@ -204,7 +204,22 @@ const CURATED: readonly CuratedEntry[] = [
     id: 8453,
     name: "Base",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: ["https://base-rpc.publicnode.com", "https://base.drpc.org"],
+    /* mainnet.base.org first, added 2026-09-10. Measured that day, from this
+     * machine, for `eth_getLogs` over 1999-block ranges:
+     *   mainnet.base.org         5/5 answered
+     *   base-rpc.publicnode.com  5/5 by curl, but HTTP 403 through the app's
+     *                            backend proxy
+     *   base.drpc.org            0/5 -- HTTP 500 every time
+     * With only the latter two configured, the Aqua portfolio scan could never
+     * complete, and because the dock UI is built from that scan there was no
+     * way to withdraw a live position through the app at all. publicnode also
+     * fails `eth_getBalance` at a historical block, which is why this endpoint
+     * was already the one every runbook command used. */
+    rpcUrls: [
+      "https://mainnet.base.org",
+      "https://base-rpc.publicnode.com",
+      "https://base.drpc.org",
+    ],
     explorerUrl: "https://basescan.org",
     testnet: false,
   },

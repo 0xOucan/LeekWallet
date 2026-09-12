@@ -298,6 +298,26 @@ export function planCap(
 
   const notices = [APPROVAL_EDIT_NOTICE, DAPP_UNAWARE_NOTICE];
 
+  /* Already exactly right: no steps at all.
+   *
+   * Without this, an allowance that already equals the amount still produced
+   * the full zero-first pair -- two transactions, two device confirmations and
+   * two nonces, to arrive at the value the chain already held. Observed on Base
+   * 2026-09-10: nonces 5 and 6 set WETH to 406168000000000 when it was already
+   * 406168000000000, and the extra traffic raced the next proposal into
+   * `nonce too low`.
+   *
+   * Deliberately `===`, not `>=`. An allowance ABOVE the amount is more
+   * exposure than the caller asked for, and lowering it is the whole point of
+   * a cap -- skipping that would silently leave the larger figure standing.
+   * Equality is the only case where doing nothing reaches the intended state.
+   *
+   * erc20 only: a permit2 allowance also carries an expiration, so an equal
+   * amount can still need rewriting to extend it. */
+  if (call.standard === "erc20" && newAmount > 0n && current === newAmount) {
+    return { steps: [], zeroFirst: false, notices };
+  }
+
   /* Zero is its own answer: setting an allowance to zero is a revoke, and a
    * revoke never needs the zero-first step because it *is* the zero step. */
   const needsSequence =
