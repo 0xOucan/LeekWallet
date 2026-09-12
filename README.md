@@ -754,13 +754,22 @@ decoration, so it shows the true number and says what it is.
 but it has never been installed or run on a device — no permission dialog, no
 enumeration, no signature. See `app/ANDROID.md`, "Known state".
 
-### ⚠️ Testnets only — verify it yourself before trusting it with anything
+### ⚠️ Testnets for everyday use — verify it yourself before trusting it with anything
 
 LeekWallet is a proof of concept under active development. **Use testnets.**
 
-Nothing here stops you from using it with real funds — it is your device, your
-keys, and the code is all here to read. But the only sensible order is: read the
-audit below, build the firmware yourself, run the test suite, verify the seed
+It has signed on mainnet. The 1inch Aqua mini-app runs a full position
+lifecycle on **Base mainnet** — approve, ship, dock — with real value, and the
+contracts it talks to are verified on Basescan. Everything else this repo has
+exercised is testnet: Arc, Hedera, Base Sepolia and the rest. That distinction
+is kept exactly because it is the one people gloss over, and a demo that says
+"mainnet" over testnet footage is the kind of claim reviewers check.
+
+So mainnet is possible and has been done deliberately, at small size, by people
+who wrote the firmware. That is not the same as it being advisable for you yet.
+Nothing here stops you from using real funds — it is your device, your keys, and
+the code is all here to read. But the only sensible order is: read the audit
+below, build the firmware yourself, run the test suite, verify the seed
 derivation against a wallet you already trust, and move a token amount first.
 Anyone recommending otherwise about software this young, including us, should be
 ignored.

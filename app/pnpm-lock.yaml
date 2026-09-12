@@ -60,6 +60,9 @@ importers:
       '@noble/hashes':
         specifier: 1.8.0
         version: 1.8.0
+      qrcode-generator:
+        specifier: ^1.4.4
+        version: 1.5.2
       viem:
         specifier: ^2.55.13
         version: 2.55.13(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)
@@ -88,7 +91,7 @@ importers:
     devDependencies:
       '@1inch/aqua-sdk':
         specifier: 0.3.1
-        version: 0.3.1(bufferutil@4.1.0)(typescript@5.9.3)(zod@3.25.76)
+        version: 0.3.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)
 
   packages/apps/ats:
     dependencies:
@@ -1013,6 +1016,9 @@ packages:
   process-warning@5.1.0:
     resolution: {integrity: sha512-jQSaVHsPgtyw60e1rQ/A+/ArPEj/S8pS/vFnyGa/gYFXrKk/6RuDkoqVDQ5NI5MmS01698ltlAk0NoDBNLujRw==}
 
+  qrcode-generator@1.5.2:
+    resolution: {integrity: sha512-pItrW0Z9HnDBnFmgiNrY1uxRdri32Uh9EjNYLPVC2zZ3ZRIIEqBoDgm4DkvDwNNDHTK7FNkmr8zAa77BYc9xNw==}
+
   qrcode-generator@2.0.4:
     resolution: {integrity: sha512-mZSiP6RnbHl4xL2Ap5HfkjLnmxfKcPWpWe/c+5XxCuetEenqmNFf1FH/ftXPCtFG5/TDobjsjz6sSNL0Sr8Z9g==}
 
@@ -1294,11 +1300,11 @@ packages:
 
 snapshots:
 
-  '@1inch/aqua-sdk@0.3.1(bufferutil@4.1.0)(typescript@5.9.3)(zod@3.25.76)':
+  '@1inch/aqua-sdk@0.3.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)':
     dependencies:
-      '@1inch/sdk-core': 0.1.3(bufferutil@4.1.0)(typescript@5.9.3)(zod@3.25.76)
+      '@1inch/sdk-core': 0.1.3(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)
       tslib: 2.8.1
-      viem: 2.55.13(bufferutil@4.1.0)(typescript@5.9.3)(zod@3.25.76)
+      viem: 2.55.13(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)
     transitivePeerDependencies:
       - assert
       - bufferutil
@@ -1308,11 +1314,11 @@ snapshots:
 
   '@1inch/byte-utils@3.1.8': {}
 
-  '@1inch/sdk-core@0.1.3(bufferutil@4.1.0)(typescript@5.9.3)(zod@3.25.76)':
+  '@1inch/sdk-core@0.1.3(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)':
     dependencies:
       '@1inch/byte-utils': 3.1.8
       tslib: 2.8.1
-      viem: 2.55.13(bufferutil@4.1.0)(typescript@5.9.3)(zod@3.25.76)
+      viem: 2.55.13(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)
     transitivePeerDependencies:
       - bufferutil
       - typescript
@@ -2563,6 +2569,8 @@ snapshots:
 
   process-warning@5.1.0: {}
 
+  qrcode-generator@1.5.2: {}
+
   qrcode-generator@2.0.4: {}
 
   quick-format-unescaped@4.0.4: {}
@@ -2711,23 +2719,6 @@ snapshots:
       - zod
 
   viem@2.55.13(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76):
-    dependencies:
-      '@noble/curves': 1.9.1
-      '@noble/hashes': 1.8.0
-      '@scure/bip32': 1.7.0
-      '@scure/bip39': 1.6.0
-      abitype: 1.2.3(typescript@5.9.3)(zod@3.25.76)
-      isows: 1.0.7(ws@8.21.0(bufferutil@4.1.0))
-      ox: 0.14.33(typescript@5.9.3)(zod@3.25.76)
-      ws: 8.21.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
-    optionalDependencies:
-      typescript: 5.9.3
-    transitivePeerDependencies:
-      - bufferutil
-      - utf-8-validate
-      - zod
-
-  viem@2.55.13(bufferutil@4.1.0)(typescript@5.9.3)(zod@3.25.76):
     dependencies:
       '@noble/curves': 1.9.1
       '@noble/hashes': 1.8.0

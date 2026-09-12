@@ -33,6 +33,7 @@ import "../../src/tokens.css";
 import "./popup.css";
 import { serialSupport, DEVICE_FILTERS } from "./env.ts";
 import { allChains, chainLabel } from "../../packages/core/src/chains.ts";
+import { addressQr } from "./receive.ts";
 import type { PopupCommand, WalletState } from "./protocol.ts";
 
 const root = document.getElementById("root") as HTMLElement;
@@ -287,6 +288,9 @@ async function grantPort(opts: { unfiltered?: boolean } = {}): Promise<void> {
  */
 let changingOrigin: string | null = null;
 
+/** Which address's receive panel is open, or null. Popup-lifetime only. */
+let receiveIndex: number | null = null;
+
 function render(): void {
   root.textContent = "";
   if (!state) {
@@ -448,17 +452,61 @@ function accountsSection(s: WalletState): HTMLElement {
   }
   const list = el("ul", {});
   s.addresses.forEach((address, i) => {
+    const showing = receiveIndex === i;
     list.append(
       el(
         "li",
         { class: "account" },
         el("span", { class: "muted mono" }, String(i)),
         el("code", { class: "grow" }, address),
+        button(showing ? "Hide" : "Receive", () => {
+          receiveIndex = showing ? null : i;
+          render();
+        }, "link"),
       ),
     );
+    if (showing) list.append(el("li", { class: "receive" }, receivePanel(address, s)));
   });
   box.append(list);
   return box;
+}
+
+/**
+ * The QR, and the sentence that makes it safe to use.
+ *
+ * A receiving address has no signature in it, so the device's "nothing is
+ * signed except what I drew" guarantee does not reach this screen: the
+ * addresses were read over the session and rendered by software on a computer.
+ * A compromised host cannot spend from them or extract a key; what it can do is
+ * show somebody else's address so that money meant for you is paid to them.
+ * Nothing in this popup can detect that, because a convincing lie here looks
+ * exactly like the truth.
+ *
+ * The device answers it. It has a View Address screen of its own, drawn from
+ * its own key on a display the browser cannot reach, so the instruction is to
+ * compare — and it is on the screen next to the QR rather than in a document
+ * nobody opens.
+ */
+function receivePanel(address: string, s: WalletState): HTMLElement {
+  const panel = el("div", { class: "receive-panel" });
+  panel.append(addressQr(address));
+  panel.append(el("p", { class: "mono break" }, address));
+  panel.append(el("p", { class: "muted" },
+    `On ${chainLabel(s.chainId)}. The code carries the address only — no chain ` +
+    `and no amount — so it cannot send a payer to the wrong network.`));
+  panel.append(el("p", { class: "warn" },
+    "Before you are paid anything that matters, check this address on the " +
+    "device itself: Menu → View Address. This popup is software on a computer, " +
+    "and a computer that has been tampered with can show you somebody else's " +
+    "address. The device draws its own from its own key, and comparing the two " +
+    "settles it."));
+  panel.append(button("Copy", () => {
+    void navigator.clipboard?.writeText(address).then(
+      () => { lastError = "Address copied. Compare it on the device before use."; render(); },
+      () => { lastError = "This window would not let the popup copy. Select the address instead."; render(); },
+    );
+  }, "link"));
+  return panel;
 }
 
 function chainSection(s: WalletState): HTMLElement {

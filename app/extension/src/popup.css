@@ -194,3 +194,25 @@ label.check {
    such: without this the whole thing collapses into a paragraph and the step
    that failed stops being obvious. Monospace because it is machine output. */
 .notice p { white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; }
+
+
+/* ------------------------------------------------------------- receive */
+
+li.receive { list-style: none; }
+
+.receive-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-2);
+  border-left: 2px solid var(--border, #333);
+}
+/* An address is the one string where a wrong character costs money, so it
+   wraps in full rather than being truncated to fit. */
+.break { word-break: break-all; }
+.warn {
+  color: var(--warn, #d08700);
+  font-size: var(--text-xs, 0.75rem);
+  margin: 0;
+}
