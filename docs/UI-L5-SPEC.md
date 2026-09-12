@@ -1,3 +1,8 @@
+> **Superseded for navigation by docs/UI-L6-SPEC.md.** L5's destinations and
+> their Back buttons are gone: the home is one accordion of collapsible
+> sections. **§3 of this document is still binding** — it is the safety
+> invariant, and L6 carries it forward verbatim and strengthens its test.
+
 # L5 — the wallet menu is the home, and the tab bar goes
 
 ## The gap this closes

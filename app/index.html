@@ -163,180 +163,583 @@
         </section>
 
         <!--
-          Wallet menu (L3 balances, L5 navigation - docs/UI-L3-SPEC.md,
-          docs/UI-L5-SPEC.md). This is the post-unlock home: account and its
-          money across every tracked testnet chain, then the blocks that
-          replace the old tab bar as the only way to Send, Receive and the
-          rest. Shown and hidden by setShellVisible() in main.ts. No polling:
-          fetched on entering (setShellVisible(true), and on backing out of a
-          block) and on the Refresh button, and nothing here refreshes while
-          the window is hidden.
+          The home accordion (L6, docs/UI-L6-SPEC.md). Post-unlock there are
+          no destinations and no Back buttons: every section is on this one
+          screen, collapsed, and its header is a real <button> that expands
+          it. Collapsing only toggles [hidden] on the body, so a half-filled
+          Send form or a mini-app mid-flow keeps its DOM and its state while
+          the user goes to sign in "Connect a site".
+
+          The whole accordion — headers included — is hidden while the shell
+          is closed (locked, disconnected, passphrase change). That is the
+          safety property of docs/UI-L5-SPEC.md §3, and it lives in
+          sectionHidden() in src/nav.ts with a test that needs no browser.
         -->
-        <section class="walletmenu" id="walletmenu" aria-labelledby="walletmenuhead" hidden>
-          <h2 id="walletmenuhead" class="visually-hidden">Wallet</h2>
-          <div class="walletmenu__account">
-            <div class="walletmenu__accountline" id="wmaccount"></div>
-            <div class="addr walletmenu__address" id="wmaddress"></div>
-          </div>
-          <div class="row">
-            <button type="button" class="secondary" id="wmrefresh">Refresh</button>
-          </div>
-          <p class="muted" id="wmnote">
-            Balances are fetched by this app from a public RPC operator per
-            chain. The device neither reports nor confirms them.
-          </p>
-          <ul class="walletmenu__chains" id="wmchains" aria-label="Balances across every chain"></ul>
-
+        <section class="acc" id="secbalances" hidden>
+          <h2 class="acc__hd">
+            <button type="button" class="acc__toggle" id="hdrbalances"
+                    aria-expanded="false" aria-controls="walletmenu">
+              <span class="acc__text">
+                <span class="acc__title">Balances</span>
+                <span class="acc__desc" id="wmtotal">—</span>
+              </span>
+              <span class="acc__chev" aria-hidden="true"></span>
+            </button>
+          </h2>
           <!--
-            The blocks (L5, docs/UI-L5-SPEC.md §1.3). Same tile CSS as the
-            pre-connect launcher (.launcher__tile) - reused, not reinvented,
-            per docs/UI-SPEC-V2.md §2e. Each is a destination: main.ts's
-            enterBlock() hides the wallet menu and shows exactly the one
-            panel named, and that panel's own Back button returns here.
-
-            Send and Receive point at the existing "Sign a transaction" and
-            "Addresses" panels rather than a second, purpose-built form - see
-            docs/UI-REDESIGN-PLAN.md milestones. Activity says plainly that it
-            is not built, in the tile itself, rather than opening onto an
-            empty-looking screen.
+            Balances (L6 §1; L3 figures - docs/UI-L6-SPEC.md,
+            docs/UI-L3-SPEC.md). The first section of the home accordion:
+            account, address, the unified per-asset total and the per-chain
+            breakdown. Shown and hidden by setShellVisible() and the header
+            above, both in main.ts. No polling: fetched when the home opens,
+            when this section is opened, and on the Refresh button - and
+            nothing here refreshes while the window is hidden.
           -->
-          <nav class="launcher walletmenu__blocks" aria-label="What do you want to do">
-            <button type="button" class="launcher__tile" id="wmgotosend">
-              <span class="launcher__title">Send</span>
-              <span class="launcher__desc">Scan a code or paste an address</span>
-            </button>
-            <button type="button" class="launcher__tile" id="wmgotoreceive">
-              <span class="launcher__title">Receive</span>
-              <span class="launcher__desc">Show an address to be paid into</span>
-            </button>
-            <button type="button" class="launcher__tile" id="wmgotoactivity">
-              <span class="launcher__title">Activity</span>
-              <span class="launcher__desc">Not built yet</span>
-            </button>
-            <button type="button" class="launcher__tile" id="wmgotoapps">
-              <span class="launcher__title">Apps</span>
-              <span class="launcher__desc">The mini-apps for this device</span>
-            </button>
-            <button type="button" class="launcher__tile" id="wmgotoconnect">
-              <span class="launcher__title">Connect a site</span>
-              <span class="launcher__desc">WalletConnect pairing</span>
-            </button>
-          </nav>
-        </section>
-
-        <section class="panel" id="addrpanel" aria-labelledby="addrhead" hidden>
-          <button type="button" class="destination__back" id="receiveback"><span aria-hidden="true">← </span>Back</button>
-          <h2 id="addrhead">Receive</h2>
-          <p>
-            Pick the account, then the address to receive into — the wrong
-            account is a real mistake and this list is what prevents it.
-            Confirm the address on the device's own screen before you use it;
-            it is the authority, not this app.
-          </p>
-          <!-- Account (T45a). The device browses one BIP-44 account on its own
-               screens and reports which; the app can ask for a different one.
-               "Follow the device" is the default because two screens showing
-               different accounts of the same seed look identical and are not.
-               Changing this throws away every derived address, exactly as a
-               wallet or passphrase change does. -->
-          <label class="field">
-            <span>Account</span>
-            <select id="accountsel" class="addr">
-              <option value="follow">Follow the device</option>
-            </select>
-          </label>
-          <p class="muted" id="accounthint" role="status"></p>
-          <!-- A selector rather than ten rows: only one address is in use at a
-               time, and a list of ten near-identical hex strings is a place to
-               mis-read one. The chosen one is then shown on its own, in full,
-               with room to check it. -->
-          <label class="field">
-            <span>Address</span>
-            <select id="addrselect" class="addr"></select>
-          </label>
-
-          <div class="addr-detail" id="addrdetail" hidden
-               role="group" aria-labelledby="addrfulllabel">
-            <span class="visually-hidden" id="addrfulllabel">Selected address, in full</span>
-            <div class="addr" id="addrfull"></div>
-            <!-- Small label, big-enough mono value: the path is what tells you
-                 *which* key this address is, and truncating it would hide the
-                 one digit that distinguishes two accounts. -->
-            <p class="addr-path-label muted" id="addrpathlabel">Derivation path</p>
-            <div class="addr addr-path" id="addrpath" aria-labelledby="addrpathlabel"></div>
-            <!-- Copy is always here because it always works. The QR is behind a
-                 button: it is only wanted when somebody is pointing a camera at
-                 this screen, and drawing it unasked pushes the address itself
-                 down the page. Share only appears where a share sheet exists,
-                 rather than being a button that quietly does something else. -->
-            <div class="row">
-              <button id="addrqrtoggle" type="button" class="secondary"
-                      aria-expanded="false" aria-controls="addrqr">Show QR code</button>
-              <button id="addrcopy" type="button" class="secondary">Copy address</button>
-              <button id="addrshare" type="button" class="secondary" hidden>Share</button>
+          <section class="walletmenu" id="walletmenu" aria-labelledby="walletmenuhead" hidden>
+            <h3 id="walletmenuhead" class="visually-hidden">Wallet</h3>
+            <div class="walletmenu__account">
+              <div class="walletmenu__accountline" id="wmaccount"></div>
+              <div class="addr walletmenu__address" id="wmaddress"></div>
             </div>
-            <!-- The SVG inside carries an aria-label with the whole address,
-                 so this container needs no label of its own. -->
-            <div class="addr-qr" id="addrqr" hidden></div>
-            <!-- The device draws this same address as a QR on its own screen.
-                 That one is evidence; this one is convenience. If this app were
-                 tampered with it could show anyone's address here, which is
-                 exactly why the sentence below is not decoration. -->
-            <p class="muted" id="addrqrnote" hidden>
-              This QR is drawn by this app, from what the device reported. Before
-              receiving anything that matters, check the address on the device's
-              own screen — it can show its own QR under the address browser.
+            <!-- Account and address live HERE, beside the balances they decide.
+                 They used to sit inside Receive, which is where you go to be
+                 paid, not where you go to choose who you are. With the sections
+                 collapsed you could hold ten derived addresses and never find
+                 the control that picks between them -- the same way the chain
+                 selector was buried in Send. The ids are unchanged, so the
+                 handlers in main.ts still own the behaviour: changing either
+                 still throws away derived state, remounts the apps, clears the
+                 balances before refetching and tells WalletConnect. -->
+            <label class="field">
+              <span>Account</span>
+              <select id="accountsel" class="addr">
+                <option value="follow">Follow the device</option>
+              </select>
+            </label>
+            <p class="muted" id="accounthint" role="status"></p>
+            <!-- A selector rather than ten rows: only one address is in use at a
+                 time, and a list of ten near-identical hex strings is a place to
+                 mis-read one. The chosen one is shown in full above. -->
+            <label class="field">
+              <span>Address</span>
+              <select id="addrselect" class="addr"></select>
+            </label>
+            <div class="row">
+              <button type="button" class="secondary" id="wmrefresh">Refresh</button>
+            </div>
+            <p class="muted" id="wmnote">
+              Balances are fetched by this app from a public RPC operator per
+              chain. The device neither reports nor confirms them.
             </p>
-            <p class="muted" id="addrshint" aria-live="polite"></p>
-          </div>
-
-          <div class="addr-list" id="addrs" hidden></div>
-
-          <!--
-            Balances (T63). Everything in here was fetched by this app from a
-            public RPC operator; the device neither reports nor confirms a
-            balance, and the line under each figure says so. Nothing refreshes
-            on a timer — each fetch tells an operator which address you care
-            about, so they happen on connect, on a chain or address change, and
-            when the button below is pressed. The age is shown instead.
-          -->
-          <section class="balances" id="balances" aria-labelledby="balanceshead">
-            <h3 id="balanceshead" class="visually-hidden">Balances</h3>
-            <div class="row">
-              <span class="balances__native" id="balnative" role="status">—</span>
-              <button id="balrefresh" class="secondary">Refresh</button>
+            <!--
+              Unified balances (L6 §1). One figure per asset, summed across
+              every chain that answered, split testnet from mainnet because
+              those two numbers must never be added together. It is a sum of
+              units, never a fiat total: this app has no price source, and an
+              invented price is a worse lie than an honest per-asset sum.
+            -->
+            <div class="walletmenu__unified">
+              <h4 class="walletmenu__unifiedhead" id="wmunifiedhead">Unified — testnet</h4>
+              <ul class="walletmenu__chains" id="wmunifiedtest" aria-labelledby="wmunifiedhead"></ul>
+              <h4 class="walletmenu__unifiedhead" id="wmunifiedmainhead">Unified — mainnet</h4>
+              <ul class="walletmenu__chains" id="wmunifiedmain" aria-labelledby="wmunifiedmainhead"></ul>
+              <p class="muted" id="wmunifiednote"></p>
             </div>
-            <p class="muted" id="balprov"></p>
+            <ul class="walletmenu__chains" id="wmchains" aria-label="Balances across every chain"></ul>
 
-            <h3>Tokens</h3>
-            <p class="muted">
-              Add a token by its contract address — the address is the only part
-              of a token this app can be sure of. Balances are shown in raw
-              units; any name or decimal point beside them is a guess.
-            </p>
-            <div class="row">
-              <input id="tokenaddr" class="addr" spellcheck="false" autocomplete="off"
-                     placeholder="Token contract 0x…" />
-              <button id="tokenadd" class="secondary">Watch token</button>
-            </div>
-            <p class="muted" id="tokenerr" aria-live="polite"></p>
-
-            <!-- Discovery over the bundled token list: one Multicall3 call per
-                 chain asks balanceOf for every listed contract at once, and
-                 only the ones with a non-zero balance are offered. The list is
-                 a convenience for finding a contract address, never evidence
-                 about it — a symbol here is still unchecked, so the address
-                 stays the heading in the results below. -->
-            <div class="row">
-              <button id="tokendiscover" type="button" class="secondary">Find tokens I hold</button>
-              <button id="tokenlistupdate" type="button" class="secondary">Update token list</button>
-            </div>
-            <p class="muted" id="tokendiscovernote" aria-live="polite"></p>
-            <ul class="tokenlist" id="tokenfound" aria-label="Tokens found by the list search"></ul>
-
-            <ul class="tokenlist" id="tokenlist" aria-label="Watched tokens"></ul>
           </section>
+
         </section>
+
+        <section class="acc" id="secchain" hidden>
+          <h2 class="acc__hd">
+            <button type="button" class="acc__toggle" id="hdrchain"
+                    aria-expanded="false" aria-controls="chainpanel">
+              <span class="acc__text">
+                <span class="acc__title">Network</span>
+                <span class="acc__desc" id="chainhdrdesc">—</span>
+              </span>
+              <span class="acc__chev" aria-hidden="true"></span>
+            </button>
+          </h2>
+            <section class="panel" id="chainpanel" aria-labelledby="chainpanelhead" hidden>
+              <h3 id="chainpanelhead" class="visually-hidden">Network</h3>
+              <p class="muted">
+                The network every balance, preview and signature on this screen
+                is about. Changing it here is the only place it changes — the
+                Send form follows this choice, it does not make it.
+              </p>
+              <!-- Chain and RPC are populated from the registry in chains.ts, so
+                   the list here cannot drift from the one the preview names. -->
+              <label class="field">
+                <span>Chain</span>
+                <select id="chain" class="addr"></select>
+              </label>
+              <p class="muted chainnote" id="chainnote"></p>
+              <!-- A first choice, not a promise: if it does not answer, the app
+                   moves to the next operator this chain lists (T62). The line
+                   below says which one was actually reached, because that is who
+                   learned which addresses were asked about. -->
+              <label class="field">
+                <span>RPC endpoint (first choice)</span>
+                <select id="rpc" class="addr"></select>
+              </label>
+              <p class="muted rpcused" id="rpcused">No endpoint contacted yet.</p>
+
+              <!-- Custom networks (T62). Only reachable when RPC calls go through
+                   the Rust proxy: a user-typed origin cannot be in the webview's
+                   build-time connect-src allowlist, so on a plain browser build
+                   the request is blocked and the form says so rather than offering
+                   something that will not work. -->
+              <details class="custom-chain" id="customchain">
+                <summary>Add a network</summary>
+                <p class="muted" id="customchainstatus"></p>
+                <label class="field"><span>Chain ID</span>
+                  <input id="ccid" class="addr" inputmode="numeric" autocomplete="off" placeholder="e.g. 480" /></label>
+                <label class="field"><span>Name</span>
+                  <input id="ccname" class="addr" autocomplete="off" /></label>
+                <label class="field"><span>Currency name</span>
+                  <input id="ccurname" class="addr" autocomplete="off" value="Ether" /></label>
+                <label class="field"><span>Currency symbol</span>
+                  <input id="ccursym" class="addr" autocomplete="off" value="ETH" /></label>
+                <label class="field"><span>Currency decimals</span>
+                  <input id="ccurdec" class="addr" inputmode="numeric" autocomplete="off" value="18" /></label>
+                <label class="field"><span>RPC URLs (https, one per line)</span>
+                  <textarea id="ccrpcs" class="addr" rows="2" spellcheck="false"></textarea></label>
+                <label class="field"><span>Explorer URL</span>
+                  <input id="ccexplorer" class="addr" spellcheck="false" autocomplete="off" placeholder="https://…" /></label>
+                <label class="field field--check">
+                  <input id="cctestnet" type="checkbox" /> <span>This is a testnet</span></label>
+                <button id="ccadd" class="secondary" type="button">Add network</button>
+                <ul class="preview__warnings" id="ccerrors" role="alert"></ul>
+                <p class="muted" id="ccnotice"></p>
+                <ul class="cclist" id="cclist"></ul>
+              </details>
+            </section>
+
+        </section>
+
+        <section class="acc" id="secreceive" hidden>
+          <h2 class="acc__hd">
+            <button type="button" class="acc__toggle" id="hdrreceive"
+                    aria-expanded="false" aria-controls="addrpanel">
+              <span class="acc__text">
+                <span class="acc__title">Receive</span>
+                <span class="acc__desc">Show an address to be paid into</span>
+              </span>
+              <span class="acc__chev" aria-hidden="true"></span>
+            </button>
+          </h2>
+          <section class="panel" id="addrpanel" aria-labelledby="addrhead" hidden>
+            <h3 id="addrhead" class="visually-hidden">Receive</h3>
+            <p>
+              Pick the account, then the address to receive into — the wrong
+              account is a real mistake and this list is what prevents it.
+              Confirm the address on the device's own screen before you use it;
+              it is the authority, not this app.
+            </p>
+            <!-- Account (T45a). The device browses one BIP-44 account on its own
+                 screens and reports which; the app can ask for a different one.
+                 "Follow the device" is the default because two screens showing
+                 different accounts of the same seed look identical and are not.
+                 Changing this throws away every derived address, exactly as a
+                 wallet or passphrase change does. -->
+
+            <div class="addr-detail" id="addrdetail" hidden
+                 role="group" aria-labelledby="addrfulllabel">
+              <span class="visually-hidden" id="addrfulllabel">Selected address, in full</span>
+              <div class="addr" id="addrfull"></div>
+              <!-- Small label, big-enough mono value: the path is what tells you
+                   *which* key this address is, and truncating it would hide the
+                   one digit that distinguishes two accounts. -->
+              <p class="addr-path-label muted" id="addrpathlabel">Derivation path</p>
+              <div class="addr addr-path" id="addrpath" aria-labelledby="addrpathlabel"></div>
+              <!-- Copy is always here because it always works. The QR is behind a
+                   button: it is only wanted when somebody is pointing a camera at
+                   this screen, and drawing it unasked pushes the address itself
+                   down the page. Share only appears where a share sheet exists,
+                   rather than being a button that quietly does something else. -->
+              <div class="row">
+                <button id="addrqrtoggle" type="button" class="secondary"
+                        aria-expanded="false" aria-controls="addrqr">Show QR code</button>
+                <button id="addrcopy" type="button" class="secondary">Copy address</button>
+                <button id="addrshare" type="button" class="secondary" hidden>Share</button>
+              </div>
+              <!-- The SVG inside carries an aria-label with the whole address,
+                   so this container needs no label of its own. -->
+              <div class="addr-qr" id="addrqr" hidden></div>
+              <!-- The device draws this same address as a QR on its own screen.
+                   That one is evidence; this one is convenience. If this app were
+                   tampered with it could show anyone's address here, which is
+                   exactly why the sentence below is not decoration. -->
+              <p class="muted" id="addrqrnote" hidden>
+                This QR is drawn by this app, from what the device reported. Before
+                receiving anything that matters, check the address on the device's
+                own screen — it can show its own QR under the address browser.
+              </p>
+              <p class="muted" id="addrshint" aria-live="polite"></p>
+            </div>
+
+            <div class="addr-list" id="addrs" hidden></div>
+
+            <!--
+              Balances (T63). Everything in here was fetched by this app from a
+              public RPC operator; the device neither reports nor confirms a
+              balance, and the line under each figure says so. Nothing refreshes
+              on a timer — each fetch tells an operator which address you care
+              about, so they happen on connect, on a chain or address change, and
+              when the button below is pressed. The age is shown instead.
+            -->
+            <section class="balances" id="balances" aria-labelledby="balanceshead">
+              <h3 id="balanceshead" class="visually-hidden">Balances</h3>
+              <div class="row">
+                <span class="balances__native" id="balnative" role="status">—</span>
+                <button id="balrefresh" class="secondary">Refresh</button>
+              </div>
+              <p class="muted" id="balprov"></p>
+
+              <h3>Tokens</h3>
+              <p class="muted">
+                Add a token by its contract address — the address is the only part
+                of a token this app can be sure of. Balances are shown in raw
+                units; any name or decimal point beside them is a guess.
+              </p>
+              <div class="row">
+                <input id="tokenaddr" class="addr" spellcheck="false" autocomplete="off"
+                       placeholder="Token contract 0x…" />
+                <button id="tokenadd" class="secondary">Watch token</button>
+              </div>
+              <p class="muted" id="tokenerr" aria-live="polite"></p>
+
+              <!-- Discovery over the bundled token list: one Multicall3 call per
+                   chain asks balanceOf for every listed contract at once, and
+                   only the ones with a non-zero balance are offered. The list is
+                   a convenience for finding a contract address, never evidence
+                   about it — a symbol here is still unchecked, so the address
+                   stays the heading in the results below. -->
+              <div class="row">
+                <button id="tokendiscover" type="button" class="secondary">Find tokens I hold</button>
+                <button id="tokenlistupdate" type="button" class="secondary">Update token list</button>
+              </div>
+              <p class="muted" id="tokendiscovernote" aria-live="polite"></p>
+              <ul class="tokenlist" id="tokenfound" aria-label="Tokens found by the list search"></ul>
+
+              <ul class="tokenlist" id="tokenlist" aria-label="Watched tokens"></ul>
+            </section>
+          </section>
+
+        </section>
+
+        <section class="acc" id="secsend" hidden>
+          <h2 class="acc__hd">
+            <button type="button" class="acc__toggle" id="hdrsend"
+                    aria-expanded="false" aria-controls="signpanel">
+              <span class="acc__text">
+                <span class="acc__title">Send</span>
+                <span class="acc__desc">Scan a code or paste an address</span>
+              </span>
+              <span class="acc__chev" aria-hidden="true"></span>
+            </button>
+          </h2>
+          <section class="panel" id="signpanel" aria-labelledby="signhead" hidden>
+            <h3 id="signhead">Sign a transaction</h3>
+            <p>
+              This preview is drawn by this app and cannot be trusted. Verify the
+              fields on the device before approving. The device shows every field on its own
+              screen and will not sign until you have seen all of them. The RPC
+              you pick learns which addresses you are asking about; it cannot
+              move funds.
+            </p>
+            <dl class="kv">
+              <dt>From</dt><dd id="sfrom">—</dd>
+            </dl>
+
+            <!-- Native or one of the watched tokens. A token send is an ERC-20
+                 transfer(address,uint256), which is in the set the device decodes
+                 and draws on its own screen. -->
+            <label class="field">
+              <span>Asset</span>
+              <select id="asset" class="addr"></select>
+            </label>
+            <p class="muted" id="assetnote"></p>
+
+            <!-- Scanning beats typing here for one reason that matters: a
+                 hand-copied address is checked by a human comparing 40 hex
+                 characters, which is exactly the task people skip. A scan that
+                 refuses a bad EIP-55 checksum catches the corruption instead.
+                 The camera is the same one the wc: pairing scanner uses, and it
+                 is released the moment a code is read. -->
+            <label class="field">
+              <span>To</span>
+              <input id="to" class="addr" spellcheck="false"
+                     placeholder="0x…" autocomplete="off" />
+            </label>
+            <div class="row">
+              <button id="toscan" type="button" class="secondary" aria-pressed="false">Scan QR</button>
+              <button id="toscanstop" type="button" class="secondary" hidden>Stop camera</button>
+            </div>
+            <p class="muted" id="toscanhint" role="status"></p>
+            <!-- A camera preview has nothing to say to a screen reader and cannot
+                 be operated from a keyboard; what matters about it — that the
+                 camera is on, and what it found — is in the live hint above. It
+                 stays out of the tree and out of the tab order rather than
+                 becoming a stop nobody can use. -->
+            <video id="tovideo" class="wc-video" hidden muted playsinline
+                   aria-hidden="true" tabindex="-1"></video>
+            <!-- Which unit the number below is in. Present for tokens because
+                 the scaled unit is built on decimals this app cannot verify, so
+                 typing raw units has to stay available rather than be the
+                 expert-mode option. -->
+            <label class="field" id="unitfield" hidden>
+              <span>Amount unit</span>
+              <select id="amountunit" class="addr"></select>
+            </label>
+            <label class="field">
+              <span id="amountlabel">Amount (ETH)</span>
+              <input id="amount" class="addr" spellcheck="false"
+                     value="0.0001" autocomplete="off" />
+            </label>
+            <!-- Max reserves the fee at maxFeePerGas, the EIP-1559 cap, not at
+                 the expected fee. Reserving at the expected fee leaves a
+                 "send everything" transaction unpayable if the base fee rises
+                 before inclusion; reserving at the cap leaves dust instead. The
+                 note below says so, because a Max button that silently guesses
+                 wrong about money is worse than no Max button. -->
+            <div class="row">
+              <button id="amountmax" type="button" class="secondary">Max</button>
+            </div>
+            <p class="muted" id="maxnote" aria-live="polite"></p>
+            <!-- The conversion, spelled out at the point of entry rather than in
+                 a footnote: if this says "5 USDC = 5000000 raw units" it is
+                 because a contract claimed six decimals, and nothing checked it. -->
+            <p class="muted amountnote" id="amountnote" aria-live="polite"></p>
+
+            <!-- Advisory preview (T48). Deliberately styled as a note rather
+                 than a verdict: nothing in here has been checked by anything the
+                 user can trust. See PROTOCOL.md 6c. -->
+            <!-- Not a live region as a whole. It redraws on every keystroke, and
+                 a screen reader re-reading the entire interpretation of a
+                 half-typed transaction is noise that gets the real content muted.
+                 The warnings are the part that changes rarely and matters most,
+                 so that list is what announces. -->
+            <section class="preview" id="preview" hidden
+                     aria-labelledby="previewtag">
+              <div class="preview__tag" id="previewtag">Preview — drawn by this app, not by the device</div>
+              <p class="preview__summary" id="psummary"></p>
+              <dl class="kv" id="pfields"></dl>
+              <ul class="preview__warnings" id="pwarnings" aria-live="polite"
+                  aria-label="Warnings about this transaction"></ul>
+              <p class="preview__authority" id="pauthority"></p>
+            </section>
+
+            <div class="row" style="margin-top: var(--space-4)">
+              <button class="primary" id="sign">Sign &amp; send</button>
+              <button id="usenext">Use address 1</button>
+            </div>
+            <p id="txresult" class="muted" role="status"></p>
+          </section>
+
+        </section>
+
+        <section class="acc" id="secapps" hidden>
+          <h2 class="acc__hd">
+            <button type="button" class="acc__toggle" id="hdrapps"
+                    aria-expanded="false" aria-controls="waiterdest">
+              <span class="acc__text">
+                <span class="acc__title">Apps</span>
+                <span class="acc__desc">The mini-apps for this device</span>
+              </span>
+              <span class="acc__chev" aria-hidden="true"></span>
+            </button>
+          </h2>
+          <!--
+            Apps / La Caja — waiter, as a destination (docs/UI-SPEC-V2.md §1a,
+            docs/UI-L5-SPEC.md §3). Reachable two ways: the launcher's "La Caja"
+            tile pre-connect, and the wallet menu's "Apps" block once unlocked
+            — main.ts's enterDest()/enterBlock() both point here, and this
+            wrapper's own [hidden] is the single gate for either path (no
+            double-gating). The #apps div inside keeps deciding its own
+            [hidden] from mounted content, unrelated to which path opened it.
+          -->
+          <section class="destination" id="waiterdest" hidden>
+            <button type="button" class="destination__back" id="waiterback"><span aria-hidden="true">← </span>Back</button>
+            <!-- Mini-apps mount here, one panel each. Empty and hidden unless the
+                 active chain has one registered - see src/apps/registry.ts, which
+                 is the single line a release build removes to exclude one. -->
+            <div id="apps" hidden></div>
+          </section>
+
+        </section>
+
+        <section class="acc" id="secconnect" hidden>
+          <h2 class="acc__hd">
+            <button type="button" class="acc__toggle" id="hdrconnect"
+                    aria-expanded="false" aria-controls="wcpanel">
+              <span class="acc__text">
+                <span class="acc__title">Connect a site</span>
+                <span class="acc__desc">WalletConnect pairing</span>
+              </span>
+              <span class="acc__badge" id="badgeconnect" hidden role="status"></span>
+              <span class="acc__chev" aria-hidden="true"></span>
+            </button>
+          </h2>
+          <!--
+            Dapp connectivity (T32/T49). Deliberately not a browser: there is no
+            address bar here and there will not be one. The dapp stays in the
+            user's own browser and only structured JSON-RPC crosses the relay —
+            see docs/PROTOCOL.md section 6b for why rendering untrusted web
+            content next to a signing device is the thing we are not doing.
+          -->
+          <section class="panel" id="wcpanel" aria-labelledby="wchead" hidden>
+            <h3 id="wchead">Dapps (WalletConnect)</h3>
+            <p id="wcstatus" class="muted" role="status"></p>
+
+            <!-- This field is the OVERRIDE, never the value in use. It reads
+                 empty on a normal install because the bundled ID is doing the
+                 work, and an empty box under a heading called "Project ID" reads
+                 as "there is no project ID" — which is what it was mistaken for.
+                 The placeholder now says which of the two it is; the hint above
+                 says which one is actually in effect. -->
+            <details>
+              <summary>Project ID</summary>
+              <p class="muted" id="wcprojecthint"></p>
+              <div class="row">
+                <input id="wcprojectid" class="addr" spellcheck="false"
+                       autocomplete="off"
+                       placeholder="Optional — your own 32-hex ID" />
+                <button id="wcprojectsave">Save</button>
+              </div>
+              <p class="muted">
+                Leave this empty to use the ID bundled with this build. Set your
+                own from cloud.reown.com if you would rather not share relay quota
+                with other users of this app — clearing it again falls back to the
+                bundled one.
+              </p>
+            </details>
+
+            <label class="field">
+              <span>Pairing link from the dapp</span>
+              <input id="wcuri" class="addr" spellcheck="false"
+                     autocomplete="off" placeholder="wc:…@2?relay-protocol=irn&amp;symKey=…" />
+            </label>
+            <div class="row">
+              <button class="primary" id="wcpair">Pair</button>
+              <button id="wcscan" aria-pressed="false">Scan QR</button>
+            </div>
+            <p class="muted" id="wcscanhint" role="status"></p>
+            <!-- Camera frames are read by the platform barcode detector and
+                 discarded; nothing is stored or uploaded. -->
+            <video id="wcvideo" class="wc-video" hidden muted playsinline
+                   aria-hidden="true" tabindex="-1"></video>
+
+            <section class="wc-card" id="wcproposal" aria-labelledby="wcprophead" hidden>
+              <h3 id="wcprophead">A dapp wants to connect</h3>
+              <dl class="kv">
+                <dt>Calls itself</dt><dd id="wcpropname"></dd>
+                <dt>At</dt><dd id="wcpropurl"></dd>
+              </dl>
+              <p id="wcpropdetail"></p>
+              <ul class="preview__warnings" id="wcpropwarn"
+                  aria-label="Warnings about this dapp"></ul>
+              <div class="row">
+                <button class="primary" id="wcpropapprove">Connect</button>
+                <button id="wcpropreject">Decline</button>
+              </div>
+            </section>
+
+            <!-- The arrival is announced by the live region at the top of the
+                 page, in one sentence naming the dapp and the method. The card
+                 itself is not live: it is several paragraphs plus a preview, and
+                 reading all of it aloud on arrival buries the sentence that says
+                 what just happened. -->
+            <section class="wc-card" id="wcrequest" aria-labelledby="wcreqhead" hidden>
+              <h3 id="wcreqhead">Pending request</h3>
+              <dl class="kv">
+                <dt>From</dt><dd id="wcreqname"></dd>
+                <dt>Method</dt><dd id="wcreqmethod"></dd>
+              </dl>
+              <div id="wcreqbody"></div>
+
+              <!-- The same advisory preview the send form draws, from the same
+                   interpretTransaction. A dapp cannot put a word inside it. -->
+              <section class="preview" id="wcpreview" aria-labelledby="wcpreviewtag" hidden>
+                <div class="preview__tag" id="wcpreviewtag">Preview — drawn by this app, not by the device</div>
+                <p class="preview__summary" id="wcpsummary"></p>
+                <dl class="kv" id="wcpfields"></dl>
+                <ul class="preview__warnings" id="wcpwarnings"
+                    aria-label="Warnings about this request"></ul>
+                <p class="preview__authority" id="wcpauthority"></p>
+              </section>
+
+              <!-- The approval cap (T-cap). Only ever shown for an
+                   approve() this app could decode, and it edits the CALLDATA:
+                   what the device then decodes and draws on its own screen is
+                   the capped call, so the figure is confirmed against hardware
+                   rather than against this box. Nothing here is a safety
+                   result, and the warning below says out loud that the dapp's
+                   request is being changed behind its back. -->
+              <section class="wc-cap" id="wccap" aria-labelledby="wccaphead" hidden>
+                <h4 id="wccaphead">Approve less than the dapp asked for</h4>
+                <p id="wccaprequested"></p>
+                <label class="field">
+                  <span id="wccaplabel">New approval amount</span>
+                  <input id="wccapamount" class="addr" spellcheck="false"
+                         autocomplete="off" inputmode="decimal" />
+                </label>
+                <p class="muted" id="wccapscale"></p>
+                <div class="row">
+                  <button id="wccapapply">Apply this amount</button>
+                  <button id="wccapreset">Restore the dapp's amount</button>
+                </div>
+                <p id="wccapstatus" role="status"></p>
+                <ul class="preview__warnings" id="wccapnotices"
+                    aria-label="What changing this amount means"></ul>
+              </section>
+
+              <div class="row">
+                <button class="primary" id="wcapprove">Approve on device</button>
+                <button id="wcreject">Reject</button>
+              </div>
+              <p class="muted" id="wcqueue" role="status"></p>
+            </section>
+
+            <h3 id="wcsessionshead">Connected dapps</h3>
+            <!-- A group rather than a list: when nothing is connected the
+                 container holds one sentence saying so, and a bare string is not
+                 a list item. -->
+            <div id="wcsessions" class="wc-sessions" role="group"
+                 aria-labelledby="wcsessionshead"></div>
+          </section>
+
+        </section>
+
+        <section class="acc" id="secactivity" hidden>
+          <h2 class="acc__hd">
+            <button type="button" class="acc__toggle" id="hdractivity"
+                    aria-expanded="false" aria-controls="activitypanel">
+              <span class="acc__text">
+                <span class="acc__title">Activity</span>
+                <span class="acc__desc">Not built yet</span>
+              </span>
+              <span class="acc__chev" aria-hidden="true"></span>
+            </button>
+          </h2>
+          <!-- Activity (M7, not built). A stub rather than nothing: the block
+               on the wallet menu already says "Not built yet", and unavailable
+               must never read as zero (rule 4) - so this repeats it plainly
+               rather than showing an empty list that looks like a wallet with
+               no transactions. -->
+          <section class="panel" id="activitypanel" aria-labelledby="activityhead" hidden>
+            <h3 id="activityhead" class="visually-hidden">Activity</h3>
+            <p class="muted">
+              Not built yet. When it is, this will show transactions signed on
+              this wallet and transfers of tokens you watch - not a full
+              history, and it will say so here rather than imply completeness.
+            </p>
+          </section>
+
+        </section>
+
 
         <!-- Firmware flashing (T65). Present but inert in shipped builds: the
              backend is compiled without the `flasher` feature, so
@@ -433,311 +836,9 @@
           <p class="muted" id="flashstatus" aria-live="polite"></p>
         </div>
 
-        <!-- Activity (M7, not built). A stub rather than nothing: the block
-             on the wallet menu already says "Not built yet", and unavailable
-             must never read as zero (rule 4) - so this repeats it plainly
-             rather than showing an empty list that looks like a wallet with
-             no transactions. -->
-        <section class="panel" id="activitypanel" aria-labelledby="activityhead" hidden>
-          <button type="button" class="destination__back" id="activityback"><span aria-hidden="true">← </span>Back</button>
-          <h2 id="activityhead">Activity</h2>
-          <p class="muted">
-            Not built yet. When it is, this will show transactions signed on
-            this wallet and transfers of tokens you watch - not a full
-            history, and it will say so here rather than imply completeness.
-          </p>
-        </section>
 
-        <section class="panel" id="signpanel" aria-labelledby="signhead" hidden>
-          <button type="button" class="destination__back" id="sendback"><span aria-hidden="true">← </span>Back</button>
-          <h2 id="signhead">Sign a transaction</h2>
-          <p>
-            This preview is drawn by this app and cannot be trusted. Verify the
-            fields on the device before approving. The device shows every field on its own
-            screen and will not sign until you have seen all of them. The RPC
-            you pick learns which addresses you are asking about; it cannot
-            move funds.
-          </p>
-          <dl class="kv">
-            <dt>From</dt><dd id="sfrom">—</dd>
-          </dl>
 
-          <!-- Chain and RPC are populated from the registry in chains.ts, so
-               the list here cannot drift from the one the preview names. -->
-          <label class="field">
-            <span>Chain</span>
-            <select id="chain" class="addr"></select>
-          </label>
-          <p class="muted chainnote" id="chainnote"></p>
-          <!-- A first choice, not a promise: if it does not answer, the app
-               moves to the next operator this chain lists (T62). The line
-               below says which one was actually reached, because that is who
-               learned which addresses were asked about. -->
-          <label class="field">
-            <span>RPC endpoint (first choice)</span>
-            <select id="rpc" class="addr"></select>
-          </label>
-          <p class="muted rpcused" id="rpcused">No endpoint contacted yet.</p>
 
-          <!-- Custom networks (T62). Only reachable when RPC calls go through
-               the Rust proxy: a user-typed origin cannot be in the webview's
-               build-time connect-src allowlist, so on a plain browser build
-               the request is blocked and the form says so rather than offering
-               something that will not work. -->
-          <details class="custom-chain" id="customchain">
-            <summary>Add a network</summary>
-            <p class="muted" id="customchainstatus"></p>
-            <label class="field"><span>Chain ID</span>
-              <input id="ccid" class="addr" inputmode="numeric" autocomplete="off" placeholder="e.g. 480" /></label>
-            <label class="field"><span>Name</span>
-              <input id="ccname" class="addr" autocomplete="off" /></label>
-            <label class="field"><span>Currency name</span>
-              <input id="ccurname" class="addr" autocomplete="off" value="Ether" /></label>
-            <label class="field"><span>Currency symbol</span>
-              <input id="ccursym" class="addr" autocomplete="off" value="ETH" /></label>
-            <label class="field"><span>Currency decimals</span>
-              <input id="ccurdec" class="addr" inputmode="numeric" autocomplete="off" value="18" /></label>
-            <label class="field"><span>RPC URLs (https, one per line)</span>
-              <textarea id="ccrpcs" class="addr" rows="2" spellcheck="false"></textarea></label>
-            <label class="field"><span>Explorer URL</span>
-              <input id="ccexplorer" class="addr" spellcheck="false" autocomplete="off" placeholder="https://…" /></label>
-            <label class="field field--check">
-              <input id="cctestnet" type="checkbox" /> <span>This is a testnet</span></label>
-            <button id="ccadd" class="secondary" type="button">Add network</button>
-            <ul class="preview__warnings" id="ccerrors" role="alert"></ul>
-            <p class="muted" id="ccnotice"></p>
-            <ul class="cclist" id="cclist"></ul>
-          </details>
-          <!-- Native or one of the watched tokens. A token send is an ERC-20
-               transfer(address,uint256), which is in the set the device decodes
-               and draws on its own screen. -->
-          <label class="field">
-            <span>Asset</span>
-            <select id="asset" class="addr"></select>
-          </label>
-          <p class="muted" id="assetnote"></p>
-
-          <!-- Scanning beats typing here for one reason that matters: a
-               hand-copied address is checked by a human comparing 40 hex
-               characters, which is exactly the task people skip. A scan that
-               refuses a bad EIP-55 checksum catches the corruption instead.
-               The camera is the same one the wc: pairing scanner uses, and it
-               is released the moment a code is read. -->
-          <label class="field">
-            <span>To</span>
-            <input id="to" class="addr" spellcheck="false"
-                   placeholder="0x…" autocomplete="off" />
-          </label>
-          <div class="row">
-            <button id="toscan" type="button" class="secondary" aria-pressed="false">Scan QR</button>
-            <button id="toscanstop" type="button" class="secondary" hidden>Stop camera</button>
-          </div>
-          <p class="muted" id="toscanhint" role="status"></p>
-          <!-- A camera preview has nothing to say to a screen reader and cannot
-               be operated from a keyboard; what matters about it — that the
-               camera is on, and what it found — is in the live hint above. It
-               stays out of the tree and out of the tab order rather than
-               becoming a stop nobody can use. -->
-          <video id="tovideo" class="wc-video" hidden muted playsinline
-                 aria-hidden="true" tabindex="-1"></video>
-          <!-- Which unit the number below is in. Present for tokens because
-               the scaled unit is built on decimals this app cannot verify, so
-               typing raw units has to stay available rather than be the
-               expert-mode option. -->
-          <label class="field" id="unitfield" hidden>
-            <span>Amount unit</span>
-            <select id="amountunit" class="addr"></select>
-          </label>
-          <label class="field">
-            <span id="amountlabel">Amount (ETH)</span>
-            <input id="amount" class="addr" spellcheck="false"
-                   value="0.0001" autocomplete="off" />
-          </label>
-          <!-- Max reserves the fee at maxFeePerGas, the EIP-1559 cap, not at
-               the expected fee. Reserving at the expected fee leaves a
-               "send everything" transaction unpayable if the base fee rises
-               before inclusion; reserving at the cap leaves dust instead. The
-               note below says so, because a Max button that silently guesses
-               wrong about money is worse than no Max button. -->
-          <div class="row">
-            <button id="amountmax" type="button" class="secondary">Max</button>
-          </div>
-          <p class="muted" id="maxnote" aria-live="polite"></p>
-          <!-- The conversion, spelled out at the point of entry rather than in
-               a footnote: if this says "5 USDC = 5000000 raw units" it is
-               because a contract claimed six decimals, and nothing checked it. -->
-          <p class="muted amountnote" id="amountnote" aria-live="polite"></p>
-
-          <!-- Advisory preview (T48). Deliberately styled as a note rather
-               than a verdict: nothing in here has been checked by anything the
-               user can trust. See PROTOCOL.md 6c. -->
-          <!-- Not a live region as a whole. It redraws on every keystroke, and
-               a screen reader re-reading the entire interpretation of a
-               half-typed transaction is noise that gets the real content muted.
-               The warnings are the part that changes rarely and matters most,
-               so that list is what announces. -->
-          <section class="preview" id="preview" hidden
-                   aria-labelledby="previewtag">
-            <div class="preview__tag" id="previewtag">Preview — drawn by this app, not by the device</div>
-            <p class="preview__summary" id="psummary"></p>
-            <dl class="kv" id="pfields"></dl>
-            <ul class="preview__warnings" id="pwarnings" aria-live="polite"
-                aria-label="Warnings about this transaction"></ul>
-            <p class="preview__authority" id="pauthority"></p>
-          </section>
-
-          <div class="row" style="margin-top: var(--space-4)">
-            <button class="primary" id="sign">Sign &amp; send</button>
-            <button id="usenext">Use address 1</button>
-          </div>
-          <p id="txresult" class="muted" role="status"></p>
-        </section>
-
-        <!--
-          Dapp connectivity (T32/T49). Deliberately not a browser: there is no
-          address bar here and there will not be one. The dapp stays in the
-          user's own browser and only structured JSON-RPC crosses the relay —
-          see docs/PROTOCOL.md section 6b for why rendering untrusted web
-          content next to a signing device is the thing we are not doing.
-        -->
-        <section class="panel" id="wcpanel" aria-labelledby="wchead" hidden>
-          <button type="button" class="destination__back" id="wcback"><span aria-hidden="true">← </span>Back</button>
-          <h2 id="wchead">Dapps (WalletConnect)</h2>
-          <p id="wcstatus" class="muted" role="status"></p>
-
-          <!-- This field is the OVERRIDE, never the value in use. It reads
-               empty on a normal install because the bundled ID is doing the
-               work, and an empty box under a heading called "Project ID" reads
-               as "there is no project ID" — which is what it was mistaken for.
-               The placeholder now says which of the two it is; the hint above
-               says which one is actually in effect. -->
-          <details>
-            <summary>Project ID</summary>
-            <p class="muted" id="wcprojecthint"></p>
-            <div class="row">
-              <input id="wcprojectid" class="addr" spellcheck="false"
-                     autocomplete="off"
-                     placeholder="Optional — your own 32-hex ID" />
-              <button id="wcprojectsave">Save</button>
-            </div>
-            <p class="muted">
-              Leave this empty to use the ID bundled with this build. Set your
-              own from cloud.reown.com if you would rather not share relay quota
-              with other users of this app — clearing it again falls back to the
-              bundled one.
-            </p>
-          </details>
-
-          <label class="field">
-            <span>Pairing link from the dapp</span>
-            <input id="wcuri" class="addr" spellcheck="false"
-                   autocomplete="off" placeholder="wc:…@2?relay-protocol=irn&amp;symKey=…" />
-          </label>
-          <div class="row">
-            <button class="primary" id="wcpair">Pair</button>
-            <button id="wcscan" aria-pressed="false">Scan QR</button>
-          </div>
-          <p class="muted" id="wcscanhint" role="status"></p>
-          <!-- Camera frames are read by the platform barcode detector and
-               discarded; nothing is stored or uploaded. -->
-          <video id="wcvideo" class="wc-video" hidden muted playsinline
-                 aria-hidden="true" tabindex="-1"></video>
-
-          <section class="wc-card" id="wcproposal" aria-labelledby="wcprophead" hidden>
-            <h3 id="wcprophead">A dapp wants to connect</h3>
-            <dl class="kv">
-              <dt>Calls itself</dt><dd id="wcpropname"></dd>
-              <dt>At</dt><dd id="wcpropurl"></dd>
-            </dl>
-            <p id="wcpropdetail"></p>
-            <ul class="preview__warnings" id="wcpropwarn"
-                aria-label="Warnings about this dapp"></ul>
-            <div class="row">
-              <button class="primary" id="wcpropapprove">Connect</button>
-              <button id="wcpropreject">Decline</button>
-            </div>
-          </section>
-
-          <!-- The arrival is announced by the live region at the top of the
-               page, in one sentence naming the dapp and the method. The card
-               itself is not live: it is several paragraphs plus a preview, and
-               reading all of it aloud on arrival buries the sentence that says
-               what just happened. -->
-          <section class="wc-card" id="wcrequest" aria-labelledby="wcreqhead" hidden>
-            <h3 id="wcreqhead">Pending request</h3>
-            <dl class="kv">
-              <dt>From</dt><dd id="wcreqname"></dd>
-              <dt>Method</dt><dd id="wcreqmethod"></dd>
-            </dl>
-            <div id="wcreqbody"></div>
-
-            <!-- The same advisory preview the send form draws, from the same
-                 interpretTransaction. A dapp cannot put a word inside it. -->
-            <section class="preview" id="wcpreview" aria-labelledby="wcpreviewtag" hidden>
-              <div class="preview__tag" id="wcpreviewtag">Preview — drawn by this app, not by the device</div>
-              <p class="preview__summary" id="wcpsummary"></p>
-              <dl class="kv" id="wcpfields"></dl>
-              <ul class="preview__warnings" id="wcpwarnings"
-                  aria-label="Warnings about this request"></ul>
-              <p class="preview__authority" id="wcpauthority"></p>
-            </section>
-
-            <!-- The approval cap (T-cap). Only ever shown for an
-                 approve() this app could decode, and it edits the CALLDATA:
-                 what the device then decodes and draws on its own screen is
-                 the capped call, so the figure is confirmed against hardware
-                 rather than against this box. Nothing here is a safety
-                 result, and the warning below says out loud that the dapp's
-                 request is being changed behind its back. -->
-            <section class="wc-cap" id="wccap" aria-labelledby="wccaphead" hidden>
-              <h4 id="wccaphead">Approve less than the dapp asked for</h4>
-              <p id="wccaprequested"></p>
-              <label class="field">
-                <span id="wccaplabel">New approval amount</span>
-                <input id="wccapamount" class="addr" spellcheck="false"
-                       autocomplete="off" inputmode="decimal" />
-              </label>
-              <p class="muted" id="wccapscale"></p>
-              <div class="row">
-                <button id="wccapapply">Apply this amount</button>
-                <button id="wccapreset">Restore the dapp's amount</button>
-              </div>
-              <p id="wccapstatus" role="status"></p>
-              <ul class="preview__warnings" id="wccapnotices"
-                  aria-label="What changing this amount means"></ul>
-            </section>
-
-            <div class="row">
-              <button class="primary" id="wcapprove">Approve on device</button>
-              <button id="wcreject">Reject</button>
-            </div>
-            <p class="muted" id="wcqueue" role="status"></p>
-          </section>
-
-          <h3 id="wcsessionshead">Connected dapps</h3>
-          <!-- A group rather than a list: when nothing is connected the
-               container holds one sentence saying so, and a bare string is not
-               a list item. -->
-          <div id="wcsessions" class="wc-sessions" role="group"
-               aria-labelledby="wcsessionshead"></div>
-        </section>
-
-        <!--
-          Apps / La Caja — waiter, as a destination (docs/UI-SPEC-V2.md §1a,
-          docs/UI-L5-SPEC.md §3). Reachable two ways: the launcher's "La Caja"
-          tile pre-connect, and the wallet menu's "Apps" block once unlocked
-          — main.ts's enterDest()/enterBlock() both point here, and this
-          wrapper's own [hidden] is the single gate for either path (no
-          double-gating). The #apps div inside keeps deciding its own
-          [hidden] from mounted content, unrelated to which path opened it.
-        -->
-        <section class="destination" id="waiterdest" hidden>
-          <button type="button" class="destination__back" id="waiterback"><span aria-hidden="true">← </span>Back</button>
-          <!-- Mini-apps mount here, one panel each. Empty and hidden unless the
-               active chain has one registered - see src/apps/registry.ts, which
-               is the single line a release build removes to exclude one. -->
-          <div id="apps" hidden></div>
-        </section>
         <!-- One camera surface for every mini-app, owned by the shell.
              An app never gets a MediaStream; it calls AppContext.scanQr and
              receives whatever its own accept() matched. -->

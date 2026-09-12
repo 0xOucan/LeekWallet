@@ -36,7 +36,9 @@ import qrcodegen from "qrcode-generator";
 import { initFlasher, tauriFlashBridge } from "./flasher.ts";
 import { parsePaymentUri } from "../packages/core/src/payment-uri.ts";
 import { mountApps } from "./apps/mount.ts";
-import { type Dest, DEST_PANEL_IDS, destHidden } from "./nav.ts";
+import {
+  type Section, SECTIONS, SECTION_HEADER_IDS, sectionHidden, toggleSection,
+} from "./nav.ts";
 import { appProposer } from "./apps/propose.ts";
 import type { ChainChannel } from "../packages/core/src/mini-app.ts";
 import { fetchTokenBalancesBatched } from "../packages/core/src/multicall.ts";
@@ -591,8 +593,8 @@ function invalidateDerived(reason: string): void {
   $("addrs").textContent = "";
   $("addrdetail").hidden = true;
   $("addrpath").textContent = "";
-  $("addrpanel").hidden = true;
-  $("signpanel").hidden = true;
+  /* addrpanel and signpanel are section bodies now; setShellVisible(false)
+     hides them along with every other section and its header. */
   setShellVisible(false);
   $("sfrom").textContent = "—";
   clearBalances();
@@ -710,83 +712,138 @@ const busy = (on: boolean): void => {
 };
 
 /**
- * The wallet menu's own blocks (L5, docs/UI-L5-SPEC.md).
+ * The home accordion (L6, docs/UI-L6-SPEC.md).
  *
- * Replaces the old tab bar (M2): Send, Receive, Activity, Apps and Connect a
- * site are destinations reached from blocks on the wallet menu, not tabs
- * shown all at once. This extends the launcher's own state-machine shape
- * (PreConnectDest/applyPreConnectVisibility/enterDest/goToLauncher, below)
- * rather than inventing a second one — same idea, one level further in.
+ * Replaces L5's push/pop destinations and their Back buttons: Balances,
+ * Network, Receive, Send, Apps, Connect a site and Activity are all sections
+ * of the one post-unlock screen, each collapsed behind a header button.
  *
- * The rule for which panel is visible (Dest/DEST_PANEL_IDS/destHidden) lives
- * in nav.ts, DOM-free, so the safety property in docs/UI-L5-SPEC.md §3 can be
- * pinned by a test that never touches a browser — see test/nav.test.ts.
+ * Single-open (docs/UI-L6-SPEC.md §2): opening one collapses the last, which
+ * keeps L5's "only one section's content on screen" reading and matches what
+ * the user asked for — click Send's header again and it folds away so
+ * Receive or Connect a site is one click below, not a scroll.
+ *
+ * Collapsing is *not* unmounting. Only `[hidden]` moves, so the Send form's
+ * fields, a running mini-app and the WalletConnect queue all keep their state
+ * while another section is open — which is the whole point: a signature
+ * request can be dealt with mid-flow and the app is still where it was.
+ *
+ * The rule for what is visible (Section/sectionHidden) lives in nav.ts,
+ * DOM-free, so the safety property in docs/UI-L5-SPEC.md §3 can be pinned by
+ * a test that never touches a browser — see test/nav.test.ts.
  */
-let dest: Dest = "walletmenu";
+let openSection: Section | null = null;
 
-/** Whether the post-unlock world (wallet menu and its blocks) is on screen at
- * all. Everything DEST_PANEL_IDS names stays hidden while this is false,
- * regardless of `dest` — the same "outer gate, inner choice" shape
+/** Whether the post-unlock world (the home accordion) is on screen at all.
+ * Everything nav.ts names stays hidden while this is false, `openSection`
+ * notwithstanding — the same "outer gate, inner choice" shape
  * applyPreConnectVisibility uses for the pre-connect destinations below. */
 let shellOpen = false;
 
-/** Show the one panel `dest` names, hide the rest — and hide all of them
- * while the shell is closed. */
-function applyDestVisibility(): void {
-  const hidden = destHidden(shellOpen, dest);
-  for (const id of Object.values(DEST_PANEL_IDS)) {
+/** Write the accordion's visibility and its ARIA state. */
+function applySectionVisibility(): void {
+  const hidden = sectionHidden(shellOpen, openSection);
+  for (const [id, isHidden] of Object.entries(hidden)) {
     const el = document.getElementById(id);
-    if (el) el.hidden = hidden[id] ?? true;
+    if (el) el.hidden = isHidden;
   }
+  for (const section of SECTIONS) {
+    const header = document.getElementById(SECTION_HEADER_IDS[section]);
+    header?.setAttribute("aria-expanded", String(openSection === section));
+  }
+  /* waiterdest is the Apps body here, but it is also a standalone
+   * destination pre-connect (La Caja from the launcher), and that path is the
+   * only one that still needs a Back button. Post-unlock there is nowhere to
+   * go back to: the header above it is the way out. */
+  $("waiterback").hidden = shellOpen;
 }
 
-/** Post-unlock home. Also the fetch moment (docs/UI-L3-SPEC.md §5): entering
- * the wallet menu, whether by unlocking or by backing out of a block, is
- * when a stale balance stops being shown. */
-function goToWalletMenu(): void {
-  dest = "walletmenu";
-  applyDestVisibility();
-  renderWalletMenu();
-  // refreshAllChainBalances itself no-ops with no address yet, so this is
-  // safe to call even before the first derivation has finished.
-  void refreshAllChainBalances("entered wallet menu");
+/** Open a section, or collapse it if it was already open. Opening Balances is
+ * also the fetch moment (docs/UI-L3-SPEC.md §5): a stale number stops being
+ * shown when the user asks to look at it, and nowhere else — no polling. */
+function openHomeSection(section: Section): void {
+  if (!shellOpen || openSection === section) return;
+  openSection = section;
+  applySectionVisibility();
+  if (section === "connect") clearSignatureBadge();
 }
 
-/** Enter one of the wallet menu's blocks. No-ops before unlock: the blocks
- * only exist inside the wallet menu, so nothing reachable pre-connect can
- * call this with the shell closed. */
-function enterBlock(d: Dest): void {
+function toggleHomeSection(section: Section): void {
   if (!shellOpen) return;
-  dest = d;
-  applyDestVisibility();
+  openSection = toggleSection(openSection, section);
+  applySectionVisibility();
+  if (openSection === "balances") {
+    renderWalletMenu();
+    void refreshAllChainBalances("opened balances");
+  }
+  if (openSection === "connect") clearSignatureBadge();
 }
 
 /**
- * Whether the post-unlock world (the wallet menu and its blocks) is offered
- * at all.
+ * Whether the post-unlock world (the home accordion) is offered at all.
  *
- * Called from exactly the places that already show/hide addrpanel and
+ * Called from exactly the places that already showed/hid addrpanel and
  * signpanel — connect's derivation success, unlock, a host-side passphrase
- * apply, invalidateDerived, and disconnect — so it tracks "there is a
- * derived address to act on" the same way those two panels already did.
+ * apply, invalidateDerived, and disconnect — so it tracks "there is a derived
+ * address to act on" the same way those two panels already did.
  *
- * This is also the safety behaviour docs/UI-L5-SPEC.md §3 calls out by name:
- * a locked device must never leave a Send form or an address on screen.
- * Closing the shell always lands back on `dest === "walletmenu"` (cleared,
- * not the block that happened to be open), and opening it always goes
- * through goToWalletMenu() rather than reopening whatever was last chosen.
+ * This is the safety behaviour docs/UI-L5-SPEC.md §3 calls out by name: a
+ * locked device must never leave a Send form or an address on screen. Closing
+ * the shell collapses every section *and* hides the whole accordion, headers
+ * included; opening it starts from collapsed rather than from whatever was
+ * last expanded.
  */
 function setShellVisible(visible: boolean): void {
   shellOpen = visible;
+  /* Always a fixed starting point, never whatever the last session left
+     expanded: Balances when the home opens, nothing at all when it closes. */
+  openSection = visible ? "balances" : null;
+  applySectionVisibility();
   if (visible) {
-    goToWalletMenu();
+    renderWalletMenu();
+    // refreshAllChainBalances itself no-ops with no address yet, so this is
+    // safe to call even before the first derivation has finished.
+    void refreshAllChainBalances("home shown");
   } else {
-    dest = "walletmenu";
-    applyDestVisibility();
-    // Leaving the wallet menu is the same "stop showing a stale number about
+    clearSignatureBadge();
+    // Leaving the home screen is the same "stop showing a stale number about
     // whoever was here before" moment clearBalances() already covers.
     allChainRows = new Map();
+    renderUnifiedTotals();
   }
+}
+
+/**
+ * A pending signature — a dapp proposal or a request, including one a
+ * mini-app raised through walletConnect.review() — badged on the "Connect a
+ * site" header (docs/UI-L6-SPEC.md §4).
+ *
+ * Read off the DOM rather than pushed from src/wc/ui.ts: that file owns
+ * #wcproposal and #wcrequest and toggles their [hidden] as the queue moves,
+ * so observing those two attributes is the same fact with no second source of
+ * truth to drift from.
+ */
+function setSignatureBadge(on: boolean): void {
+  const badge = $("badgeconnect");
+  badge.hidden = !on;
+  badge.textContent = on ? "Waiting for you" : "";
+  const header = $("hdrconnect");
+  if (on) header.dataset["alert"] = "1"; else delete header.dataset["alert"];
+}
+
+function clearSignatureBadge(): void { setSignatureBadge(false); }
+
+function watchSignatureRequests(): void {
+  const cards = [$("wcproposal"), $("wcrequest")];
+  const update = (): void => {
+    // Never badge a screen the user cannot reach, and never badge the
+    // section they are already reading.
+    if (!shellOpen || openSection === "connect") { clearSignatureBadge(); return; }
+    setSignatureBadge(cards.some((c) => !c.hidden));
+  };
+  const observer = new MutationObserver(update);
+  for (const card of cards) observer.observe(card, { attributes: true, attributeFilter: ["hidden"] });
+  update();
 }
 
 /**
@@ -794,7 +851,7 @@ function setShellVisible(visible: boolean): void {
  *
  * Replaces the tab bar's old job of showing everything at once, pre-connect,
  * with three destinations that are entered and left one at a time — "one
- * thing per screen" per §2e. Dest/applyDestVisibility (L5, above) own the
+ * thing per screen" per §2e. The home accordion (L6, above) owns the
  * same shape for *after* a device is connected and unlocked; this is only
  * about what is on screen before that.
  */
@@ -806,7 +863,14 @@ function applyPreConnectVisibility(): void {
   $("launcher").hidden = preConnectDest !== "launcher";
   $("devicepanel").hidden = preConnectDest !== "connect";
   $("flashpanel").hidden = preConnectDest !== "flash";
-  $("waiterdest").hidden = preConnectDest !== "waiter";
+  /* waiterdest doubles as the Apps section's body post-unlock, so its
+   * accordion wrapper has to open with it on this path — but only while the
+   * shell is closed, where this function is the one that decides. Once the
+   * shell is open applySectionVisibility owns both. */
+  if (!shellOpen) {
+    $("waiterdest").hidden = preConnectDest !== "waiter";
+    $("secapps").hidden = preConnectDest !== "waiter";
+  }
 }
 
 /** Flash and the waiter hold no session, so leaving them is never more than
@@ -1460,6 +1524,14 @@ function applyChain(info: ChainInfo): void {
   showRpcUsed("No endpoint contacted yet.");
   $("amountlabel").textContent = `Amount (${info.nativeCurrency.symbol})`;
   $("chainnote").dataset["net"] = info.testnet ? "testnet" : "mainnet";
+  /* The Network section's header line, read while the section is collapsed —
+   * the selected chain has to be legible without opening anything, because it
+   * is what every other section on the screen is about. Same
+   * chainLabelDetailed() text as the list itself, so a user-supplied custom
+   * name cannot reach the header unqualified. */
+  $("chainhdrdesc").textContent =
+    `${chainLabelDetailed(info.id).text} — ${info.testnet ? "testnet" : "MAINNET"}`;
+  $("hdrchain").dataset["net"] = info.testnet ? "testnet" : "mainnet";
   const money = info.testnet
     ? `Chain ${info.id}. Testnet — this money is not worth anything. Check the chain ID on the device.`
     : `Chain ${info.id}. MAINNET — real funds. Check the chain ID on the device before approving.`;
@@ -1529,7 +1601,7 @@ function remountApps(info: ChainInfo): void {
   // mountApps() just wrote #apps's own [hidden] based on chain content;
   // waiterdest (the wrapper around it) is a separate gate, owned by whichever
   // destination system currently applies — pre-connect (applyPreConnectVisibility)
-  // or post-unlock (applyDestVisibility) — and neither depends on this call.
+  // or post-unlock (applySectionVisibility) — and neither depends on this call.
 }
 
 /** Rebuild the chain list: curated first, then custom. The order is the trust order. */
@@ -1900,12 +1972,111 @@ function renderChainRow(chain: ChainInfo): void {
   block.appendChild(list);
 }
 
+/**
+ * Unified balances (L6, docs/UI-L6-SPEC.md §1): one figure per asset, summed
+ * across every chain that answered, testnet and mainnet kept apart.
+ *
+ * A sum of units, never a fiat total — this app has no price source, and an
+ * invented price would be a worse lie than an honest per-asset sum. Two
+ * assets are only added when they agree on symbol *and* decimals; anything
+ * still reading or errored is counted as missing and said so, because
+ * docs/UI-L3-SPEC.md §3's rule that unavailable must not read as zero applies
+ * to a total exactly as it does to a row.
+ */
+interface UnifiedTotal { symbol: string; decimals: number; sum: bigint; mixed: boolean }
+
+function unifiedTotals(testnet: boolean): { totals: UnifiedTotal[]; partial: boolean } {
+  const byAsset = new Map<string, UnifiedTotal>();
+  let partial = false;
+  const add = (symbol: string, decimals: number, raw: bigint): void => {
+    const existing = byAsset.get(symbol);
+    if (!existing) { byAsset.set(symbol, { symbol, decimals, sum: raw, mixed: false }); return; }
+    // Same ticker, different decimals: not the same unit, so it is not added.
+    if (existing.decimals !== decimals) { existing.mixed = true; return; }
+    existing.sum += raw;
+  };
+
+  for (const chain of trackedChains()) {
+    if (chain.testnet !== testnet) continue;
+    const row = allChainRows.get(chain.id);
+    if (!row) { partial = true; continue; }
+    if (row.native.kind === "native") {
+      add(chain.nativeCurrency.symbol, chain.nativeCurrency.decimals, row.native.wei);
+    } else if (row.native.kind !== "unavailable") {
+      partial = true;
+    }
+    for (const token of row.tokens) {
+      if (token.state.kind === "token") {
+        const scaled = token.state.view.scaled;
+        if (scaled) add(token.symbol, scaled.decimals, token.state.view.raw);
+        else partial = true;
+      } else if (token.state.kind !== "unavailable") {
+        partial = true;
+      }
+    }
+  }
+  return { totals: [...byAsset.values()], partial };
+}
+
+function unifiedText(total: UnifiedTotal): string {
+  return total.mixed
+    ? "not summable — this symbol has different decimals on different chains"
+    : `${formatUnits(total.sum, total.decimals)} ${total.symbol}`;
+}
+
+function fillUnifiedList(id: string, totals: UnifiedTotal[], emptyText: string): void {
+  const list = $(id);
+  list.textContent = "";
+  if (totals.length === 0) {
+    const row = document.createElement("li");
+    row.className = "walletmenu__asset";
+    row.dataset["state"] = "unavailable";
+    row.textContent = emptyText;
+    list.appendChild(row);
+    return;
+  }
+  for (const total of totals) {
+    const row = document.createElement("li");
+    row.className = "walletmenu__asset";
+    row.dataset["state"] = total.mixed ? "error" : "native";
+    const name = document.createElement("span");
+    name.textContent = total.symbol;
+    const value = document.createElement("span");
+    value.textContent = unifiedText(total);
+    row.append(name, value);
+    list.appendChild(row);
+  }
+}
+
+/** Redraw the unified lists and the one-line summary on the section header. */
+function renderUnifiedTotals(): void {
+  const test = unifiedTotals(true);
+  const main = unifiedTotals(false);
+  fillUnifiedList("wmunifiedtest", test.totals, "nothing read yet");
+  fillUnifiedList(
+    "wmunifiedmain", main.totals,
+    "not fetched — this build tracks testnets only (see AUDIT.md)",
+  );
+  $("wmunifiednote").textContent = test.partial || main.partial
+    ? "Some chains have not answered. This total is of what has been read so far, not of what you hold."
+    : "Summed per asset across the chains above. Not a fiat total: this app has no price source.";
+
+  /* The header line, visible while the section is collapsed. Three assets at
+   * most: a header is a glance, and the full list is one click below it. */
+  const summary = test.totals.filter((t) => !t.mixed && t.sum > 0n).slice(0, 3);
+  $("wmtotal").textContent = summary.length > 0
+    ? summary.map((t) => `${formatUnits(t.sum, t.decimals)} ${t.symbol}`).join(" · ")
+      + (test.partial ? " (partial)" : "")
+    : (test.partial ? "reading…" : "nothing held on the chains tracked");
+}
+
 function renderWalletMenu(): void {
   const account = effectiveAccount();
   const address = addresses[selectedIndex];
   $("wmaccount").textContent = `Account ${account}`;
   $("wmaddress").textContent = address ? checksumAddress(address.slice(2)) : "—";
   for (const chain of trackedChains()) renderChainRow(chain);
+  renderUnifiedTotals();
 }
 
 /**
@@ -1931,6 +2102,7 @@ async function refreshAllChainBalances(reason: string): Promise<void> {
         allChainRows.set(row.chainId, row);
         const chain = trackedChains().find((c) => c.id === row.chainId);
         if (chain) renderChainRow(chain);
+        renderUnifiedTotals();
       },
     );
   } finally {
@@ -2109,6 +2281,9 @@ function renderBalances(): void {
     send.addEventListener("click", () => {
       ($("asset") as HTMLSelectElement).value = token;
       applyAsset();
+      /* Send is a collapsed section now, not a screen: scrolling to a hidden
+         panel would land on nothing, so open it first. */
+      openHomeSection("send");
       $("signpanel").scrollIntoView({ behavior: "smooth", block: "start" });
     });
     const drop = document.createElement("button");
@@ -3698,8 +3873,6 @@ async function disconnect(): Promise<void> {
   // Back to whatever the build allows: a single-option selector stays shut.
   ($("transport") as HTMLSelectElement).disabled =
     ($("transport") as HTMLSelectElement).options.length < 2;
-  $("addrpanel").hidden = true;
-  $("signpanel").hidden = true;
   $("passpanel").hidden = true;
   $("pairing").hidden = true;
   setShellVisible(false);
@@ -3841,36 +4014,38 @@ initToScanner();
 initMaxAmount();
 populateAssets();
 void initRpcTransport();
+/* Mount the device-free apps before anything is connected.
+ *
+ * remountApps() was called on connect, disconnect, chain change and address
+ * change — every path EXCEPT the first paint. So on a fresh launch #apps had
+ * never been built, and pressing "La Caja — waiter" on the launcher revealed
+ * `waiterdest` with an empty, self-hidden #apps inside it: the button worked
+ * and nothing appeared.
+ *
+ * The `worksWithoutDevice` filter in remountApps exists precisely so the
+ * waiter can mount with `client === null`; it just needed something to call
+ * it. Before applyPreConnectVisibility, so the panel it reveals already has
+ * content in it. */
+remountApps(activeChain());
 applyPreConnectVisibility();
-applyDestVisibility();
+applySectionVisibility();
+watchSignatureRequests();
 
 $("gotoconnect").addEventListener("click", () => enterDest("connect"));
 $("gotoflash").addEventListener("click", () => enterDest("flash"));
 $("gotowaiter").addEventListener("click", () => enterDest("waiter"));
 $("connectback").addEventListener("click", connectDestBack);
 $("flashback").addEventListener("click", goToLauncher);
-// waiterdest is reachable both pre-connect (La Caja, from the launcher) and
-// post-unlock (Apps, from the wallet menu); Back has to undo whichever one
-// got it here. shellOpen is the same flag setShellVisible uses to decide
-// that, so this is the one place that reads it outside this file's own
-// destination functions.
-$("waiterback").addEventListener("click", () => {
-  if (shellOpen) goToWalletMenu(); else goToLauncher();
-});
+// Only the pre-connect path into waiterdest (La Caja, from the launcher) has
+// a Back: post-unlock the section is collapsed by its own header instead, and
+// applySectionVisibility hides this button there.
+$("waiterback").addEventListener("click", goToLauncher);
 
-// The wallet menu's blocks (L5, docs/UI-L5-SPEC.md §1.3) and each
-// destination's own Back button, all routed through enterBlock()/
-// goToWalletMenu() — the post-unlock half of the same pattern the launcher
-// uses above.
-$("wmgotosend").addEventListener("click", () => enterBlock("send"));
-$("wmgotoreceive").addEventListener("click", () => enterBlock("receive"));
-$("wmgotoactivity").addEventListener("click", () => enterBlock("activity"));
-$("wmgotoapps").addEventListener("click", () => enterBlock("apps"));
-$("wmgotoconnect").addEventListener("click", () => enterBlock("connect"));
-$("sendback").addEventListener("click", goToWalletMenu);
-$("receiveback").addEventListener("click", goToWalletMenu);
-$("activityback").addEventListener("click", goToWalletMenu);
-$("wcback").addEventListener("click", goToWalletMenu);
+// The home accordion (L6, docs/UI-L6-SPEC.md). One handler per header; the
+// header element is the <button>, so keyboard and touch come for free.
+for (const section of SECTIONS) {
+  $(SECTION_HEADER_IDS[section]).addEventListener("click", () => toggleHomeSection(section));
+}
 
 $("connect").addEventListener("click", () => void connect());
 $("unlock").addEventListener("click", () => void unlock());

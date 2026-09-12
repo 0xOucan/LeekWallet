@@ -553,6 +553,95 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .walletmenu__asset[data-state="error"],
 .walletmenu__asset[data-state="reading"] { color: var(--muted); }
 
+.walletmenu__unified { margin-top: var(--space-3); }
+.walletmenu__unifiedhead {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-sm); font-weight: 500; color: var(--muted);
+}
+
+/*
+ * The home accordion (L6, docs/UI-L6-SPEC.md).
+ *
+ * Every section header is a real <button> carrying aria-expanded, so it is a
+ * tab stop and announces its own state; none of this styling removes the
+ * focus ring. 56px minimum height keeps the row above the 44px touch floor
+ * with room to spare, and the whole row is the target rather than the
+ * chevron.
+ *
+ * Only opacity and transform are animated — never height, which cannot be
+ * animated from `auto` without measuring and which reflows the page under the
+ * user's finger on every frame. The body is shown and hidden with [hidden],
+ * which is instant; the movement is a 4px settle, and prefers-reduced-motion
+ * removes even that.
+ */
+.acc { border-bottom: 1px solid var(--border); }
+.acc__hd { margin: 0; font-size: inherit; font-weight: inherit; }
+.acc__toggle {
+  display: flex; align-items: center; gap: var(--space-3);
+  width: 100%;
+  min-height: 56px;
+  padding: var(--space-3) var(--space-2);
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion) ease-out;
+}
+.acc__toggle:hover { background: var(--surface-2); }
+.acc__toggle[aria-expanded="true"] { background: var(--surface-2); }
+.acc__text {
+  display: flex; flex-direction: column; gap: 2px;
+  flex: 1 1 auto; min-width: 0;
+}
+.acc__title { font-size: var(--text-lg); font-weight: 500; line-height: 1.5; }
+.acc__desc {
+  font-size: var(--text-sm); color: var(--muted); line-height: 1.5;
+  /* A chain name or a long total wraps rather than widening the page: this
+     runs at phone width and nothing here may cause a horizontal scroll. */
+  overflow-wrap: anywhere;
+}
+/* A pending signature, badged so a user mid-flow in a mini-app can see where
+   to go without opening every section (docs/UI-L6-SPEC.md §4). Colour is not
+   the only signal — it carries words, and role="status" announces it. */
+.acc__badge {
+  flex: 0 0 auto;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius);
+  background: var(--warn);
+  color: var(--accent-fg);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.acc__chev {
+  flex: 0 0 auto;
+  width: 9px; height: 9px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform var(--motion) ease-out;
+}
+.acc__toggle[aria-expanded="true"] .acc__chev { transform: rotate(-135deg); }
+
+/* The body sits flush under its header: the panel chrome would otherwise draw
+   a second box inside the section's own rule. */
+.acc > .panel, .acc > .walletmenu, .acc > .destination {
+  border: none;
+  background: transparent;
+  margin-bottom: 0;
+  padding: 0 var(--space-2) var(--space-4);
+  animation: acc-open var(--motion) ease-out;
+}
+@keyframes acc-open {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .acc__toggle, .acc__chev { transition: none; }
+  .acc > .panel, .acc > .walletmenu, .acc > .destination { animation: none; }
+}
+
 .balances { margin-top: var(--space-4); }
 .balances__native { font-family: var(--font-mono); font-size: var(--text-lg); }
 .balances__native[data-stale="true"] { color: var(--muted); }

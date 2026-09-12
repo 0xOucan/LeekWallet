@@ -22,7 +22,7 @@
 
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 import { AQUA_APP } from "@leekwallet/app-aqua";
-import { ATS_APP } from "@leekwallet/app-ats";
+import { ATS_APP, ATS_MARKET_APP } from "@leekwallet/app-ats";
 import { TILL_APP, TILL_PAYROLL_APP, TILL_WAITER_APP } from "@leekwallet/app-till";
 
 export type { AppContext, MiniApp };
@@ -35,7 +35,7 @@ export type { AppContext, MiniApp };
  * about the code rather than disabled inputs. All three come out of a release
  * with the same directory. */
 export const MINI_APPS: readonly MiniApp[] =
-  [AQUA_APP, ATS_APP, TILL_APP, TILL_WAITER_APP, TILL_PAYROLL_APP];
+  [AQUA_APP, ATS_APP, ATS_MARKET_APP, TILL_APP, TILL_WAITER_APP, TILL_PAYROLL_APP];
 
 export const findMiniApp = (id: string): MiniApp | undefined =>
   MINI_APPS.find((app) => app.id === id);
