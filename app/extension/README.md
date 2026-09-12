@@ -171,6 +171,16 @@ hand `accountsChanged` to every embedded third-party iframe on the page.
 
 ### Known limitations
 
+- **Connecting reboots the board.** Web Serial gives no way to suppress the DTR
+  toggle `open()` raises, and on the ESP32-S3's USB-Serial-JTAG that line is
+  wired to reset. So the device reboots when the extension connects and comes
+  back at its PIN screen — which looks like the wallet locking itself
+  defensively, and is not. The transport waits for the boot to finish before
+  the handshake (see `SETTLE_*` in `serial-transport.ts`), so the connection
+  succeeds, but the re-entered PIN is unavoidable until the toggle can be
+  suppressed. The desktop companion is unaffected: its Rust transport sets
+  `dtr_on_open(false)` and never triggers the reset.
+
 - **An evicted worker cancels a pending connection approval.** The in-flight
   `eth_requestAccounts` lives in the worker's memory. Persisting a half-answered
   approval across a restart would mean a click in the popup could resolve a

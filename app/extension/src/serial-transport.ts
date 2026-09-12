@@ -58,19 +58,32 @@ const BAUD_RATE = 115200;
 /**
  * How long to drain the line, in plaintext-boot-noise mode, after opening.
  *
- * Taken from `app/transport-serial/src/transport.rs`'s 250ms sleep-then-clear
- * — but note the two cases are NOT the same, and this number has not been
- * validated for ours. There, `dtr_on_open(false)` prevents the reset outright,
- * so 250ms only has to cover draining bytes the device had already queued.
- * Here Web Serial gives no way to suppress the initial toggle, so if the open
- * does reset the board, this window has to cover an actual ESP32-S3 boot,
- * which may well be longer. No boot time is recorded anywhere in this repo.
+ * A fixed 250ms used to sit here, copied from
+ * `app/transport-serial/src/transport.rs`. The two cases are not the same and
+ * the number was wrong for this one: there, `dtr_on_open(false)` prevents the
+ * reset outright, so the wait only has to cover bytes the device had already
+ * queued. Web Serial gives no way to suppress the initial DTR toggle, so on an
+ * ESP32-S3's USB-Serial-JTAG the open RESETS the board — which is what a user
+ * sees as "the device locked itself when I connected". It did not lock; it
+ * rebooted, and a rebooted device is at its PIN screen. The window then has to
+ * cover an entire boot, and 250ms does not.
  *
- * So treat 250 as a lower bound copied from an easier problem, not a measured
- * figure: if a device still reports "did not answer within 5000ms" on a real
- * board, raise this first before suspecting anything else.
+ * Rather than guess a bigger number, this waits for the boot to FINISH.
+ * `sdkconfig.defaults` puts the ESP-IDF console on USB-Serial-JTAG at INFO
+ * level, so a reset pours its whole boot log down this very port: bytes
+ * arriving are the boot still running, and a gap in them is the boot over.
+ * That makes silence a real readiness signal rather than a hopeful delay.
+ *
+ * The floor exists because a port that never says anything must not be
+ * declared ready instantly; the cap exists because a device that never stops
+ * talking must not hold the connection open for ever.
  */
-const SETTLE_MS = 250;
+/** Silence, after something was heard, that means the boot has finished. */
+const SETTLE_QUIET_MS = 300;
+/** Never return sooner than this, even from a completely silent port. */
+const SETTLE_MIN_MS = 400;
+/** Never wait longer than this, however much noise is still arriving. */
+const SETTLE_MAX_MS = 3000;
 
 export class SerialTransport implements Transport {
   readonly kind = "usb" as const;
@@ -143,9 +156,24 @@ export class SerialTransport implements Transport {
    * nothing to do with the device's actual answer.
    */
   private async settle(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
-    const deadline = Date.now() + SETTLE_MS;
+    const start = Date.now();
+    const hardDeadline = start + SETTLE_MAX_MS;
+    /* Seeded to the start so a silent port is judged by the floor alone. */
+    let lastHeard = start;
+    let heardAnything = false;
     for (;;) {
-      const remaining = deadline - Date.now();
+      const now = Date.now();
+      if (now >= hardDeadline) return;
+      /* Ready when the floor has passed AND, if the board said anything at
+       * all, it has now been quiet long enough to call the boot finished. */
+      if (now - start >= SETTLE_MIN_MS && (!heardAnything || now - lastHeard >= SETTLE_QUIET_MS)) {
+        return;
+      }
+      /* Wake at whichever comes first: the floor, the quiet window, the cap. */
+      const remaining = Math.min(
+        hardDeadline - now,
+        Math.max(SETTLE_MIN_MS - (now - start), heardAnything ? SETTLE_QUIET_MS - (now - lastHeard) : SETTLE_MIN_MS),
+      );
       if (remaining <= 0) return;
       const timedOut = Symbol("settle-timeout");
       const timer = new Promise<typeof timedOut>((resolve) => {
@@ -159,8 +187,12 @@ export class SerialTransport implements Transport {
         // below will hit the same error and report it properly.
         return;
       }
-      if (result === timedOut || result.done) return;
-      // Discard result.value and keep draining until the window closes.
+      if (result === timedOut) continue;
+      if (result.done) return;
+      /* Discarded on purpose — nothing has been sent, so this cannot be a
+       * reply. Its only meaning is "the board is still booting". */
+      heardAnything = true;
+      lastHeard = Date.now();
     }
   }
 
