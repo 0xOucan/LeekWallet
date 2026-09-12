@@ -26,13 +26,18 @@ git log --oneline --until=2026-09-05 | wc -l      # 344 commits
 git show 2cbcf62                                  # the last of them
 
 # What was built during it
-git log --oneline --since=2026-09-06 | wc -l      # 140 commits
-git diff --shortstat 2cbcf62 HEAD                 # 222 files, +50,148 lines
+git log --oneline --since=2026-09-06 | wc -l      # 140+ and still growing
+git diff --shortstat 2cbcf62 HEAD                 # 222 files, ~50k lines
 git diff --shortstat 2cbcf62 HEAD -- app/packages/apps/ats docs/ATS.md
-                                                  # 64 files, +16,717 lines — Hedera alone
+                                                  # 64 files, ~17k lines — Hedera alone
 git log --diff-filter=A --format='%ad %h' --date=short -- app/packages/apps/ats | tail -1
                                                   # 2026-09-06 46c339c — the first line of it
 ```
+
+The counts above are approximate on purpose: they move every time a commit
+lands, and a figure that disagrees with the command printed beside it reads as
+dishonest rather than stale. Run the commands. What does not move is the
+boundary — `2cbcf62` — and the fact that nothing Hedera exists before it.
 
 The history is continuous from **2026-08-12**, months before this event, with
 no single-commit drop at the end.
