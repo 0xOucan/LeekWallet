@@ -108,6 +108,35 @@ import { duplicatesIn, unitsFor, type Duplicate, type StaffMember } from "./staf
  * in the wrong wrapped bitcoin is that same mistake with a transfer attached,
  * so the name here is the one core's verified table uses.
  */
+/**
+ * The template a user fills in, as text.
+ *
+ * Kept here rather than only in `examples/payroll-example.csv`, because a
+ * template nobody can obtain from the app is a template nobody uses: the file
+ * on disk is reachable from a git checkout and from nowhere else, and the
+ * person running payroll is not necessarily the person who cloned the repo.
+ *
+ * Two example rows, not six, and deliberately simple ASCII names: the header is
+ * the part that has to be exactly right, and a long example invites editing in
+ * place rather than replacing. The accented names in the repo's example file
+ * exist to prove the parser accepts them (see the TEXT_SHAPE note in staff.ts);
+ * they are a test fixture, not a starting point.
+ *
+ * `tips` may be 0 — it is a separate transaction per employee, and a zero tip
+ * simply means that second transaction is not built.
+ *
+ * The two addresses are real-looking and must be REPLACED. They are not the
+ * zero address on purpose: `importStaffCsv` refuses the zero address outright
+ * ("the zero address cannot be paid"), so a template using it would be a
+ * template that cannot be imported — which is how a first attempt at this
+ * shipped, and why `test/payroll.test.ts` now imports this constant rather
+ * than trusting it to look right.
+ */
+export const PAYROLL_CSV_TEMPLATE =
+  "name,role,address,salary,tips\n" +
+  "Ana Diaz,waiter,0xA17c4e2f9B0d3856c1e74Af20B93D6851Fc0A2e7,1250.00,162.50\n" +
+  "Beto Ruiz,chef,0x4D8b91f3c027Ae56D1904b7fE238ca6019B5d34C,2100.00,0\n";
+
 export type PayrollToken = TillToken | "cirBTC";
 
 export const PAYROLL_TOKENS: readonly PayrollToken[] = ["USDC", "EURC", "cirBTC"] as const;

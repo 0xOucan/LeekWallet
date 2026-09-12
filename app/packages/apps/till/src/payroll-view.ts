@@ -47,7 +47,7 @@ import {
   importStaffCsv, staffFromFields, MAX_STAFF, type Duplicate, type StaffMember,
 } from "./staff.ts";
 import {
-  PAYROLL_TOKENS, planPayroll, runPayroll,
+  PAYROLL_CSV_TEMPLATE, PAYROLL_TOKENS, planPayroll, runPayroll,
   type PayrollPlan, type PayrollToken, type PaymentState, type RunProgress,
 } from "./payroll.ts";
 
@@ -352,6 +352,56 @@ export const TILL_PAYROLL_APP: MiniApp = {
     file.setAttribute("aria-label", "Payroll CSV");
     controls.append(file);
 
+    /* The template, obtainable from the app rather than only from the repo.
+     *
+     * Two routes on purpose. The download is the one people expect, and it is
+     * also the one that can silently do nothing: this runs inside a webview
+     * under a strict CSP, and a blob: navigation is exactly the kind of thing
+     * that gets blocked without an error anybody sees. Copying to the clipboard
+     * has a precedent that works in this app (the diagnostics panel) and needs
+     * no navigation at all, so it is offered beside it and its outcome is
+     * reported either way. A user who gets neither still has the header line
+     * in the paste box's placeholder. */
+    const templateCopy = el("button", "till-payroll-template", "Copy CSV template");
+    templateCopy.type = "button";
+    const templateSave = el("button", "till-payroll-template", "Download CSV template");
+    templateSave.type = "button";
+    const templateNote = el("p", "till-note");
+    controls.append(templateCopy, templateSave);
+
+    templateCopy.addEventListener("click", () => {
+      void (async () => {
+        try {
+          await navigator.clipboard.writeText(PAYROLL_CSV_TEMPLATE);
+          templateNote.textContent =
+            "Template copied. Paste it into a spreadsheet, replace the two example " +
+            "rows, and keep the header line exactly as it is.";
+        } catch {
+          /* Say what failed and what still works, rather than nothing. */
+          templateNote.textContent =
+            "Could not reach the clipboard. Use Download, or copy the header from " +
+            "the box below by hand.";
+        }
+      })();
+    });
+
+    templateSave.addEventListener("click", () => {
+      try {
+        const blob = new Blob([PAYROLL_CSV_TEMPLATE], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const a = el("a") as HTMLAnchorElement;
+        a.href = url;
+        a.download = "payroll-template.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+        templateNote.textContent =
+          "If no file appeared, this webview blocked the download — use Copy instead.";
+      } catch {
+        templateNote.textContent =
+          "This webview refused the download. Use Copy CSV template instead.";
+      }
+    });
+
     const duplicates = el("input");
     duplicates.type = "checkbox";
     duplicates.setAttribute("aria-label", "Allow an address to be paid twice");
@@ -365,7 +415,7 @@ export const TILL_PAYROLL_APP: MiniApp = {
     paste.setAttribute("aria-label", "Paste a payroll CSV");
     paste.placeholder =
       "name,role,address,salary,tips\nAna,waiter,0x…,1250.00,162.50";
-    panel.append(paste);
+    panel.append(templateNote, paste);
 
     const importButton = el("button", "till-payroll-import", "Import these rows");
     importButton.type = "button";
@@ -407,6 +457,15 @@ export const TILL_PAYROLL_APP: MiniApp = {
         error.textContent = result.line > 0
           ? `Line ${result.line}: ${result.reason} — nothing was imported.`
           : `${result.reason} — nothing was imported.`;
+        /* "Nothing was imported" is true about THIS attempt and reads, next to
+         * a payroll already on screen, as though the payroll were empty. A
+         * failed import leaves the previous one standing untouched -- that is
+         * the safe behaviour -- so say which one the sentence is about. */
+        if (state.staff.length > 0) {
+          error.textContent +=
+            ` The ${state.staff.length} row(s) below are from your previous ` +
+            `import and are unchanged.`;
+        }
         return;
       }
       // Replaces rather than appends: an import is a payroll, not an addition

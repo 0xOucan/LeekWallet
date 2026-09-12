@@ -18,7 +18,10 @@
 import { encodeErc20Transfer } from "@leekwallet/core/balances.ts";
 import type { AppProposal, ProposalOutcome } from "@leekwallet/core/app-proposal.ts";
 import { screenProposal } from "@leekwallet/core/app-proposal.ts";
-import { PAYROLL_TOKENS, payrollDeployment, planPayroll, runPayroll } from "../src/payroll.ts";
+import {
+  PAYROLL_CSV_TEMPLATE, PAYROLL_TOKENS, payrollDeployment, planPayroll, runPayroll,
+} from "../src/payroll.ts";
+import { importStaffCsv } from "../src/staff.ts";
 import { staffFromFields, type StaffMember } from "../src/staff.ts";
 
 let failures = 0;
@@ -223,5 +226,30 @@ group("an answer that is not a transaction is not treated as one");
   eq(final.states[0]?.kind, "failed", "a typed-data answer is not a payment");
 }
 
+group("the CSV template the app hands out actually imports");
+{
+  /* The first version of this template used the zero address and was refused
+   * by our own parser ("the zero address cannot be paid") — a template nobody
+   * could use, handed out by a button. The constant is imported here rather
+   * than eyeballed so that can never be true again. */
+  const parsed = importStaffCsv(PAYROLL_CSV_TEMPLATE);
+  check(parsed.ok === true,
+    `the template does not import: ${parsed.ok ? "" : parsed.reason}`);
+  check(parsed.ok && parsed.staff.length === 2,
+    "the template should carry exactly two example rows");
+
+  /* The header is the part that must be exact; the rows are meant to be
+   * replaced. If the parser's expected columns ever change, this fails here
+   * rather than in somebody's payroll. */
+  check(PAYROLL_CSV_TEMPLATE.startsWith("name,role,address,salary,tips\n"),
+    "the template header is not the one the parser expects");
+
+  /* A zero tip must be allowed: it means the second transaction is simply not
+   * built, not that the row is invalid. */
+  check(parsed.ok && parsed.staff[1]?.tips === undefined,
+    "a zero tip should leave no tips leg on the row");
+}
+
 console.log(failures === 0 ? "\nall ok" : `\n${failures} failure(s)`);
+
 process.exit(failures === 0 ? 0 : 1);
