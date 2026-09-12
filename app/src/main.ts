@@ -1069,8 +1069,21 @@ async function findDevice(kind: LinkKind): Promise<Transport | null> {
     if (candidates.length > 1) {
       log(`${candidates.length} Espressif devices attached; using ${port.name}`);
     } else if (!port.likely_device) {
+      /* Worth naming precisely, because the usual cause is a cable in the
+       * wrong socket rather than a missing board. An ESP32-S3 dev board has
+       * TWO USB-C ports: the native one (Espressif VID 303a) carries
+       * USB-Serial-JTAG, and a second one sits behind a UART bridge — CH343,
+       * CP210x, FTDI. protocol.c installs the endpoint on USB-Serial-JTAG and
+       * nothing else, so on the bridge port the device cannot answer at all:
+       * there is no driver listening, and no Link setting changes that.
+       * Saying "no Espressif device" alone sent a user hunting through the
+       * device's Bluetooth settings for an hour. */
       log(`no Espressif device among ${ports.length} port(s); trying ${port.name} anyway`);
+      log(`${port.name} is a USB-UART bridge, not the board's native USB.`);
+      log(`If this is an ESP32-S3, move the cable to its other USB-C socket —`);
+      log(`the one that enumerates as "Espressif USB JTAG/serial debug unit".`);
     }
+    usbPortWasNative = port.likely_device;
     log(`found ${port.name} — ${port.description}`);
     /* A port existing does not mean the device is listening on it. With Link
      * set to Bluetooth the firmware drains this port and parses nothing
@@ -1193,7 +1206,17 @@ async function connectOnce(): Promise<void> {
       /* On USB this is nearly always a device whose Link is set to Bluetooth:
        * the port opened, the bytes went out, and nothing was listening. */
       setConnection("error", "Device did not answer");
-      if (kind === "usb") {
+      if (kind === "usb" && !usbPortWasNative) {
+        /* The likelier of the two causes, and the one the user cannot guess:
+         * a bridge port has no protocol endpoint behind it at all. Say this
+         * INSTEAD of the Bluetooth advice, not after it — two explanations for
+         * one silence is how an hour goes missing. */
+        log("the port opened but the device never answered.");
+        log("That port is a USB-UART bridge. The protocol runs on the board's");
+        log("native USB only, so nothing is listening there whatever the");
+        log("device's Link setting says. Move the cable to the other USB-C");
+        log("socket on the board and connect again.");
+      } else if (kind === "usb") {
         log("the port opened but the device never answered.");
         log("if the device's Link setting is Bluetooth, USB is silent by design —");
         log("check Settings → Link on the device, or switch this app to Bluetooth.");
@@ -2002,6 +2025,17 @@ async function appScanQr<T>(accept: (raw: string) => T | undefined): Promise<QrS
     video.hidden = true;
   }
 }
+
+/**
+ * Whether the USB port we last opened was the board's own USB.
+ *
+ * False for a UART bridge — CH343, CP210x, FTDI — which is a port the protocol
+ * can never answer on, since protocol.c installs its endpoint on
+ * USB-Serial-JTAG alone. Remembered because the silence that follows is
+ * diagnosed far from where the port is chosen, and the two causes of that
+ * silence need opposite advice.
+ */
+let usbPortWasNative = true;
 
 const chainChannels = new Map<number, ChainChannel>();
 function chainChannel(chainId: number): ChainChannel | undefined {
