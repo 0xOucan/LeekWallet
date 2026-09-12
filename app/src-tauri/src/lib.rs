@@ -162,6 +162,11 @@ pub fn run() {
         .plugin(tauri_plugin_blec::init())
         .plugin(tauri_plugin_serialplugin::init());
 
+    // Registered on every target, unlike the two above: this one IS called from
+    // the webview, and the link it opens is built by the app from the chain
+    // record, never from dapp- or app-authored text.
+    let builder = builder.plugin(tauri_plugin_opener::init());
+
     builder
         .setup(|_app| {
             #[cfg(target_os = "linux")]

@@ -133,6 +133,52 @@ const logText = (): string =>
  * button uses and say so out loud. Either way the user ends up somewhere they
  * can reach the transaction, and never at a link that just sits there.
  */
+/**
+ * Open a URL in the user's real browser, from any of the four clients.
+ *
+ * Three routes, tried in order, because none of them works everywhere:
+ *
+ * 1. **`opener.openUrl`**, the Tauri plugin. The only route that works in the
+ *    desktop and Android webviews: both drop a request for a new window, so
+ *    `window.open` there returns null and an anchor does nothing at all. The
+ *    plugin hands the URL to the OS instead. Its permission in
+ *    `capabilities/default.json` is scoped to https.
+ * 2. **`window.open`**, which is the right answer in a browser tab and in the
+ *    extension, where there is no Tauri object to find.
+ * 3. **The clipboard**, through the same three-route `copyText` the
+ *    diagnostics button uses, when a window will do neither.
+ *
+ * A link that silently does nothing is the failure being avoided here: the
+ * user clicks, nothing happens, and there is no way to tell that from an
+ * explorer that is merely slow.
+ */
+async function openExternal(url: string): Promise<void> {
+  const opener = (window as unknown as {
+    __TAURI__?: { opener?: { openUrl?: (u: string) => Promise<void> } };
+  }).__TAURI__?.opener?.openUrl;
+  if (opener) {
+    try {
+      await opener(url);
+      return;
+    } catch { /* fall through: a refused plugin call is not a reason to stop */ }
+  }
+
+  try {
+    if (window.open(url, "_blank", "noreferrer") !== null) return;
+  } catch { /* a webview that throws is a webview that will not open it */ }
+
+  try {
+    const route = await copyText(url);
+    announce(
+      route === "manual"
+        ? "This window cannot open links or reach the clipboard. The explorer URL is in the log — copy it by hand."
+        : "This window would not open the link, so the explorer URL was copied to the clipboard instead.",
+    );
+  } catch {
+    announce("This window would not open the link and the copy failed. The explorer URL is in the log.");
+  }
+}
+
 function explorerAnchor(url: string, label: string): HTMLAnchorElement {
   const a = document.createElement("a");
   a.href = url;
@@ -140,30 +186,8 @@ function explorerAnchor(url: string, label: string): HTMLAnchorElement {
   a.rel = "noreferrer";
   a.textContent = label;
   a.addEventListener("click", (ev) => {
-    /* `window.open` returns null when the window was blocked or ignored; in a
-     * webview that drops it, that is the signal to fall back rather than leave
-     * the user clicking a dead link. */
-    let opened: Window | null = null;
-    try {
-      opened = window.open(url, "_blank", "noreferrer");
-    } catch { opened = null; }
-    if (opened !== null) {
-      ev.preventDefault();
-      return;
-    }
     ev.preventDefault();
-    void copyText(url).then(
-      (route) => {
-        announce(
-          route === "manual"
-            ? "This window cannot open links or reach the clipboard. The explorer URL is in the log — copy it by hand."
-            : "This window would not open the link, so the explorer URL was copied to the clipboard.",
-        );
-      },
-      () => {
-        announce("This window would not open the link and the copy failed. The explorer URL is in the log.");
-      },
-    );
+    void openExternal(url);
   });
   return a;
 }

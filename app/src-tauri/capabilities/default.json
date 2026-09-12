@@ -4,6 +4,11 @@
   "description": "Everything the companion window may invoke. Tauri denies by default, so this list is the whole surface: adding a capability here is a deliberate act, which is the property we chose Tauri for.",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "description": "Open a block-explorer link in the system browser. Both webviews drop target=_blank, so without this an explorer link is a link that does nothing. Scoped to https so the window cannot hand the OS a file:// or a custom scheme; it is not narrowed to the explorer hosts because a user-added custom chain brings its own explorer, and a scope that silently excluded it would produce exactly the dead link this exists to fix. The only URLs the app ever passes are built by txUrl() from the chain record.",
+      "allow": [{ "url": "https://*" }]
+    }
   ]
 }
