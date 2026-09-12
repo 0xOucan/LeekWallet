@@ -33,7 +33,13 @@
  */
 
 import { encodeCbor, decodeCbor, type CborValue } from "../../packages/core/src/cbor.ts";
-import { encodeFrame, FrameDecoder, FrameType } from "../../packages/core/src/framing.ts";
+import { FrameType } from "../../packages/core/src/framing.ts";
+/* USB framing, not the BLE framing in core/framing.ts. The device marks every
+ * USB frame with 'L' 'K' because the protocol shares that stream with the
+ * ESP-IDF console; BLE has a characteristic to itself and sends no marker.
+ * This client is the only TypeScript that speaks USB, which is how it came to
+ * import the wrong one. See usb-framing.ts. */
+import { encodeUsbFrame, UsbFrameDecoder } from "./usb-framing.ts";
 import { DeviceError, ErrorCode, type Transport } from "../../packages/core/src/transport.ts";
 import {
   Session, deriveSession, generateKeypair, generateNonce, verifyCommitment,
@@ -44,7 +50,7 @@ export { PROTOCOL_VERSION };
 
 export class DeviceClient {
   private readonly transport: Transport;
-  private readonly decoder = new FrameDecoder();
+  private readonly decoder = new UsbFrameDecoder();
   private pending: ((v: { ok?: Record<string, CborValue>; err?: DeviceError }) => void) | null = null;
   /** Established after the handshake; null while everything is plaintext. */
   private session: Session | null = null;
@@ -196,7 +202,7 @@ export class DeviceClient {
       : [FrameType.Request, body];
 
     try {
-      await this.transport.send(encodeFrame(type, payload));
+      await this.transport.send(encodeUsbFrame(type, payload));
     } catch (e) {
       this.session = null;
       this.pending = null;
