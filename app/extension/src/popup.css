@@ -155,6 +155,15 @@ li.site {
   justify-content: space-between;
 }
 
+/* The open address picker for one connected site. Indented so it reads as
+   belonging to the row above it rather than as a second site. */
+li.site-editor {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border, #333);
+  margin: var(--space-1) 0 var(--space-2);
+}
+li.site-editor code { word-break: break-all; }
+
 label.check {
   display: flex;
   gap: var(--space-2);

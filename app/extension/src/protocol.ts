@@ -214,6 +214,10 @@ export type PopupCommand =
   | { pop: "approve"; id: string; accounts: string[] }
   | { pop: "reject"; id: string }
   | { pop: "revoke"; origin: string }
+  /* Re-pick which addresses a site already connected to may see. Separate from
+   * `approve`, which answers a request the site is waiting on; this one is
+   * unprompted, so the site learns through accountsChanged like any wallet. */
+  | { pop: "setAccounts"; origin: string; accounts: string[] }
   | { pop: "setOverride"; value: boolean }
   | { pop: "setChain"; chainId: number };
 

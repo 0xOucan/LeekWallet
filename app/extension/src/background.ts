@@ -862,6 +862,50 @@ async function handlePopup(command: PopupCommand): Promise<unknown> {
       return await walletState();
     }
 
+    case "setAccounts": {
+      /* Changing what a CONNECTED site sees, without making it reconnect.
+       *
+       * The addresses are re-derived from the device rather than taken from
+       * the popup's message. The popup renders what the device derived, but a
+       * message is a message: an origin that could name any address here would
+       * be granting itself access to one the device never produced, and every
+       * later check that asks "was this origin granted this address" would
+       * agree with it. Signing still checks the same way (see signerIndex),
+       * so this is defence in depth rather than the only gate — which is the
+       * right amount for a list that decides what a website can spend. */
+      const known = await ask<string[]>({ cmd: "derive", count: 10 });
+      const lower = new Set(known.map((a) => a.toLowerCase()));
+      const accounts = command.accounts
+        .map((a) => a.toLowerCase())
+        .filter((a) => lower.has(a));
+      if (accounts.length !== command.accounts.length) {
+        await appendLog("refused to grant an address this device did not derive");
+        return await walletState();
+      }
+
+      const { grants } = await readState();
+      const before = grants[command.origin];
+      if (before === undefined) return await walletState();
+      /* An empty list is a disconnect in EIP-1193 terms, and saying so is
+       * kinder than leaving a site connected to nothing. */
+      if (accounts.length === 0) {
+        delete grants[command.origin];
+        await writeState({ grants });
+        await broadcast("accountsChanged", [], new Set([command.origin]));
+        await appendLog(`${command.origin} left with no address; access revoked`);
+        return await walletState();
+      }
+
+      grants[command.origin] = { accounts, grantedAt: before.grantedAt };
+      await writeState({ grants });
+      /* The dapp finds out the way it would from any wallet. Ordering matters:
+       * state first, then the event, so a site that re-reads eth_accounts on
+       * the event does not read the list it just stopped having. */
+      await broadcast("accountsChanged", accounts, new Set([command.origin]));
+      await appendLog(`${command.origin} now sees ${accounts.length} account(s)`);
+      return await walletState();
+    }
+
     case "revoke": {
       const { grants } = await readState();
       if (grants[command.origin] === undefined) return await walletState();

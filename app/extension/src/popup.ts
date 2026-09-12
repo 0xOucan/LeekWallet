@@ -278,6 +278,15 @@ async function grantPort(opts: { unfiltered?: boolean } = {}): Promise<void> {
   await act("Connecting…", { pop: "connect" });
 }
 
+/**
+ * Which connected site's address picker is open, or null.
+ *
+ * Popup state, deliberately not persisted: the popup is destroyed every time
+ * it closes, and an editor that reopened half-finished would invite a click on
+ * Save for a decision made minutes ago about a site the user has forgotten.
+ */
+let changingOrigin: string | null = null;
+
 function render(): void {
   root.textContent = "";
   if (!state) {
@@ -488,20 +497,58 @@ function sitesSection(s: WalletState): HTMLElement {
   }
   const list = el("ul", {});
   for (const grant of s.grants) {
-    list.append(
+    /* Expanded in place rather than in a second window: the decision is "which
+     * of these addresses", and the addresses are already on this screen. */
+    const editing = changingOrigin === grant.origin;
+    const row = el(
+      "li",
+      { class: "site" },
       el(
-        "li",
-        { class: "site" },
-        el(
-          "span",
-          { class: "grow" },
-          el("span", { class: "mono" }, grant.origin),
-          el("br"),
-          el("span", { class: "muted mono" }, grant.accounts.map(short).join(", ")),
-        ),
-        button("Revoke", () => void act("Revoking…", { pop: "revoke", origin: grant.origin }), "link"),
+        "span",
+        { class: "grow" },
+        el("span", { class: "mono" }, grant.origin),
+        el("br"),
+        el("span", { class: "muted mono" }, grant.accounts.map(short).join(", ")),
       ),
+      button(editing ? "Cancel" : "Change", () => {
+        changingOrigin = editing ? null : grant.origin;
+        render();
+      }, "link"),
+      button("Revoke", () => void act("Revoking…", { pop: "revoke", origin: grant.origin }), "link"),
     );
+    list.append(row);
+
+    if (editing) {
+      const granted = new Set(grant.accounts.map((a) => a.toLowerCase()));
+      const boxes: HTMLInputElement[] = [];
+      const picker = el("ul", { class: "accounts" });
+      if (s.addresses.length === 0) {
+        picker.append(el("li", { class: "muted" },
+          "Connect and unlock the device to change which addresses this site sees."));
+      }
+      s.addresses.forEach((address, i) => {
+        const check = el("input", { type: "checkbox", id: `c${i}` }) as HTMLInputElement;
+        check.checked = granted.has(address.toLowerCase());
+        boxes.push(check);
+        picker.append(el("li", { class: "account" }, check,
+          el("label", { for: `c${i}` }, el("code", {}, address))));
+      });
+      if (s.addresses.length > 0) {
+        picker.append(el("li", {},
+          button("Save", () => {
+            const chosen = s.addresses.filter((_, i) => boxes[i]?.checked === true);
+            changingOrigin = null;
+            void act("Updating…", { pop: "setAccounts", origin: grant.origin, accounts: chosen });
+          }),
+          /* Said out loud because it is not obvious that a site finds out at
+             all, and because unticking everything is a disconnect. */
+          el("span", { class: "muted" },
+            " The site is told immediately, through accountsChanged. " +
+            "Unticking every address disconnects it."),
+        ));
+      }
+      list.append(el("li", { class: "site-editor" }, picker));
+    }
   }
   box.append(list);
   return box;
