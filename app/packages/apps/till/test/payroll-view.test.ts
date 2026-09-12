@@ -41,7 +41,7 @@ const person = (address: string, salary: string, name = "Ana", tips = ""): Staff
 };
 const state = (staff: StaffMember[], over: Partial<PayrollState> = {}): PayrollState => ({
   staff, token: "USDC", chainId: BASE_SEPOLIA, from: MERCHANT,
-  progress: undefined, running: false, ...over,
+  progress: undefined, running: false, batched: false, ...over,
 });
 
 group("the total is the prominent figure, and it carries its caveat");

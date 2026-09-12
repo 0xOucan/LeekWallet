@@ -82,6 +82,13 @@ export interface PayrollView {
   /** How many transfers the run is, which is not the head-count. */
   readonly legCount: number;
   /**
+   * How many times the device will be asked to sign. Equal to `legCount` on
+   * the per-payment route; approval + one call per non-empty leg when batched.
+   * Kept separate from `legCount` because the money still moves in `legCount`
+   * transfers either way — only the signing count changes.
+   */
+  readonly signCount: number;
+  /**
    * The three figures, all shown, none of them derivable from the screen
    * without the other two. Empty when there is nothing plannable.
    */
@@ -129,6 +136,23 @@ export interface PayrollState {
   /** Set once a run is under way; rows read their state from it. */
   progress: RunProgress | undefined;
   running: boolean;
+  /** Batch via Disperse. Changes the transaction COUNT the screen promises. */
+  batched: boolean;
+}
+
+/**
+ * How many device confirmations the batched route costs: the approval, plus one
+ * call per non-empty leg.
+ *
+ * Built from `disperseFor`, not from arithmetic on the head-count, so that a
+ * plan the batcher REFUSES (more than DISPERSE_MAX_RECIPIENTS, say) reports the
+ * per-payment count instead of promising a run that cannot happen. The number
+ * on the screen has to be the number the run will actually ask for.
+ */
+function signCountFor(plan: PayrollPlan): number {
+  const built = disperseFor(plan);
+  if (!("approval" in built)) return plan.payments.length;
+  return 1 + (built.salaries ? 1 : 0) + (built.tips ? 1 : 0);
 }
 
 export function payrollView(state: PayrollState): PayrollView {
@@ -162,6 +186,7 @@ export function payrollView(state: PayrollState): PayrollView {
         tipsRawText: "", tipsState: "",
       })),
       legCount: 0,
+      signCount: 0,
       salaryTotalText: "",
       salaryTotalRawText: "",
       tipsTotalText: "",
@@ -205,6 +230,7 @@ export function payrollView(state: PayrollState): PayrollView {
     count: state.staff.length,
     rows,
     legCount: plan.payments.length,
+    signCount: state.batched ? signCountFor(plan) : plan.payments.length,
     salaryTotalText: amountText(plan.salaryTotal, state.token),
     salaryTotalRawText: plan.salaryTotal.rawText,
     tipsTotalText: amountText(plan.tipsTotal, state.token),
@@ -241,7 +267,7 @@ export function renderPayroll(root: HTMLElement, view: PayrollView): void {
 
   const head = el("p", "till-payroll-head",
     view.problem === undefined
-      ? `${view.count} on the payroll · ${view.legCount} transactions · ` +
+      ? `${view.count} on the payroll · ${view.signCount} transactions · ` +
         `${view.token} on ${view.chainName}`
       : `${view.count} on the payroll · ${view.token} on ${view.chainName}`);
   panel.append(head);
@@ -332,6 +358,7 @@ export const TILL_PAYROLL_APP: MiniApp = {
       from: context.address,
       progress: undefined,
       running: false,
+      batched: false,
     };
     let allowDuplicates = false;
 
@@ -416,6 +443,12 @@ export const TILL_PAYROLL_APP: MiniApp = {
     const batchLabel = el("label", "till-payroll-dupes");
     batchLabel.append(batch, document.createTextNode(
       " batch via Disperse (3 confirmations instead of 2 per person)"));
+    /* The header promises a transaction count; ticking this changes it, so the
+     * promise is recomputed here rather than at send time. */
+    batch.addEventListener("change", () => {
+      state.batched = batch.checked;
+      redraw();
+    });
 
     const duplicates = el("input");
     duplicates.type = "checkbox";
@@ -562,7 +595,7 @@ export const TILL_PAYROLL_APP: MiniApp = {
     });
 
     const run = async (plan: PayrollPlan) => {
-      if (batch.checked) {
+      if (state.batched) {
         await runBatched(plan);
       } else {
         await runPayroll(plan, propose, (progress) => {
@@ -600,9 +633,12 @@ export const TILL_PAYROLL_APP: MiniApp = {
         error.textContent = `Check every page on the device — ${step.what}.`;
         redraw();
         const outcome = await propose({
-          to: step.call.to, data: step.call.data, value: step.call.value,
-          label: step.call.label,
-        } as never);
+          kind: "call",
+          to: step.call.to,
+          data: step.call.data,
+          value: step.call.value,
+          reason: step.call.label,
+        });
         if (!outcome.ok) {
           error.textContent =
             `Stopped at the ${step.what}. Anything already sent stays sent: ` +

@@ -13,6 +13,8 @@ import {
   DISPERSE, DISPERSE_MAX_RECIPIENTS, encodeDisperse, encodeDisperseApproval, planDisperse,
 } from "../src/disperse.ts";
 import { disperseFor, planPayroll } from "../src/payroll.ts";
+import { staffFromFields } from "../src/staff.ts";
+import { screenProposal } from "@leekwallet/core/app-proposal.ts";
 
 let failures = 0;
 const check = (ok: boolean, why: string): void => {
@@ -148,6 +150,68 @@ group("the batch pays exactly what the per-payment route would");
   check(sal.disperse?.legs.length === 2, "both salaries are not in the batch");
   check(tip.disperse?.legs.length === 1, "the tips batch is not just the one who earned them");
   check(tip.disperse?.legs[0]?.to === A, "the tips went to the wrong person");
+}
+
+{
+  /* THE PROPERTY: every call the batched run proposes survives the gate.
+   *
+   * This is the test that was missing. The encoders were covered and the
+   * decode round trip was covered, but nothing screened a proposal built the
+   * way the view builds it — and the view passed `label` where the gate reads
+   * `reason`, so every batched run died at the approval with "the app gave no
+   * reason for the request" and the device was never asked. An `as never` cast
+   * at the call site is what hid it from the compiler.
+   *
+   * So this walks the same three steps runBatched walks, in the same order,
+   * proposing the same shape, and insists the gate says yes to all of them. */
+  console.log("\n== every batched proposal passes the app gate");
+
+  const staff = [
+    { name: "Ana Diaz", role: "waiter", address: A, salary: 1_100_000n, tips: 1_100_000n },
+    { name: "Beto Ruiz", role: "chef", address: B, salary: 1_100_000n, tips: 1_100_000n },
+  ].map((m) => {
+    const made = staffFromFields({
+      name: m.name, role: m.role, address: m.address,
+      salary: "1.1", tips: "1.1",
+    });
+    if (!made.ok) throw new Error(made.reason);
+    return made.member;
+  });
+
+  const PAYER2 = "0xbdeb381a7c77040bf2a99e2990c116774ccb339f";
+  const planned = planPayroll(staff, 5042002, "USDC", PAYER2);
+  check(planned.ok === true, "the two-person payroll did not plan");
+  if (!planned.ok) throw new Error("unreachable");
+
+  const built = disperseFor(planned.plan);
+  check("approval" in built, "the batch was refused");
+  if (!("approval" in built)) throw new Error("unreachable");
+
+  const steps = [
+    { what: "approval", call: built.approval },
+    ...(built.salaries ? [{ what: "salaries", call: built.salaries }] : []),
+    ...(built.tips ? [{ what: "tips", call: built.tips }] : []),
+  ];
+  check(steps.length === 3, `expected three confirmations, got ${steps.length}`);
+
+  for (const step of steps) {
+    /* The exact object literal runBatched sends. If those two drift apart this
+     * test stops meaning anything, which is why it is written out in full
+     * rather than imported from a shared helper. */
+    const outcome = screenProposal(
+      {
+        kind: "call",
+        to: step.call.to,
+        data: step.call.data,
+        value: step.call.value,
+        reason: step.call.label,
+      },
+      { chainId: 5042002, from: PAYER2 },
+    );
+    check(outcome.kind === "ok",
+      `the gate refused the ${step.what}: ` +
+      `${outcome.kind === "refused" ? outcome.why : ""}`);
+  }
 }
 
 console.log(failures === 0 ? "\nall ok" : `\n${failures} failure(s)`);

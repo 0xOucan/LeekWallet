@@ -51,7 +51,7 @@ const plan = (staff: StaffMember[]): PayrollPlan => {
 };
 const state = (staff: StaffMember[], over: Partial<PayrollState> = {}): PayrollState => ({
   staff, token: "USDC", chainId: BASE_SEPOLIA, from: MERCHANT,
-  progress: undefined, running: false, ...over,
+  progress: undefined, running: false, batched: false, ...over,
 });
 
 group("a person with tips is two proposals, in order, never one for the sum");
