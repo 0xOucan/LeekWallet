@@ -20,6 +20,36 @@ out of all proportion to the size of the thing holding them — and it makes eve
 use of them visible on a screen that the computer it is plugged into cannot
 change.
 
+## Architecture
+
+**Two gates, and only one of them is trusted.** The companion renders a preview
+from ERC-7730 descriptors and says out loud that it is not trusted; the device
+decodes the raw calldata **independently**, with its own table, and draws what
+it found. No descriptor is ever sent to the device, so nothing the host says can
+change what the screen shows.
+
+```mermaid
+flowchart LR
+    subgraph HOST["Companion — NOT trusted"]
+        APP["Mini-app"] --> SCREEN["screenProposal<br/>ERC-7730"]
+    end
+    subgraph DEV["Device — trusted"]
+        DEC["eth-decode.c<br/>its own decoder"] --> PAGES["one page per field"] --> KEY["seed, never leaves"]
+    end
+    SCREEN -->|"to · value · data · gas<br/><b>no descriptor</b>"| DEC
+    KEY -->|"signature"| HOST --> CHAIN["chain"]
+    style DEV fill:#1b5e20,color:#fff
+    style HOST fill:#4e342e,color:#fff
+```
+
+If the device cannot read a call, it refuses it. That refusal is the product —
+and it means supporting a new contract call extends the *device*, not the app.
+
+**[Full architecture →](docs/ARCHITECTURE.md)** — the three tiers of decoding,
+the shared firmware/host vectors, and a flow per integration.
+
+## What follows from it
+
 That is the entire design goal. Everything below follows from it: the device
 decides, the host asks, and anything the device cannot display in full it
 refuses to sign.
@@ -1044,6 +1074,13 @@ open items as the honest list of what is missing rather than a formality.
 
 Bug reports, review of the cryptographic paths, and someone finding a hole in
 this are worth more to the project than stars.
+
+---
+
+Built for ETHGlobal's Continuity Track: see
+**[ETHGLOBAL.md](ETHGLOBAL.md)** for what was built during the event, which
+sponsor tracks it answers, and links to the on-chain transactions and the code
+behind each one.
 
 ---
 
