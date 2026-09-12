@@ -263,9 +263,11 @@ group("a camera code the terminal refuses is reported, not swallowed");
     ...context,
     scanQr: (accept: (raw: string) => unknown) => {
       offered = accept;
-      /* What the shell's loop does: hand the decoded text to `accept` and
-         resolve with whatever it returns. */
-      return Promise.resolve(accept(elsewhere.text) ?? null);
+      /* What the shell's loop does: hand the decoded text to `accept`, and
+         resolve `scanned` with whatever it returned — or `closed` if it
+         wanted nothing. Mirrors appScanQr in src/main.ts. */
+      const v = accept(elsewhere.text);
+      return Promise.resolve(v === undefined ? { kind: "closed" } : { kind: "scanned", value: v });
     },
   } as never);
   const button = nodes.slice(from).find((n) => n.tagName === "button" && n.textContent === "Scan with camera");
@@ -287,7 +289,7 @@ group("a camera that closes with nothing says so");
   const from = nodes.length;
   const quietRoot = makeNode("div");
   await TILL_WAITER_APP.mount(quietRoot as unknown as HTMLElement,
-    { ...context, scanQr: () => Promise.resolve(null) } as never);
+    { ...context, scanQr: () => Promise.resolve({ kind: "closed" }) } as never);
   const button = nodes.slice(from).find((n) => n.tagName === "button" && n.textContent === "Scan with camera");
   for (const [, fn] of button?.listeners ?? []) fn();
   await Promise.resolve();
@@ -295,6 +297,56 @@ group("a camera that closes with nothing says so");
   const errors = nodes.slice(from).filter((n) => n.className === "till-error").map((n) => n.textContent);
   check(errors.some((t) => /camera closed without reading a request/.test(t)),
     `a camera that read nothing stayed silent: ${JSON.stringify(errors)}`);
+}
+
+group("a camera that will not start says what happened, not that it found nothing");
+{
+  /* THE PROPERTY: the three ways a scan ends without a value are three
+   * different sentences. They used to be one `null`, so an unreachable camera
+   * and a steady hand problem read identically and only one of them had a
+   * useful next step. */
+  const from = nodes.length;
+  const brokeRoot = makeNode("div");
+  await TILL_WAITER_APP.mount(brokeRoot as unknown as HTMLElement, {
+    ...context,
+    scanQr: () => Promise.resolve({
+      kind: "failed",
+      reason: "Camera: permission denied.",
+    }),
+  } as never);
+  const button = nodes.slice(from).find((n) => n.tagName === "button" && n.textContent === "Scan with camera");
+  for (const [, fn] of button?.listeners ?? []) fn();
+  await Promise.resolve();
+  await Promise.resolve();
+  const errors = nodes.slice(from).filter((n) => n.className === "till-error").map((n) => n.textContent);
+  check(errors.some((t) => /permission denied/.test(t)),
+    `the camera's own reason never reached the screen: ${JSON.stringify(errors)}`);
+  /* And it must not be reported as the one thing it is not. */
+  check(!errors.some((t) => /closed without reading/.test(t)),
+    "a broken camera was reported as one that simply found nothing");
+  check(errors.some((t) => /paste/i.test(t)), "no fallback was offered for a dead camera");
+}
+
+group("a window that cannot scan at all says so, and offers the way in");
+{
+  const from = nodes.length;
+  const noCamRoot = makeNode("div");
+  await TILL_WAITER_APP.mount(noCamRoot as unknown as HTMLElement, {
+    ...context,
+    scanQr: () => Promise.resolve({
+      kind: "unavailable",
+      reason: "This window cannot reach a camera. Enter the value by hand instead.",
+    }),
+  } as never);
+  const button = nodes.slice(from).find((n) => n.tagName === "button" && n.textContent === "Scan with camera");
+  for (const [, fn] of button?.listeners ?? []) fn();
+  await Promise.resolve();
+  await Promise.resolve();
+  const errors = nodes.slice(from).filter((n) => n.className === "till-error").map((n) => n.textContent);
+  check(errors.some((t) => /cannot reach a camera/.test(t)),
+    `an unavailable camera stayed silent: ${JSON.stringify(errors)}`);
+  check(!errors.some((t) => /closed without reading/.test(t)),
+    "a window with no camera was reported as one that found nothing");
 }
 
 console.log(failures === 0 ? "\nall ok" : `\n${failures} failure(s)`);

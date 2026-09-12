@@ -51,6 +51,29 @@ import type { AppProposal, ProposalOutcome } from "./app-proposal.ts";
 import type { EthRequest } from "./balances.ts";
 import type { Descriptor } from "./erc7730.ts";
 
+/**
+ * How a scan ended.
+ *
+ * Four outcomes, not a value-or-null, because three of the four are failures
+ * and they need different words. "The camera found nothing", "the camera
+ * broke" and "this build has no camera" used to collapse into one `null`, so
+ * an app could only ever say the first — and did, about all three. Diagnosing
+ * an Android camera then meant reading the device log, if the user knew there
+ * was one.
+ *
+ * The send screen never had this problem: it drives the scanner directly and
+ * prints `Camera: <message>`. This is that same honesty, given to apps.
+ */
+export type QrScanOutcome<T> =
+  /** A code the app accepted. */
+  | { kind: "scanned"; value: T }
+  /** Closed with nothing accepted — cancelled, or nothing it wanted was shown. */
+  | { kind: "closed" }
+  /** The camera failed. `reason` is the message, already a sentence. */
+  | { kind: "failed"; reason: string }
+  /** This window cannot scan at all. Not a failure of this attempt. */
+  | { kind: "unavailable"; reason: string };
+
 /** Everything the shell hands an app when it mounts one. */
 export interface AppContext {
   /** The chain the shell is on. An app is only mounted on a chain it listed. */
@@ -122,8 +145,8 @@ export interface AppContext {
    *
    * The app supplies `accept`, which decides whether a code in shot is the one
    * it wanted; anything else is ignored rather than handed over, so an
-   * unrelated code cannot be pasted into a field. Resolves with the accepted
-   * value, or null if the user closed the scanner without one.
+   * unrelated code cannot be pasted into a field. Resolves with a
+   * `QrScanOutcome`, which separates the ways a scan can end without a value.
    *
    * Added for La Caja's waiter, which exists to scan a request the cashier
    * issued. Without it the app had a text box, which is not a thing anyone
@@ -135,7 +158,7 @@ export interface AppContext {
    * be validated, never as instruction. La Caja does: the scanned request is
    * refused unless it pays the address the terminal was configured with.
    */
-  scanQr?: <T>(accept: (raw: string) => T | undefined) => Promise<T | null>;
+  scanQr?: <T>(accept: (raw: string) => T | undefined) => Promise<QrScanOutcome<T>>;
 }
 
 /** A read path to one chain, and whoever most recently answered on it. */

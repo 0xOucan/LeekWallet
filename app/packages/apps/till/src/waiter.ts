@@ -311,17 +311,24 @@ export const TILL_WAITER_APP: MiniApp = {
            * to be printed. */
           const text = raw.trim();
           return text.startsWith(`${REQUEST_PREFIX}|`) ? text : undefined;
-        }).then((raw) => {
-          if (raw === null) {
-            /* Closed without a code, or no camera to open. Both are silent
-             * from here and both used to leave the screen exactly as it was. */
+        }).then((outcome) => {
+          /* Each ending gets its own sentence. They used to be one `null`, so
+           * a build with no camera, a camera that refused to start, and a
+           * waiter who closed the scanner all read as the same shrug — and the
+           * first two are the ones that need a different action. */
+          if (outcome.kind === "unavailable" || outcome.kind === "failed") {
+            error.textContent =
+              `${outcome.reason} Paste the request text into the box below instead.`;
+            return;
+          }
+          if (outcome.kind === "closed") {
             error.textContent =
               "The camera closed without reading a request. Hold the cashier's " +
               "code steady and fill the frame, or paste the request text into " +
               "the box instead.";
             return;
           }
-          scan.value = raw;
+          scan.value = outcome.value;
           scan.dispatchEvent(new Event("input"));
         });
       });

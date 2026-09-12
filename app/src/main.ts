@@ -40,7 +40,7 @@ import {
   type Section, SECTIONS, SECTION_HEADER_IDS, sectionHidden, toggleSection,
 } from "./nav.ts";
 import { appProposer } from "./apps/propose.ts";
-import type { ChainChannel } from "../packages/core/src/mini-app.ts";
+import type { ChainChannel, QrScanOutcome } from "../packages/core/src/mini-app.ts";
 import { fetchTokenBalancesBatched } from "../packages/core/src/multicall.ts";
 import {
   fetchAllChainBalances, trackedChains, type AssetState, type ChainBalanceRow,
@@ -1961,20 +1961,41 @@ function balanceRequest(info: ChainInfo): { request: EthRequest; host: () => str
  * their mind" and "it found nothing" are one state to the caller and neither
  * is an error.
  */
-async function appScanQr<T>(accept: (raw: string) => T | undefined): Promise<T | null> {
-  if (!qrScanningAvailable()) return null;
+async function appScanQr<T>(accept: (raw: string) => T | undefined): Promise<QrScanOutcome<T>> {
+  /* Distinguished from every other ending, and answered before the camera is
+   * touched: a build that cannot scan at all is not this attempt failing, and
+   * an app that reports it as "nothing was read" sends its user looking for a
+   * steadier hand instead of another way in. */
+  if (!qrScanningAvailable()) {
+    return { kind: "unavailable", reason: qrUnavailable("Enter the value by hand instead.") };
+  }
   const video = $("appvideo") as HTMLVideoElement;
   video.hidden = false;
   const controller = new AbortController();
   try {
-    return await new Promise<T | null>((resolve) => {
+    return await new Promise<QrScanOutcome<T>>((resolve) => {
       void scanQr<T>(
         video,
         accept,
-        (value) => { controller.abort(); resolve(value); },
-        (message) => { log(`scan: ${message}`); controller.abort(); resolve(null); },
+        (value) => { controller.abort(); resolve({ kind: "scanned", value }); },
+        /* Still logged — a bug report wants the message whatever the app did
+         * with it — but no longer ONLY logged. */
+        (message) => {
+          log(`scan: ${message}`);
+          controller.abort();
+          resolve({ kind: "failed", reason: message });
+        },
         controller.signal,
-      );
+        (status) => log(`scan: ${status}`),
+      ).catch((e: unknown) => {
+        /* scanQr throws for a camera it could not start at all — permission
+         * refused, no device, another app holding it. That used to escape as
+         * an unhandled rejection and the promise below never settled. */
+        const reason = (e as Error).message ?? String(e);
+        log(`scan: ${reason}`);
+        controller.abort();
+        resolve({ kind: "failed", reason });
+      });
     });
   } finally {
     controller.abort();
