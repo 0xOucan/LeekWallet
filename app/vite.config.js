@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /**
  * Serve the shipping Content-Security-Policy during development.
@@ -40,11 +41,11 @@ function shippingCsp() {
 /**
  * The demo payroll CSV, served by the DEV server only.
  *
- *   LEEK_DEMO_CSV=/somewhere/outside/the/repo/payroll.csv pnpm tauri dev
- *
- * La Caja's "Use example CSV" button fetches `/__demo/payroll.csv`. When the
- * variable points at a file, this answers with it; otherwise 404, and the
- * button falls back to a copy remembered on the machine.
+ * La Caja's "Use example CSV" button fetches `/__demo/payroll.csv`, and this
+ * answers with `example.csv` from the folder that CONTAINS the repository --
+ * next to it, never inside it. Set LEEK_DEMO_CSV to use a different file. When
+ * there is no file this answers 404 and the button falls back to a copy
+ * remembered on the machine.
  *
  * Why a dev route rather than anything else: the file holds names and
  * addresses, so it must not be committed, must not be bundled, and must not be
@@ -59,8 +60,9 @@ function demoPayrollCsv() {
     apply: "serve",
     configureServer(server) {
       server.middlewares.use("/__demo/payroll.csv", (_req, res) => {
-        const path = process.env.LEEK_DEMO_CSV;
-        if (!path) { res.statusCode = 404; res.end(); return; }
+        // app/ -> the repo -> the folder the repo lives in.
+        const path = process.env.LEEK_DEMO_CSV
+          || fileURLToPath(new URL("../../example.csv", import.meta.url));
         try {
           const body = readFileSync(path, "utf8");
           res.setHeader("Content-Type", "text/csv; charset=utf-8");

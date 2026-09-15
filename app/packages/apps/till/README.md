@@ -67,11 +67,10 @@ and draws each recipient and amount on its own screen; a tenth recipient in one
 batch is refused as a call the screen cannot hold rather than truncated.
 
 **Demo CSV, kept out of the repository.** *Use example CSV* loads a payroll file
-without a file picker, so a recorded screen never shows the folder tree:
-
-```bash
-LEEK_DEMO_CSV=/path/outside/the/repo/payroll.csv pnpm --dir app tauri dev
-```
+without a file picker, so a recorded screen never shows the folder tree. Put the
+file at `example.csv` in the folder that contains the repository — beside it,
+not inside it — and run `pnpm --dir app tauri dev` as usual. `LEEK_DEMO_CSV`
+points it at a different file.
 
 The dev server alone serves it (`vite.config.js`, `apply: "serve"`); a production
 build never contains it. In a built app the button falls back to a copy
