@@ -55,7 +55,27 @@ disputed separately. One transaction carrying both is a number nobody can
 reconcile afterwards. Two transactions are two lines in a ledger.
 
 - Parser and plan: [`src/payroll.ts`](src/payroll.ts) · [`src/staff.ts`](src/staff.ts)
+- Batching: [`src/disperse.ts`](src/disperse.ts)
 - Example CSV: [`examples/payroll-example.csv`](examples/payroll-example.csv)
+
+**Batched through Disperse, optionally.** Ticking *batch via Disperse* sends the
+same plan as an approval, one `disperseToken` for every salary and one for every
+tip — **three device confirmations whatever the headcount** instead of two per
+person. Salaries and tips are still separate transactions, so the accounting
+property above survives the batching. The device decodes `disperseToken` itself
+and draws each recipient and amount on its own screen; a tenth recipient in one
+batch is refused as a call the screen cannot hold rather than truncated.
+
+**Demo CSV, kept out of the repository.** *Use example CSV* loads a payroll file
+without a file picker, so a recorded screen never shows the folder tree:
+
+```bash
+LEEK_DEMO_CSV=/path/outside/the/repo/payroll.csv pnpm --dir app tauri dev
+```
+
+The dev server alone serves it (`vite.config.js`, `apply: "serve"`); a production
+build never contains it. In a built app the button falls back to a copy
+remembered on that machine.
 
 **The CSV parser is treated as a security boundary**, because it is: a payroll
 file is attacker-controlled input that ends in a transfer amount. It refuses
@@ -108,7 +128,16 @@ pnpm --dir app/packages/apps/till test     # 13 suites
 
 ## Status
 
-The code and its tests are complete. **End-to-end execution on Arc testnet has
-not yet been recorded** as of 2026-09-11 — unlike Aqua and ATS, this app has no
-on-chain transaction to point at yet. Stated here rather than left to be
-discovered.
+**Executed on Arc testnet**, batched through Disperse and signed on both boards
+(every transaction confirmed `status 1`):
+
+| board | approve | salaries | tips |
+|---|---|---|---|
+| ESP32-S3 | [`0xa521ce6e…`](https://testnet.arcscan.app/tx/0xa521ce6e05294321f3339ab9e1ace62d2493db4a6c26eb64e84663f6adafb7b8) | [`0x31099ba2…`](https://testnet.arcscan.app/tx/0x31099ba28ee13d31ceb5bdb37b1e1c230922194d5f9743cd8065d8a92eececba) | [`0xd49a3549…`](https://testnet.arcscan.app/tx/0xd49a35491561c10eac280c866bcf10813503e677555408474611800826f01511) |
+| Firefly Pixie | [`0x26b08eaf…`](https://testnet.arcscan.app/tx/0x26b08eaf63cafb291b4fe38ad79b6eb192770f427a2382632d93f420fc2823ca) | [`0xebe252d2…`](https://testnet.arcscan.app/tx/0xebe252d259d0a2786731b3fc616e3fa5f32244da0238cccda64660509803096e) | [`0xc705d3fb…`](https://testnet.arcscan.app/tx/0xc705d3fbb2641679604f72615f96bf3faecc63d3875205dbbb0d597d772c0dd8) |
+
+The waiter terminal ran across three devices — desktop cashier, Android scanner
+with no wallet on it, an unmodified Rabby paying — and detected the payment on
+its own:
+[`0x83f8f67c…`](https://sepolia.basescan.org/tx/0x83f8f67c7e2462cd695c0ff243493004e400e550afaf89990f4ed3428897d91f)
+on Base Sepolia.

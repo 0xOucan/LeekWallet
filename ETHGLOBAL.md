@@ -54,7 +54,7 @@ harness, and the companion shell.
 |---|---|---|---|
 | [**Aqua**](app/packages/apps/aqua/README.md) | 1inch | Build an Aqua App — Continuity | **Base mainnet**, full lifecycle |
 | [**ATS**](app/packages/apps/ats/README.md) | Hedera | Tokenization of Anything — Continuity | **Hedera testnet**, 6 verified contracts |
-| [**La Caja**](app/packages/apps/till/README.md) | Arc / Circle | Best DeFi or Agentic Application — Continuity | code complete, execution not yet recorded |
+| [**La Caja**](app/packages/apps/till/README.md) | Arc / Circle | Best DeFi or Agentic Application — Continuity | **Arc testnet**, batched payroll on both boards |
 
 ---
 
@@ -79,6 +79,18 @@ the device, all on Base mainnet:
 | Ship | [`0x8eba6a31…`](https://basescan.org/tx/0x8eba6a313f13f0c8a77ea1354279d8ef458b445031fb2629ecf23b85c1439241) |
 | Fill | [`0x8478c356…`](https://basescan.org/tx/0x8478c356986936ee50ee8375dfece2610b16036af772c4ce8545049ce4028da6) |
 | Dock | [`0x274877aa…`](https://basescan.org/tx/0x274877aa875599d892dc870973e8258004d28ee34508ed1fb7aa599865385d42) |
+
+A second two-sided position, shipped from the companion's own **Ship a position**
+form rather than a script, and filled by a separate taker:
+
+| step | signed by | tx |
+|---|---|---|
+| Ship | the device | [`0xc78e2df7…`](https://basescan.org/tx/0xc78e2df70ec5d49e1708a23fd2fa912f3d45f57d398d40f7b93716e6e04ef585) |
+| Fill | the taker | [`0x9aeae445…`](https://basescan.org/tx/0x9aeae445e0c39e35048e378d68c0406ba1187d224845e6689af9efc356a3fd0d) |
+
+The maker sold 0.00009 WETH for 0.3663 USDC at a price set by the SwapVM program
+the device decoded. The fill's sender is the taker by design; the device's
+address appears on both token legs of it.
 
 **The one contract we deployed is verified:** `GateToken` at
 [`0x8ed185f9…`](https://basescan.org/address/0x8ed185f95d62a60cc3cf2688ffe3a250b3a8262b#code)
@@ -154,16 +166,33 @@ two values that vary. The Studio's web app cannot do this.
 **[Full README →](app/packages/apps/till/README.md)**
 
 Stablecoin-native point-of-sale and payroll on Arc (chain **5042002**), in USDC,
-EURC and cirBTC. Salary and tips are sent as **two separate transactions per
-employee**, because tips are not wages and one netted transfer is a number
-nobody can reconcile afterwards.
+EURC and cirBTC. Salary and tips stay **separate legs**, because tips are not
+wages and one netted transfer is a number nobody can reconcile afterwards.
 
-No contracts are deployed: the app composes ERC-20 transfers of tokens Circle
-already published, so the trust sits in the device screen rather than in a
-contract we wrote.
+**Batched through the canonical Disperse contract**
+([`0xd15fe25e…`](https://testnet.arcscan.app/address/0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3)):
+an approval, one transaction for every salary, one for every tip — **three
+device confirmations whatever the headcount**, where paying one leg at a time
+would cost two per person. Nine staff and eighteen payments are three presses.
+The device decodes `disperseToken` itself and draws every recipient and amount
+on its own screen before signing.
 
-**Honest status:** the code and its tests are complete; **end-to-end execution
-on Arc testnet has not yet been recorded** as of 2026-09-11.
+No contracts are deployed: the app composes transfers of tokens Circle already
+published and batches them through a Disperse deployment that already existed,
+so the trust sits in the device screen rather than in a contract we wrote.
+
+**Executed on Arc testnet, signed on both boards** (all confirmed `status 1`):
+
+| board | approve | salaries | tips |
+|---|---|---|---|
+| ESP32-S3 | [`0xa521ce6e…`](https://testnet.arcscan.app/tx/0xa521ce6e05294321f3339ab9e1ace62d2493db4a6c26eb64e84663f6adafb7b8) | [`0x31099ba2…`](https://testnet.arcscan.app/tx/0x31099ba28ee13d31ceb5bdb37b1e1c230922194d5f9743cd8065d8a92eececba) | [`0xd49a3549…`](https://testnet.arcscan.app/tx/0xd49a35491561c10eac280c866bcf10813503e677555408474611800826f01511) |
+| Firefly Pixie | [`0x26b08eaf…`](https://testnet.arcscan.app/tx/0x26b08eaf63cafb291b4fe38ad79b6eb192770f427a2382632d93f420fc2823ca) | [`0xebe252d2…`](https://testnet.arcscan.app/tx/0xebe252d259d0a2786731b3fc616e3fa5f32244da0238cccda64660509803096e) | [`0xc705d3fb…`](https://testnet.arcscan.app/tx/0xc705d3fbb2641679604f72615f96bf3faecc63d3875205dbbb0d597d772c0dd8) |
+
+**The waiter terminal, across three devices:** a desktop cashier issued a bill,
+the Android app scanned it with no wallet on the phone, an unmodified Rabby paid
+it, and the terminal noticed on its own —
+[`0x83f8f67c…`](https://sepolia.basescan.org/tx/0x83f8f67c7e2462cd695c0ff243493004e400e550afaf89990f4ed3428897d91f)
+on Base Sepolia, matched by exact amount down to a sub-cent order marker.
 
 ---
 

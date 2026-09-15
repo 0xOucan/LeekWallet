@@ -78,6 +78,45 @@ USDC against 0.00009 WETH at 2,562 USDC/WETH** with spot at 2,462: the maker
 earned the spread plus the 0.30% fee, and the registry's virtual credits and
 the real ERC-20 transfers agree to the unit.
 
+A second position, shipped from the companion's **Ship a position** form and
+filled by a separate taker:
+
+| step | signed by | transaction |
+|---|---|---|
+| Ship | the device | [`0xc78e2df7…`](https://basescan.org/tx/0xc78e2df70ec5d49e1708a23fd2fa912f3d45f57d398d40f7b93716e6e04ef585) |
+| Fill | the taker | [`0x9aeae445…`](https://basescan.org/tx/0x9aeae445e0c39e35048e378d68c0406ba1187d224845e6689af9efc356a3fd0d) |
+
+## Running the demo
+
+Three steps, and only the middle one touches the device.
+
+```bash
+cd app/packages/apps/aqua/contracts
+./script/pre-demo.sh          # before recording
+```
+
+Reads both sides — the device's WETH, USDC and gas; the taker's gas, USDC,
+`LWGATE` and router allowance — and approves the router only if the allowance is
+short. There is no time-limited permission to grant beforehand: the 2 hours is
+the position's own deadline, and it starts when the device ships.
+
+1. **Companion → Aqua → Fill example position → Plan the position.** The button
+   fills the form with the smallest two-sided WETH/USDC position (0.0001 WETH,
+   0.30 USDC, gated by `LWGATE`). It plans and signs nothing.
+2. **Device:** approve, then ship. Copy the hash from the device-log line that
+   says *ship a strategy*.
+3. **Terminal, within 2 hours:**
+
+   ```bash
+   ./script/fill-position.sh 0x<ship tx hash>
+   ```
+
+   Reads the strategy from the ship receipt, quotes for free, tops up the router
+   allowance only if needed, swaps from the `monad-deployer` keystore, and prints
+   both Basescan links and the maker's balance change. `DRY_RUN=1` stops before
+   anything is sent. An expired position is reported as `DeadlineReached` with
+   the time it expired, not as a raw selector.
+
 ## SwapVM
 
 The device decodes the SwapVM program itself and draws **one page per
@@ -170,6 +209,8 @@ Code: [`src/manage.ts`](src/manage.ts).
 | [`src/withdraw.ts`](src/withdraw.ts) | dock, and the revoke that docking does not do |
 | [`src/dca.ts`](src/dca.ts) | attended DCA schedule |
 | [`contracts/RUNBOOK.md`](contracts/RUNBOOK.md) | the operational runbook, corrected against real failures |
+| [`contracts/script/pre-demo.sh`](contracts/script/pre-demo.sh) | checks both sides before a demo; tops up the router allowance only if short |
+| [`contracts/script/fill-position.sh`](contracts/script/fill-position.sh) | fills a shipped position from its hash and prints the explorer proof |
 | [`contracts/src/GateToken.sol`](contracts/src/GateToken.sol) | the gate token (opcode 14) that keeps a position off bots |
 
 ## Run the tests
