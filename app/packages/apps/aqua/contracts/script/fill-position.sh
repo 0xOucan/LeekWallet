@@ -2,10 +2,13 @@
 #
 # Fill an Aqua position the device just shipped, and print the proof.
 #
-#   ./script/fill-position.sh 0x<ship tx hash>
+#   ./script/fill-position.sh                   the device's latest open position
+#   ./script/fill-position.sh 0x<ship tx hash>  one position in particular
 #
-# The ship hash is the "Aqua: sent 0x…" line in the companion's device log,
-# on the step that says "ship a strategy". Everything else is read from chain:
+# With no argument, script/latest-position.py finds the newest position the
+# device shipped and has not docked. With a hash, that ship is used -- the
+# "Aqua: sent 0x…" line on the "ship a strategy" step of the device log.
+# Everything else is read from chain:
 #
 #   1. the ship receipt   -> the strategy bytes, its hash, the maker, and how
 #                            much WETH was pushed (the fill is sized from it)
@@ -28,12 +31,14 @@
 #   AMOUNT_OUT   WETH wei to take out         (default: a quarter of the WETH pushed)
 #   TAKER        the keystore's address       (default the RUNBOOK deployer; saves a password prompt)
 #   DRY_RUN=1    read and quote only; approve and swap nothing
+#   MAKER        the device to look for       (default the RUNBOOK maker)
+#   SCAN_BLOCKS  how far back to look         (default 6000, ~3.3h on Base)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SHIP_TX="${1:-}"
-[[ "$SHIP_TX" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
-  echo "usage: $0 0x<ship tx hash>   (the 'ship a strategy' line in the device log)" >&2
+[[ -z "$SHIP_TX" || "$SHIP_TX" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
+  echo "usage: $0 [0x<ship tx hash>]   (omit it to fill the device's latest open position)" >&2
   exit 2
 }
 
@@ -54,7 +59,13 @@ for tool in cast jq python3 node; do
 done
 
 TAKER="${TAKER:-0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45}"
+DEVICE="${MAKER:-0xbDEB381a7c77040bf2a99E2990C116774CCb339f}"
 echo "==> taker   $TAKER  ($ACCOUNT)"
+
+if [[ -z "$SHIP_TX" ]]; then
+  echo "==> finding the device's latest open position"
+  SHIP_TX=$(python3 script/latest-position.py "$BASE_RPC" "$REGISTRY" "$DEVICE" "${SCAN_BLOCKS:-6000}") || exit 1
+fi
 
 # ---------------------------------------------------------------- 1. receipt
 echo "==> reading ship $SHIP_TX"
@@ -111,7 +122,7 @@ if ! QUOTE=$(cast call --rpc-url "$BASE_RPC" --from "$TAKER" "$ROUTER" \
   if [[ "$QUOTE" == *0x09e99adc* ]]; then
     DL=$(grep -oE '0x09e99adc[0-9a-f]{128}' <<<"$QUOTE" | cut -c75-)
     echo "DeadlineReached: this position expired at $(date -u -d @$((16#$DL)))." >&2
-    echo "Ship a fresh one from the companion and run this again with its hash." >&2
+    echo "Ship a fresh one from the companion, then run this again." >&2
   elif [[ "$QUOTE" == *0x9669f955* ]]; then
     echo "TakerTokenBalanceIsZero: $TAKER holds no gate token, so opcode 14 refuses it." >&2
   else

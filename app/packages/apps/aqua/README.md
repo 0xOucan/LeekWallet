@@ -103,15 +103,18 @@ the position's own deadline, and it starts when the device ships.
 1. **Companion → Aqua → Fill example position → Plan the position.** The button
    fills the form with the smallest two-sided WETH/USDC position (0.0001 WETH,
    0.30 USDC, gated by `LWGATE`). It plans and signs nothing.
-2. **Device:** approve, then ship. Copy the hash from the device-log line that
-   says *ship a strategy*.
+2. **Device:** approve, then ship.
 3. **Terminal, within 2 hours:**
 
    ```bash
-   ./script/fill-position.sh 0x<ship tx hash>
+   ./script/fill-position.sh
    ```
 
-   Reads the strategy from the ship receipt, quotes for free, tops up the router
+   Finds the device's newest position that has not been docked
+   (`script/latest-position.py` scans the registry's `Shipped` events backwards
+   in 2,000-block chunks, since Aqua does not index the maker and the public RPC
+   caps a log query at 2,000 blocks). Pass a ship hash instead to fill one
+   position in particular. It then reads the strategy from the ship receipt, quotes for free, tops up the router
    allowance only if needed, swaps from the `monad-deployer` keystore, and prints
    both Basescan links and the maker's balance change. `DRY_RUN=1` stops before
    anything is sent. An expired position is reported as `DeadlineReached` with
