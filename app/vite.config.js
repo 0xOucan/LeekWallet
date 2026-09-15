@@ -37,10 +37,48 @@ function shippingCsp() {
   };
 }
 
+/**
+ * The demo payroll CSV, served by the DEV server only.
+ *
+ *   LEEK_DEMO_CSV=/somewhere/outside/the/repo/payroll.csv pnpm tauri dev
+ *
+ * La Caja's "Use example CSV" button fetches `/__demo/payroll.csv`. When the
+ * variable points at a file, this answers with it; otherwise 404, and the
+ * button falls back to a copy remembered on the machine.
+ *
+ * Why a dev route rather than anything else: the file holds names and
+ * addresses, so it must not be committed, must not be bundled, and must not be
+ * picked through a file dialog on a screen that is being recorded -- a picker
+ * shows the folder tree. `apply: "serve"` means `vite build` never runs this
+ * plugin, so nothing about the file can reach dist/ or a release. It is read
+ * from disk on every request, so editing the CSV needs no restart.
+ */
+function demoPayrollCsv() {
+  return {
+    name: "demo-payroll-csv",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use("/__demo/payroll.csv", (_req, res) => {
+        const path = process.env.LEEK_DEMO_CSV;
+        if (!path) { res.statusCode = 404; res.end(); return; }
+        try {
+          const body = readFileSync(path, "utf8");
+          res.setHeader("Content-Type", "text/csv; charset=utf-8");
+          res.setHeader("Cache-Control", "no-store");
+          res.end(body);
+        } catch {
+          res.statusCode = 404;
+          res.end();
+        }
+      });
+    },
+  };
+}
+
 // Tauri expects a fixed dev port and no obfuscation in dev builds.
 export default defineConfig({
   root: ".",
-  plugins: [shippingCsp()],
+  plugins: [shippingCsp(), demoPayrollCsv()],
   build: { outDir: "dist", emptyOutDir: true, target: "es2022" },
   server: { port: 1420, strictPort: true },
   clearScreen: false,

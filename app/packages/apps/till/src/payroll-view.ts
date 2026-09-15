@@ -403,7 +403,7 @@ export const TILL_PAYROLL_APP: MiniApp = {
     const exampleNote = el("span", "till-payroll-note");
     const drawExample = () => {
       const have = readExample() !== null;
-      exampleButton.textContent = have ? "Use example CSV" : "Choose example CSV…";
+      exampleButton.textContent = "Use example CSV";
       forgetExample.hidden = !have;
     };
     const examplePicker = el("input");
@@ -571,6 +571,22 @@ export const TILL_PAYROLL_APP: MiniApp = {
       redraw();
     });
     exampleButton.addEventListener("click", () => {
+      void (async () => {
+      /* First choice: the dev server's /__demo/payroll.csv, set by
+       * LEEK_DEMO_CSV (see vite.config.js). No picker, so no folder tree on a
+       * recorded screen, and nothing bundled. In a built app the fetch simply
+       * fails and the fallbacks below take over. */
+      try {
+        const res = await fetch("/__demo/payroll.csv", { cache: "no-store" });
+        if (res.ok) {
+          const text = await res.text();
+          if (text.trim() !== "") {
+            exampleNote.textContent = " example loaded";
+            importText(text);
+            return;
+          }
+        }
+      } catch { /* not the dev server */ }
       const stored = readExample();
       if (stored !== null) {
         exampleNote.textContent = " example loaded from this machine";
@@ -580,6 +596,7 @@ export const TILL_PAYROLL_APP: MiniApp = {
       /* Guarded because the screen is also mounted in a test DOM without
        * `click`; in any real webview it is always there. */
       if (typeof examplePicker.click === "function") examplePicker.click();
+      })();
     });
     examplePicker.addEventListener("change", () => {
       const chosen = examplePicker.files?.[0];
