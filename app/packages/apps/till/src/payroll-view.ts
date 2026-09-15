@@ -379,6 +379,40 @@ export const TILL_PAYROLL_APP: MiniApp = {
     file.setAttribute("aria-label", "Payroll CSV");
     controls.append(file);
 
+    /* "Use example CSV": one click for a demo, with the file kept OUT of the
+     * repository.
+     *
+     * A payroll CSV holds names and addresses, and committing one -- even a
+     * made-up one -- puts that metadata in git history for good. So the example
+     * lives in this machine's storage for this app, and nowhere else: the
+     * first press opens a file picker and remembers what was chosen; every
+     * press after that imports it directly. "Forget" clears it. Nothing is
+     * bundled into the build and nothing is sent anywhere.
+     *
+     * A webview cannot read an arbitrary path on disk without a filesystem
+     * permission this app deliberately does not hold, which is why the file is
+     * chosen once by a person rather than named in code. */
+    const exampleKey = "leek.till.payrollExampleCsv";
+    const readExample = (): string | null => {
+      try { return localStorage.getItem(exampleKey); } catch { return null; }
+    };
+    const exampleButton = el("button", "till-payroll-template", "Use example CSV");
+    exampleButton.type = "button";
+    const forgetExample = el("button", "till-payroll-template", "Forget example");
+    forgetExample.type = "button";
+    const exampleNote = el("span", "till-payroll-note");
+    const drawExample = () => {
+      const have = readExample() !== null;
+      exampleButton.textContent = have ? "Use example CSV" : "Choose example CSV…";
+      forgetExample.hidden = !have;
+    };
+    const examplePicker = el("input");
+    examplePicker.type = "file";
+    examplePicker.accept = ".csv,text/csv,text/plain";
+    examplePicker.hidden = true;
+    controls.append(exampleButton, forgetExample, examplePicker, exampleNote);
+    drawExample();
+
     /* The template, obtainable from the app rather than only from the repo.
      *
      * Two routes on purpose. The download is the one people expect, and it is
@@ -535,6 +569,38 @@ export const TILL_PAYROLL_APP: MiniApp = {
       state.progress = undefined;
       error.textContent = "";
       redraw();
+    });
+    exampleButton.addEventListener("click", () => {
+      const stored = readExample();
+      if (stored !== null) {
+        exampleNote.textContent = " example loaded from this machine";
+        importText(stored);
+        return;
+      }
+      /* Guarded because the screen is also mounted in a test DOM without
+       * `click`; in any real webview it is always there. */
+      if (typeof examplePicker.click === "function") examplePicker.click();
+    });
+    examplePicker.addEventListener("change", () => {
+      const chosen = examplePicker.files?.[0];
+      if (chosen === undefined) return;
+      void chosen.text().then((text) => {
+        try {
+          localStorage.setItem(exampleKey, text);
+          exampleNote.textContent = ` remembered ${chosen.name} on this machine`;
+        } catch {
+          exampleNote.textContent = " imported, but this window would not remember it";
+        }
+        drawExample();
+        importText(text);
+      }, (e: Error) => {
+        error.textContent = `That file could not be read: ${e.message}`;
+      });
+    });
+    forgetExample.addEventListener("click", () => {
+      try { localStorage.removeItem(exampleKey); } catch { /* nothing stored */ }
+      exampleNote.textContent = " example forgotten";
+      drawExample();
     });
     file.addEventListener("change", () => {
       const chosen = file.files?.[0];

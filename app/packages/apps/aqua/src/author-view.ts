@@ -43,6 +43,26 @@ import { outstandingText, runSteps, type RunOutcome } from "./run.ts";
 import type { DeployStep } from "./deploy.ts";
 import type { Instruction } from "./program.ts";
 
+/**
+ * The demo position: the smallest two-sided WETH/USDC strategy worth filling.
+ *
+ * The gate is the LWGATE token this repo deployed and verified on Base
+ * (contracts/RUNBOOK.md, step 2). Leg keys are the token addresses as the form
+ * stores them -- lowercase, from BASE_TOKENS.
+ */
+const EXAMPLE_POSITION = {
+  pair: "weth-usdc",
+  tier: "medium" as RiskTier,
+  mid: "4000",
+  fee: "0.30",
+  hours: "2",
+  gate: "0x8ed185f95d62a60cc3cf2688ffe3a250b3a8262b",
+  legs: {
+    "0x4200000000000000000000000000000000000006": "0.0001",
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "0.30",
+  } as Record<string, string>,
+} as const;
+
 /** What the picker needs. The same shape manage.ts takes, minus the portfolio. */
 export interface AuthorContext {
   chainId: number;
@@ -162,10 +182,48 @@ export function renderAuthor(root: HTMLElement, ctx: AuthorContext): void {
   section.append(el("p", "aqua-notice aqua-tone-unavailable", TOKEN_HINT_NOTICE));
 
   const out = el("div", "aqua-out");
+
+  /* A demo shortcut, and only a shortcut: it FILLS THE FORM, it does not plan,
+   * approve or ship anything. Every value lands in the fields above where it
+   * can be read and changed, and Plan still has to be pressed and every step
+   * still confirmed on the device.
+   *
+   * It exists because this form prefills each leg with the maker's WHOLE
+   * balance (see rebuildLegs), which is the honest default for a real maker
+   * and the wrong one for a demo run on mainnet. The example is the smallest
+   * two-sided position the fill script can take a slice of: both legs present,
+   * so either direction is fillable, and small enough that a demo costs cents. */
+  const example = el("button", undefined, "Fill example position");
+  example.type = "button";
+  example.addEventListener("click", () => {
+    void (async () => {
+      exampleLegs = EXAMPLE_POSITION.legs;
+      pair.value = EXAMPLE_POSITION.pair;
+      midPlaceholder();
+      await rebuildLegs();
+      tier.value = EXAMPLE_POSITION.tier;
+      mid.value = EXAMPLE_POSITION.mid;
+      fee.value = EXAMPLE_POSITION.fee;
+      hours.value = EXAMPLE_POSITION.hours;
+      gate.value = EXAMPLE_POSITION.gate;
+      for (const [address, amount] of Object.entries(EXAMPLE_POSITION.legs)) {
+        const field = legFields.get(address);
+        if (field !== undefined) field.input.value = amount;
+      }
+      out.replaceChildren(el("p", "aqua-detail",
+        "Example values filled in. Nothing has been planned or signed: read them, " +
+        "then press Plan the position."));
+    })();
+  });
+  section.append(example);
+
   const build = el("button", undefined, "Plan the position");
   build.type = "button";
   section.append(build, out);
   root.append(section);
+
+  /** Leg amounts from the example button, if it was pressed. */
+  let exampleLegs: Record<string, string> | undefined;
 
   /** Balances, per token address, from the chain. Undefined means unread. */
   let balances = new Map<string, bigint>();
@@ -233,7 +291,12 @@ export function renderAuthor(root: HTMLElement, ctx: AuthorContext): void {
        * this screen that is a fact rather than a choice, and because a maker
        * shipping less can only do so by typing less. Zero stays zero: a side
        * with nothing behind it must not arrive pre-filled with a number. */
-      if (result.raw > 0n) field.input.value = formatUnits(result.raw, token.decimals);
+      /* The example, when chosen, outranks the balance: a read that finishes
+       * after the button was pressed must not overwrite a demo amount with a
+       * whole wallet. */
+      const chosen = exampleLegs?.[token.address];
+      if (chosen !== undefined) field.input.value = chosen;
+      else if (result.raw > 0n) field.input.value = formatUnits(result.raw, token.decimals);
     }
   };
 
