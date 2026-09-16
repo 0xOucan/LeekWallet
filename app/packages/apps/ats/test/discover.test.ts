@@ -19,7 +19,7 @@
 
 import {
   DEFAULT_SCAN_BLOCKS, LOG_CHUNK_BLOCKS, LOG_CHUNK_RETRIES, MAX_LOG_CHUNKS,
-  FACTORY_DEPLOY_BLOCK, decodeDeployedData, discoverIssued, mergeSecurities,
+  FACTORY_DEPLOY_BLOCK, decodeDeployedData, discoverIssued, issuedInTransaction, mergeSecurities,
 } from "../src/discover.ts";
 import { ISSUE_TOPIC } from "../src/issue.ts";
 import { KNOWN_SECURITIES } from "../src/securities.ts";
@@ -171,8 +171,13 @@ const run = async (): Promise<void> => {
     check(!failed.ok && failed.reason === "logs-unavailable", "the failure has the wrong reason");
     check(!failed.ok && /reports none of what the other chunks saw/.test(failed.why),
       "the failure does not say the other chunks were discarded");
-    check(asked === 1 + (1 + LOG_CHUNK_RETRIES),
-      `${asked} requests, expected one good chunk plus ${1 + LOG_CHUNK_RETRIES} attempts`);
+    /* Chunks run concurrently, so a chunk already in flight when another one
+     * gives up still finishes: the count is a ceiling, not an exact figure.
+     * What must hold is that the failing chunk was retried to its limit and
+     * that nothing was reported -- both asserted above. */
+    check(asked >= 1 + (1 + LOG_CHUNK_RETRIES) && asked <= 3 * (1 + LOG_CHUNK_RETRIES),
+      `${asked} requests: expected the failing chunk retried ${1 + LOG_CHUNK_RETRIES} times, ` +
+      "plus at most the other chunks in flight beside it");
   }
 
   group("an unreadable head, an over-wide window, and a log of the wrong shape");
@@ -256,6 +261,61 @@ const run = async (): Promise<void> => {
     check(known?.source === "both", "a confirmed security is not marked as confirmed");
     check(known?.symbol === KNOWN_SECURITIES[0]?.symbol,
       "a log's symbol overwrote the table's, losing the difference between them");
+  }
+
+  group("one receipt answers what a single deploy created");
+  {
+    /* THE PROPERTY: straight after a deploy the question is not "everything I
+       have ever issued" but "what did THIS transaction create", and a receipt
+       answers it in one request. Every check the scan makes is made here too,
+       because a wrong address is one a user would go on to mint into. */
+    const HASH = `0x${"ab".repeat(32)}`;
+    const receipt = (logs: unknown[], status = "0x1") =>
+      (async (req: { method: string; params?: unknown }) => {
+        if (req.method !== "eth_getTransactionReceipt") throw new Error(req.method);
+        check((req.params as string[])[0] === HASH, "the receipt was asked for by the wrong hash");
+        return { status, logs };
+      }) as never;
+
+    const withFactory = (log: Record<string, unknown>) => ({ ...log, address: FACTORY });
+
+    const found = await issuedInTransaction(
+      receipt([withFactory(equityLog(ISSUER, NEW_EQUITY, 42))]), HASH, ISSUER, FACTORY);
+    check(found?.address === NEW_EQUITY, `the security address was ${String(found?.address)}`);
+    check(found?.kind === "deployEquity", "the kind was not read from the topic");
+    check(found?.symbol === "ACME", "the symbol was not decoded");
+    check(found?.blockNumber === 42n, "the block number was not read");
+
+    /* Each of these would put a wrong address in front of someone about to
+       mint, so each returns nothing rather than a best guess. */
+    check(await issuedInTransaction(
+      receipt([withFactory(equityLog(STRANGER, NEW_EQUITY, 42))]), HASH, ISSUER, FACTORY) === undefined,
+      "a deploy by somebody else was accepted as this wallet's");
+    check(await issuedInTransaction(
+      receipt([{ ...equityLog(ISSUER, NEW_EQUITY, 42), address: STRANGER }]), HASH, ISSUER, FACTORY) === undefined,
+      "an event from another contract was accepted as this factory's");
+    check(await issuedInTransaction(
+      receipt([withFactory(equityLog(ISSUER, NEW_EQUITY, 42))], "0x0"), HASH, ISSUER, FACTORY) === undefined,
+      "a reverted transaction was read as having created a security");
+    check(await issuedInTransaction(receipt([]), HASH, ISSUER, FACTORY) === undefined,
+      "an empty receipt produced a security");
+
+    /* Not yet mined, and an endpoint that refuses: both are "no answer yet",
+       not an error, so a caller may poll without special-casing them. */
+    check(await issuedInTransaction((async () => null) as never, HASH, ISSUER, FACTORY) === undefined,
+      "a pending transaction was not reported as pending");
+    check(await issuedInTransaction(
+      (async () => { throw new Error("down"); }) as never, HASH, ISSUER, FACTORY) === undefined,
+      "an unreachable node threw instead of answering undefined");
+    check(await issuedInTransaction(receipt([]), "not-a-hash", ISSUER, FACTORY) === undefined,
+      "a malformed hash was sent to the node");
+
+    /* A neighbouring log that does not decode must not lose the real one. */
+    const mixed = await issuedInTransaction(receipt([
+      { ...withFactory(equityLog(ISSUER, NEW_EQUITY, 42)), data: "0xzz" },
+      withFactory(equityLog(ISSUER, NEW_EQUITY, 42)),
+    ]), HASH, ISSUER, FACTORY);
+    check(mixed?.address === NEW_EQUITY, "an undecodable neighbour hid the real deployment");
   }
 
   console.log(failures === 0 ? "\nall ok" : `\n${failures} failure(s)`);

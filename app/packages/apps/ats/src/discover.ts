@@ -103,6 +103,18 @@ export const MAX_LOG_CHUNKS = 256;
 /** Extra attempts per chunk before the scan gives up. Reads, so repeating is free. */
 export const LOG_CHUNK_RETRIES = 2;
 
+/**
+ * How many chunk requests are in flight at once.
+ *
+ * One at a time made a 171,000-block window about half a minute of waiting
+ * before anything appeared. These are independent reads, so they overlap —
+ * but a public endpoint answers a burst with 429s, and by the all-or-nothing
+ * rule a chunk that exhausts its retries fails the entire scan. Eight is
+ * chosen to be obviously below what a public node objects to; raise it only
+ * against an endpoint you control.
+ */
+export const LOG_CHUNK_CONCURRENCY = 8;
+
 export const DISCOVERY_NOTICE =
   "This list is what the factory's logs say inside the block window shown " +
   "beside it, and nothing else. The scan starts at the factory's own " +
@@ -293,41 +305,75 @@ export async function discoverIssued(
 
   const byAddress = new Map<string, IssuedSecurity>();
 
+  /* The ranges first, then a bounded number of them in flight at once.
+   *
+   * A 171,000-block window is 171 chunks, and one request at a time against a
+   * public node is around half a minute of waiting before the console shows
+   * anything. The requests are independent reads, so they are run
+   * concurrently -- but only a few at a time, because a public endpoint
+   * answers a burst with 429s, and a rate-limited chunk that exhausts its
+   * retries fails the whole scan by the all-or-nothing rule below.
+   *
+   * Order is not left to whoever answers first: results are written into a
+   * slot per range and decoded in block order afterwards, so the register
+   * reads the same way whatever the network did. */
+  const ranges: Array<{ from: bigint; end: bigint }> = [];
   for (let from = start; from <= toBlock; from += chunkBlocks) {
-    const end = from + chunkBlocks - 1n > toBlock ? toBlock : from + chunkBlocks - 1n;
-    let logs: unknown;
-    /* Bounded retry per chunk, for the reason positions.ts records: the scan is
-     * all-or-nothing, so without a retry one transient 500 from a public node
-     * throws away every other chunk's work — and a failed discovery is not
-     * cosmetic here either, since a security that cannot be listed cannot be
-     * minted from this console at all. */
-    for (let attempt = 0; ; attempt++) {
-      try {
-        logs = await request({
-          method: "eth_getLogs",
-          params: [{
-            address: target,
-            /* Topic 0 as an array is "EquityDeployed OR BondDeployed"; topic 1
-             * pins the caller. One request per chunk, filtered by the node. */
-            topics: [[ISSUE_TOPIC.deployEquity, ISSUE_TOPIC.deployBond], padTopic(wanted)],
-            fromBlock: hexQuantity(from),
-            toBlock: hexQuantity(end),
-          }],
-        });
-        break;
-      } catch (e) {
-        if (attempt >= LOG_CHUNK_RETRIES) {
-          return {
-            ok: false, reason: "logs-unavailable", window,
-            why:
-              `blocks ${from}–${end} could not be read after ${attempt + 1} attempts ` +
-              `(${String((e as Error)?.message ?? e)}), so this scan found nothing it can ` +
-              "stand behind and reports none of what the other chunks saw.",
-          };
+    ranges.push({ from, end: from + chunkBlocks - 1n > toBlock ? toBlock : from + chunkBlocks - 1n });
+  }
+
+  const answers = new Array<unknown>(ranges.length);
+  let failure: Discovery | undefined;
+  let next = 0;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next++;
+      if (index >= ranges.length || failure !== undefined) return;
+      const { from, end } = ranges[index] as { from: bigint; end: bigint };
+      /* Bounded retry per chunk, for the reason positions.ts records: the scan
+       * is all-or-nothing, so without a retry one transient 500 from a public
+       * node throws away every other chunk's work — and a failed discovery is
+       * not cosmetic here either, since a security that cannot be listed
+       * cannot be minted from this console at all. */
+      for (let attempt = 0; ; attempt++) {
+        try {
+          answers[index] = await request({
+            method: "eth_getLogs",
+            params: [{
+              address: target,
+              /* Topic 0 as an array is "EquityDeployed OR BondDeployed"; topic
+               * 1 pins the caller. One request per chunk, filtered by the
+               * node. */
+              topics: [[ISSUE_TOPIC.deployEquity, ISSUE_TOPIC.deployBond], padTopic(wanted)],
+              fromBlock: hexQuantity(from),
+              toBlock: hexQuantity(end),
+            }],
+          });
+          break;
+        } catch (e) {
+          if (attempt >= LOG_CHUNK_RETRIES) {
+            failure ??= {
+              ok: false, reason: "logs-unavailable", window,
+              why:
+                `blocks ${from}–${end} could not be read after ${attempt + 1} attempts ` +
+                `(${String((e as Error)?.message ?? e)}), so this scan found nothing it can ` +
+                "stand behind and reports none of what the other chunks saw.",
+            };
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
         }
-        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
       }
     }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(LOG_CHUNK_CONCURRENCY, ranges.length) }, worker),
+  );
+  if (failure !== undefined) return failure;
+
+  for (const logs of answers) {
     if (!Array.isArray(logs)) {
       return { ok: false, reason: "undecodable", window, why: "the node's answer was not a list of logs" };
     }
@@ -430,5 +476,86 @@ export function mergeSecurities(
       source: "log",
     });
   }
-  return [...out.values()];
+  /* Newest first among what the chain confirmed, so a security issued a minute
+   * ago is at the top rather than wherever the table happened to put it. Rows
+   * the scan did not confirm keep their order and follow: they are the ones a
+   * reader is least likely to want. */
+  const rank = new Map(discovery.issued.map((i) => [i.address, i.blockNumber]));
+  return [...out.values()].sort((a, b) => {
+    const x = rank.get(a.address);
+    const y = rank.get(b.address);
+    if (x === undefined && y === undefined) return 0;
+    if (x === undefined) return 1;
+    if (y === undefined) return -1;
+    return x === y ? 0 : x > y ? -1 : 1;
+  });
+}
+
+/**
+ * The security a single deploy transaction created, read from its own receipt.
+ *
+ * The scan above answers "everything this wallet has ever issued", and pays
+ * for it: a 171,000-block window is 171 log requests. Straight after a deploy
+ * the question is much smaller — *what did THIS transaction create* — and the
+ * receipt answers it in one request, with no window, no chunking and no
+ * caveat about what was not looked for.
+ *
+ * Every check the scan makes is made here too, because a receipt is still a
+ * node's answer about bytes: the log must come from the factory this console
+ * is pointed at, carry one of the two events, and name `issuer` as its caller.
+ * A receipt that satisfies none of those returns `undefined` rather than a
+ * plausible-looking row -- a wrong address here is one a user would then mint
+ * into.
+ *
+ * `undefined` also covers the ordinary case of a transaction that has not been
+ * mined yet, so a caller may poll this without treating "not yet" as an error.
+ */
+export async function issuedInTransaction(
+  request: (req: { method: string; params?: unknown }) => Promise<unknown>,
+  hash: string,
+  issuer: string,
+  factory: string,
+): Promise<IssuedSecurity | undefined> {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) return undefined;
+  const wanted = issuer.toLowerCase();
+  const target = factory.toLowerCase();
+
+  let receipt: unknown;
+  try {
+    receipt = await request({ method: "eth_getTransactionReceipt", params: [hash] });
+  } catch {
+    return undefined;
+  }
+  if (receipt === null || typeof receipt !== "object") return undefined;
+  const r = receipt as { status?: unknown; logs?: unknown };
+  /* A reverted deploy created nothing, whatever its logs look like. */
+  if (typeof r.status === "string" && parseQuantity(r.status) !== 1n) return undefined;
+  if (!Array.isArray(r.logs)) return undefined;
+
+  for (const raw of r.logs) {
+    try {
+      const log = raw as {
+        address?: unknown; topics?: unknown; data?: unknown; blockNumber?: unknown;
+      };
+      if (String(log.address).toLowerCase() !== target) continue;
+      const topics = log.topics;
+      if (!Array.isArray(topics) || topics.length < 3) continue;
+      const kind = (Object.keys(ISSUE_TOPIC) as IssueKind[])
+        .find((k) => ISSUE_TOPIC[k] === String(topics[0]).toLowerCase());
+      if (kind === undefined) continue;
+      if (addressTopic(topics[1]) !== wanted) continue;
+      const { symbol, isin } = decodeDeployedData(log.data);
+      return {
+        address: addressTopic(topics[2]),
+        kind,
+        symbol,
+        isin,
+        blockNumber: parseQuantity(log.blockNumber),
+      };
+    } catch {
+      /* A log that does not decode is not this factory's deployment event.
+       * Keep looking rather than failing the whole read on a neighbour. */
+    }
+  }
+  return undefined;
 }

@@ -20,7 +20,7 @@ import {
   planIssue, runIssue, type IssueKind, type IssuePlan, type IssueRefusal,
 } from "./issue.ts";
 import {
-  DISCOVERY_NOTICE, discoverIssued, mergeSecurities,
+  DISCOVERY_NOTICE, discoverIssued, issuedInTransaction, mergeSecurities,
   type Discovery, type SecurityChoice,
 } from "./discover.ts";
 
@@ -138,13 +138,42 @@ export function renderIssuePanel(root: HTMLElement, context: AppContext): void {
       const outcome = await runIssue(context, plan);
       const line = el("p");
       switch (outcome.kind) {
-        case "sent":
+        case "sent": {
           line.className = "ats-muted";
           line.textContent =
-            `Signed and sent. Transaction ${outcome.result}. The security's address ` +
-            "is in the EquityDeployed or BondDeployed log of that transaction; " +
-            "press \"Find what this wallet has issued\" below once it is mined.";
+            `Signed and sent. Transaction ${outcome.result}. Reading that ` +
+            "transaction's own receipt for the address it created…";
+          /* The receipt, not a log scan.
+           *
+           * "What did this transaction create" is one request and needs no
+           * window, no chunking and no caveat about what was not looked for —
+           * unlike "everything this wallet has ever issued", which is 171
+           * requests over a 171,000-block window. Polling here is bounded and
+           * silent on failure: the scan button below still answers the wider
+           * question, so a slow node costs a wait, never the address. */
+          void (async () => {
+            for (let attempt = 0; attempt < 20; attempt++) {
+              const made = await issuedInTransaction(
+                context.request, outcome.result, context.address, LEEK_SECURITY_FACTORY,
+              );
+              if (made !== undefined) {
+                line.textContent =
+                  `Signed and sent in transaction ${outcome.result}. It created ` +
+                  `${made.symbol === "" ? "a security" : made.symbol} at ${made.address}, ` +
+                  `in block ${made.blockNumber}. That address is read from this ` +
+                  "transaction's own receipt, and the log it came from names this " +
+                  "wallet as the caller and the factory as its source.";
+                return;
+              }
+              await new Promise((r) => setTimeout(r, 1_500));
+            }
+            line.textContent =
+              `Signed and sent. Transaction ${outcome.result}. Its receipt did not ` +
+              "name a new security within 30 seconds — it may still be pending. " +
+              "Press \"Find what this wallet has issued\" below to look again.";
+          })();
           break;
+        }
         case "declined":
           line.className = "ats-uncertain";
           line.textContent = outcome.notice;
@@ -286,7 +315,16 @@ function paintChoices(
     tr.append(symbolCell);
     tr.append(el("td", "ats-address", choice.address));
     tr.append(el("td", undefined, choice.kind));
-    tr.append(el("td", undefined, SOURCE_TEXT[choice.source]));
+    /* After a successful scan, a row the chain did not confirm is a row this
+     * wallet did not issue: the scan filters on the caller, so anything from
+     * the table alone belongs to somebody else. Saying "this repo's table"
+     * beside it under a heading that reads "securities this wallet can act on"
+     * invites exactly the wrong conclusion. */
+    const confirmed = discovery !== undefined && discovery.ok;
+    tr.append(el("td", undefined,
+      confirmed && choice.source === "table"
+        ? "this repo's table — not issued by this wallet"
+        : SOURCE_TEXT[choice.source]));
     tr.append(el("td", "ats-muted", choice.note));
     table.append(tr);
   }
