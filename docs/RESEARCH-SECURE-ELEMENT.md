@@ -67,11 +67,21 @@ replacing it. **Reflashing the ESP32 buys the attacker no additional attempts.**
 | Pin | Signal |
 |---|---|
 | 4 | GND |
-| 5 | VCC (3.3 V) |
-| 7 | SCL |
-| 8 | SDA |
+| 5 | SDA |
+| 6 | SCL |
+| 8 | VCC (3.3 V) |
 
-Pins 1, 2, 3, 6 are no-connect. **Four functional wires.**
+Pins 1, 2, 3, 7 are no-connect. **Four functional wires.** Source: Microchip
+DS40002239B (ATECC608B Summary Datasheet), Table 1 and the 8-lead SOIC pinout on
+page 2.
+
+> **Corrected 2026-09-16.** This table previously gave pin 5 as VCC, pin 7 as SCL
+> and pin 8 as SDA, with pin 6 as no-connect. Wired that way, 3.3 V goes into the
+> data pin and VCC is left floating. It was never checked against a datasheet
+> because no chip had been obtained; it was checked the day one arrived.
+
+A **100 nF ceramic capacitor** between pin 8 and pin 4, as close to the chip as
+it will go, decouples the supply.
 
 It shares the existing I²C bus — `SDA=GPIO8`, `SCL=GPIO9` — and answers at
 `0x60` while the SSD1306 OLED is at `0x3C`, so there is no address conflict.
