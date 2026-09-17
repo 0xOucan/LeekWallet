@@ -204,3 +204,198 @@ one primitive neither the ESP32 nor Argon2id provides, and that is exactly what
 [RESEARCH-SECURE-ELEMENT.md](RESEARCH-SECURE-ELEMENT.md) and the grant milestone
 promise. The two are complementary; the chip is the attempt limiter, not the
 signer.
+
+---
+
+# Part 2: architecture decisions
+
+## 8. Tomb: borrow the shape, not the code
+
+**Do not copy Tomb source.** Tomb is **GPL-3.0** and this repository is
+Apache-2.0. Importing its logic into our firmware would force the whole
+firmware to GPL-3.0. That is a licensing decision, not a technical one, and it
+is not ours to make casually.
+
+It is also not worth it. Tomb is roughly: create a file, `losetup` it,
+`cryptsetup luksFormat`, `mount`, and manage keyfiles with GnuPG. Strip the
+Linux and almost nothing remains.
+
+What *is* worth borrowing is one idea, and it comes from LUKS rather than Tomb:
+**key slots**. The payload is encrypted under a random master key, and the
+master key is stored several times, each copy wrapped by a different
+credential.
+
+```
+LEEKVAULT header (plaintext)
+  magic "LEEKVLT1", version, flags
+  slot[0..3], each:
+      argon2id salt (16 B), m_cost, t_cost, p
+      wrapped master key: AES-256-GCM(32 B key + 16 B tag)
+      slot flags (empty / in use / bound to eFuse)
+  payload nonce (12 B)
+
+encrypted payload: AES-256-GCM
+  seed entropy, creation time, derivation metadata
+```
+
+Why slots earn their place: changing the PIN rewraps a 32-byte key instead of
+re-encrypting the vault, and a second slot can require the eFuse HMAC while the
+first does not, so one card can work in OPEN or BOUND mode without reformatting.
+
+Everything needed is already in the build: **mbedTLS** ships with ESP-IDF and
+gives AES-256-GCM with hardware acceleration, and Argon2id is a single small C
+file (the reference implementation is CC0/Apache-2.0 dual licensed, which is
+compatible). No new large dependency, and the whole format is a few hundred
+lines of C we own and can audit.
+
+## 9. Is eFuse burning required? No.
+
+Moving the vault to the SD card **removes the reason eFuse binding existed.**
+
+[VAULT.md](VAULT.md) burns an eFuse key because the seed lives in the device's
+flash, so `esptool read_flash` on a stolen device must return ciphertext. Once
+the seed lives only on a removable card, **a device without its card contains
+no seed at all.** There is nothing in flash to protect.
+
+So the three modes re-sort:
+
+| Threat | Defence | Needs eFuse? |
+|---|---|---|
+| Device stolen, card elsewhere | Nothing to steal | **no** |
+| Card stolen or copied | Argon2id + optional passphrase | **no** |
+| Card copied *and* device stolen | eFuse HMAC binding | yes |
+| Attacker flashes own firmware to brute-force | Secure Boot + Flash Encryption | yes |
+
+**Recommendation: ship OPEN as the default and do not burn anything.** BOUND
+stays available for people who want it, and it is the one thing that makes a
+copied card useless without this exact board. Every mode gets exercised under
+QEMU with emulated fuses first.
+
+One honest gap either way: **a copied SD card defeats attempt counting.** The
+attacker restores the old card and the count resets, whatever the count is
+stored in. Only an on-device monotonic counter fixes that, which is the
+ATECC608B's one irreplaceable job. Argon2id is what makes each attempt
+expensive meanwhile, and it is the main defence in OPEN mode.
+
+## 10. Argon2id parameters
+
+A six-digit PIN is 10^6 candidates. Tune on the bench, aiming at **about one
+second per attempt** on device using PSRAM:
+
+- `m_cost` around 64 MB, `t_cost` 3, `p` 1 as a starting point, measured and
+  then fixed in the header so an old card still opens on a newer build.
+- At one second, 10^6 PIN candidates is roughly 11 days on the same hardware,
+  and much less on a GPU — which is why the **passphrase matters** and why the
+  docs must say a PIN alone is a delay, not a wall.
+- The parameters live in the header, so they can be raised for new vaults
+  without breaking old ones.
+
+## 11. The cloak: PIN entry that is not PIN entry
+
+With no card inserted the device is a gadget: clock, Pomodoro, dice, QR tool,
+Snake. Those are real, working apps.
+
+PIN entry is expressed as ordinary settings inside one of them:
+
+```
+Snake > Settings          Clock > Set time
+  difficulty  1             hours    12
+  lives       2             minutes  34
+  speed       3             seconds  56
+```
+
+Entering `1 2 3` or `12:34:56` *is* entering the PIN. The screen shows a normal
+settings page either way, and a wrong value simply starts a normal game or sets
+a normal clock. There is no "wrong PIN" message, because there is nothing that
+looks like a PIN.
+
+Transition to wallet mode needs all three: the right card, the right entry
+point, and the right values.
+
+Stated accurately:
+
+- It is operational, not cryptographic. It does not advertise a seed; it does
+  not protect one.
+- The vault file is high entropy and **detectable by anyone who looks**. It can
+  be named innocuously, but it cannot be made to look like a save file to an
+  examiner.
+- The strongest part of this design is not the disguise. It is that **the
+  device genuinely holds nothing** when the card is out.
+
+## 12. Architecture and workflow
+
+```
+power on
+   │
+   ▼
+cloak shell ── clock · pomodoro · dice · QR tool · snake      no card: this is all there is
+   │
+   │  card present + entry point + correct values (section 11)
+   ▼
+Argon2id(PIN [+ passphrase]) ─┬─ [BOUND] HMAC_efuse ─┐
+                              └──────────────────────┴─► unwrap slot ─► master key
+   │
+   ▼
+wallet mode (RAM only, zeroised on eject, timeout or exit)
+   │
+   ├── export account: BC-UR crypto-hdkey  ──────► animated QR out ──► companion
+   │
+   └── sign:
+         companion ──► animated QR in ──► OV5640 ──► quirc ──► BC-UR fountain
+                                                               │
+                                                     eth-sign-request (EIP-4527)
+                                                               │
+                                            device parses calldata itself
+                                            device draws it on its own screen
+                                                               │
+                                                 buttons: approve / reject
+                                                               │
+                                                     sign, then zeroise key
+                                                               │
+                                            eth-signature ──► animated QR out
+                                                               │
+                                                  companion broadcasts
+```
+
+Firmware layering, so the S3-mini build and the CAM build stay one tree:
+
+```
+board profile (pins, features)   <- the only thing that differs per board
+      ├── display driver
+      ├── buttons
+      ├── camera + quirc            (CAM only)
+      ├── sdcard + vault            (CAM only)
+      └── atecc608b                 (optional, either board)
+core: bip39/32/44, signing, calldata decoder, BC-UR codec, cloak shell
+transports: qr (default) · usb (opt-in) · ble (opt-in)
+```
+
+The calldata decoder, the signing core and the BC-UR codec are all host
+testable, and the BC-UR codec gets tested against Keystone's published vectors
+before it ever runs on hardware.
+
+## 13. What to measure on the board
+
+Power off, USB unplugged, meter in continuity (beep) mode, one probe on a GND
+header pin to confirm the meter works first.
+
+1. **microSD.** Probe each candidate header pin (1, 2, 14, 21, 38, 39, 40, 41,
+   42, 47, 48) against the SD socket's CLK, CMD and DAT0 contacts. Boards in
+   this class often use 39/38/40, but that must be confirmed rather than
+   assumed. Also confirm the socket is actually populated and routed on this
+   PCB revision.
+2. **The two USB-C ports.** For each, check the D+ and D- pins for continuity
+   to GPIO19 and GPIO20. If one port does not reach them, it goes through a
+   bridge instead: read the small chip's marking with the loupe (CH340, CP2102,
+   CH343).
+3. **LEDs.** Continuity from each LED pad to a header pin tells you the GPIO,
+   and diode mode across the LED tells you its polarity.
+4. **OLED pull-ups.** Resistance on the 20 kΩ range from the screen's VCC pin to
+   its SDA pin, and to SCL. Around 4.7 or 10 means pull-ups are fitted.
+5. **3V3 rail.** Continuity from the header's 3V3 pin to the module's 3V3, so
+   the ATECC608B and OLED get power from a pin that is actually the rail.
+6. **Camera FPC, power ON, meter in DC volts.** Do **not** assume every FPC pin
+   is 3.3 V. The sensor uses several domains and the adapter may regulate.
+   Measure before connecting anything of your own to those nets.
+
+Record the results in this document before step 4 of section 6.
