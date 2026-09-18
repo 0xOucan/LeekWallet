@@ -58,9 +58,25 @@
 #  endif
 #endif
 
-#if (defined(LEEK_BOARD_S3) + defined(LEEK_BOARD_PIXIE) + \
-     defined(LEEK_BOARD_S3CAM)) != 1
-#  error "Define exactly one of LEEK_BOARD_S3, LEEK_BOARD_PIXIE, LEEK_BOARD_S3CAM"
+/*
+ * Normalise to 0/1 before checking, so the guard and the dispatch below ask the
+ * same question. They did not, in the first version of this: the guard tested
+ * `defined(...)` while the dispatch tested the value, so `-DLEEK_BOARD_PIXIE=0`
+ * satisfied the guard, matched no branch, and fell through to whichever board
+ * happened to be last. Found in review before it ever ran.
+ */
+#ifndef LEEK_BOARD_S3
+#  define LEEK_BOARD_S3 0
+#endif
+#ifndef LEEK_BOARD_PIXIE
+#  define LEEK_BOARD_PIXIE 0
+#endif
+#ifndef LEEK_BOARD_S3CAM
+#  define LEEK_BOARD_S3CAM 0
+#endif
+
+#if (LEEK_BOARD_S3 + LEEK_BOARD_PIXIE + LEEK_BOARD_S3CAM) != 1
+#  error "Define exactly one of LEEK_BOARD_S3, LEEK_BOARD_PIXIE, LEEK_BOARD_S3CAM as 1"
 #endif
 
 /*
@@ -158,6 +174,12 @@
 #define BOARD_HAS_I2C_PANEL     1
 #define BOARD_HAS_SPI_PANEL     0
 
+/* No addressable LEDs on the reference board. Defined anyway, for the same
+   reason the capability flags are: a board that omits a macro turns a typo
+   elsewhere into a silent zero. */
+#define PIN_PIXELS              GPIO_NUM_NC
+#define PIXEL_COUNT             0
+
 #define LEEK_HAS_CAMERA         0
 #define LEEK_HAS_SDCARD         0
 #define LEEK_HAS_SE             0
@@ -165,7 +187,7 @@
 #define LEEK_HAS_USB            1
 #define LEEK_VAULT_ON_SD        0
 
-#else
+#elif LEEK_BOARD_S3CAM
 
 /* ------------------------------------------- ESP32-S3-N16R8 CAM + OV5640 */
 
@@ -182,12 +204,22 @@
 #define BOARD_NAME              "ESP32-S3 CAM"
 #define BOARD_MODEL             "LeekWallet-S3CAM"
 
-/* GPIO14 is the one pin in the 4-18 block the camera does not claim. GPIO2
-   also drives the onboard LED, which is harmless for an input with a pull-up:
-   it means the LED dims while that button is held. GPIO42 is JTAG MTMS, which
-   is free because debugging goes over native USB. */
+/*
+ * GPIO14 is the one pin in the 4-18 block the camera does not claim. GPIO41 is
+ * JTAG MTDI and GPIO42 is MTMS, both free because debugging goes over native
+ * USB, and neither is a strapping pin on the S3.
+ *
+ * GPIO2 is deliberately NOT used, though it is free. It also drives the onboard
+ * LED, and an earlier version put K2 there on the assumption that an internal
+ * pull-up made this harmless. That assumption was never measured. If the LED
+ * sits between GPIO2 and ground, the ~45k internal pull-up is clamped near the
+ * LED's forward voltage, roughly 1.8-2.6 V, against a V_IH around 2.5 V — so
+ * the idle level is marginal and the button could read permanently pressed.
+ * A spare pin costs nothing and an unverified assumption on an input costs a
+ * bring-up day, so K2 moved to GPIO41 and GPIO2 is the spare.
+ */
 #define PIN_BUTTON_UP           GPIO_NUM_1    /* K1 */
-#define PIN_BUTTON_DOWN         GPIO_NUM_2    /* K2 — shared with onboard LED */
+#define PIN_BUTTON_DOWN         GPIO_NUM_41   /* K2 — MTDI */
 #define PIN_BUTTON_CANCEL       GPIO_NUM_14   /* K3 */
 #define PIN_BUTTON_ACCEPT       GPIO_NUM_42   /* K4 — MTMS */
 
@@ -236,6 +268,8 @@
 #define LEEK_HAS_USB            1   /* likewise */
 #define LEEK_VAULT_ON_SD        1
 
+#else
+#  error "No board branch matched; see the LEEK_BOARD_* guard above"
 #endif
 
 #endif /* LEEK_BOARD_H */

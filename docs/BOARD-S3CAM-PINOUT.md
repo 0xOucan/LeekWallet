@@ -114,12 +114,12 @@ After camera, SD, PSRAM, USB and strapping pins, these are free:
 | I2C SDA (OLED + ATECC608B) | **47** | free |
 | I2C SCL (OLED + ATECC608B) | **21** | free |
 | Button K1 | **1** | ADC1_CH0 / T1 |
-| Button K2 | **2** | also drives LED_ON; harmless with an internal pull-up |
+| Button K2 | **41** | MTDI, free with native USB JTAG |
 | Button K3 | **14** | the one GPIO in 4-18 the camera does not take |
-| Button K4 | **42** | MTMS, unused with native USB JTAG |
+| Button K4 | **42** | MTMS, likewise |
 | Status LED | **48** | onboard WS2812 |
 | Serial log | **43 / 44** | UART0, kept |
-| Spare | **41** | MTDI |
+| Spare | **2** | free, but it also drives LED_ON — see board.h before using it as an input |
 
 No strapping pin is used. See
 [RESEARCH-AIRGAP-VAULT.md](RESEARCH-AIRGAP-VAULT.md) for what is built on top.
