@@ -1335,3 +1335,93 @@ checked in C directly:
    occur, so the call graph is the bound — `decode_sign_request` calls
    `decode_keypath` calls `decode_path_components`, and there is no generic
    recursion to give a MAX_DEPTH to.
+
+---
+
+# Part 7: the two flows, and what each one is allowed to decide
+
+## 35. Signing is EIP-4527. So is the handshake.
+
+Both directions are the same registry; they are different UR types.
+
+```
+HANDSHAKE (once per account the companion will watch)
+
+  device  ──ur:crypto-hdkey──►  companion        one direction only
+
+SIGNING (every transaction)
+
+  companion ──ur:eth-sign-request──► device      animated in
+  device    ──ur:eth-signature ────► companion   animated out
+```
+
+`crypto-hdkey` is part of EIP-4527, not something adjacent to it, so there is
+no second protocol to design. What differs is authority, and that is the part
+worth being careful about.
+
+## 36. The request QR is a suggestion, never an instruction
+
+The proposed flow has the companion show a QR asking for addresses, the device
+scan it, and the device answer. That works, and the scanner has to exist anyway
+for signing. But it introduces something the one-directional version did not
+have: **an untrusted input that decides what the device reveals.**
+
+So the rule, which costs nothing and closes it:
+
+> A scanned request may **populate** the screen. It may never **answer** it.
+
+Concretely: the device scans "show me account 0 and account 1", and the device
+then displays *account 0 and account 1, and asks the user to confirm*. The
+companion chose the default; the user chose the answer. A request for fifty
+accounts is a screen the user declines, not fifty accounts on a wire.
+
+And the request is **optional**. `Main menu -> Show address` reaches the same
+screen with nothing scanned, which is the version to build first: it is
+strictly less code, has no attack surface at all, and the scanner work it skips
+is work signing needs anyway.
+
+## 37. What to export, and the one real trade
+
+The companion wants addresses at indices 0, 1, 2 … The device can give it
+either of two things, and they are not equivalent.
+
+| | One account xpub (`m/44'/60'/0'`) | N individual addresses |
+|---|---|---|
+| Size on the wire | ~78 bytes, **one frame** | ~40 bytes each, several frames |
+| Companion can derive | every index, forever | only what it was given |
+| Adding index 11 later | automatic | another handshake |
+| What a leak reveals | the whole account | the addresses shown |
+| Interoperability | what Keystone and MetaMask expect | needs `crypto-multi-accounts` (1103, a Keystone extension) |
+
+On a 128x64 panel this is not a close call for the default: ten addresses is
+several hundred bytes of animation, an xpub is one static frame. **Ship the
+account-level xpub as the default and the single address as the private
+option**, say plainly in the UI which one is happening, and let the user pick.
+
+The earlier note in section 20 preferring individual accounts stands as the
+*privacy* recommendation; it was written before the screen was costed, and the
+screen is what decides the default.
+
+## 38. Next steps, in order
+
+**Phase 2a — firmware**
+
+1. `Main menu -> Scan` and `Main menu -> Show address`. The scanner is needed
+   for signing regardless, so it is not handshake-only work.
+2. Camera bring-up on the CAM board, quirc into PSRAM, and run
+   `research/qr-spike/bench.c` unchanged on hardware to replace the estimate.
+3. QR **out**: raise `oled-core.c` past its hardwired version 3-or-4, uppercase
+   the UR for alphanumeric mode, and measure which version the OV5640 can read
+   off the panel (section 32).
+4. `crypto-hdkey` encode, then `eth-sign-request` in and `eth-signature` out,
+   converging on the existing `EthTx` path so `eth-decode.c` is untouched.
+5. Promote `EthTx` out of the dispatch stack frame, because scan and confirm
+   become separate user actions and the invariant that decode, display and sign
+   read one buffer must survive that.
+
+**Phase 2b/2c/2d — the three companions**, in parallel once 1-4 exist:
+animated QR display, the existing zxing scanner given a UR `accept`, and the
+`Transport` union widened. `app/src/wc/qr.ts` is already agnostic about what a
+code means, so the scanner is a callback rather than a fork.
+
+**Phase 3** — hardware integration, QEMU regression, release.
