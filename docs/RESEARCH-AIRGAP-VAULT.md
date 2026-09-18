@@ -1226,3 +1226,112 @@ The extension therefore stays what it is — straight pairing over USB or BLE, o
 an airgapped pairing for the CAM board, feeding a dapp in the browser through
 EIP-6963. No games, no disguise, no mini-apps. Its job is to be the thing a
 website talks to, and the device is what refuses.
+
+## 32. The return path is limited by our screen, not their camera
+
+Section 3 measured the companion-to-device direction and found a large margin.
+The other direction is the tight one, and the limit is the **128x64 OLED**.
+
+Measured from `src/qrcode.c`'s own tables, with a 2 px quiet zone, so these are
+what the shipping encoder can actually produce:
+
+| Version | Modules | px at scale 1 | px at scale 2 | BYTE chars | ALNUM chars |
+|---|---|---|---|---|---|
+| 3 | 29 | 33 | **62** | 53 | 77 |
+| 4 | 33 | 37 | 70 ✗ | 78 | 114 |
+| 6 | 41 | **45** | 86 ✗ | 134 | 195 |
+| 8 | 49 | 53 | 102 ✗ | 192 | 279 |
+| 10 | 57 | **61** | 118 ✗ | 271 | 395 |
+| 11 | 61 | 65 ✗ | — | 321 | 468 |
+
+Two hard ceilings fall out: **version 10 at scale 1**, and **version 3 at scale
+2**. Nothing larger fits in 64 rows.
+
+### Uppercase the UR, and get 46 percent for free
+
+A UR is lowercase, which forces QR **byte** mode at 8 bits a character.
+Uppercased it becomes **alphanumeric** at 5.5 bits, which is why readers
+uppercase in the first place. At version 10 that is 395 characters instead of
+271. The decoder already accepts an uppercase UR (section 26's case test), so
+this costs nothing but must be done deliberately on the way out.
+
+### The real trade is module size against frame count
+
+An `eth-signature` is small — a 16-byte request id and a 65-byte signature, so
+roughly 90 bytes of CBOR, about 190 Bytewords characters plus the `UR:` prefix.
+That fits **one** version-7 frame. But at scale 1 every module is a single
+pixel, and a camera reading 1 px modules off a small OLED is the part nobody
+should assume works.
+
+So the choice is not "does it fit" but "how big are the modules":
+
+| Strategy | Version | Module size | Frames for a signature |
+|---|---|---|---|
+| One dense frame | 7, scale 1 | 1 px | 1 |
+| **Animated, readable** | **6, scale 1** | **1 px, 41x41** | **~2** |
+| Animated, chunky | 3, scale 2 | 2 px | ~8 |
+
+Version 3 at scale 2 gives the most readable modules and pays for it in frames,
+because the multipart envelope — `UR:ETH-SIGNATURE/1-8/` plus the CBOR part
+header plus the checksum — eats most of a 77-character budget before any
+payload goes in. **The overhead is why very small frames are a bad trade.**
+
+The bench answers this, not the arithmetic: display each candidate on the real
+OLED, photograph it with the OV5640, and see which decodes. `research/qr-spike`
+already measures the other direction and takes the same shape here.
+
+### A blocker on the way
+
+`src/oled-core.c` hardwires version 3, falling back to version 4, because its
+one caller draws a 42-character address. Anything above that needs the caller
+to choose a version, and `qrcode.c` sizes its grids as **stack VLAs** — a
+version 10 grid is about 500 bytes on the UI task's 8 KB stack, which is
+survivable but is not a one-line change. The bounds fix in `a798a3d` is what
+makes raising the version safe to attempt at all.
+
+## 33. Two different defences, which should not be conflated
+
+Worth stating because the words drift together:
+
+```
+CLOAK                          MINI-APP SANDBOX
+a property of the DEVICE       a property of the APPLICATION SURFACE
+controls what it presents as   controls what an app can technically do
+                               (no seed, no key, no signer, no transport)
+```
+
+The cloak is presentation. It does not restrain anything; it only declines to
+announce. The sandbox is capability, and it is what `app-proposal.ts` and the
+tests in `docs/MINI-APPS.md` enforce. A calculator UI is not a security control,
+and describing it as one would be the conceptual mistake this note exists to
+prevent.
+
+**The initials entered after a game over are not authentication either.** They
+are a natural interaction path, so that typing something after losing does not
+itself announce a wallet. The PIN they carry is authenticated by Argon2id and
+the vault; the game is why nobody wonders what you are doing. The docs must keep
+that language precise.
+
+## 34. The gate before phase 2
+
+> **EIP-4527 differential conformance.** Every shared vector produces equivalent
+> semantic output, or the identical stable error code, in TypeScript and in
+> firmware C — under host tests with ASan and UBSan, and on the real ESP32
+> build.
+
+When that passes, **the grammar freezes**. Any future compatibility problem
+requires a new vector first and a parser change second. That order is the rule
+that stops `eip4527` drifting into the general CBOR parser it exists to avoid.
+
+Three firmware-specific hazards the TypeScript side cannot catch, so they are
+checked in C directly:
+
+1. **No allocation from an attacker's length.** Read the declared length,
+   compare it against the schema's maximum, then copy into a fixed buffer.
+   Never size an allocation from the wire.
+2. **No arithmetic before the bounds check.** `pos + len` can wrap; the test has
+   to be `len > input_len - pos`.
+3. **Depth is structural, not configurable.** The schema says where nesting can
+   occur, so the call graph is the bound — `decode_sign_request` calls
+   `decode_keypath` calls `decode_path_components`, and there is no generic
+   recursion to give a MAX_DEPTH to.

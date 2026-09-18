@@ -185,11 +185,13 @@ export class Reader {
   /**
    * Exactly `false` or `true`, and nothing else from major type 7.
    *
-   * Booleans are CBOR simple values, which this grammar otherwise refuses
-   * outright along with floats and `null`. crypto-keypath needs them for the
-   * hardened flag, so the two byte values are named here rather than the major
-   * type being opened up: `expectBool` accepts 0xF4 and 0xF5 and nothing else,
-   * so `null`, `undefined` and every float stay refused.
+   * Booleans live in CBOR major type 7, which this grammar otherwise refuses
+   * outright — that is where floats, `null` and every other simple value are.
+   * crypto-keypath needs booleans for the hardened flag, so the two *encodings*
+   * are named here rather than the major type being opened up: `expectBool`
+   * accepts the bytes 0xF4 and 0xF5 and nothing else. Major type 7 as a whole
+   * stays outside the grammar, which is what lets the claim about floats and
+   * simple values remain true.
    */
   expectBool(): boolean {
     const b = this.byte();
