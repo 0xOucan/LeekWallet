@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "ur.h"
+#include <stdlib.h>
 
 static int failures = 0;
 
@@ -200,8 +201,79 @@ static void test_multipart_is_detected(void)
           "the single-part decoder accepted a multi-part UR");
 }
 
-int main(void)
+
+/*
+ * The mock leg for the wire format, same reasoning as $(VECTORS) and
+ * $(ETH_DECODE_VECTORS) in sim/Makefile: what src/ur.c actually produces,
+ * written down for the TypeScript mirror to replay.
+ *
+ * Regenerated rather than checked in and trusted. A corpus recorded from an
+ * older ur.c would let the TS side agree with an encoder that no longer
+ * exists, which is the failure docs/MIRROR-GAP.md describes.
+ *
+ * The payloads walk the shapes that broke things while this was written: empty,
+ * one byte, the CBOR-ish sizes either side of a length prefix, and lengths that
+ * are not a multiple of anything.
+ */
+static int emit_vectors(const char *path)
 {
+    FILE *f = fopen(path, "w");
+    if (f == NULL) {
+        perror(path);
+        return 1;
+    }
+
+    static const size_t LENGTHS[] = {
+        0, 1, 2, 3, 7, 8, 15, 16, 23, 24, 31, 32, 55, 56, 63, 64,
+        99, 100, 127, 128, 200, 250, 255, 256, 400,
+    };
+
+    fprintf(f, "[\n");
+    for (size_t i = 0; i < sizeof LENGTHS / sizeof LENGTHS[0]; i++) {
+        const size_t len = LENGTHS[i];
+        uint8_t payload[512];
+        /* Deterministic and not a constant run, so a byte-order mistake shows
+           up rather than cancelling out. */
+        for (size_t j = 0; j < len; j++) {
+            payload[j] = (uint8_t)((j * 31 + 17) & 0xFF);
+        }
+
+        char body[2048];
+        const size_t n = ur_bytewords_encode(payload, len, body, sizeof body);
+        if (n == 0 && len != 0) {
+            fclose(f);
+            return 1;
+        }
+
+        char ur[2048];
+        ur_encode("eth-signature", payload, len, ur, sizeof ur);
+
+        fprintf(f, "  {\n    \"length\": %zu,\n    \"payloadHex\": \"", len);
+        for (size_t j = 0; j < len; j++) {
+            fprintf(f, "%02x", payload[j]);
+        }
+        fprintf(f, "\",\n    \"crc32\": %u,\n", ur_crc32(payload, len));
+        fprintf(f, "    \"bytewords\": \"%s\",\n", body);
+        fprintf(f, "    \"ur\": \"%s\"\n  }%s\n", ur,
+                i + 1 == sizeof LENGTHS / sizeof LENGTHS[0] ? "" : ",");
+    }
+    fprintf(f, "]\n");
+
+    if (fclose(f) != 0) {
+        perror(path);
+        return 1;
+    }
+    printf("wrote %zu UR vectors to %s\n",
+           sizeof LENGTHS / sizeof LENGTHS[0], path);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[1], "--emit-vectors") == 0) {
+        return emit_vectors(argv[2]);
+    }
+
     test_reference_vectors();
     test_crc32();
     test_corruption_is_refused();

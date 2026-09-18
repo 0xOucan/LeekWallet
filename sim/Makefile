@@ -366,7 +366,16 @@ ETH_DECODE_VECTORS := ../app/packages/core/test/eth-decode-vectors.json
 eth-decode-conformance: $(BUILD)/test_eth_decode
 	./$(BUILD)/test_eth_decode --emit-vectors $(ETH_DECODE_VECTORS)
 
+# The mock leg for the QR wire format. Same reasoning as the two above, and
+# the same reason it is regenerated rather than trusted: the device and three
+# companions have to agree byte for byte about what a UR contains, and a corpus
+# recorded from an older ur.c would let them agree with an encoder nobody runs.
+UR_VECTORS := ../app/packages/core/test/ur-vectors.json
+
+ur-conformance: $(BUILD)/test_ur
+	./$(BUILD)/test_ur --emit-vectors $(UR_VECTORS)
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test asan fuzz conformance eth-decode-conformance clean
+.PHONY: all test asan fuzz conformance eth-decode-conformance ur-conformance clean
