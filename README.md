@@ -556,13 +556,17 @@ ESP32-S3 bought with cash at an electronics shop carries no such association.
 Nobody sells it as a wallet, so no list exists of the people who turned one into
 one.
 
-**Separation is what replaces the chip here.** On the ESP32-S3 CAM board the
-vault lives on a removable microSD card, so a device found in a drawer or taken
-from a bag **holds no seed, no extended public key, no address list and nothing
-to extract**. Argon2id makes a copied card expensive to attack -- about a second
-per guess -- and a BIP-39 passphrase, which never touches the device, makes a
-copied card useless. Device, storage, recovery and knowledge are four separate
-things, and an attacker needs more than one of them.
+**What ships today**, and it is the smaller claim: the seed is stored encrypted
+in flash under a PIN-derived key, so a device that is found or stolen does not
+give up its seed to `esptool read_flash`. A BIP-39 passphrase, which never
+touches the device, is supported and is the strongest thing a user can add.
+
+**Separation is what is being built to replace the chip**, on the ESP32-S3 CAM
+board, and **none of it is implemented yet**: a vault on a removable microSD
+card so a device found in a drawer holds no seed at all, and Argon2id so that a
+copied card is expensive rather than cheap to attack. The design is in
+[docs/RESEARCH-AIRGAP-VAULT.md](docs/RESEARCH-AIRGAP-VAULT.md); the code is not
+written. Do not plan around it.
 
 The ATECC608B is **not** cancelled by this argument and remains on the roadmap.
 It provides the one thing neither the ESP32 nor a slow KDF can: a monotonic
