@@ -638,3 +638,43 @@ the docs must state:
   the raw hex address and the user compares it. That is a real usability cost
   of being airgapped, and it is paid honestly rather than papered over with a
   name the device cannot check.
+
+## 18. The nonce, and what to do about it
+
+**EIP-4527 does not solve the nonce. It cannot.** The nonce is a field in the
+transaction the companion built, and the device has no chain to check it
+against. 4527 only guarantees the device *sees* it, because it is in the RLP
+that gets signed.
+
+Three levels of answer, and the middle one is worth building.
+
+**1. Display it.** The device decodes the nonce and shows it. Costs nothing and
+catches the obvious case where a user is signing something they did not expect.
+
+**2. Keep a nonce ledger on the device.** Store the highest nonce signed per
+`(chain id, address)` in the vault, and compare before signing:
+
+| Observed | Meaning | Device does |
+|---|---|---|
+| expected + 1 | normal | sign |
+| already signed | **reuse** | refuse, or warn hard and require a second confirmation |
+| a gap ahead | companion skipped, or another wallet is spending | warn, allow |
+
+This is worth building because it defends against a real attack, not just a
+mistake. A malicious companion can ask for two different transactions at the
+**same nonce**: the user approves the harmless one, and the attacker broadcasts
+the other. Only one can confirm, and the attacker chooses which. A device that
+remembers refuses the second request without needing a chain. It is a few
+bytes per account in the vault and it is the only nonce defence an airgapped
+device can actually offer.
+
+Replacement transactions — speed-ups and cancels — are legitimately the same
+nonce, so this is a confirmation rather than a hard block, and the screen has to
+say *why* it is asking.
+
+**3. Accept the residue.** A wrong nonce that is merely wrong, rather than
+malicious, produces a transaction that fails or sits pending. **It does not lose
+funds.** The same is true of balances: the device cannot check a balance either,
+and signing a transfer larger than the balance produces a failed transaction,
+not a loss. These are usability failures, and it is honest to call them that
+rather than to imply the device is checking something it is not.
