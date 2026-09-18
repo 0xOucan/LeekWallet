@@ -1,0 +1,21 @@
+<!doctype html>
+<!--
+  The QR scan tab: the one extension context that holds a camera.
+
+  Opened by the service worker, one job at a time, for QR pairing and QR
+  signing. See the header of src/qr-page.ts for why it is a tab and not the
+  popup or the offscreen document.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LeekWallet QR</title>
+  </head>
+  <body class="view-qr">
+    <main id="qr-root" aria-live="polite">
+      <p class="muted">Loading…</p>
+    </main>
+    <script type="module" src="./src/qr-page.ts"></script>
+  </body>
+</html>

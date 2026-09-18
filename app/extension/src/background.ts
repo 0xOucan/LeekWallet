@@ -51,6 +51,7 @@ import {
   encodeBalanceOf, encodeDecimals, encodeSymbol, sanitiseSymbol,
 } from "../../packages/core/src/balances.ts";
 import { planSend } from "./send.ts";
+import { QrJobError, QrJobs } from "./qr-job.ts";
 import {
   EIP1193,
   type OwnerCommand, type OwnerEnvelope, type OwnerEvent, type OwnerReply,
@@ -331,6 +332,37 @@ async function openApprovalWindow(): Promise<void> {
   });
   approvalWindowId = window.id ?? null;
 }
+
+/* ---------------------------------------------------------------- QR tab */
+
+/**
+ * The QR scan tab: one job at a time, opened in a normal window.
+ *
+ * A tab rather than a `type: "popup"` window, because the camera permission
+ * prompt, like the serial chooser, is anchored to a tab. qr-page.ts explains
+ * why the camera lives in a tab at all rather than in the popup or the
+ * offscreen document. Like `pending`, the job lives in module scope: an
+ * evicted worker loses it, and the tab's keepalive pings are what keep that
+ * from happening while a person is holding the device up to the camera.
+ */
+const qrJobs = new QrJobs({
+  async open(jobId) {
+    const win = await chrome.windows.create({
+      url: chrome.runtime.getURL(`qr.html?job=${encodeURIComponent(jobId)}`),
+      type: "normal",
+      width: 560,
+      height: 900,
+    });
+    return win.tabs?.[0]?.id ?? null;
+  },
+  close(tabId) {
+    void chrome.tabs.remove(tabId).catch(() => {
+      /* Already gone: the user closed it in the same instant. */
+    });
+  },
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => qrJobs.tabClosed(tabId));
 
 /* ------------------------------------------------------- the EIP-1193 core */
 
@@ -796,6 +828,9 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
  */
 function toProviderError(e: unknown): { code: number; message: string } {
   if (e instanceof RpcError) return { code: e.code, message: e.message };
+  /* A closed or cancelled QR tab arrives here as 4001, the same answer as
+   * pressing reject on the device: both are the user saying no. */
+  if (e instanceof QrJobError) return { code: e.code, message: e.message };
   if (e instanceof OwnerError) {
     /* ErrorCode.UserRejected and ErrorCode.UserTimeout from core/transport.ts.
      * Not imported, because importing the enum for two constants pulls a
@@ -1037,6 +1072,20 @@ async function handlePopup(command: PopupCommand): Promise<unknown> {
       );
       return await walletState();
     }
+
+    case "qrJob":
+      return qrJobs.view(command.id);
+
+    case "qrDone":
+      return await qrJobs.done(command.id, command.cbor);
+
+    case "qrCancel":
+      qrJobs.cancel(command.id);
+      return null;
+
+    case "qrPing":
+      /* Arriving at all is the point: it resets the worker's idle timer. */
+      return qrJobs.isOpen(command.id);
 
     case "setChain": {
       if (!getChain(command.chainId)) throw new Error(`chain ${command.chainId} is not known`);

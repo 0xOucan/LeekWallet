@@ -43,6 +43,7 @@ async function buildModules() {
         input: {
           popup: join(here, "popup.html"),
           offscreen: join(here, "offscreen.html"),
+          qr: join(here, "qr.html"),
           background: join(here, "src/background.ts"),
         },
         output: {
@@ -103,6 +104,7 @@ async function copyStatic() {
     ...manifest.content_scripts.flatMap((c) => c.js),
     manifest.action.default_popup,
     "offscreen.html",
+    "qr.html",
   ];
   const missing = [];
   for (const file of required) {
@@ -126,7 +128,7 @@ async function copyStatic() {
  * popup that renders an empty shell with no error anywhere.
  */
 async function checkHtml() {
-  for (const page of ["popup.html", "offscreen.html"]) {
+  for (const page of ["popup.html", "offscreen.html", "qr.html"]) {
     const html = await readFile(join(dist, page), "utf8");
     const fixed = html.replace(/(src|href)="\/(?!\/)/g, '$1="./');
     if (fixed !== html) await writeFile(join(dist, page), fixed);
@@ -146,7 +148,7 @@ async function checkHtml() {
  * so instead.
  */
 async function checkEntryIsolation() {
-  const entries = ["popup.js", "offscreen.js", "background.js"];
+  const entries = ["popup.js", "offscreen.js", "qr.js", "background.js"];
   for (const entry of entries) {
     const js = await readFile(join(dist, entry), "utf8");
     for (const other of entries) {
