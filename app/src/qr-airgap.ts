@@ -10,7 +10,7 @@
  * here has a session to break.
  */
 
-import { UrDecoder } from "../packages/core/src/ur-decoder.ts";
+import { UrScanAssembler } from "../packages/core/src/ur-scan.ts";
 import { urFrames } from "../packages/core/src/ur-encoder.ts";
 import { scanQr } from "./wc/qr.ts";
 
@@ -22,20 +22,11 @@ export class QrCancelled extends Error {
   }
 }
 
-/** The UR type of a scanned string, or null if it is not a UR at all. */
-function urType(raw: string): string | null {
-  if (!/^ur:/i.test(raw)) return null;
-  const slash = raw.indexOf("/");
-  return slash < 0 ? null : raw.slice(3, slash).toLowerCase();
-}
-
 /**
  * Scan until a complete UR of `type` has been assembled, and return its body.
  *
- * Only parts of the expected type reach the decoder. The decoder pins its
- * type from the first part it accepts, so an unrelated UR in view — another
- * wallet's screen, a poster — would otherwise capture the assembly and hold
- * it for the rest of the scan.
+ * Only parts of the expected type reach the decoder; see UrScanAssembler
+ * in core, which the extension's scan window shares.
  */
 export function scanUr(
   video: HTMLVideoElement,
@@ -44,24 +35,14 @@ export function scanUr(
   signal: AbortSignal,
   log: (line: string) => void,
 ): Promise<Uint8Array> {
-  const decoder = new UrDecoder();
+  const assembler = new UrScanAssembler(type);
   return new Promise<Uint8Array>((resolve, reject) => {
     let handle: { stop(): void } | null = null;
     const cancel = (): void => { handle?.stop(); reject(new QrCancelled()); };
     if (signal.aborted) { cancel(); return; }
     signal.addEventListener("abort", cancel, { once: true });
 
-    const accept = (raw: string): Uint8Array | undefined => {
-      if (urType(raw) !== type) return undefined;
-      const result = decoder.receive(raw);
-      if (result === "complete") return decoder.message ?? undefined;
-      if (result === "accepted") {
-        onProgress(decoder.remaining > 0
-          ? `Reading… ${decoder.remaining} fragment(s) still missing. Keep the device in view.`
-          : "Reading…");
-      }
-      return undefined;
-    };
+    const accept = (raw: string): Uint8Array | undefined => assembler.accept(raw, onProgress);
 
     video.hidden = false;
     scanQr<Uint8Array>(
