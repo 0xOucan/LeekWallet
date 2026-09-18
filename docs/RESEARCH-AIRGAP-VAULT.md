@@ -66,19 +66,47 @@ What is left on an N16R8 after camera, USB, straps and memory:
 | 1, 2, 14, 21, 38, 39, 40, 41, 42, 43, 44, 47, 48 | candidates |
 
 Thirteen candidates for OLED (2) + buttons (4) + microSD (3 in 1-bit mode) +
-the ATECC608B (shares the OLED's I2C) = 9. **It fits, with margin.** Proposed:
+the ATECC608B (shares the OLED's I2C) = 9. **It fits, with margin.**
+
+**Verified against the vendor pinout diagram (`specs.avif`) and continuity
+tested on the board, 2026-09-17:**
+
+| Function | GPIO | Source |
+|---|---|---|
+| microSD CMD / CLK / DATA | **38 / 39 / 40** | diagram, confirmed by meter |
+| PSRAM | 35, 36, 37 | diagram, octal as expected for R8 |
+| onboard WS2812 | 48 | diagram |
+| onboard LED | 2 | diagram, "LED ON" |
+| UART0 TXD / RXD + TX/RX LEDs | 43 / 44 | diagram |
+| USB D-/D+ | 19 / 20 | diagram (it prints them swapped; the datasheet has 19 = D-) |
+| 3V3 and 5V rails | header | continuity tested, both good |
+
+The SD exposes **one data line**, so **1-bit SDMMC is the only mode** on this
+board. That is fine for a vault file and it costs three pins instead of six.
+
+The camera map on the diagram matches the `esp32-camera` `BOARD_ESP32S3_WROOM`
+map exactly, including the Y-numbering: Y2=D0=11, Y3=D1=9, Y4=D2=8, Y5=D3=10,
+Y6=D4=12, Y7=D5=18, Y8=D6=17, Y9=D7=16.
+
+**Final pin map** (revised: GPIO48 is the onboard WS2812, so SCL moves to 21):
 
 ```
-OLED + ATECC608B I2C   SDA 47   SCL 48
-buttons K1..K4          1, 2, 14, 21
-microSD 1-bit SDMMC    CLK/CMD/D0 on the board's existing wiring
-spare                  41, 42 (43/44 are UART0 by default)
+OLED + ATECC608B I2C   SDA 47   SCL 21
+buttons K1..K4          1, 2, 14, 42
+microSD 1-bit           CMD 38   CLK 39   DATA 40
+status LED              48 (onboard WS2812, free)
+serial logs             43 / 44 (UART0, kept)
+spare                   41
 ```
 
-**Unverified and must be measured on the board before any layout:** which pins
-the microSD is actually wired to, what the two USB-C ports do, whether there is
-a USB-UART bridge, and the LED pins. The vendor photos do not settle these.
-A continuity check with the multimeter settles them in ten minutes.
+GPIO2 also drives the onboard LED, which is harmless for a button input with an
+internal pull-up. GPIO42 is JTAG MTMS, unused while debugging goes over native
+USB. Nothing here touches a strapping pin (0, 3, 45, 46).
+
+**Still unverified:** which of the two USB-C ports is native USB and which goes
+through a bridge. The diagram labelling UART0 with TX/RX LEDs on 43/44 implies
+a bridge on one of them. This does not block anything: plug into one, and if
+the board enumerates as a USB Serial/JTAG device it is the native port.
 
 ## 3. Airgap transport
 
@@ -379,7 +407,7 @@ before it ever runs on hardware.
 Power off, USB unplugged, meter in continuity (beep) mode, one probe on a GND
 header pin to confirm the meter works first.
 
-1. **microSD.** Probe each candidate header pin (1, 2, 14, 21, 38, 39, 40, 41,
+1. ~~microSD~~ **done**: CMD 38, CLK 39, DATA 40, 1-bit only.
    42, 47, 48) against the SD socket's CLK, CMD and DAT0 contacts. Boards in
    this class often use 39/38/40, but that must be confirmed rather than
    assumed. Also confirm the socket is actually populated and routed on this
@@ -392,7 +420,7 @@ header pin to confirm the meter works first.
    and diode mode across the LED tells you its polarity.
 4. **OLED pull-ups.** Resistance on the 20 kΩ range from the screen's VCC pin to
    its SDA pin, and to SCL. Around 4.7 or 10 means pull-ups are fitted.
-5. **3V3 rail.** Continuity from the header's 3V3 pin to the module's 3V3, so
+5. ~~3V3 rail~~ **done**: 3V3 and 5V both continuous to the header.
    the ATECC608B and OLED get power from a pin that is actually the rail.
 6. **Camera FPC, power ON, meter in DC volts.** Do **not** assume every FPC pin
    is 3.3 V. The sensor uses several domains and the adapter may regulate.
