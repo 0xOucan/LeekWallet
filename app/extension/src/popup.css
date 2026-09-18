@@ -222,3 +222,27 @@ li.receive { list-style: none; }
 li.account { flex-wrap: wrap; }
 li.account code { word-break: break-all; }
 li.account button.link { margin-left: auto; white-space: nowrap; }
+
+/* The QR tab is a real browser tab: give it a readable column rather than
+ * the popup's fixed width, and room for a camera preview and a code big
+ * enough for the device's camera to resolve. */
+body.view-qr {
+  width: auto;
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+.qr-display svg {
+  width: 100%;
+  max-width: 420px;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+.qr-video {
+  width: 100%;
+  max-width: 480px;
+  border-radius: 8px;
+  background: #000;
+}

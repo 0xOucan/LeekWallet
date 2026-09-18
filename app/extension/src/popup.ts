@@ -351,8 +351,9 @@ function render(): void {
   if (lastError !== null) {
     root.append(el("section", { class: "notice bad" }, el("p", {}, lastError)));
   }
-  if (!state.serialSupported) {
-    root.append(unsupportedSection(state));
+  /* No Web Serial is no USB, but a QR pairing needs only a camera. */
+  if (!state.serialSupported && state.link !== "qr") {
+    root.append(unsupportedSection(state), qrPairSection());
     return;
   }
   if (isApprovalView) {
@@ -383,6 +384,28 @@ function header(s: WalletState): HTMLElement {
       !s.serialSupported ? "unavailable" : on ? "ready" : s.connected ? "locked" : "not connected",
     ),
   );
+}
+
+/**
+ * Pairing by QR, for a device with a camera and no cable.
+ *
+ * The scan runs in its own tab (qr-page.ts says why), and this popup closes
+ * the moment that tab takes focus, so the request is fired and not awaited:
+ * the worker stores the pairing, and the next popup shows it.
+ */
+function qrPairButton(): HTMLButtonElement {
+  return button("Pair by QR…", () => {
+    void send({ pop: "qrPair" }).catch(() => {});
+  }, "link");
+}
+
+function qrPairSection(): HTMLElement {
+  return el("section", {},
+    el("h2", {}, "Pair by QR"),
+    el("p", { class: "muted" },
+      "A device with a camera can pair without a cable: it shows its account key as a QR " +
+      "code, and each signature is a QR code it scans and approves on its own screen."),
+    el("div", { class: "row" }, qrPairButton()));
 }
 
 function unsupportedSection(s: WalletState): HTMLElement {
@@ -431,6 +454,20 @@ function connectionSection(s: WalletState): HTMLElement {
     return box;
   }
 
+  if (s.link === "qr") {
+    box.append(
+      el("p", {}, `Paired by QR with the account key at ${s.qrPairing?.path ?? "?"}.`),
+      el("p", { class: "muted" },
+        "This extension holds that public key, so it can derive every address in the " +
+        "account; it cannot sign. Each signature is a request QR the device scans, decodes " +
+        "and shows on its own screen. Signing messages and typed data is not available " +
+        "over QR yet — only transactions."),
+      el("div", { class: "row" },
+        button("Forget QR pairing", () => void act("Forgetting…", { pop: "qrForget" }))),
+    );
+    return box;
+  }
+
   if (!s.connected) {
     box.append(
       el(
@@ -449,6 +486,7 @@ function connectionSection(s: WalletState): HTMLElement {
           : button("Choose device…", () => void grantPort(), "primary"),
         s.portGranted && button("Choose a different device…", () => void grantPort(), "link"),
         button("Show every serial device", () => void grantAnyPort(), "link"),
+        qrPairButton(),
       ),
     );
     return box;

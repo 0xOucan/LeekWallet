@@ -52,11 +52,14 @@ importers:
         specifier: 1.8.0
         version: 1.8.0
       qrcode-generator:
-        specifier: ^1.4.4
-        version: 1.5.2
+        specifier: 2.0.4
+        version: 2.0.4
       viem:
         specifier: ^2.55.13
         version: 2.55.13(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@3.25.76)
+      zxing-wasm:
+        specifier: 3.1.3
+        version: 3.1.3(@types/emscripten@1.41.5)
     devDependencies:
       '@types/chrome':
         specifier: ^0.0.287
@@ -609,9 +612,6 @@ packages:
 
   process-warning@5.1.0:
     resolution: {integrity: sha512-jQSaVHsPgtyw60e1rQ/A+/ArPEj/S8pS/vFnyGa/gYFXrKk/6RuDkoqVDQ5NI5MmS01698ltlAk0NoDBNLujRw==}
-
-  qrcode-generator@1.5.2:
-    resolution: {integrity: sha512-pItrW0Z9HnDBnFmgiNrY1uxRdri32Uh9EjNYLPVC2zZ3ZRIIEqBoDgm4DkvDwNNDHTK7FNkmr8zAa77BYc9xNw==}
 
   qrcode-generator@2.0.4:
     resolution: {integrity: sha512-mZSiP6RnbHl4xL2Ap5HfkjLnmxfKcPWpWe/c+5XxCuetEenqmNFf1FH/ftXPCtFG5/TDobjsjz6sSNL0Sr8Z9g==}
@@ -1447,8 +1447,6 @@ snapshots:
       source-map-js: 1.2.1
 
   process-warning@5.1.0: {}
-
-  qrcode-generator@1.5.2: {}
 
   qrcode-generator@2.0.4: {}
 
