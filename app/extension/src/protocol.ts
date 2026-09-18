@@ -181,6 +181,10 @@ export interface WalletState {
   grants: { origin: string; accounts: string[] }[];
   /** A dapp waiting on the human, if any. */
   pending: PendingApproval | null;
+  /** Which link `addresses` came from: a USB session, a QR pairing, or neither. */
+  link: "device" | "qr" | null;
+  /** The QR-paired account key's path, if a device has been paired by QR. */
+  qrPairing: { path: string } | null;
   /** Set while the device is drawing a confirmation screen of its own. */
   awaitingDevice: string | null;
 }
@@ -230,6 +234,9 @@ export type PopupCommand =
    * all the way down: turning it into a number here is where 0.1 + 0.2 gets
    * in, and core's parseUnits is the only thing that should scale it. */
   | { pop: "send"; index: number; recipient: string; amount: string; token?: string }
+  /* Scan a device's `ur:crypto-hdkey` in the QR tab and keep its addresses. */
+  | { pop: "qrPair" }
+  | { pop: "qrForget" }
   /* The QR scan tab's side of a job the worker opened it for. The tab is
    * given a view and returns the bytes it scanned; it decides nothing. */
   | { pop: "qrJob"; id: string }

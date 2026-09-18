@@ -52,6 +52,7 @@ import {
 } from "../../packages/core/src/balances.ts";
 import { planSend } from "./send.ts";
 import { QrJobError, QrJobs } from "./qr-job.ts";
+import { pairingFromCbor, type QrPairing } from "./qr-pairing.ts";
 import {
   EIP1193,
   type OwnerCommand, type OwnerEnvelope, type OwnerEvent, type OwnerReply,
@@ -364,6 +365,58 @@ const qrJobs = new QrJobs({
 
 chrome.tabs.onRemoved.addListener((tabId) => qrJobs.tabClosed(tabId));
 
+/* ------------------------------------------------------------ QR pairing */
+
+const hexOf = (b: Uint8Array): string => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+const bytesOf = (h: string): Uint8Array =>
+  new Uint8Array((h.match(/../g) ?? []).map((x) => parseInt(x, 16)));
+
+/**
+ * The QR-paired account key, as the CBOR the device showed.
+ *
+ * `chrome.storage.session`, not `local`: cleared when the browser closes and
+ * never written to disk. The key derives every address in the account, and
+ * core's PERSIST_DERIVED_ADDRESSES rule is that a passphrase wallet's
+ * addresses do not outlive the session that showed them - on disk they would
+ * tell anyone reading the profile that a hidden wallet exists. The offscreen
+ * document keeps USB addresses in memory for the same reason. Re-pairing is
+ * one scan of a code the device can show again at any time.
+ *
+ * Decoded on every read rather than cached in module scope, because the
+ * worker restarts constantly and a stale cache after "Forget" would keep
+ * offering addresses the user removed.
+ */
+async function readQrPairing(): Promise<QrPairing | null> {
+  const { qrHdkey } = await chrome.storage.session.get({ qrHdkey: null as string | null });
+  if (typeof qrHdkey !== "string") return null;
+  try {
+    return pairingFromCbor(bytesOf(qrHdkey));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The addresses on offer right now, and which link they came from.
+ *
+ * A connected, unlocked USB device wins: it is the one the user plugged in
+ * and is looking at. The QR pairing is used when there is no such device,
+ * which is the whole point of the CAM board - no cable at all.
+ */
+async function activeAccounts(): Promise<
+  { link: "device"; addresses: string[] } | { link: "qr"; addresses: string[]; pairing: QrPairing } | null
+> {
+  const snap = await ownerSnapshot(true);
+  if (snap.connected && snap.confirmed && snap.unlocked) {
+    return { link: "device", addresses: snap.addresses };
+  }
+  const pairing = await readQrPairing();
+  if (pairing !== null) {
+    return { link: "qr", addresses: pairing.accounts.map((a) => a.address), pairing };
+  }
+  return null;
+}
+
 /* ------------------------------------------------------- the EIP-1193 core */
 
 class RpcError extends Error {
@@ -518,11 +571,16 @@ async function handle(origin: string, method: string, params: unknown[]): Promis
       const already = await grantedAccounts(origin);
       if (already.length > 0) return already;
 
-      await requireDevice();
-      /* Derive before asking. The approval window has to show real addresses —
-       * a picker of placeholders is one nobody can make a decision from — and
-       * deriving ten addresses takes about half a second on the device. */
-      await ask<string[]>({ cmd: "derive", count: 10 });
+      /* A QR pairing already has its addresses: they were derived from the
+       * exported key when it was scanned. */
+      const active = await activeAccounts();
+      if (active?.link !== "qr") {
+        await requireDevice();
+        /* Derive before asking. The approval window has to show real addresses —
+         * a picker of placeholders is one nobody can make a decision from — and
+         * deriving ten addresses takes about half a second on the device. */
+        await ask<string[]>({ cmd: "derive", count: 10 });
+      }
 
       if (pending) {
         throw new RpcError(
@@ -1020,7 +1078,10 @@ async function handlePopup(command: PopupCommand): Promise<unknown> {
        * agree with it. Signing still checks the same way (see signerIndex),
        * so this is defence in depth rather than the only gate — which is the
        * right amount for a list that decides what a website can spend. */
-      const known = await ask<string[]>({ cmd: "derive", count: 10 });
+      const active = await activeAccounts();
+      const known = active?.link === "qr"
+        ? active.addresses
+        : await ask<string[]>({ cmd: "derive", count: 10 });
       const lower = new Set(known.map((a) => a.toLowerCase()));
       const accounts = command.accounts
         .map((a) => a.toLowerCase())
@@ -1073,6 +1134,49 @@ async function handlePopup(command: PopupCommand): Promise<unknown> {
       return await walletState();
     }
 
+    case "qrPair": {
+      /* The popup that sent this closes as soon as the tab takes focus, so
+       * nobody reads this reply; the pairing is stored here, in the worker,
+       * and the next popup render shows it. */
+      const cbor = await qrJobs.run(
+        {
+          title: "Pair by QR",
+          summary: [],
+          scan: {
+            type: "crypto-hdkey",
+            instructions:
+              "On the device, open the account export so it shows its QR code, " +
+              "and hold it in front of this camera. Nothing is sent to the device.",
+          },
+        },
+        /* Decoded here so a key core refuses - private, master, wrong coin -
+         * is a "scan again" in the tab rather than a pairing that cannot
+         * sign. */
+        async (body) => { pairingFromCbor(body); return body; },
+      ).catch((e: unknown) => {
+        if (e instanceof QrJobError) return null;
+        throw e;
+      });
+      if (cbor === null) {
+        await appendLog("QR pairing cancelled");
+        return await walletState();
+      }
+      const pairing = pairingFromCbor(cbor);
+      await chrome.storage.session.set({ qrHdkey: hexOf(cbor) });
+      await appendLog(`paired by QR: ${pairing.accounts.length} watch-only addresses under ${pairing.describe}`);
+      return await walletState();
+    }
+
+    case "qrForget": {
+      await chrome.storage.session.set({ qrHdkey: null });
+      /* As on a USB disconnect: a dapp left holding an address nobody can
+       * sign for would go on offering to. */
+      const { grants } = await readState();
+      await broadcast("accountsChanged", [], new Set(Object.keys(grants)));
+      await appendLog("forgot the QR pairing");
+      return await walletState();
+    }
+
     case "qrJob":
       return qrJobs.view(command.id);
 
@@ -1101,6 +1205,8 @@ async function handlePopup(command: PopupCommand): Promise<unknown> {
 async function walletState(): Promise<WalletState> {
   const persisted = await readState();
   const snap = await ownerSnapshot(true);
+  const active = await activeAccounts();
+  const qr = active?.link === "qr" ? active.pairing : await readQrPairing();
   const session = await chrome.storage.session.get({
     log: [] as string[],
     awaitingDevice: null as string | null,
@@ -1114,10 +1220,15 @@ async function walletState(): Promise<WalletState> {
     serialSupported: true,
     serialReason: "",
     portGranted: false,
-    connected: snap.connected && snap.confirmed,
+    /* A QR pairing counts as connected and unlocked: there is nothing to
+     * connect and nothing to unlock, and every signature is still approved
+     * on the device. `link` says which one the popup is looking at. */
+    connected: active?.link === "qr" || (snap.connected && snap.confirmed),
     passkey: snap.passkey,
-    unlocked: snap.unlocked,
-    addresses: snap.addresses,
+    unlocked: active?.link === "qr" || snap.unlocked,
+    addresses: active?.addresses ?? snap.addresses,
+    link: active?.link ?? null,
+    qrPairing: qr === null ? null : { path: qr.describe },
     chainId: persisted.chainId,
     overrideWindowEthereum: persisted.overrideWindowEthereum,
     log: session["log"] as string[],
