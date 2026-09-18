@@ -859,11 +859,6 @@ function applySectionVisibility(): void {
     const header = document.getElementById(SECTION_HEADER_IDS[section]);
     header?.setAttribute("aria-expanded", String(openSection === section));
   }
-  /* waiterdest is the Apps body here, but it is also a standalone
-   * destination pre-connect (La Caja from the launcher), and that path is the
-   * only one that still needs a Back button. Post-unlock there is nowhere to
-   * go back to: the header above it is the way out. */
-  $("waiterback").hidden = shellOpen;
 }
 
 /** Open a section, or collapse it if it was already open. Opening Balances is
@@ -963,7 +958,7 @@ function watchSignatureRequests(): void {
  * same shape for *after* a device is connected and unlocked; this is only
  * about what is on screen before that.
  */
-type PreConnectDest = "launcher" | "connect" | "flash" | "waiter";
+type PreConnectDest = "launcher" | "connect" | "flash";
 let preConnectDest: PreConnectDest = "launcher";
 
 /** Show exactly the launcher, or exactly the one destination chosen. */
@@ -971,17 +966,13 @@ function applyPreConnectVisibility(): void {
   $("launcher").hidden = preConnectDest !== "launcher";
   $("devicepanel").hidden = preConnectDest !== "connect";
   $("flashpanel").hidden = preConnectDest !== "flash";
-  /* waiterdest doubles as the Apps section's body post-unlock, so its
-   * accordion wrapper has to open with it on this path — but only while the
-   * shell is closed, where this function is the one that decides. Once the
-   * shell is open applySectionVisibility owns both. */
-  if (!shellOpen) {
-    $("waiterdest").hidden = preConnectDest !== "waiter";
-    $("secapps").hidden = preConnectDest !== "waiter";
-  }
+  /* appsdest is the Apps section's body, owned entirely by
+   * applySectionVisibility post-unlock. Nothing pre-connect reveals it: no
+   * app currently declares worksWithoutDevice, so there is no destination
+   * here to gate. */
 }
 
-/** Flash and the waiter hold no session, so leaving them is never more than
+/** Flash holds no session, so leaving it is never more than
  * a screen change — no teardown, unlike the connect destination below. */
 function goToLauncher(): void {
   preConnectDest = "launcher";
@@ -1003,7 +994,7 @@ let backingOut = false;
 /**
  * The connect destination's Back button.
  *
- * Unlike Flash and the waiter, this destination can be mid-handshake or
+ * Unlike Flash, this destination can be mid-handshake or
  * fully connected when Back is pressed, and there is no safe way to just
  * hide the panel under either condition: a hidden Device panel with a live
  * transport is a session with no Disconnect button. So Back reuses
@@ -1692,8 +1683,8 @@ function applyChain(info: ChainInfo): void {
  * Called from applyChain and again whenever the selected address changes.
  * Apps receive the address as a snapshot at mount, and originally this ran only
  * on chain selection — which is before a device is connected, so every app
- * mounted with an empty address and never learned one arrived. La Caja showed
- * "No merchant address to be paid into" on a wallet that plainly had ten.
+ * mounted with an empty address and never learned one arrived, and rendered
+ * as though the wallet held no accounts at all.
  */
 function remountApps(info: ChainInfo): void {
   const address = addresses[selectedIndex] ?? "";
@@ -1717,22 +1708,16 @@ function remountApps(info: ChainInfo): void {
     }),
     /* Pre-connect (M3, UI-REDESIGN-PLAN.md §2a): only apps that hold no key
      * by design belong on the pre-connect surface alongside Connect and Flash
-     * firmware. "Holds no key" is not a field MiniApp carries — that type is
-     * in packages/core, out of scope for this pass — so it is named here by
-     * id, the one place the shell is already allowed to know an app exists.
-     * The cashier half of La Caja needs a signer to issue a bill and stays
-     * off until a device is connected; the waiter only displays one. */
-    /* Ask the app whether it works without a device, rather than testing its
-       name. A shell that knows an app's ID still compiles once that app is
-       deleted, matches nothing, and leaves an empty pre-connect screen with no
-       error -- which makes removability a claim instead of a property.
-       app/test/apps.test.ts enforces this. */
+     * firmware. Ask the app whether it works without a device, rather than
+     * testing its name: a shell that knows an app's ID still compiles once
+     * that app is deleted, matches nothing, and leaves an empty pre-connect
+     * screen with no error -- which makes removability a claim instead of a
+     * property. */
     client === null ? (app) => app.worksWithoutDevice === true : undefined,
   );
   // mountApps() just wrote #apps's own [hidden] based on chain content;
-  // waiterdest (the wrapper around it) is a separate gate, owned by whichever
-  // destination system currently applies — pre-connect (applyPreConnectVisibility)
-  // or post-unlock (applySectionVisibility) — and neither depends on this call.
+  // appsdest (the wrapper around it) is a separate gate, owned by
+  // applySectionVisibility, which does not depend on this call.
 }
 
 /** Rebuild the chain list: curated first, then custom. The order is the trust order. */
@@ -4213,15 +4198,10 @@ void initRpcTransport();
 /* Mount the device-free apps before anything is connected.
  *
  * remountApps() was called on connect, disconnect, chain change and address
- * change — every path EXCEPT the first paint. So on a fresh launch #apps had
- * never been built, and pressing "La Caja — waiter" on the launcher revealed
- * `waiterdest` with an empty, self-hidden #apps inside it: the button worked
- * and nothing appeared.
- *
- * The `worksWithoutDevice` filter in remountApps exists precisely so the
- * waiter can mount with `client === null`; it just needed something to call
- * it. Before applyPreConnectVisibility, so the panel it reveals already has
- * content in it. */
+ * change — every path EXCEPT the first paint. So on a fresh launch #apps was
+ * never built, and any app declaring `worksWithoutDevice` was missing from the
+ * pre-connect surface it exists for. Before applyPreConnectVisibility, so a
+ * panel it reveals already has content in it. */
 remountApps(activeChain());
 applyPreConnectVisibility();
 applySectionVisibility();
@@ -4229,13 +4209,8 @@ watchSignatureRequests();
 
 $("gotoconnect").addEventListener("click", () => enterDest("connect"));
 $("gotoflash").addEventListener("click", () => enterDest("flash"));
-$("gotowaiter").addEventListener("click", () => enterDest("waiter"));
 $("connectback").addEventListener("click", connectDestBack);
 $("flashback").addEventListener("click", goToLauncher);
-// Only the pre-connect path into waiterdest (La Caja, from the launcher) has
-// a Back: post-unlock the section is collapsed by its own header instead, and
-// applySectionVisibility hides this button there.
-$("waiterback").addEventListener("click", goToLauncher);
 
 // The home accordion (L6, docs/UI-L6-SPEC.md). One handler per header; the
 // header element is the <button>, so keyboard and touch come for free.

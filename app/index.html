@@ -49,15 +49,15 @@
         </div>
 
         <!--
-          The launcher (docs/UI-SPEC-V2.md §1). Three destinations and nothing
+          The launcher (docs/UI-SPEC-V2.md §1). Two destinations and nothing
           else before a device is connected — no tab bar, no empty panels, no
           greyed controls. Each tile is a <button> so it is a real 44px+ touch
           target and reachable by keyboard, not a styled <div>.
 
           Membership of the pre-connect surface for mini-apps is decided
           elsewhere, in remountApps() (main.ts), by MiniApp.worksWithoutDevice
-          — never by name. This nav only carries the three fixed destinations
-          the brief names; it does not enumerate apps.
+          — never by name. This nav only carries the fixed destinations the
+          brief names; it does not enumerate apps.
         -->
         <nav class="launcher" id="launcher" aria-label="Choose what to do">
           <button type="button" class="launcher__tile" id="gotoconnect">
@@ -67,10 +67,6 @@
           <button type="button" class="launcher__tile" id="gotoflash">
             <span class="launcher__title">Flash firmware</span>
             <span class="launcher__desc">Install or update from a release</span>
-          </button>
-          <button type="button" class="launcher__tile" id="gotowaiter">
-            <span class="launcher__title">La Caja — waiter</span>
-            <span class="launcher__desc">Take a payment. No wallet needed.</span>
           </button>
         </nav>
 
@@ -544,7 +540,7 @@
         <section class="acc" id="secapps" hidden>
           <h2 class="acc__hd">
             <button type="button" class="acc__toggle" id="hdrapps"
-                    aria-expanded="false" aria-controls="waiterdest">
+                    aria-expanded="false" aria-controls="appsdest">
               <span class="acc__text">
                 <span class="acc__title">Apps</span>
                 <span class="acc__desc">The mini-apps for this device</span>
@@ -553,16 +549,14 @@
             </button>
           </h2>
           <!--
-            Apps / La Caja — waiter, as a destination (docs/UI-SPEC-V2.md §1a,
-            docs/UI-L5-SPEC.md §3). Reachable two ways: the launcher's "La Caja"
-            tile pre-connect, and the wallet menu's "Apps" block once unlocked
-            — main.ts's enterDest()/enterBlock() both point here, and this
-            wrapper's own [hidden] is the single gate for either path (no
-            double-gating). The #apps div inside keeps deciding its own
-            [hidden] from mounted content, unrelated to which path opened it.
+            Apps, as a destination (docs/UI-SPEC-V2.md §1a, docs/UI-L5-SPEC.md
+            §3). Reachable from the wallet menu's "Apps" block once unlocked —
+            main.ts's enterBlock() points here, and this wrapper's own [hidden]
+            is the single gate (no double-gating). The #apps div inside keeps
+            deciding its own [hidden] from mounted content, unrelated to which
+            path opened it.
           -->
-          <section class="destination" id="waiterdest" hidden>
-            <button type="button" class="destination__back" id="waiterback"><span aria-hidden="true">← </span>Back</button>
+          <section class="destination" id="appsdest" hidden>
             <!-- Mini-apps mount here, one panel each. Empty and hidden unless the
                  active chain has one registered - see src/apps/registry.ts, which
                  is the single line a release build removes to exclude one. -->

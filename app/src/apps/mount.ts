@@ -3,14 +3,13 @@
  *
  * One function, one call site, so the shell's knowledge of mini-apps is a
  * single import in main.ts. It goes through `registry.ts` and never names an
- * app: `apps.test.ts` asserts that, and the assertion is what keeps removal to
- * one directory and one registry line.
+ * app, which is what keeps removal to one directory and one registry line.
  *
  * The chain gate is a display decision, not the exclusion mechanism. An app
- * whose `chainIds` exclude the active chain is not offered — for the ATS
- * console, reading a Hedera security over an Ethereum endpoint would produce a
- * confidently empty register, which is the failure that app is built around —
- * but its code is still in the bundle. Excluding an app is deleting it.
+ * whose `chainIds` exclude the active chain is not offered — reading one
+ * chain's state over another chain's endpoint produces a confidently wrong
+ * answer rather than an error — but its code is still in the bundle.
+ * Excluding an app is deleting it.
  */
 
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
@@ -54,9 +53,8 @@ export function mountApps(
   /* One app on screen at a time, chosen by a tab.
    *
    * Stacking every app down one page was the first shape and it was wrong for
-   * the thing this is mostly used for: showing one app to somebody. A demo of
-   * La Caja should not have an issuer console under it, and a screenshot of the
-   * portfolio should not be half a point-of-sale.
+   * the thing this is mostly used for: showing one app to somebody. One
+   * app's screen should not have an unrelated app's console under it.
    *
    * The tab strip is skipped entirely when only one app applies to the chain,
    * because a single tab is a label pretending to be a control. */
