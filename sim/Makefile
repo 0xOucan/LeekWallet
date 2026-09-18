@@ -40,9 +40,12 @@ VAULT_CRYPTO :=                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/aes/aestab.c $(CRYPTO)/aes/aes_modes.c \
                 $(CRYPTO)/aes/aesgcm.c $(CRYPTO)/aes/gf128mul.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39 test_temp_seed
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39 test_temp_seed test_ur
 
 all: $(addprefix $(BUILD)/,$(TESTS))
+
+$(BUILD)/test_ur: test_ur.c host_stubs.c ../src/ur.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD)/test_mnemonic_entry: test_mnemonic_entry.c host_stubs.c ../src/mnemonic-entry.c $(CRYPTO_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^

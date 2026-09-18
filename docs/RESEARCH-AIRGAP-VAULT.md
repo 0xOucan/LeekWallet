@@ -868,6 +868,15 @@ Boards without a card (the reference S3 and the Pixie) can keep a shorter log
 in NVS behind `LEEK_HAS_SDCARD`, or none at all. The feature is capability
 gated like everything else.
 
+### Defaults
+
+History is **on by default**, and is a settings toggle for anyone who wants it
+off. That is the opposite of the radios, which ship off and take a deliberate
+act to enable, and the difference is the point: a radio changes who can reach
+the device, while a log changes only what the owner can see about their own
+device. Turning history off does not delete what is already stored; clearing it
+is its own action, so neither can happen by accident.
+
 ### What it does not claim
 
 - It records what was **signed**. Not what confirmed, was replaced or was
