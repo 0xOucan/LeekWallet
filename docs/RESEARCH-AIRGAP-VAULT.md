@@ -815,3 +815,65 @@ over more.
 This is the same principle as the vault on a removable card and the device that
 holds nothing without it: **keep the parts separate, and make the state
 somebody else holds as small as it can be.**
+
+## 22. The signed-transaction history
+
+Promoted from "nice to have" to a feature. The SafePal S1 is the precedent:
+airgapped, QR-only, and it still shows you what the device signed.
+
+### One log, filtered — not a menu per chain
+
+The chain id is a field in the entry, not a directory. Filters over one flat
+log, newest first:
+
+```
+History                        filter: [ all chains ▾ ] [ all accounts ▾ ]
+────────────────────────────────────────────────────────────────────────
+#124  Base      swap        0.30 USDC        0x9aeae4…   fee 0.00002 ETH
+#123  Base      approve     USDC → 0x1111…   0xc78e2d…   fee 0.00001 ETH
+#122  Arc       transfer    12.00 USDC       0x4f21a8…   fee 0.00000 ETH
+```
+
+A per-chain menu would need a new screen every time a chain is added and would
+hide the thing people actually scan for, which is "the last thing I did".
+
+### What each entry holds
+
+Chain id, account, nonce, destination, the decoded action, token and amount
+where the decoder produced them, the gas fields, and — the part worth the
+whole feature — **the transaction hash**.
+
+The device signs, so it can keccak the signed RLP itself. That hash is
+device-derived, needs no network, and is exactly what you paste into an
+explorer or DeBank to find out what actually happened. It is the bridge between
+a device that can never know a balance and the tools that do.
+
+### No timestamps, because there is no clock to trust
+
+An airgapped device has no reliable time. Its RTC drifts and resets, and time
+offered by the companion is companion-supplied data, which rule 1 of section 16
+keeps off the screen. So entries carry a **monotonic sequence number**, not a
+date, and the UI says "#124" rather than inventing a time it cannot stand
+behind. The explorer supplies the timestamp, from the hash.
+
+### Storage
+
+A fixed-size ring buffer inside the encrypted vault: fixed-width entries, no
+allocator, no fragmentation, oldest overwritten. Pre-filled with random like
+the vault itself, so the file does not reveal how many transactions exist. At
+roughly 96 bytes an entry, 256 entries is about 24 KB, which is nothing on a
+card.
+
+Boards without a card (the reference S3 and the Pixie) can keep a shorter log
+in NVS behind `LEEK_HAS_SDCARD`, or none at all. The feature is capability
+gated like everything else.
+
+### What it does not claim
+
+- It records what was **signed**. Not what confirmed, was replaced or was
+  dropped, because the device cannot know. The screen says "signed".
+- **It is a log of this device, not of the seed.** The same seed used in
+  another wallet leaves no trace here. That is a property of the design rather
+  than a defect, and the guides should say so plainly instead of letting people
+  read the list as a complete history of their funds.
+- It is not a balance. The hash plus an explorer is the answer to that.
