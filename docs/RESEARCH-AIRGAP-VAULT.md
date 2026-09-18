@@ -505,13 +505,17 @@ The ESP32-S3 has Wi-Fi 802.11 b/g/n and Bluetooth LE 5 sharing one antenna.
 
 **An airgapped wallet with a working radio is not airgapped.** So:
 
-- Wi-Fi and Bluetooth are **compiled out** of the wallet build, not merely left
-  uninitialised. `CONFIG_ESP_WIFI_ENABLED=n` and the Bluetooth stack disabled
-  in sdkconfig, so the code is absent from the image rather than dormant.
-- This is checkable by a third party: the release notes can state the symbols
-  are not in the binary, and a reproducible build lets anyone confirm it.
-- BLE therefore stays a **separate build**, not a runtime toggle. A user who
-  wants BLE flashes the BLE image and knowingly gives up the air gap.
+- The radios are **present in the firmware but disabled at boot**, and turning
+  one on is a deliberate act: a 5-second hold, or five confirmations, with the
+  device stating plainly on its own screen that the air gap is being given up.
+  It stays on for that session only and is off again after a power cycle.
+- QR is the only transport that works without that act, so the default
+  configuration is airgapped and the exception is visible and chosen.
+- The honest cost of this choice, which the docs must carry: dormant code is
+  still code. Firmware that has already been compromised can enable a radio
+  without asking, so this defends against an untrusted companion and an
+  ordinary mistake, not against malicious firmware. Secure Boot is what
+  defends against malicious firmware, and it is a separate, optional decision.
 
 Same reasoning for the relevant SoC facts: the S3's AES and SHA accelerators do
 help the vault, and its ECC accelerator covers P-256 rather than **secp256k1**,
