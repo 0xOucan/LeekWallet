@@ -86,12 +86,33 @@ if [[ -n "$PORT" ]]; then PORTS=("$PORT"); else PORTS=(/dev/ttyACM* /dev/ttyUSB*
 declare -A SEEN_MAC=()
 MATCH=(); UNKNOWN=(); OTHER=()
 
+# A --fresh flash is a blank board that the user has put into download mode by
+# hand. chip_id resets the chip afterwards by default, which would boot the
+# factory firmware again and leave nothing listening for the write, so on this
+# path the chip is told to stay where it is.
+AFTER=(); (( FRESH )) && AFTER=(--after no_reset)
+
 for P in "${PORTS[@]}"; do
-  INFO=$("$ESPTOOL" --port "$P" chip_id 2>/dev/null || true)
+  INFO=$("$ESPTOOL" --port "$P" "${AFTER[@]}" chip_id 2>&1 || true)
   C=$(grep -oE 'ESP32-(S3|C3)' <<<"$INFO" | head -1 || true)
   MAC=$(grep -oiE 'MAC: *([0-9a-f]{2}:){5}[0-9a-f]{2}' <<<"$INFO" | head -1 | awk '{print tolower($2)}' || true)
 
-  if [[ -z "$C" ]]; then echo "   $P: no ESP32 answered - skipped"; continue; fi
+  if [[ -z "$C" ]]; then
+    echo "   $P: no ESP32 answered - skipped"
+    # The usual cause on a new board: it is running its factory firmware, which
+    # presents its own USB device (303a:4001) instead of the chip's built-in
+    # USB-Serial/JTAG (303a:1001), so esptool cannot reset it into download
+    # mode. LeekWallet uses the built-in one, so this only happens once.
+    if command -v lsusb >/dev/null && lsusb | grep -qi '303a:4001'; then
+      echo "     The board is running firmware that hides the chip's own USB port (303a:4001)."
+      echo "     Put it in download mode by hand: hold BOOT, tap RST, release BOOT."
+      echo "     lsusb should then show 303a:1001. Run this again with --port and --fresh."
+    else
+      echo "     esptool said: $(grep -iE 'error|failed' <<<"$INFO" | tail -1)"
+      echo "     If the board is new, put it in download mode: hold BOOT, tap RST, release BOOT."
+    fi
+    continue
+  fi
   if [[ "$C" != "$CHIP" ]]; then echo "   $P: $C, not $CHIP - skipped"; continue; fi
   if [[ -n "$MAC" && -n "${SEEN_MAC[$MAC]:-}" ]]; then
     echo "   $P: same board as ${SEEN_MAC[$MAC]} (MAC $MAC) - skipped"; continue
@@ -152,7 +173,7 @@ fi
 if [[ "$MODE" == app ]]; then
   "$ESPTOOL" --chip "$ESPCHIP" --port "$TARGET" write_flash 0x10000 "$BUILDDIR/firmware.bin"
 else
-  "$ESPTOOL" --chip "$ESPCHIP" --port "$TARGET" write_flash \
+  "$ESPTOOL" --chip "$ESPCHIP" --port "$TARGET" --before no_reset write_flash \
       0x0     "$BUILDDIR/bootloader.bin" \
       0x8000  "$BUILDDIR/partitions.bin" \
       0x10000 "$BUILDDIR/firmware.bin"
