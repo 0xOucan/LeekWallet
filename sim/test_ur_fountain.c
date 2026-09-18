@@ -14,6 +14,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <stdlib.h>
+
 #include "ur-fountain.h"
 
 static int failures = 0;
@@ -174,8 +176,75 @@ static void test_bounds(void)
           "exactly UR_MAX_PARTS was refused");
 }
 
-int main(void)
+
+/*
+ * The fountain leg of the shared corpus. Same reasoning as the other
+ * --emit-vectors modes in this directory, with one extra reason that applies
+ * only here: the fragment subset is never transmitted, both ends derive it,
+ * and the derivation runs through doubles. Two implementations agreeing on
+ * these numbers is therefore also a claim that they agree bit for bit about
+ * IEEE-754 arithmetic, which is not something to assume across C and
+ * JavaScript.
+ */
+static int emit_vectors(const char *path)
 {
+    FILE *f = fopen(path, "w");
+    if (f == NULL) {
+        perror(path);
+        return 1;
+    }
+
+    static UrFountainScratch sc;
+    /* A spread of fragment counts and part numbers, weighted to the mixed
+       path, because parts 1..seq_len are trivially right and everything that
+       can go wrong lives above that. */
+    static const uint32_t SEQ_LENS[] = { 1, 2, 3, 5, 8, 13, 21, 34, 64 };
+    static const uint32_t CHECKSUMS[] = {
+        0x00000000u, 0xFFFFFFFFu, 0x12345678u, 0xDEADBEEFu, 0x5A5A5A5Au,
+    };
+
+    fprintf(f, "[\n");
+    int first = 1;
+    for (size_t li = 0; li < sizeof SEQ_LENS / sizeof SEQ_LENS[0]; li++) {
+        const uint32_t seq_len = SEQ_LENS[li];
+        for (size_t ci = 0; ci < sizeof CHECKSUMS / sizeof CHECKSUMS[0]; ci++) {
+            const uint32_t checksum = CHECKSUMS[ci];
+            for (uint32_t n = 1; n <= seq_len + 24; n++) {
+                uint8_t mask[UR_PART_MASK_BYTES];
+                if (!ur_fountain_fragments(n, seq_len, checksum, mask, &sc)) {
+                    fclose(f);
+                    return 1;
+                }
+                fprintf(f, "%s  { \"seqNum\": %u, \"seqLen\": %u, "
+                           "\"checksum\": %u, \"fragments\": [",
+                        first ? "" : ",\n", n, seq_len, checksum);
+                int wrote = 0;
+                for (uint32_t i = 0; i < seq_len; i++) {
+                    if (mask[i / 8] & (1u << (i % 8))) {
+                        fprintf(f, "%s%u", wrote++ ? ", " : "", i);
+                    }
+                }
+                fprintf(f, "] }");
+                first = 0;
+            }
+        }
+    }
+    fprintf(f, "\n]\n");
+
+    if (fclose(f) != 0) {
+        perror(path);
+        return 1;
+    }
+    printf("wrote fountain vectors to %s\n", path);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[1], "--emit-vectors") == 0) {
+        return emit_vectors(argv[2]);
+    }
+
     test_reference_vectors();
     test_pure_parts_are_in_order();
     test_degree_is_in_range();

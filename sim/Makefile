@@ -372,8 +372,11 @@ eth-decode-conformance: $(BUILD)/test_eth_decode
 # recorded from an older ur.c would let them agree with an encoder nobody runs.
 UR_VECTORS := ../app/packages/core/test/ur-vectors.json
 
-ur-conformance: $(BUILD)/test_ur
+UR_FOUNTAIN_VECTORS := ../app/packages/core/test/ur-fountain-vectors.json
+
+ur-conformance: $(BUILD)/test_ur $(BUILD)/test_ur_fountain
 	./$(BUILD)/test_ur --emit-vectors $(UR_VECTORS)
+	./$(BUILD)/test_ur_fountain --emit-vectors $(UR_FOUNTAIN_VECTORS)
 
 clean:
 	rm -rf $(BUILD)
