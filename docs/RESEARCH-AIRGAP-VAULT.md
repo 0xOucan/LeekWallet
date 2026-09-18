@@ -877,3 +877,67 @@ gated like everything else.
   than a defect, and the guides should say so plainly instead of letting people
   read the list as a complete history of their funds.
 - It is not a balance. The hash plus an explorer is the answer to that.
+
+### Opening an entry shows a QR of the explorer link
+
+Select an entry and the device draws a QR of the explorer URL. Phone camera,
+browser opens, and the airgap is never crossed — the device emitted light, and
+nothing came back.
+
+```
+#124  Base · swap                      ┌───────────────┐
+0x9aeae445…                            │ ▄▄▄▄▄ ██ ▄▄▄▄ │
+0.30 USDC                              │ █   █ ▀▄ █   █ │   basescan.org/tx/0x9a…
+fee 0.00002 ETH                        │ █▄▄▄█ █▄ █▄▄▄█ │
+                                       └───────────────┘
+```
+
+The URL is built **on the device**, from a chain id to explorer table compiled
+into the firmware — the same data the companion's `chains.ts` holds, moved
+where it can be trusted. It is not a URL the companion sent, because a URL from
+the companion is a link the device cannot verify and rule 1 keeps it off the
+screen. A short URL is a QR version 4 or 5, which the 128x64 panel shows in one
+static frame, no animation.
+
+Worth telling users once, in the guides: **opening that link tells the explorer
+your IP and that you care about that address.** It is their choice, the device
+is not making it for them, and they can equally type the hash in by hand.
+
+### How much history, and when it overwrites
+
+Entry layout, fixed width so there is no allocator and no fragmentation:
+
+| Field | Bytes |
+|---|---|
+| sequence, chain id, nonce | 20 |
+| account address, destination, token address | 60 |
+| value, token amount | 64 |
+| gas limit, fee cap | 16 |
+| **transaction hash** | 32 |
+| action code, decimals, symbol, flags | 16 |
+| reserved | to 256 |
+
+**256 bytes an entry.** So:
+
+| Board | Entries | Space | At 3 signatures a day |
+|---|---|---|---|
+| SD vault | **4096** | 1 MB | ~3.7 years |
+| NVS only (reference S3, Pixie) | 64 | 16 KB | ~3 weeks |
+
+On a card, 1 MB is nothing, so the honest answer to "when does it delete" is
+**effectively never, for how this wallet gets used.** Set at vault creation and
+recorded in the header, so a user who wants 16384 entries can have them.
+
+When it does wrap, the oldest entry is overwritten silently. No prompt: a wallet
+that interrupts you to ask about a log entry has its priorities wrong. A
+`Clear history` action exists for people who want it gone sooner.
+
+Two engineering constraints that follow, and they matter more than the size:
+
+- **Entries are sealed individually, not as part of the vault blob.** Each is
+  its own AES-256-GCM record under a key derived from the master key and the
+  entry slot. Otherwise every signature rewrites the whole vault, which is
+  write amplification on a card and a window where a power loss costs the seed.
+- **There is no head pointer.** The head is found by scanning for the highest
+  sequence number at startup. A separate pointer is one more thing that can tear
+  on a power cut and disagree with the data it points at.
