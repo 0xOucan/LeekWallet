@@ -49,12 +49,34 @@ $(BUILD)/test_eip4527: test_eip4527.c host_stubs.c ../src/eip4527.c | $(BUILD)
 
 # The writer, checked against the strict reader: an eth-signature the device
 # emits has to be one its own grammar accepts.
-$(BUILD)/test_eip4527_encode: test_eip4527_encode.c host_stubs.c ../src/eip4527-encode.c ../src/eip4527.c ../src/cbor.c | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $^
+# The vectors are real BIP32 keys, so this links the derivation too.
+EIP4527_ENCODE_SRC := test_eip4527_encode.c host_stubs.c ../src/eip4527-encode.c \
+                      ../src/eip4527.c ../src/cbor.c ../src/ur.c \
+                      $(CRYPTO)/bip32.c $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
+                      $(CRYPTO)/ecdsa.c $(CRYPTO)/bignum.c $(CRYPTO)/secp256k1.c \
+                      $(CRYPTO)/nist256p1.c $(CRYPTO)/curves.c $(CRYPTO)/ripemd160.c \
+                      $(CRYPTO)/base58.c $(CRYPTO)/blake256.c $(CRYPTO)/blake2b.c \
+                      $(CRYPTO)/hasher.c $(CRYPTO)/address.c $(CRYPTO)/segwit_addr.c \
+                      $(CRYPTO)/base32.c $(CRYPTO)/groestl.c \
+                      $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/hmac.c \
+                      $(CRYPTO)/pbkdf2.c $(CRYPTO)/rfc6979.c $(CRYPTO)/hmac_drbg.c \
+                      $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
+                      $(CRYPTO)/ed25519-donna/ed25519.c \
+                      $(CRYPTO)/ed25519-donna/curve25519-donna-32bit.c \
+                      $(CRYPTO)/ed25519-donna/curve25519-donna-helpers.c \
+                      $(CRYPTO)/ed25519-donna/curve25519-donna-scalarmult-base.c \
+                      $(CRYPTO)/ed25519-donna/ed25519-donna-32bit-tables.c \
+                      $(CRYPTO)/ed25519-donna/ed25519-donna-impl-base.c \
+                      $(CRYPTO)/ed25519-donna/modm-donna-32bit.c \
+                      $(CRYPTO)/ed25519-donna/ed25519-sha3.c \
+                      $(CRYPTO)/ed25519-donna/ed25519-keccak.c
 
-$(BUILD)/test_eip4527_encode_asan: test_eip4527_encode.c host_stubs.c ../src/eip4527-encode.c ../src/eip4527.c ../src/cbor.c | $(BUILD)
-	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all \
-	      -fno-omit-frame-pointer -o $@ $^
+$(BUILD)/test_eip4527_encode: $(EIP4527_ENCODE_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -o $@ $^
+
+$(BUILD)/test_eip4527_encode_asan: $(EIP4527_ENCODE_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -fsanitize=address,undefined \
+	      -fno-sanitize-recover=all -fno-omit-frame-pointer -o $@ $^
 
 $(BUILD)/test_qrcode: test_qrcode.c host_stubs.c ../src/qrcode.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
@@ -243,6 +265,8 @@ $(BUILD)/test_ui: test_ui.c esp_stubs.c host_stubs.c fake_oled.c fake_wallet.c \
                   ../src/eth-tx.c ../src/eth-decode.c ../src/eip712.c ../src/blind-signing.c \
                   ../src/cbor.c ../src/device-wipe.c \
                   ../src/qr-out.c ../src/ur-encoder.c ../src/ur.c ../src/ur-fountain.c \
+                  ../src/airgap.c ../src/camera.c ../src/ur-decoder.c ../src/eip4527.c \
+                  ../src/eip4527-encode.c \
                   $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                   $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
                   $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
@@ -272,6 +296,9 @@ PROTOCOL_SRC := test_protocol.c esp_stubs.c host_stubs.c fake_usb.c fake_wallet.
                 ../src/protocol.c ../src/cbor.c ../src/session.c ../src/pin.c \
                 ../src/ble-chunk.c ../src/ble.c ../src/ble-name.c ../src/transport.c ../src/entropy.c \
                 ../src/eth-tx.c ../src/eth-decode.c ../src/eip712.c ../src/blind-signing.c \
+                ../src/eip4527.c ../src/eth-tx-rlp.c ../src/eip4527-encode.c \
+                ../src/airgap.c ../src/ur-decoder.c ../src/ur-encoder.c ../src/ur.c \
+                ../src/ur-fountain.c ../src/qr-out.c \
                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
                 $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \

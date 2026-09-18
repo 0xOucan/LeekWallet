@@ -48,6 +48,11 @@
 #include "transport.h"
 #include "session.h"
 #include "ui.h"
+#include "airgap.h"
+#include "eip4527.h"
+#include "qr-out.h"
+#include "ur-decoder.h"
+#include "ur-encoder.h"
 
 #include "chacha20poly1305/rfc7539.h"
 #include "sha3.h"
@@ -512,6 +517,8 @@ static void fresh_device(void)
     host_tx = host_rx = 0;
     session_up = false;
     confirm_requests = unlock_prompts = lock_requests = session_confirm_prompts = 0;
+    airgap_acknowledge();
+    airgap_scan_reset();
     sign_reports = 0;
     last_sign_report = -1;
     message_prompts = passphrase_prompts = typed_prompts = 0;
@@ -1498,6 +1505,383 @@ static void test_the_displayed_transaction_cannot_be_replaced(void)
     f = next_reply();
     CHECK(f.present && f.type == T_ENC_RESPONSE,
           "the slot was not released after the first signature");
+}
+
+/* ------------------------------------------------------------- air gap */
+
+/* The QR entrance, end to end on the host: an eth-sign-request built the way
+ * a companion builds it, cut into animated parts, scanned with frames lost,
+ * signed through the real protocol.c, and the answer shown as animated
+ * eth-signature frames that are read back with the same decoders a companion
+ * uses. Only the camera and the panel are missing. */
+
+typedef struct {
+    EthTx    tx;
+    uint32_t account, index;
+    uint64_t chain_id_field;   /* key 4, normally the tx's own */
+    uint8_t  data_type;
+    bool     with_id, with_address, with_fp;
+    bool     wrong_address, wrong_fp;
+    int      path_components;  /* 5 normally */
+    const uint8_t *raw_sign_data;   /* overrides tx when set */
+    size_t   raw_sign_data_len;
+} AirgapCase;
+
+static const uint8_t AIRGAP_ID[16] = {
+    0x9b, 0x1d, 0xeb, 0x4d, 0x3b, 0x7d, 0x4b, 0xad,
+    0x9b, 0xdd, 0x2b, 0x0d, 0x7b, 0x3d, 0xcb, 0x6d,
+};
+
+static void put_raw(CborWriter *w, const uint8_t *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (w->length >= w->capacity) { w->overflow = true; return; }
+        w->buf[w->length++] = b[i];
+    }
+}
+
+static bool hex_to_address(const char *hex, uint8_t out[20])
+{
+    if (strlen(hex) != 42) return false;
+    for (int i = 0; i < 20; i++) {
+        unsigned v;
+        if (sscanf(hex + 2 + i * 2, "%2x", &v) != 1) return false;
+        out[i] = (uint8_t)v;
+    }
+    return true;
+}
+
+static AirgapCase airgap_case(void)
+{
+    AirgapCase c;
+    memset(&c, 0, sizeof c);
+    c.tx.chain_id = 8453;                   /* Base: not the default of 1 */
+    eth_quantity_set_u64(&c.tx.nonce, 7);
+    eth_quantity_set_u64(&c.tx.max_priority_fee, 1000000);
+    eth_quantity_set_u64(&c.tx.max_fee, 3000000000ull);
+    eth_quantity_set_u64(&c.tx.gas_limit, 21000);
+    memset(c.tx.to, 0x42, 20);
+    c.tx.has_to = true;
+    eth_quantity_set_u64(&c.tx.value, 1000000000000000000ull);
+    c.account = 2;
+    c.index = 5;
+    c.chain_id_field = 8453;
+    c.data_type = 4;
+    c.with_id = c.with_address = c.with_fp = true;
+    c.path_components = 5;
+    return c;
+}
+
+/* The request CBOR, key by key, as ERC-4527 and Keystone lay it out. */
+static size_t build_sign_request(const AirgapCase *c, uint8_t *out, size_t cap,
+                                 uint8_t *sign_data, size_t *sign_data_len)
+{
+    size_t sd_len;
+    if (c->raw_sign_data) {
+        memcpy(sign_data, c->raw_sign_data, c->raw_sign_data_len);
+        sd_len = c->raw_sign_data_len;
+    } else {
+        sd_len = eth_tx_encode(&c->tx, sign_data, ETH_MAX_DATA + 192);
+    }
+    *sign_data_len = sd_len;
+
+    HDPath p = HDPATH_ETH_DEFAULT;
+    p.account = c->account;
+    p.address_index = c->index;
+    EthAddress a;
+    uint8_t addr[20] = {0};
+    if (wallet_get_address_at_path(&p, &a) == WALLET_OK) {
+        hex_to_address(a.hex, addr);
+    }
+    if (c->wrong_address) addr[19] ^= 0x01;
+    uint32_t fp = 0;
+    wallet_get_master_fingerprint(&fp);
+    if (c->wrong_fp) fp ^= 0x80000000u;
+
+    CborWriter w;
+    cbor_writer_init(&w, out, cap);
+    cbor_write_map(&w, 4 + (c->with_id ? 1 : 0) + (c->with_address ? 1 : 0));
+    if (c->with_id) {
+        cbor_write_uint(&w, 1);
+        put_raw(&w, (const uint8_t[]){ 0xD8, 0x25 }, 2);
+        cbor_write_bytes(&w, AIRGAP_ID, 16);
+    }
+    cbor_write_uint(&w, 2);
+    cbor_write_bytes(&w, sign_data, sd_len);
+    cbor_write_uint(&w, 3);
+    cbor_write_uint(&w, c->data_type);
+    cbor_write_uint(&w, 4);
+    cbor_write_uint(&w, (uint32_t)c->chain_id_field);
+    cbor_write_uint(&w, 5);
+    put_raw(&w, (const uint8_t[]){ 0xD9, 0x01, 0x30 }, 3);
+    cbor_write_map(&w, c->with_fp ? 2 : 1);
+    cbor_write_uint(&w, 1);
+    const uint32_t comp[5] = { 44, 60, c->account, 0, c->index };
+    cbor_write_array(&w, (size_t)c->path_components * 2);
+    for (int i = 0; i < c->path_components; i++) {
+        cbor_write_uint(&w, comp[i]);
+        put_raw(&w, (const uint8_t[]){ i < 3 ? 0xF5 : 0xF4 }, 1);
+    }
+    if (c->with_fp) {
+        cbor_write_uint(&w, 2);
+        cbor_write_uint(&w, fp);
+    }
+    if (c->with_address) {
+        cbor_write_uint(&w, 6);
+        cbor_write_bytes(&w, addr, 20);
+    }
+    return cbor_writer_ok(&w) ? w.length : 0;
+}
+
+/* Scan `cbor` as an animated ur:<type>, dropping every third frame. Returns
+   the last result the scanner gave. */
+static AirgapScan scan_animated(const char *type, const uint8_t *cbor, size_t len)
+{
+    static UrEncoder e;
+    AirgapScan last = AIRGAP_SCAN_UNREADABLE;
+    if (!ur_encoder_init(&e, type, cbor, len, 40)) {
+        return last;
+    }
+    for (int i = 1; i <= 200; i++) {
+        char part[400];
+        const size_t n = ur_encoder_next_part(&e, part, sizeof part);
+        if (i % 3 == 0) {
+            continue;   /* the camera missed it */
+        }
+        ur_to_upper(part);   /* as the companion shows it */
+        last = airgap_scan_feed(part, n);
+        if (last != AIRGAP_SCAN_ACCEPTED && last != AIRGAP_SCAN_REDUNDANT) {
+            break;
+        }
+    }
+    return last;
+}
+
+/* Run one case through the scanner. Returns the worker's state. */
+static AirgapState airgap_run(const AirgapCase *c, TxSignResult *rc,
+                              uint8_t *sign_data, size_t *sign_data_len)
+{
+    uint8_t req[1400];
+    const size_t n = build_sign_request(c, req, sizeof req, sign_data, sign_data_len);
+    CHECK(n > 0, "could not build the sign request");
+    const AirgapScan s = scan_animated("eth-sign-request", req, n);
+    CHECK(s == AIRGAP_SCAN_SUBMITTED, "the request was not submitted (scan %d)", s);
+    *rc = TXSIGN_OK;
+    return airgap_poll(NULL, NULL, rc);
+}
+
+static void test_airgap_signs_what_it_showed(void)
+{
+    printf("== a scanned sign request is signed through the USB path and answered as a UR\n");
+    fresh_device();
+    device_unlocked();
+    scripted_outcome = SIGN_APPROVED;
+
+    AirgapCase c = airgap_case();
+    uint8_t sign_data[ETH_MAX_DATA + 192];
+    size_t sign_data_len = 0;
+    TxSignResult rc;
+    const AirgapState st = airgap_run(&c, &rc, sign_data, &sign_data_len);
+    CHECK(st == AIRGAP_DONE, "the worker did not finish (state %d, %s)", st,
+          airgap_refusal_text(rc));
+    CHECK(confirm_requests == 1, "the user was asked %d times", confirm_requests);
+
+    /* What was shown came from the signed bytes: Base, account 2 index 5. */
+    CHECK(shown_tx.chain_id == 8453, "the screen showed chain %llu",
+          (unsigned long long)shown_tx.chain_id);
+    CHECK(shown_path.account == 2 && shown_path.address_index == 5,
+          "the screen showed m/44'/60'/%u'/0/%u", shown_path.account,
+          shown_path.address_index);
+    CHECK(last_sign_report == 1, "the screen was not told it was signed");
+
+    const uint8_t *body = NULL;
+    size_t body_len = 0;
+    if (airgap_poll(&body, &body_len, NULL) != AIRGAP_DONE) {
+        return;
+    }
+
+    /* Out through the panel's own frame schedule, in the chunky mode so it
+       takes several frames, and back through a companion's decoders. */
+    CHECK(qr_out_start("eth-signature", body, body_len, 2, 0), "could not show it");
+    CHECK(qr_out_seq_len() > 1, "a signature fit one v3 frame, so this is not animated");
+    static uint8_t frag[2048], mix[8 * 512];
+    static UrDecoder d;
+    ur_decoder_init(&d, frag, sizeof frag, mix, sizeof mix);
+    UrPartResult r = UR_PART_ACCEPTED;
+    int64_t now = 0;
+    for (int i = 0; i < 100 && r != UR_PART_COMPLETE; i++) {
+        const char *f = qr_out_frame();
+        if (i % 4 != 1) {   /* the companion's camera misses some too */
+            r = ur_decoder_receive(&d, f, strlen(f));
+        }
+        now += 1000000;
+        qr_out_tick(now);
+    }
+    qr_out_stop();
+    airgap_acknowledge();
+    CHECK(r == UR_PART_COMPLETE, "the signature UR never reassembled");
+    CHECK(strcmp(d.type, "eth-signature") == 0, "the answer is a %s", d.type);
+
+    size_t mlen = 0;
+    const uint8_t *m = ur_decoder_message(&d, &mlen);
+    E4527Signature sig;
+    const char *field = NULL;
+    CHECK(m && eip4527_decode_signature(m, mlen, &sig, &field) == E4527_OK,
+          "the strict reader refused the answer in %s", field ? field : "?");
+    CHECK(memcmp(sig.request_id, AIRGAP_ID, 16) == 0,
+          "the request id was not echoed exactly");
+
+    /* The fake wallet puts the digest in r: the signature is over keccak of
+       the exact bytes that were scanned, 0x02 || rlp(...). */
+    uint8_t digest[32];
+    keccak_256(sign_data, sign_data_len, digest);
+    CHECK(memcmp(sig.signature, digest, 32) == 0,
+          "the signature is not over the scanned sign-data");
+    CHECK(sig.signature[32 + 1] == 5, "signed at index %u, not 5", sig.signature[33]);
+    CHECK(sig.signature[64] <= 1, "v is %u, not yParity", sig.signature[64]);
+}
+
+/* Every refusal below happens before the question is put to the user, except
+   the ones that are the user's answer. A request the device will not sign
+   must not first cost the user a confirmation. */
+static void expect_refused(const AirgapCase *c, TxSignResult want, bool prompted,
+                           const char *what)
+{
+    fresh_device();
+    device_unlocked();
+    scripted_outcome = SIGN_APPROVED;
+    uint8_t sd[ETH_MAX_DATA + 192];
+    size_t sdl;
+    TxSignResult rc = TXSIGN_OK;
+    const AirgapState st = airgap_run(c, &rc, sd, &sdl);
+    CHECK(st == AIRGAP_FAILED && rc == want, "%s: state %d, %s (wanted %s)",
+          what, st, airgap_refusal_text(rc), airgap_refusal_text(want));
+    CHECK((confirm_requests > 0) == prompted, "%s: %s", what,
+          prompted ? "the user was never asked" : "the user was asked anyway");
+    airgap_acknowledge();
+}
+
+static void test_airgap_refusals(void)
+{
+    printf("== the air gap refuses what it cannot verify, before asking\n");
+    AirgapCase c;
+
+    c = airgap_case(); c.wrong_address = true;
+    expect_refused(&c, TXSIGN_PATH_MISMATCH, false,
+                   "an address that the path does not derive");
+
+    c = airgap_case(); c.wrong_fp = true;
+    expect_refused(&c, TXSIGN_PATH_MISMATCH, false, "another seed's fingerprint");
+
+    c = airgap_case(); c.chain_id_field = 1;
+    expect_refused(&c, TXSIGN_MALFORMED, false,
+                   "a chain-id field that disagrees with the signed bytes");
+
+    c = airgap_case(); c.data_type = 3;
+    expect_refused(&c, TXSIGN_MALFORMED, false, "a personal message");
+    c = airgap_case(); c.data_type = 1;
+    expect_refused(&c, TXSIGN_MALFORMED, false, "a legacy transaction");
+
+    c = airgap_case(); c.with_id = false;
+    expect_refused(&c, TXSIGN_MALFORMED, false, "a request with no id to answer");
+
+    c = airgap_case(); c.with_address = false;
+    expect_refused(&c, TXSIGN_MALFORMED, false, "a request with no address to verify");
+
+    c = airgap_case(); c.path_components = 4;
+    expect_refused(&c, TXSIGN_MALFORMED, false, "a path that is not m/44'/60'/a'/0/i");
+
+    /* 0x02 || rlp with the nonce as 0x81 0x07: the long form of a byte that
+       should stand alone. It parses; it is not what eth_tx_encode would
+       produce, so the bytes hashed would not be the bytes scanned. */
+    {
+        c = airgap_case();
+        uint8_t canon[ETH_MAX_DATA + 192];
+        const size_t n = eth_tx_encode(&c.tx, canon, sizeof canon);
+        static uint8_t odd[ETH_MAX_DATA + 200];
+        /* canon = 02 | f8/c0-list-header | 82 21 05 (chain) | 07 (nonce) ... */
+        const size_t hdr = (canon[1] >= 0xF8) ? 2 + (canon[1] - 0xF7) : 2;
+        const size_t chain_len = 3;
+        size_t o = 0;
+        odd[o++] = 0x02;
+        const size_t body = (n - hdr) + 1;
+        odd[o++] = 0xF8;
+        odd[o++] = (uint8_t)body;
+        memcpy(odd + o, canon + hdr, chain_len); o += chain_len;
+        odd[o++] = 0x81;
+        odd[o++] = 0x07;
+        memcpy(odd + o, canon + hdr + chain_len + 1, n - hdr - chain_len - 1);
+        o += n - hdr - chain_len - 1;
+        c.raw_sign_data = odd;
+        c.raw_sign_data_len = o;
+        expect_refused(&c, TXSIGN_MALFORMED, false, "a non-canonical RLP nonce");
+    }
+
+    /* A non-empty access list: EthTx cannot hold it, and dropping it would
+       sign a different transaction. */
+    {
+        c = airgap_case();
+        uint8_t canon[ETH_MAX_DATA + 192];
+        const size_t n = eth_tx_encode(&c.tx, canon, sizeof canon);
+        static uint8_t al[ETH_MAX_DATA + 200];
+        const size_t hdr = (canon[1] >= 0xF8) ? 2 + (canon[1] - 0xF7) : 2;
+        const size_t inner = n - hdr - 1;          /* body without the C0 */
+        /* [[0x11 x20, []]] = D7 D6 94 <20> C0 */
+        uint8_t entry[24] = { 0xD7, 0xD6, 0x94 };
+        memset(entry + 3, 0x11, 20);
+        entry[23] = 0xC0;
+        size_t o = 0;
+        al[o++] = 0x02;
+        al[o++] = 0xF8;
+        al[o++] = (uint8_t)(inner + sizeof entry);
+        memcpy(al + o, canon + hdr, inner); o += inner;
+        memcpy(al + o, entry, sizeof entry); o += sizeof entry;
+        c.raw_sign_data = al;
+        c.raw_sign_data_len = o;
+        expect_refused(&c, TXSIGN_MALFORMED, false, "a non-empty access list");
+    }
+
+    c = airgap_case();
+    fresh_device();
+    device_unlocked();
+    scripted_outcome = SIGN_REJECTED;
+    {
+        uint8_t sd[ETH_MAX_DATA + 192];
+        size_t sdl;
+        TxSignResult rc;
+        CHECK(airgap_run(&c, &rc, sd, &sdl) == AIRGAP_FAILED && rc == TXSIGN_REJECTED,
+              "a rejection on the device did not refuse");
+        CHECK(confirm_requests == 1, "a rejected request was not asked first");
+        airgap_acknowledge();
+    }
+
+    /* Locked: the PIN gate applies to this entrance exactly as to USB. */
+    fresh_device();
+    device_unlocked();
+    {
+        uint8_t req[1400], sd[ETH_MAX_DATA + 192];
+        size_t sdl;
+        c = airgap_case();
+        const size_t n = build_sign_request(&c, req, sizeof req, sd, &sdl);
+        pin_lock();
+        CHECK(scan_animated("eth-sign-request", req, n) == AIRGAP_SCAN_SUBMITTED,
+              "not submitted");
+        TxSignResult rc;
+        CHECK(airgap_poll(NULL, NULL, &rc) == AIRGAP_FAILED && rc == TXSIGN_LOCKED,
+              "a locked device went ahead");
+        CHECK(confirm_requests == 0, "a locked device asked the user");
+        airgap_acknowledge();
+    }
+
+    /* Anything that is not a sign request is not answered at all. */
+    fresh_device();
+    device_unlocked();
+    {
+        const uint8_t hdkey[] = { 0xA1, 0x03, 0x41, 0x02 };
+        CHECK(scan_animated("crypto-hdkey", hdkey, sizeof hdkey) == AIRGAP_SCAN_WRONG_TYPE,
+              "a crypto-hdkey was treated as a sign request");
+        CHECK(airgap_poll(NULL, NULL, NULL) == AIRGAP_IDLE, "the worker was started");
+    }
 }
 
 static void test_rejection_and_timeout(void)
@@ -4134,6 +4518,8 @@ static int run_all_tests(void)
     test_blind_signing_is_off_until_the_device_says_otherwise();
     test_signing_signs_what_it_showed();
     test_the_displayed_transaction_cannot_be_replaced();
+    test_airgap_signs_what_it_showed();
+    test_airgap_refusals();
     test_rejection_and_timeout();
     test_errors_stay_encrypted_once_a_session_exists();
     test_malformed_input();

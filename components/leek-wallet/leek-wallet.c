@@ -1492,6 +1492,69 @@ done:
     return err;
 }
 
+/**
+ * The account-level public key, m/44'/60'/<account>', for the QR handshake.
+ *
+ * Same discipline as wallet_get_master_fingerprint(): local nodes only, never
+ * state.node, under the derive lock, and every node zeroed on the way out -
+ * the private halves are derived along the way even though only public data
+ * leaves.
+ */
+WalletError wallet_get_account_key(uint32_t account, uint8_t public_key[33],
+                                   uint8_t chain_code[32],
+                                   uint32_t *parent_fingerprint,
+                                   uint32_t *master_fingerprint) {
+    if (!public_key || !chain_code || !parent_fingerprint || !master_fingerprint ||
+        account >= 0x80000000u) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
+    if (!state.initialized) {
+        return WALLET_ERROR_NOT_INITIALIZED;
+    }
+    if (!state.unlocked) {
+        return WALLET_ERROR_LOCKED;
+    }
+    if (!state.has_mnemonic) {
+        return WALLET_ERROR_NO_MNEMONIC;
+    }
+    if (!derive_lock_take()) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
+
+    cache_seed_from_mnemonic();
+
+    HDNode node;
+    WalletError err = WALLET_OK;
+
+    if (hdnode_from_seed(state.seed, SEED_SIZE, SECP256K1_NAME, &node) != 1) {
+        err = WALLET_ERROR_DERIVATION_FAILED;
+        goto done;
+    }
+    hdnode_fill_public_key(&node);
+    *master_fingerprint = hdnode_fingerprint(&node);
+
+    if (hdnode_private_ckd_prime(&node, 44) != 1 ||
+        hdnode_private_ckd_prime(&node, 60) != 1) {
+        err = WALLET_ERROR_DERIVATION_FAILED;
+        goto done;
+    }
+    hdnode_fill_public_key(&node);
+    *parent_fingerprint = hdnode_fingerprint(&node);
+
+    if (hdnode_private_ckd_prime(&node, account) != 1) {
+        err = WALLET_ERROR_DERIVATION_FAILED;
+        goto done;
+    }
+    hdnode_fill_public_key(&node);
+    memcpy(public_key, node.public_key, 33);
+    memcpy(chain_code, node.chain_code, 32);
+
+done:
+    memzero(&node, sizeof(node));
+    derive_lock_give();
+    return err;
+}
+
 WalletError wallet_change_password(const char *old_password, size_t old_length,
                                    const char *new_password, size_t new_length,
                                    WalletProgressFn progress) {

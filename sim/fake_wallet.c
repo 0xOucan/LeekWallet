@@ -313,6 +313,37 @@ WalletError wallet_get_master_fingerprint(uint32_t *fingerprint_out)
     return WALLET_OK;
 }
 
+/* Not a real BIP32 key: the UI and protocol tiers need a key that exists only
+ * when unlocked, varies by account and by wallet, and has a compressed-point
+ * prefix so the hdkey writer accepts it. The real derivation is checked in
+ * test_eip4527_encode.c against trezor-crypto. */
+WalletError wallet_get_account_key(uint32_t account, uint8_t public_key[33],
+                                   uint8_t chain_code[32],
+                                   uint32_t *parent_fingerprint,
+                                   uint32_t *master_fingerprint)
+{
+    if (!public_key || !chain_code || !parent_fingerprint || !master_fingerprint ||
+        account >= 0x80000000u) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
+    WalletError err = wallet_get_master_fingerprint(master_fingerprint);
+    if (err != WALLET_OK) {
+        return err;
+    }
+    uint32_t h = *master_fingerprint ^ (account * 2654435761u);
+    public_key[0] = 0x02;
+    for (int i = 1; i < 33; i++) {
+        h = h * 16777619u + 0x9E37u;
+        public_key[i] = (uint8_t)(h >> 24);
+    }
+    for (int i = 0; i < 32; i++) {
+        h = h * 16777619u + 0x79B9u;
+        chain_code[i] = (uint8_t)(h >> 24);
+    }
+    *parent_fingerprint = *master_fingerprint ^ 0x2C3C0000u;
+    return WALLET_OK;
+}
+
 /* Not a signature. It is a receipt: r and s carry the digest and the path
  * index, so a protocol test can prove the bytes that were signed are the ones
  * the device rendered, without linking secp256k1 in to prove it. v uses the

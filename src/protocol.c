@@ -42,6 +42,8 @@
 #include "eth-tx.h"
 #include "eth-decode.h"
 #include "eip712.h"
+#include "eip4527.h"
+#include "eth-tx-rlp.h"
 #include "ui.h"
 
 static const char *TAG = "protocol";
@@ -792,6 +794,159 @@ static void send_tx_sign_error(TxSignResult rc)
             send_error(ERR_NO_WALLET, "signing failed");
             break;
     }
+}
+
+/* ------------------------------------------------------ the air gap */
+
+/* A 42-character "0x" address against 20 raw bytes, either case. The rendered
+   form is what approval_still_holds() compares too, so the check here reads
+   the same string the screen will. */
+static bool address_matches(const char *hex, const uint8_t raw[20])
+{
+    if (hex == NULL || strlen(hex) != 42 || hex[0] != '0' ||
+        (hex[1] != 'x' && hex[1] != 'X')) {
+        return false;
+    }
+    for (int i = 0; i < 20; i++) {
+        uint8_t v = 0;
+        for (int j = 0; j < 2; j++) {
+            const char ch = hex[2 + i * 2 + j];
+            uint8_t d;
+            if (ch >= '0' && ch <= '9')      d = (uint8_t)(ch - '0');
+            else if (ch >= 'a' && ch <= 'f') d = (uint8_t)(ch - 'a' + 10);
+            else if (ch >= 'A' && ch <= 'F') d = (uint8_t)(ch - 'A' + 10);
+            else return false;
+            v = (uint8_t)((v << 4) | d);
+        }
+        if (v != raw[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* m/44'/60'/<account>'/0/<index> and nothing else, which is every path the
+   device's own screens and the USB path can name. A request for any other
+   shape is refused rather than approximated: an HDPath cannot carry it, and
+   signing at the nearest path it CAN carry is signing with a key nobody
+   asked for. */
+static bool keypath_to_hdpath(const E4527Keypath *kp, HDPath *out)
+{
+    if (kp->count != 5) {
+        return false;
+    }
+    for (int i = 0; i < 5; i++) {
+        if (kp->components[i].wildcard ||
+            kp->components[i].hardened != (i < 3)) {
+            return false;
+        }
+    }
+    if (kp->components[0].index != 44 || kp->components[1].index != 60 ||
+        kp->components[3].index != 0) {
+        return false;
+    }
+    HDPath p = HDPATH_ETH_DEFAULT;
+    p.account = kp->components[2].index;
+    p.address_index = kp->components[4].index;
+    if (!hd_path_in_range(&p)) {
+        return false;
+    }
+    *out = p;
+    return true;
+}
+
+TxSignResult protocol_airgap_sign(const E4527SignRequest *req,
+                                  uint8_t signature_out[65])
+{
+    if (req == NULL || signature_out == NULL) {
+        return TXSIGN_MALFORMED;
+    }
+    /* No session on this entrance and none needed (ARCHITECTURE.md): the
+       request is self-contained and the user is looking at both screens. The
+       PIN gate is a different matter and applies exactly as it does to USB. */
+    if (!pin_is_unlocked()) {
+        return TXSIGN_LOCKED;
+    }
+
+    /* The signature has to name the request it answers, and the reader
+       refuses one without an id, so a request without one cannot be
+       answered. Transactions only: messages and typed data over QR are not
+       built on either side yet, and refusing them is the honest state. */
+    if (!req->has_request_id || req->data_type != E4527_SIGN_TYPED_TRANSACTION) {
+        return TXSIGN_MALFORMED;
+    }
+
+    HDPath sign_path;
+    if (!keypath_to_hdpath(&req->derivation_path, &sign_path)) {
+        return TXSIGN_MALFORMED;
+    }
+
+    /* A request addressed to a different seed - another device, or this one
+       with another passphrase - is refused before anything is derived at its
+       path. Without this the device would derive at the path, find the
+       address wrong, and say "mismatch", which is true but less useful. */
+    if (req->derivation_path.has_source_fingerprint) {
+        uint32_t xfp;
+        if (wallet_get_master_fingerprint(&xfp) != WALLET_OK) {
+            return TXSIGN_NO_WALLET;
+        }
+        if (xfp != req->derivation_path.source_fingerprint) {
+            return TXSIGN_PATH_MISMATCH;
+        }
+    }
+
+    /* Rule 4 of section 16: the path is verified, not trusted. The address
+       the request claims is compared with the one derived here; the screen
+       will show the derived one either way. Required rather than optional,
+       because a request without one leaves nothing to verify against. */
+    if (!req->has_address) {
+        return TXSIGN_MALFORMED;
+    }
+    EthAddress derived;
+    if (wallet_get_address_at_path(&sign_path, &derived) != WALLET_OK) {
+        return TXSIGN_NO_WALLET;
+    }
+    if (!address_matches(derived.hex, req->address)) {
+        return TXSIGN_PATH_MISMATCH;
+    }
+
+    EthTx *slot = owned_tx_claim();
+    if (slot == NULL) {
+        return TXSIGN_BUSY;
+    }
+
+    /* The sign-data becomes the owned transaction, canonically or not at all
+       (eth-tx-rlp.h). From here on nothing reads the request's bytes again. */
+    if (!eth_tx_from_rlp(req->sign_data, req->sign_data_len, slot)) {
+        owned_tx_release();
+        return TXSIGN_MALFORMED;
+    }
+
+    /* Rule 3: the chain id is the one inside the signed payload. The
+       request's own chain-id field is a second statement of it, and a
+       request whose two statements disagree is refused rather than resolved
+       in favour of either. */
+    if (req->chain_id != slot->chain_id) {
+        owned_tx_release();
+        return TXSIGN_MALFORMED;
+    }
+
+    EthSignature sig;
+    TxSignResult rc = sign_owned_tx(&sign_path, &sig);
+    owned_tx_release();
+    if (rc != TXSIGN_OK) {
+        memzero(&sig, sizeof sig);
+        return rc;
+    }
+
+    /* r || s || yParity. yParity rather than 27/28 for a type-2
+       transaction, for the reason the USB path gives: a companion that masks
+       the low bit of 27 inverts it. */
+    memcpy(signature_out, sig.r, 32);
+    memcpy(signature_out + 32, sig.s, 32);
+    signature_out[64] = (sig.v >= 27) ? (uint8_t)(sig.v - 27) : (uint8_t)(sig.v & 1);
+    memzero(&sig, sizeof sig);
+    return TXSIGN_OK;
 }
 
 /* Handle one decoded request. */

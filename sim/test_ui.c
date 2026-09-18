@@ -35,6 +35,10 @@ bool fake_protocol_rx_enabled(void);
 #include "leek-wallet.h"
 #include "session.h"
 #include "qr-out.h"
+#include "airgap.h"
+#include "eip4527-encode.h"
+#include "ur-decoder.h"
+#include "ur-encoder.h"
 
 /* Test hooks from ui.c and pin.c (compiled with -DLEEK_HOST_TEST). */
 void        pin__reset_static_state_for_test(void);
@@ -46,6 +50,11 @@ void        fake_button_hold(button_id_t id);
 void        fake_button_release(void);
 void        ui__service_host_lock_for_test(void);
 void        ui__service_qr_out_for_test(void);
+void        ui__service_airgap_for_test(void);
+void        ui__scan_feed_for_test(const char *ur);
+const char *ui__scan_status_for_test(void);
+void        fake_protocol_airgap_answer(TxSignResult rc);
+int         fake_protocol_airgap_calls(void);
 const char *ui__master_xfp_for_test(void);
 uint32_t    ui__account_for_test(void);
 bool        ui__wallet_info_pass_shown_for_test(void);
@@ -2908,8 +2917,210 @@ static void test_qr_out_animates_and_leaves_cleanly(void)
     CHECK(ui_get_screen() == SCREEN_MAIN_MENU, "a refused UR still changed screen");
 }
 
+/* Read a UR off the QR screen the way a companion's camera would: frame by
+ * frame, advancing the clock between them, until it assembles. */
+static bool read_qr_screen(char *type, uint8_t *out, size_t cap, size_t *out_len)
+{
+    static uint8_t frag[2048], mix[8 * 512];
+    static UrDecoder d;
+    ur_decoder_init(&d, frag, sizeof frag, mix, sizeof mix);
+    for (int i = 0; i < 60; i++) {
+        const char *f = fake_oled_qr_data();
+        if (ur_decoder_receive(&d, f, strlen(f)) == UR_PART_COMPLETE) {
+            size_t n = 0;
+            const uint8_t *m = ur_decoder_message(&d, &n);
+            if (n > cap) return false;
+            memcpy(out, m, n);
+            *out_len = n;
+            snprintf(type, UR_TYPE_MAX + 1, "%s", d.type);
+            return true;
+        }
+        fake_clock_advance_us(1000000);
+        ui__service_qr_out_for_test();
+        idle_pump();
+    }
+    return false;
+}
+
+static bool select_menu_item(const char *label)
+{
+    for (int i = 0; i < 12; i++) {
+        char want[24];
+        snprintf(want, sizeof want, "> %s", label);
+        if (fake_oled_contains(want)) {
+            return true;
+        }
+        press(BUTTON_DOWN);
+    }
+    return false;
+}
+
+static void test_show_address_says_what_it_shares_then_shares_it(void)
+{
+    printf("== Show address names the account and the cost, then sends that xpub\n");
+    boot_unlocked_with_seed();
+    go(SCREEN_MAIN_MENU);
+
+    CHECK(select_menu_item("Show Address"), "Show Address is not on the main menu");
+    /* No camera on the host board, and Scan must not pretend otherwise. */
+    go(SCREEN_MAIN_MENU);
+    CHECK(!select_menu_item("Scan"), "Scan is offered on a board with no camera");
+
+    go(SCREEN_MAIN_MENU);
+    select_menu_item("Show Address");
+    press(BUTTON_ACCEPT);
+    CHECK(ui_get_screen() == SCREEN_SHOW_ADDRESS, "the menu did not open it");
+    CHECK(fake_oled_contains("Account 0") && fake_oled_contains("m/44'/60'/0'"),
+          "the screen does not name the account it will share");
+    CHECK(fake_oled_contains("ALL addrs") && fake_oled_contains("Cannot spend"),
+          "the screen does not say what sharing an xpub means");
+
+    press(BUTTON_DOWN);
+    CHECK(fake_oled_contains("Account 1"), "DOWN did not move to account 1");
+    CHECK(fake_oled_qr_data()[0] == '\0', "a QR appeared before OK");
+
+    press(BUTTON_ACCEPT);
+    CHECK(fake_oled_contains("Deriving"), "OK did not say it had started");
+    idle_pump();   /* the deferred derivation, then its frame */
+    idle_pump();
+    CHECK(ui_get_screen() == SCREEN_QR_OUT, "OK did not show the QR");
+
+    char type[UR_TYPE_MAX + 1] = {0};
+    uint8_t got[256];
+    size_t got_len = 0;
+    CHECK(read_qr_screen(type, got, sizeof got, &got_len), "the QR never assembled");
+    CHECK(strcmp(type, "crypto-hdkey") == 0, "the QR is a %s", type);
+
+    /* Byte for byte the key of account 1 - the one on screen, not the
+       device's own account 0. */
+    E4527AccountKey k;
+    memset(&k, 0, sizeof k);
+    k.account = 1;
+    wallet_get_account_key(1, k.key_data, k.chain_code, &k.parent_fingerprint,
+                           &k.master_fingerprint);
+    uint8_t want[E4527_HDKEY_MAX];
+    const size_t want_len = eip4527_encode_account_hdkey(&k, want, sizeof want);
+    CHECK(got_len == want_len && memcmp(got, want, want_len) == 0,
+          "the QR does not carry account 1's key");
+
+    press(BUTTON_CANCEL);
+    CHECK(ui_get_screen() == SCREEN_SHOW_ADDRESS, "BACK from the QR went elsewhere");
+    CHECK(qr_out_frame() == NULL, "the QR buffers outlived the screen");
+}
+
+static void test_a_suggestion_populates_but_never_answers(void)
+{
+    printf("== a scanned request may choose the account, never send it\n");
+    boot_unlocked_with_seed();
+    go(SCREEN_MAIN_MENU);
+
+    ui_suggest_show_address(7);
+    idle_pump();
+    CHECK(ui_get_screen() == SCREEN_SHOW_ADDRESS && fake_oled_contains("Account 7"),
+          "the suggestion did not populate the screen");
+
+    /* Time passes, every service runs: still nothing leaves the device. */
+    for (int i = 0; i < 20; i++) {
+        fake_clock_advance_us(1000000);
+        ui__service_qr_out_for_test();
+        ui__service_airgap_for_test();
+        idle_pump();
+    }
+    CHECK(ui_get_screen() == SCREEN_SHOW_ADDRESS, "the screen moved without a press");
+    CHECK(fake_oled_qr_data()[0] == '\0', "a QR was shown without the user's OK");
+
+    /* And the user can overrule it before answering. */
+    press(BUTTON_UP);
+    CHECK(fake_oled_contains("Account 6"), "the suggested account could not be changed");
+}
+
+/* A request the reader accepts, as bytes. The fake endpoint does not parse
+ * the sign-data; what matters here is that the scanner assembled it, the
+ * reader took it and the worker's answer reached the screen. */
+static size_t tiny_sign_request(uint8_t *out)
+{
+    static const uint8_t req[] = {
+        0xA4,
+        0x01, 0xD8, 0x25, 0x50, 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,
+        0x02, 0x43, 0x02, 0xC1, 0x80,
+        0x03, 0x04,
+        0x05, 0xD9, 0x01, 0x30, 0xA1, 0x01, 0x8A,
+        0x18, 44, 0xF5, 0x18, 60, 0xF5, 0x00, 0xF5, 0x00, 0xF4, 0x00, 0xF4,
+    };
+    memcpy(out, req, sizeof req);
+    return sizeof req;
+}
+
+static void scan_it(const char *type, const uint8_t *cbor, size_t len)
+{
+    static UrEncoder e;
+    ur_encoder_init(&e, type, cbor, len, 12);
+    for (uint32_t i = 0; i < e.seq_len + 20; i++) {
+        char part[200];
+        ur_encoder_next_part(&e, part, sizeof part);
+        ur_to_upper(part);
+        ui__scan_feed_for_test(part);
+        if (ui_get_screen() != SCREEN_SCAN ||
+            strstr(ui__scan_status_for_test(), "parts to go") == NULL) {
+            break;
+        }
+    }
+}
+
+static void test_scan_flows_into_signing_and_back_out_as_a_qr(void)
+{
+    printf("== a scanned request goes to the signer and its answer to the panel\n");
+    boot_unlocked_with_seed();
+    go(SCREEN_SCAN);
+    CHECK(fake_oled_contains("Scan request"), "the scan screen did not draw");
+
+    uint8_t req[64];
+    const size_t n = tiny_sign_request(req);
+    fake_protocol_airgap_answer(TXSIGN_OK);
+    const int calls = fake_protocol_airgap_calls();
+    scan_it("eth-sign-request", req, n);
+    CHECK(fake_protocol_airgap_calls() == calls + 1,
+          "the assembled request did not reach the signer");
+
+    ui__service_airgap_for_test();
+    idle_pump();
+    CHECK(ui_get_screen() == SCREEN_QR_OUT, "the signature was not shown");
+    char type[UR_TYPE_MAX + 1] = {0};
+    uint8_t got[256];
+    size_t got_len = 0;
+    CHECK(read_qr_screen(type, got, sizeof got, &got_len) &&
+          strcmp(type, "eth-signature") == 0, "the QR is not an eth-signature");
+    E4527Signature sig;
+    CHECK(eip4527_decode_signature(got, got_len, &sig, NULL) == E4527_OK &&
+          sig.request_id[0] == 1 && sig.request_id[15] == 16,
+          "the answer does not echo the request id");
+    press(BUTTON_CANCEL);
+    CHECK(ui_get_screen() == SCREEN_MAIN_MENU, "BACK from the signature went elsewhere");
+
+    /* A refusal comes back to the scanner with its reason on it. */
+    go(SCREEN_SCAN);
+    fake_protocol_airgap_answer(TXSIGN_PATH_MISMATCH);
+    scan_it("eth-sign-request", req, n);
+    ui__service_airgap_for_test();
+    idle_pump();
+    CHECK(ui_get_screen() == SCREEN_SCAN && fake_oled_contains("Not this wallet"),
+          "a refusal did not come back to the scanner with its reason");
+    fake_protocol_airgap_answer(TXSIGN_OK);
+
+    /* Anything but a sign request is named and not acted on. */
+    const int before = fake_protocol_airgap_calls();
+    const uint8_t hdkey[] = { 0xA1, 0x03, 0x41, 0x02 };
+    scan_it("crypto-hdkey", hdkey, sizeof hdkey);
+    idle_pump();
+    CHECK(fake_protocol_airgap_calls() == before && fake_oled_contains("Not a sign request"),
+          "a crypto-hdkey was acted on, or not named");
+}
+
 int main(void)
 {
+    test_show_address_says_what_it_shares_then_shares_it();
+    test_a_suggestion_populates_but_never_answers();
+    test_scan_flows_into_signing_and_back_out_as_a_qr();
     test_qr_out_animates_and_leaves_cleanly();
     test_blind_signing_takes_a_deliberate_act();
     test_blind_confirmation_is_marked_and_shows_the_digest();

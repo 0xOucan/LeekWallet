@@ -17,8 +17,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bip32.h"
+#include "bip39.h"
+#include "curves.h"
+#include "ecdsa.h"
 #include "eip4527.h"
 #include "eip4527-encode.h"
+#include "memzero.h"
+#include "sha3.h"
+#include "ur.h"
 
 static int failures = 0;
 
@@ -167,11 +174,81 @@ static void hex(FILE *f, const uint8_t *p, size_t n)
     }
 }
 
+/* The BIP39 test mnemonic every wallet vector uses. Public by design: these
+ * are vectors, and a companion test must be able to rebuild them. */
+static const char *VECTOR_MNEMONIC =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon "
+    "abandon abandon about";
+
+/* Derive m/44'/60'/<account>' from the vector mnemonic the way the device's
+ * wallet_get_account_key() does (checked against the real vault in
+ * test_temp_seed.c). */
+static void vector_account_key(uint32_t account, E4527AccountKey *k)
+{
+    uint8_t seed[64];
+    mnemonic_to_seed(VECTOR_MNEMONIC, "", seed, NULL);
+    HDNode n;
+    hdnode_from_seed(seed, 64, SECP256K1_NAME, &n);
+    hdnode_fill_public_key(&n);
+    memset(k, 0, sizeof *k);
+    k->master_fingerprint = hdnode_fingerprint(&n);
+    hdnode_private_ckd_prime(&n, 44);
+    hdnode_private_ckd_prime(&n, 60);
+    hdnode_fill_public_key(&n);
+    k->parent_fingerprint = hdnode_fingerprint(&n);
+    hdnode_private_ckd_prime(&n, account);
+    hdnode_fill_public_key(&n);
+    memcpy(k->key_data, n.public_key, 33);
+    memcpy(k->chain_code, n.chain_code, 32);
+    k->account = account;
+    memzero(&n, sizeof n);
+    memzero(seed, sizeof seed);
+}
+
+/* m/.../0/<index> from the xpub alone, as a watching companion derives it. */
+static void watcher_address(const E4527AccountKey *k, uint32_t index, char out[43])
+{
+    HDNode w;
+    memset(&w, 0, sizeof w);
+    memcpy(w.public_key, k->key_data, 33);
+    memcpy(w.chain_code, k->chain_code, 32);
+    w.curve = get_curve_by_name(SECP256K1_NAME);
+    hdnode_public_ckd(&w, 0);
+    hdnode_public_ckd(&w, index);
+    uint8_t full[65], digest[32];
+    ecdsa_uncompress_pubkey(w.curve->params, w.public_key, full);
+    keccak_256(full + 1, 64, digest);
+    snprintf(out, 3, "0x");
+    for (int i = 0; i < 20; i++) {
+        snprintf(out + 2 + i * 2, 3, "%02x", digest[12 + i]);
+    }
+}
+
+static void test_real_keys(void)
+{
+    printf("== a real account key, and the addresses a watcher derives from it\n");
+
+    E4527AccountKey k;
+    vector_account_key(0, &k);
+    char addr[43];
+    watcher_address(&k, 0, addr);
+    /* The published first address of the abandon...about mnemonic, which
+       every Ethereum wallet agrees on. An anchor outside this repository. */
+    CHECK(strcmp(addr, "0x9858effd232b4033e47d90003d41ec34ecaeda94") == 0,
+          "m/44'/60'/0'/0/0 from the xpub is %s", addr);
+
+    uint8_t out[E4527_HDKEY_MAX];
+    CHECK(eip4527_encode_account_hdkey(&k, out, sizeof out) > 0,
+          "a real key was refused");
+}
+
 /*
  * The mock leg for the handshake, same reasoning as every other vector file
  * `ur-conformance` writes: what this encoder produces today, with the inputs
  * next to it so the TypeScript side can build the same key with ur-registry
- * and require identical bytes.
+ * and require identical bytes. Real keys from the BIP39 test mnemonic, so a
+ * companion's point-on-curve check passes, and the first three addresses a
+ * watcher derives from each, so it can check it derives the same ones.
  */
 static int emit_vectors(const char *path)
 {
@@ -181,27 +258,24 @@ static int emit_vectors(const char *path)
         return 1;
     }
 
-    static const uint32_t ACCOUNTS[] = { 0, 1, 9, 23, 24, 255, 256, 65535, 65536, 0x7FFFFFFFu };
+    static const uint32_t ACCOUNTS[] = { 0, 1, 2, 9, 23, 24, 255, 256, 65536, 0x7FFFFFFFu };
     const size_t count = sizeof ACCOUNTS / sizeof ACCOUNTS[0];
 
     fprintf(f, "[\n");
     for (size_t i = 0; i < count; i++) {
         E4527AccountKey k;
-        fill(k.key_data, 33, (uint8_t)(0x21 * (i + 1)));
-        k.key_data[0] = (i & 1) ? 0x03 : 0x02;
-        fill(k.chain_code, 32, (uint8_t)(0x5B * (i + 3)));
-        k.account = ACCOUNTS[i];
-        k.master_fingerprint = 0x01020304u * (uint32_t)(i + 1);
-        k.parent_fingerprint = 0xF0E0D0C0u ^ (uint32_t)(i * 0x01010101u);
+        vector_account_key(ACCOUNTS[i], &k);
 
         uint8_t out[E4527_HDKEY_MAX];
         const size_t len = eip4527_encode_account_hdkey(&k, out, sizeof out);
-        if (len == 0) {
+        char ur[400];
+        if (len == 0 || ur_encode("crypto-hdkey", out, len, ur, sizeof ur) == 0) {
             fclose(f);
             return 1;
         }
 
-        fprintf(f, "  {\n    \"path\": \"m/44'/60'/%u'\",\n", k.account);
+        fprintf(f, "  {\n    \"mnemonic\": \"%s\",\n", VECTOR_MNEMONIC);
+        fprintf(f, "    \"path\": \"m/44'/60'/%u'\",\n", k.account);
         fprintf(f, "    \"account\": %u,\n", k.account);
         fprintf(f, "    \"pubkeyHex\": \"");
         hex(f, k.key_data, 33);
@@ -211,7 +285,14 @@ static int emit_vectors(const char *path)
         fprintf(f, "    \"parentFingerprint\": %u,\n", k.parent_fingerprint);
         fprintf(f, "    \"cborHex\": \"");
         hex(f, out, len);
-        fprintf(f, "\"\n  }%s\n", i + 1 == count ? "" : ",");
+        fprintf(f, "\",\n    \"ur\": \"%s\",\n", ur);
+        fprintf(f, "    \"addresses\": [");
+        for (uint32_t a = 0; a < 3; a++) {
+            char addr[43];
+            watcher_address(&k, a, addr);
+            fprintf(f, "%s\"%s\"", a ? ", " : "", addr);
+        }
+        fprintf(f, "]\n  }%s\n", i + 1 == count ? "" : ",");
     }
     fprintf(f, "]\n");
 
@@ -232,6 +313,7 @@ int main(int argc, char **argv)
     test_hdkey_matches_the_table();
     test_hdkey_refusals();
     test_signature_round_trips();
+    test_real_keys();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");

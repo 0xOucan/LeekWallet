@@ -20,6 +20,12 @@
 #include "leek-wallet.h"
 #include "memzero.h"
 #include "sha2.h"
+#include "bip32.h"
+#include "bip39.h"
+#include "curves.h"
+#include "ecdsa.h"
+#include "sha3.h"
+#include <strings.h>
 
 void wallet__reset_static_state_for_test(void);
 
@@ -381,8 +387,83 @@ static void test_a_passphrase_applies_to_a_temporary_seed(void)
           "the passphrase-derived address reached flash");
 }
 
+/* wallet_get_account_key() is what the QR handshake exports, and a companion
+ * will derive every receive address from it. So the one property that
+ * matters is that those addresses are the ones this device signs with: here
+ * the child keys are derived from the exported xpub alone, the way a watcher
+ * does, and compared with wallet_get_address_at_path(). The parent
+ * fingerprint is checked against an independent derivation from the seed. */
+static void test_the_exported_account_key_is_this_wallets(void)
+{
+    printf("== the exported account xpub derives the addresses the device signs with\n");
+    device_with_a_stored_wallet();
+
+    uint8_t seed[64];
+    mnemonic_to_seed(STORED, "", seed, NULL);
+    HDNode m;
+    hdnode_from_seed(seed, 64, SECP256K1_NAME, &m);
+    hdnode_private_ckd_prime(&m, 44);
+    hdnode_private_ckd_prime(&m, 60);
+    hdnode_fill_public_key(&m);
+    const uint32_t want_parent = hdnode_fingerprint(&m);
+    memzero(&m, sizeof m);
+    memzero(seed, sizeof seed);
+
+    static const uint32_t ACCOUNTS[] = { 0, 3 };
+    for (size_t a = 0; a < 2; a++) {
+        uint8_t pub[33], cc[32];
+        uint32_t parent = 0, master = 0, xfp = 0;
+        CHECK(wallet_get_account_key(ACCOUNTS[a], pub, cc, &parent, &master) == WALLET_OK,
+              "no account key for %u", ACCOUNTS[a]);
+        CHECK(wallet_get_master_fingerprint(&xfp) == WALLET_OK && xfp == master,
+              "the key's origin fingerprint is not the device's XFP");
+        CHECK(parent == want_parent, "parent fingerprint 0x%08x, want 0x%08x",
+              parent, want_parent);
+
+        for (uint32_t i = 0; i < 3; i += 2) {
+            HDNode w;
+            memset(&w, 0, sizeof w);
+            w.depth = 3;
+            memcpy(w.public_key, pub, 33);
+            memcpy(w.chain_code, cc, 32);
+            w.curve = get_curve_by_name(SECP256K1_NAME);
+            CHECK(hdnode_public_ckd(&w, 0) == 1 && hdnode_public_ckd(&w, i) == 1,
+                  "public derivation failed");
+            /* From the public key alone - trezor's pubkeyhash helper reads
+               the private key, which a watcher does not have. */
+            uint8_t full[65], digest[32];
+            CHECK(ecdsa_uncompress_pubkey(w.curve->params, w.public_key, full) == 1,
+                  "the exported key is not on the curve");
+            keccak_256(full + 1, 64, digest);
+            const uint8_t *h = digest + 12;
+            char watcher[43];
+            snprintf(watcher, sizeof watcher, "0x");
+            for (int k = 0; k < 20; k++) {
+                snprintf(watcher + 2 + k * 2, 3, "%02x", h[k]);
+            }
+            HDPath p = HDPATH_ETH_DEFAULT;
+            p.account = ACCOUNTS[a];
+            p.address_index = i;
+            EthAddress dev;
+            CHECK(wallet_get_address_at_path(&p, &dev) == WALLET_OK, "no address");
+            CHECK(strcasecmp(dev.hex, watcher) == 0,
+                  "account %u index %u: the xpub derives %s, the device signs as %s",
+                  ACCOUNTS[a], i, watcher, dev.hex);
+        }
+    }
+
+    uint8_t pub[33], cc[32];
+    uint32_t parent, master;
+    CHECK(wallet_get_account_key(0x80000000u, pub, cc, &parent, &master) != WALLET_OK,
+          "an already-hardened account was accepted");
+    wallet_lock();
+    CHECK(wallet_get_account_key(0, pub, cc, &parent, &master) == WALLET_ERROR_LOCKED,
+          "a locked wallet exported a key");
+}
+
 int main(void)
 {
+    test_the_exported_account_key_is_this_wallets();
     test_the_flash_scan_can_fail();
     test_nothing_reaches_storage();
     test_a_reboot_loses_it();

@@ -41,6 +41,7 @@
 #include "device-wipe.h"
 #include "protocol.h"
 #include "transport.h"
+#include "airgap.h"
 
 static const char *TAG = "leekwallet";
 
@@ -144,6 +145,12 @@ void app_main(void)
     /* Protocol endpoint over the same USB cable used for flashing. Only now,
      * with a transport chosen, may frames be answered. */
     protocol_start();
+
+#if LEEK_HAS_CAMERA
+    /* The QR entrance's signing worker. Only where there is a camera to feed
+     * it: elsewhere nothing can submit, and 10 KB of idle stack is 10 KB. */
+    airgap_start();
+#endif
 
     /* Start UI task */
     BaseType_t task_ret = xTaskCreate(

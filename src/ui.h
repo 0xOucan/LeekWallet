@@ -76,6 +76,12 @@ typedef enum {
      * Shows whatever ui_show_ur() was handed and nothing else; the screen
      * that decided to share it is the one that said what it is. */
     SCREEN_QR_OUT,
+    /* Main menu -> Show address: pick an account, read what sharing it means,
+     * then its crypto-hdkey goes out on SCREEN_QR_OUT. */
+    SCREEN_SHOW_ADDRESS,
+    /* Main menu -> Scan, on a board with a camera. Hosts the capture loop and
+     * hands a complete eth-sign-request to the same signing path as USB. */
+    SCREEN_SCAN,
     SCREEN_COUNT
 } screen_id_t;
 
@@ -186,6 +192,16 @@ void ui_register_screen(screen_id_t id, const screen_t *screen);
  */
 bool ui_show_ur(const char *type, const uint8_t *cbor, size_t len,
                 screen_id_t back);
+
+/**
+ * Open Show address with `account` preselected - what a scanned request for
+ * an account may do, and all it may do.
+ *
+ * The request populates the screen; it does not answer it. Nothing leaves the
+ * device until the user has read the statement and pressed OK, and they can
+ * change the account first. UI task only.
+ */
+void ui_suggest_show_address(uint32_t account);
 
 /**
  * UI main task - runs the screen state machine
