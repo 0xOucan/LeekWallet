@@ -76,7 +76,6 @@ refuses to sign.
 | **QR codes** | Display addresses as scannable QR codes |
 | **Companion app** | Tauri v2 on Linux/macOS/Windows and an Android APK, with WalletConnect v2 for real dapps |
 | **Browser extension** | Chromium MV3, an EIP-1193 provider announced over **EIP-6963** so it sits beside other wallets rather than fighting for `window.ethereum`. Talks to the board over Web Serial with **no relay and no QR**. It holds no key and ships no descriptors: a dapp's calldata goes straight to the device, which decodes it. Verified against a live `app.aave.com` session. Connecting resets the board — Web Serial cannot suppress the DTR toggle — so the PIN is re-entered each time |
-| **Mini apps** | Three, in `app/packages/apps/`: **La Caja** (point of sale, payroll, and a waiter terminal that needs no wallet), **Issuer console + Share market** (Hedera ATS securities), **Aqua** (1inch positions on Base mainnet) |
 
 ### Also runs on the Firefly Pixie
 
@@ -758,10 +757,10 @@ enumeration, no signature. See `app/ANDROID.md`, "Known state".
 
 LeekWallet is a proof of concept under active development. **Use testnets.**
 
-It has signed on mainnet. The 1inch Aqua mini-app runs a full position
-lifecycle on **Base mainnet** — approve, ship, dock — with real value, and the
-contracts it talks to are verified on Basescan. Everything else this repo has
-exercised is testnet: Arc, Hedera, Base Sepolia and the rest. That distinction
+It has signed on mainnet. A full position lifecycle ran on **Base mainnet** —
+approve, ship, dock — with real value, against contracts verified on Basescan.
+Everything else this repo has exercised is testnet: Arc, Hedera, Base Sepolia
+and the rest. That distinction
 is kept exactly because it is the one people gloss over, and a demo that says
 "mainnet" over testnet footage is the kind of claim reviewers check.
 

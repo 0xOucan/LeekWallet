@@ -13,11 +13,12 @@ govern those files. Nothing here is relicensed.
 | QRCode | `src/qrcode.c`, `src/qrcode.h` | MIT | Yes |
 | ESP-IDF | build dependency, not vendored | Apache-2.0 | Yes |
 | zxing-wasm | `app/` npm dependency, WASM bundled into the app | MIT | Yes |
-| @1inch/aqua-sdk | `app/packages/apps/aqua/` **devDependency, tests only — never bundled** | LicenseRef-Degensoft-Aqua-Source-1.1 | **No — see below** |
+| @1inch/aqua-sdk | no longer used — was a test-only devDependency of a deleted mini-app | LicenseRef-Degensoft-Aqua-Source-1.1 | **No — see below** |
 
-Every row above is bundled into a release except `@1inch/aqua-sdk`, which is
-deliberately not, because it is the one entry that could not be. The section
-on it below says why, and what contributors must not do with it.
+Every row above is bundled into a release except `@1inch/aqua-sdk`, which never
+was and now is not a dependency at all. The section on it below is kept as the
+record of why it could not be bundled, and of what contributors must not do
+with it if anyone reaches for it again.
 
 MIT is permissive and imposes only attribution, so MIT code may be distributed
 inside an Apache-2.0 project provided the copyright notices and license text
@@ -132,11 +133,11 @@ then write the implementation here.
 
 ## @1inch/aqua-sdk
 
-`app/packages/apps/aqua/` — the 1inch Aqua SDK. A **devDependency**, used only
-by `test/sdk-parity.test.ts`, which builds the same `ship` and `dock` calldata
-the app builds and asserts the two agree byte for byte. **No module under any
-`src/` imports it, so no release artifact contains it**; that suite asserts as
-much, because everything below depends on it staying true.
+The 1inch Aqua SDK. It was a **devDependency** of the Aqua mini-app, used only
+by a parity test that built the same `ship` and `dock` calldata the app built
+and asserted the two agreed byte for byte. The app is deleted and nothing
+depends on the SDK now. The analysis below stands as the reason it may not be
+reintroduced as anything a release contains.
 
 License: **Degensoft Aqua Source License 1.1** (`LicenseRef-Degensoft-Aqua-Source-1.1`),
 Copyright © 2025 Degensoft Ltd. Full text ships in the package: `LICENSE`.
