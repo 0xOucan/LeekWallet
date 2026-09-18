@@ -683,6 +683,24 @@ Replacement transactions — speed-ups and cancels — are legitimately the same
 nonce, so this is a confirmation rather than a hard block, and the screen has to
 say *why* it is asking.
 
+**2b. A signed-transaction history, which is the useful version of the same
+data.** Rather than a counter the user never sees, keep the last N signed
+transactions in the vault: chain, account, nonce, destination, token, amount
+and gas. The user gets something they actually want — "what did I sign, and
+what did it cost" — and reuse detection falls out of it for free if it is ever
+wanted, because the nonces are right there.
+
+Two honest limits. It records what was **signed**, not what **confirmed**: an
+airgapped device cannot know whether a transaction landed, was replaced or was
+dropped, so the screen has to say "signed" and never "sent". And it is not a
+balance. For balances and confirmations the answer is an explorer or a
+portfolio viewer such as DeBank, using the public address — which needs no
+device, leaks nothing the chain does not already show, and is what the guides
+should teach.
+
+The history lives inside the encrypted vault on the card, so it is protected by
+the same key as the seed and disappears with the card.
+
 **3. Accept the residue.** A wrong nonce that is merely wrong, rather than
 malicious, produces a transaction that fails or sits pending. **It does not lose
 funds.** The same is true of balances: the device cannot check a balance either,
