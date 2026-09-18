@@ -94,10 +94,18 @@ adds QR for the CAM board.
 
 ## Mini apps
 
-Aqua, ATS and Till are hackathon work and were always scoped to be removable.
-They come out of the default build in this line of work and stay in `apps/`
-until removed outright, per the standing rule. Removing them is its own commit,
-separate from anything else, so it can be reverted alone.
+**Done.** Aqua, ATS and Till were hackathon work and always scoped to be
+removable; they were removed in `5a2b8bd`, with the hackathon documentation
+following in `82c5163`, each its own commit so either can be reverted alone.
+
+Three things were deliberately kept. The mini-app **framework** stays, so the
+shell keeps exactly one edge to apps rather than growing a new one later.
+`docs/AQUA-B3-SPEC.md` stays despite its name, because it specifies the SwapVM
+decoder in `src/eth-decode.c`, which is still shipping firmware. And the
+decoder's `CallKind` entries and their shared vectors stay, because a call the
+device *draws* has to be decoded by the device: deleting those changes firmware
+behaviour and is a deliberate decision of its own, not a side effect of removing
+an app.
 
 ## Standing rules for this work
 

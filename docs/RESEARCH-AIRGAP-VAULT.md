@@ -667,7 +667,7 @@ decodes it and puts it on screen for free. No state, no storage.
 | a gap ahead | companion skipped, or another wallet is spending | warn, allow |
 
 This is **not** scheduled. It defends against a malicious companion, which is
-not the threat model for a wallet used at home and at hackathons on testnets,
+not the threat model for a wallet used at home and at meetups on testnets,
 and it is the only part of this design that would need new vault state. Level 1
 costs nothing and is what ships. This paragraph exists so the reason is on
 record if real funds ever change the calculation.

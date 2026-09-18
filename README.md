@@ -531,6 +531,55 @@ while the wallet was unlocked (AUDIT S8g).
 
 ## Security
 
+### Why there is no secure element
+
+The honest version of this argument, because the dishonest one is common.
+
+A secure element is not pointless. Against invasive physical key extraction --
+decapping, glitching, probing -- a certified one wins, and this project does not
+pretend otherwise. What a secure element does **not** do is protect the identity
+of the person who bought it.
+
+That is where hardware wallets have actually failed their owners:
+
+- Ledger's 2020 breach exposed roughly **272,000 records** with names, postal
+  addresses and phone numbers. No device was compromised and no seed was
+  extracted; the customer database was ([Bitdefender](https://www.bitdefender.com/en-us/blog/hotforsecurity/hacker-publishes-stolen-email-and-mailing-addresses-of-270000-ledger-cryptocurrency-wallet-users)).
+  Tampered "replacement" devices were then mailed to people on that list
+  ([Bitcoin Magazine](https://bitcoinmagazine.com/technical/ledger-hack-victim-scam-details)).
+- Trezor's 2024 support-system incident exposed names and email addresses, and
+  an attacker contacted 40 users directly asking for their recovery seeds.
+
+The dangerous datum in both cases is not any single field. It is the
+association: *this person, at this address, owns a hardware wallet.* A generic
+ESP32-S3 bought with cash at an electronics shop carries no such association.
+Nobody sells it as a wallet, so no list exists of the people who turned one into
+one.
+
+**Separation is what replaces the chip here.** On the ESP32-S3 CAM board the
+vault lives on a removable microSD card, so a device found in a drawer or taken
+from a bag **holds no seed, no extended public key, no address list and nothing
+to extract**. Argon2id makes a copied card expensive to attack -- about a second
+per guess -- and a BIP-39 passphrase, which never touches the device, makes a
+copied card useless. Device, storage, recovery and knowledge are four separate
+things, and an attacker needs more than one of them.
+
+The ATECC608B is **not** cancelled by this argument and remains on the roadmap.
+It provides the one thing neither the ESP32 nor a slow KDF can: a monotonic
+attempt counter that reflashing the main chip cannot reset. See
+[docs/RESEARCH-SECURE-ELEMENT.md](docs/RESEARCH-SECURE-ELEMENT.md).
+
+**The costs, in the same breath:**
+
+- Buying anywhere means knowing less about the board, the flash and the passive
+  parts. Purchase privacy and supply-chain assurance come from the same
+  property, so improving one worsens the other.
+- Open source does not make the binary on *your* device honest. That is what the
+  reproducible build, the signed `SHA256SUMS` and self-flashing are for.
+- Invasive physical attack against a device **with** its card inserted is
+  explicitly out of scope. LeekWallet is a general-purpose MCU, not certified
+  silicon.
+
 ### Cryptographic Implementation
 
 | Component | Algorithm |
