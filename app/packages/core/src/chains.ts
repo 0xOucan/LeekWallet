@@ -289,6 +289,18 @@ const CURATED: readonly CuratedEntry[] = [
   /* Testnets. Kept because a wallet nobody can rehearse on is a wallet people
    * end up rehearsing on with real money. */
   {
+    id: 143,
+    name: "Monad",
+    /* Verified live 2026-09-17: eth_chainId returned 0x8f and the chain was
+     * producing blocks at both operators. */
+    nativeCurrency: { name: "Monad", symbol: "MON", decimals: 18 },
+    /* Monad Foundation's own endpoint first, drpc second, per the two-operator
+     * rule above. */
+    rpcUrls: ["https://rpc.monad.xyz", "https://monad.drpc.org"],
+    explorerUrl: "https://monadscan.com",
+    testnet: false,
+  },
+  {
     id: 97,
     name: "BNB Smart Chain Testnet",
     nativeCurrency: { name: "Test BNB", symbol: "tBNB", decimals: 18 },
@@ -322,6 +334,18 @@ const CURATED: readonly CuratedEntry[] = [
       "https://unichain-sepolia.drpc.org",
     ],
     explorerUrl: "https://sepolia.uniscan.xyz",
+    testnet: true,
+  },
+  {
+    id: 10143,
+    name: "Monad Testnet",
+    nativeCurrency: { name: "Test Monad", symbol: "MON", decimals: 18 },
+    /* Note the host: `testnet-rpc.monad.xyz`, NOT `rpc.testnet.monad.xyz`.
+     * The latter appears in secondary documentation and answered nothing when
+     * it was tried first here. Worth naming so it is not "corrected" back
+     * later by somebody reading the same page. */
+    rpcUrls: ["https://testnet-rpc.monad.xyz", "https://monad-testnet.drpc.org"],
+    explorerUrl: "https://testnet.monadscan.com",
     testnet: true,
   },
   /* Holesky (17000) was removed on 2026-08-14. The Ethereum Foundation shut it
