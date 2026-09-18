@@ -68,8 +68,9 @@ What is left on an N16R8 after camera, USB, straps and memory:
 Thirteen candidates for OLED (2) + buttons (4) + microSD (3 in 1-bit mode) +
 the ATECC608B (shares the OLED's I2C) = 9. **It fits, with margin.**
 
-**Verified against the vendor pinout diagram (`specs.avif`) and continuity
-tested on the board, 2026-09-17:**
+**Verified against the vendor pinout diagram and continuity tested on the
+board, 2026-09-17. Full transcription in
+[BOARD-S3CAM-PINOUT.md](BOARD-S3CAM-PINOUT.md):**
 
 | Function | GPIO | Source |
 |---|---|---|
