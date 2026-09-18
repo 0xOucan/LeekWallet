@@ -20,7 +20,7 @@ If the device cannot read a call, it refuses it. That refusal is the product.
 ```mermaid
 flowchart LR
     subgraph HOST["Companion — NOT trusted"]
-        APP["Mini-app<br/>aqua · ats · till"]
+        APP["Caller<br/>WalletConnect · send · dapp"]
         SCREEN["screenProposal<br/>ERC-7730 descriptors"]
         APP -->|"proposal"| SCREEN
     end
@@ -28,7 +28,7 @@ flowchart LR
     subgraph DEV["LeekWallet device — trusted"]
         DEC["eth-decode.c<br/>its own decoder"]
         PAGES["ui.c<br/>one page per field"]
-        KEY["seed · AES-256-CBC<br/>never leaves"]
+        KEY["seed · AES-256-GCM v3<br/>never leaves"]
         DEC --> PAGES --> KEY
     end
 
@@ -39,6 +39,12 @@ flowchart LR
     style DEV fill:#1b5e20,color:#fff
     style HOST fill:#4e342e,color:#fff
 ```
+
+> **Note, 2026-09-17.** The hackathon mini-apps (aqua, ats, till) were removed.
+> The seam they used, `app-proposal.ts` and `screenProposal`, remains and is
+> what WalletConnect and the send flow use, so the diagrams below still
+> describe how a call reaches the device. The per-track flow sections are kept
+> as worked examples of the three decoding tiers, not as shipping features.
 
 **Consequence:** supporting a new contract call means extending the *device*,
 not the app. A host-side descriptor alone cannot make a call signable — proven
@@ -185,3 +191,48 @@ state where the legs are shown beside a program the device gave up on.
 - **No blind signing by default**, and no host command can enable it.
 - **No balance is claimed as zero when it could not be read.** Unreadable and
   empty are different facts throughout.
+
+
+---
+
+## The QR air gap is a second entrance, not a third transport
+
+Decided while reading this code, and worth writing down because the obvious
+guess is wrong.
+
+`docs/PROTOCOL.md` §2 frames every message as `len:u16 | type:u8 | CBOR`, with
+no request IDs, and §3b says the device exposes **one transport at a time**
+because the session layer is single-peer and a reply belongs to whichever
+request went out last. A QR channel could carry those same frames — and then
+nothing else would change.
+
+**It should not.** Carrying our own frames over QR would make LeekWallet
+unable to talk to any other wallet, and the whole reason to pick BC-UR and
+EIP-4527 is that Keystone, AirGap, imToken and others already speak it. So:
+
+```
+USB / BLE ──► protocol.c frames ──┐
+                                  ├──► eth-decode.c ──► ui.c pages ──► sign
+QR (BC-UR / EIP-4527) ────────────┘
+```
+
+Two entrances, one decision path. What that costs and what it must not cost:
+
+- **It converges at the decoder, not before it.** An `eth-sign-request` becomes
+  the same `EthTx` the USB path produces, and from there every rule in this
+  document applies unchanged: the device decodes, the device draws, the device
+  refuses what it cannot read.
+- **It has no session, and does not need one.** §3's passkey defends against an
+  active MITM on a live channel. There is no live channel: a QR carries a
+  self-contained request, and the user is looking at both screens. The session
+  code is not weakened, it is **not used** on this path.
+- **QR joins the one-transport-at-a-time selector** as a third setting, and
+  becomes the default on the CAM board. §3b's three reasons all still hold, and
+  the third one - "a device listening on BLE while plugged into USB is reachable
+  by someone you cannot see" - is the whole argument for the radios being off
+  until a deliberate act turns one on.
+- **`ETH_MAX_DATA` is 768**, and that bound now does a second job: it caps what
+  a QR animation has to carry. A signing request cannot exceed roughly a
+  kilobyte, which is a dozen or so fountain fragments. The refusal that made
+  ATS's 3,748-byte `deployEquity` undrawable is the same refusal that keeps the
+  air gap fast.
