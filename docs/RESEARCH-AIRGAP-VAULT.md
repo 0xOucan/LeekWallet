@@ -1425,3 +1425,21 @@ animated QR display, the existing zxing scanner given a UR `accept`, and the
 code means, so the scanner is a callback rather than a fork.
 
 **Phase 3** — hardware integration, QEMU regression, release.
+
+## 39. Known hazard, recorded rather than fixed
+
+`reply_encrypted` in `src/protocol.c` is one global shared by every frame. If
+the USB and BLE tasks ever handled frames at once, one could clear the flag
+under the other and a reply would leave in plaintext. The phase 2a race test
+demonstrates it by forcing concurrency.
+
+It is not reachable today, for one reason only: `transport_apply()` disables
+USB reception whenever BLE is selected, which is the one-transport-at-a-time
+rule of PROTOCOL.md section 3b. The QR path does not touch the flag at all —
+`protocol_airgap_sign()` returns a result that `airgap.c` draws as a QR and
+sends no framed reply — so the new airgap task adds no exposure.
+
+That makes the flag a correctness property that depends on an invariant in a
+different file. It should become per-frame state passed down the call chain
+before anything relaxes that invariant, and whoever relaxes it must fix this
+first.
