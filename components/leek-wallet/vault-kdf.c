@@ -285,15 +285,23 @@ uint32_t vault_kdf_benchmark_ms(void)
     static const uint8_t probe_salt[VAULT_SALT_SIZE] = {0};
     uint8_t key[VAULT_KEY_SIZE];
 
+    /* Benchmark what this build actually creates vaults at, not a version
+     * that happens to share its derivation today. The moment VAULT_KDF_CURRENT
+     * moves to a costlier family, a hardcoded v2 here would report a latency
+     * no user ever experiences. */
+    VaultKdfParams params;
+    vault_params_default(VAULT_KDF_CURRENT, &params);
+
     int64_t start = esp_timer_get_time();
-    vault_derive_key(VAULT_KDF_V2, "000000", 6, probe_salt, key);
+    vault_derive_key_with(&params, "000000", 6, probe_salt, key);
     int64_t elapsed_us = esp_timer_get_time() - start;
 
     memzero(key, sizeof(key));
 
     uint32_t ms = (uint32_t)(elapsed_us / 1000);
-    ESP_LOGW("vault-kdf", "KDF benchmark: %u iterations in %u ms (target ~500)",
-             (unsigned)VAULT_KDF_V2_ITERATIONS, (unsigned)ms);
+    ESP_LOGW("vault-kdf", "KDF benchmark: v%d, family %u, %u iterations in %u ms (target ~500)",
+             (int)VAULT_KDF_CURRENT, (unsigned)params.family,
+             (unsigned)params.iterations, (unsigned)ms);
     return ms;
 }
 #endif

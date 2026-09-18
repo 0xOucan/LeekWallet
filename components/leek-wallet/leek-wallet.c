@@ -390,8 +390,10 @@ static void load_vault_params(void) {
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
         uint8_t ver = 0;
+        /* A range, not a list of two: the next version must not need this
+         * line edited to be readable. */
         if (nvs_get_u8(nvs, KEY_KDF_VERSION, &ver) == ESP_OK &&
-            (ver == VAULT_KDF_V2 || ver == VAULT_KDF_V3)) {
+            ver >= VAULT_KDF_V2 && ver <= VAULT_KDF_CURRENT) {
             size_t salt_len = VAULT_SALT_SIZE;
             if (nvs_get_blob(nvs, KEY_KDF_SALT, vault_salt, &salt_len) == ESP_OK &&
                 salt_len == VAULT_SALT_SIZE) {
@@ -931,8 +933,16 @@ static WalletError migrate_vault_to_current(const char *password, size_t length)
 
     /*
      * If a salt already exists, a previous migration was interrupted and some
-     * blobs may already be under v2. Derive that key up front so both passes
-     * can fall back to it.
+     * blobs may already be under the key that migration was targeting. Derive
+     * that key up front so both passes can fall back to it.
+     *
+     * The target version is NOT assumed to be the current one, and must not
+     * be: the partial blobs on disk were written by whatever firmware ran
+     * last, which may be older than this one. It is recorded, though -
+     * init_vault_params_v3() commits the salt, the version marker and the
+     * parameter blob together, so a salt on disk never appears without the
+     * two values that say how it was used. Read them back and derive under
+     * those, not under whatever this build would choose today.
      */
     uint8_t  resume_key[32];
     uint8_t *resume = NULL;
@@ -943,9 +953,32 @@ static WalletError migrate_vault_to_current(const char *password, size_t length)
             size_t  slen = VAULT_SALT_SIZE;
             if (nvs_get_blob(nvs, KEY_KDF_SALT, existing, &slen) == ESP_OK &&
                 slen == VAULT_SALT_SIZE) {
-                vault_derive_key(VAULT_KDF_V2, password, length, existing, resume_key);
+                uint8_t rver = VAULT_KDF_CURRENT;
+                uint8_t rv = 0;
+                if (nvs_get_u8(nvs, KEY_KDF_VERSION, &rv) == ESP_OK &&
+                    rv >= VAULT_KDF_V2 && rv <= VAULT_KDF_CURRENT) {
+                    rver = rv;
+                }
+
+                uint8_t rblob[VAULT_PARAMS_BLOB_SIZE];
+                size_t  rblob_len = sizeof(rblob);
+                if (nvs_get_blob(nvs, KEY_KDF_PARAMS, rblob, &rblob_len) != ESP_OK) {
+                    rblob_len = 0;
+                }
+
+                VaultKdfParams rparams;
+                if (!vault_params_parse(rblob_len ? rblob : NULL, rblob_len,
+                                        (VaultKdfVersion)rver, &rparams)) {
+                    ESP_LOGE(TAG, "Interrupted migration left unusable kdf params; "
+                                  "resuming on v%d defaults", (int)rver);
+                }
+
+                vault_derive_key_with(&rparams, password, length, existing, resume_key);
                 resume = resume_key;
-                ESP_LOGW(TAG, "Found an existing salt; resuming a prior migration");
+                ESP_LOGW(TAG, "Found an existing salt; resuming a prior migration "
+                              "targeting v%d (%u iterations)",
+                         (int)rver, (unsigned)rparams.iterations);
+                memzero(&rparams, sizeof(rparams));
             }
             memzero(existing, sizeof(existing));
             nvs_close(nvs);
@@ -965,14 +998,19 @@ static WalletError migrate_vault_to_current(const char *password, size_t length)
         }
     }
 
-    // Establish v2 parameters and derive the new key.
+    // Establish the parameters for the version being migrated TO, and derive
+    // the new key under exactly those. Naming a version here - any fixed
+    // version - is how a migration ends up writing blobs under one derivation
+    // while recording another, which is unrecoverable rather than merely
+    // wrong. init_vault_params_v3() has just published salt, version and
+    // parameters, so vault_kdf_params is the target by construction.
     WalletError err = init_vault_params_v3();
     if (err != WALLET_OK) {
         memzero(old_key, sizeof(old_key));
         memzero(resume_key, sizeof(resume_key));
         return err;
     }
-    vault_derive_key(VAULT_KDF_V2, password, length, vault_salt, new_key);
+    vault_derive_key_with(&vault_kdf_params, password, length, vault_salt, new_key);
 
     // Pass 2: re-encrypt one wallet at a time, swapping the active key around
     // each operation. Holding two 32-byte keys instead of every plaintext keeps
@@ -1221,10 +1259,19 @@ WalletError wallet_set_password(const char *password, size_t length) {
         return WALLET_ERROR_WRONG_PASSWORD;
     }
 
-    // A brand-new vault is always v2. Establish the salt before deriving
-    // anything, so the very first key is salted.
+    // A brand-new vault is salted before anything is derived, so the very
+    // first key is salted.
+    //
+    // The test is "has this vault been salted yet", not "is it at some
+    // particular version". Those differ: init_vault_params_v3() mints a FRESH
+    // random salt, so running it against an already-initialised vault would
+    // orphan every mnemonic already encrypted under the old one. Comparing
+    // against a named version made that a live hazard for any vault not at
+    // that exact version - today a v3 one, tomorrow a v4. Moving an
+    // already-salted vault forward is migrate_vault_to_current()'s job, and
+    // it re-encrypts before it flips.
     load_vault_params();
-    if (vault_version != VAULT_KDF_V2) {
+    if (vault_version == VAULT_KDF_V1_LEGACY) {
         WalletError verr = init_vault_params_v3();
         if (verr != WALLET_OK) {
             return verr;
