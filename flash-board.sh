@@ -180,7 +180,16 @@ else
 fi
 
 echo "== checking what came up"
-GOT=$($PROBE "$TARGET" 3 2>/dev/null || echo none)
+# The first boot after a reset re-enumerates USB and benchmarks the KDF before
+# the protocol endpoint listens, so one early question can meet silence from a
+# board that is fine. Seen on the first CAM board flashed: 'none' at 3 s, then
+# the right model moments later. So ask a few times before calling it a fault.
+GOT=none
+for _ in 1 2 3 4 5; do
+  sleep 2
+  GOT=$($PROBE "$TARGET" 0.5 2>/dev/null || echo none)
+  [[ "$GOT" == "$MODEL" ]] && break
+done
 if [[ "$GOT" == "$MODEL" ]]; then
   echo "   $TARGET now answers as $GOT"
 else
