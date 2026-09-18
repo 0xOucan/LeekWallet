@@ -1093,3 +1093,88 @@ is not a convincing clock, so realism and entropy pull against each other there.
 A **timer** does not have that problem, since counting down from 99:59:59 is
 ordinary. If the clock face is ever the chosen cloak, clamping it to real time
 and accepting 86,400 is the more convincing option.
+
+---
+
+# Part 5: EIP-4527 without widening the CBOR parser
+
+## 26. A second small grammar, not a bigger one
+
+`cbor.ts` and `src/cbor.c` say what they are for in their own headers: *"a
+signing device's parser is attack surface, so the grammar stays small enough to
+audit in one sitting"*, and tags, floats, indefinite lengths and bignums are
+**rejected rather than tolerated**.
+
+EIP-4527 needs tags. Three ways out were considered:
+
+| | |
+|---|---|
+| Allowlist tags inside `cbor.ts` | Least code. Costs the sentence above, which is part of the security argument, not decoration. |
+| **A separate strict UR-CBOR reader** | Keeps `cbor.ts` exactly as it is. Costs some duplicated primitive decoding. **Chosen.** |
+| A transcoder into an internal form | Strongest boundary, most code. Its good idea is kept: the adapter is a parsing layer with no access to keys. |
+
+So there are two grammars, each small enough to audit in one sitting, rather
+than one that is no longer small. `cbor.c` keeps rejecting every tag; the new
+reader accepts a **finite, named set** and refuses the rest.
+
+## 27. Schema-driven, never tag-driven
+
+The reader does **not** produce `{ tag: n, value: ... }` and decide later what
+it means. That hands an attacker a value tagged with a number of their choosing
+and defers the question of whether it was allowed.
+
+Instead the schema asks for what it expects, at the point it expects it:
+
+```
+expectTag(r, 304);        // a keypath, or this is not a keypath
+expectMap(r);
+...
+```
+
+so an unexpected tag is a refusal at the position it appears, not a surprise
+three layers up. A UUID is not "tag 37 holding something": it is tag 37 holding
+exactly sixteen bytes, checked there.
+
+## 28. The finite tag set, taken from implementations rather than prose
+
+Verified against Blockchain Commons' registry and Keystone's `ur-registry`:
+
+| Tag | Type | Where it appears |
+|---|---|---|
+| 37 | uuid | `request-id` |
+| 303 | crypto-hdkey | account export |
+| 304 | crypto-keypath | `derivation-path`, and nested inside an hdkey |
+| 305 | crypto-coin-info | nested inside an hdkey |
+| 1103 | crypto-multi-accounts | exporting several accounts at once |
+
+**Anything else is refused.**
+
+The reason to take these from code rather than from the ERC: the published CDDL
+writes `data-type: #3.401(sign-data-type)` and
+`derivation-path: #5.304(crypto-keypath)`. In CBOR, `#3` is a text string and
+`#5` is a map; semantic tags are `#6.n`. Those notations cannot mean what they
+appear to say, and a parser built from them would be built from typos. The
+implementations everyone actually interoperates with are the compatibility
+authority here.
+
+Two structural facts that follow from reading `RegistryItem.toUR()`, and that
+the spec never states plainly:
+
+- **The top-level body is untagged.** `ur:eth-sign-request/...` carries the map
+  directly. The UR type name is what identifies it, so no tag is needed and
+  none is sent.
+- **Nested registry items are tagged**, explicitly, by the encoder. A keypath
+  inside a sign request carries 304; the same keypath as a top-level UR would
+  not.
+
+So the decoder must expect a bare map at the top and a tag one level down,
+which is the opposite of what a reading of the CDDL suggests.
+
+## 29. Open until it is tested against a real device
+
+`data-type` is the field the CDDL mangles worst. It is expected to be a plain
+unsigned integer — 1 transaction, 2 typed data, 3 personal message, 4 typed
+transaction — and that is what the decoder will accept. If a Keystone or
+AirGap sends something else, the result must be a clear refusal naming the
+field, never a silent misparse. This is written down so the first failure is
+recognised as this, and not chased as a camera fault.
