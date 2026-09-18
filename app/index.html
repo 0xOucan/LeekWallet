@@ -87,6 +87,9 @@
             <button class="primary" id="connect">Connect</button>
             <button id="unlock" disabled>Unlock</button>
             <button id="disconnect" disabled>Disconnect</button>
+            <!-- Not a Link option: QR is a second entrance with no session,
+                 so it is its own action rather than a transport to select. -->
+            <button id="qrpair" type="button" class="secondary">Pair by QR</button>
           </div>
           <div id="pairing" hidden style="margin-top: var(--space-4)"
                role="group" aria-label="Passkey to compare with the device">
@@ -832,6 +835,35 @@
 
 
 
+
+        <!-- The QR air gap: pairing (scan the device's account key) and
+             signing (show the request, scan the signature). One panel for
+             both, because both are "look at the device, then at this". -->
+        <section class="panel" id="qrpanel" hidden aria-labelledby="qrhead">
+          <h2 id="qrhead">QR</h2>
+          <p id="qrinstr"></p>
+          <p class="muted" id="qrauthority" hidden>
+            The device screen is authoritative. It decodes the request itself
+            and shows what it will sign; anything this app displays is only a
+            preview. If the two disagree, reject on the device.
+          </p>
+          <div id="qrdisplay"></div>
+          <div class="row" id="qrfragrow" hidden>
+            <label class="muted" for="qrfrag">Fragment size</label>
+            <select id="qrfrag" class="addr">
+              <option value="40">Small (more frames, easier to read)</option>
+              <option value="90" selected>Medium</option>
+              <option value="200">Large (fewer frames, denser)</option>
+            </select>
+          </div>
+          <video id="qrvideo" class="wc-video" hidden muted playsinline
+                 aria-label="Camera, scanning the device's QR code"></video>
+          <p class="muted" id="qrprogress" role="status" aria-live="polite"></p>
+          <div class="row">
+            <button id="qrnext" type="button" class="primary" hidden>Scan the signature</button>
+            <button id="qrcancel" type="button">Cancel</button>
+          </div>
+        </section>
 
         <!-- One camera surface for every mini-app, owned by the shell.
              An app never gets a MediaStream; it calls AppContext.scanQr and

@@ -71,6 +71,14 @@ import { chunk, renderInterpretation } from "./interpretation-view.ts";
 import { initWalletConnect, type WalletBridge } from "./wc/ui.ts";
 import { resolveProjectId } from "./wc/project-id.ts";
 import type { PlannedTx } from "./wc/requests.ts";
+import {
+  ethSignRequestForTx, newRequestId, signedTxFromEthSignature, type UnsignedTransaction,
+} from "../packages/core/src/qr-signing.ts";
+import {
+  decodeCryptoHdkey, deriveAccounts, describeHdkey, type CryptoHdkey, type DerivedAccount,
+} from "../packages/core/src/eip4527/hdkey.ts";
+import { formatKeypath } from "../packages/core/src/eip4527/sign-request.ts";
+import { DEFAULT_FRAGMENT, QrCancelled, scanUr, showUr } from "./qr-airgap.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -619,6 +627,23 @@ function addressPath(account: number, index: number): string {
 }
 
 /**
+ * The QR pairing, when the addresses on screen came from a scanned account
+ * key rather than from a connected device. Null on the USB and BLE paths.
+ *
+ * Holding the key rather than just the addresses is the trade section 37 of
+ * RESEARCH-AIRGAP-VAULT.md records: one static frame instead of an animation,
+ * at the cost of the companion being able to derive every address in the
+ * account. The pairing note says so where the user reads it.
+ */
+let qrPairing: { key: CryptoHdkey; accounts: DerivedAccount[] } | null = null;
+
+/** The path of an address on screen, whichever way it was derived. */
+function pathLabel(index: number): string {
+  const qr = qrPairing?.accounts[index];
+  return qr ? formatKeypath(qr.path.components) : addressPath(derivedAccount, index);
+}
+
+/**
  * The account to put on a signing request, or a refusal.
  *
  * Every signing call sends `account` explicitly rather than leaning on the
@@ -1010,7 +1035,7 @@ let backingOut = false;
  */
 function connectDestBack(): void {
   if (connecting || backingOut) return;
-  if (client) {
+  if (client || qrPairing) {
     backingOut = true;
     void disconnect().finally(() => { backingOut = false; });
   } else {
@@ -1358,11 +1383,23 @@ async function loadAddresses(): Promise<void> {
     derived.push(String(r["address"]));
   }
 
+  presentAddresses(derived, account);
+}
+
+/**
+ * Put a derived address list on screen and tell everything that holds one.
+ *
+ * Shared by the device path, which asks the device for each address, and the
+ * QR path, which derives them from the exported account key: the two must
+ * land in exactly the same state or the send form and the apps would behave
+ * differently depending on how the addresses arrived.
+ */
+function presentAddresses(derived: string[], account: number): void {
   addresses.length = 0;
   addresses.push(...derived);
   derivedAccount = account;
 
-  list.textContent = "";
+  $("addrs").textContent = "";
 
   const select = $("addrselect") as HTMLSelectElement;
   select.textContent = "";
@@ -1379,7 +1416,7 @@ async function loadAddresses(): Promise<void> {
   select.value = String(selectedIndex);
   drawSelectedAddress();
 
-  $("sfrom").textContent = addressPath(account, selectedIndex);
+  $("sfrom").textContent = pathLabel(selectedIndex);
   log(`derived ${addresses.length} addresses under account ${account}`);
   /* Apps hold the address as a snapshot taken at mount, and until now the only
      mount was on chain selection — which happens before a device is connected.
@@ -2500,13 +2537,13 @@ function initBalances(): void {
  */
 
 /** Renders a QR as an SVG path. No canvas, no raster, scales to any size. */
-function qrSvg(text: string): SVGSVGElement {
+function qrSvg(text: string, mode?: "Alphanumeric"): SVGSVGElement {
   /* Error correction M: a receive address on a screen is not a label on a
    * warehouse crate, so the extra redundancy of Q/H buys little, while a
    * smaller matrix stays readable on a phone held at arm's length. Type 0 lets
    * the library pick the smallest version that fits. */
   const qr = qrcodegen(0, "M");
-  qr.addData(text);
+  qr.addData(text, mode);
   qr.make();
 
   const n = qr.getModuleCount();
@@ -2552,7 +2589,7 @@ function drawSelectedAddress(): void {
   /* derivedAccount, not effectiveAccount() — same reason as the sfrom line
    * below: this path must name the account the address above it actually
    * came from, not whatever the selector has moved on to since. */
-  $("addrpath").textContent = addressPath(derivedAccount, selectedIndex);
+  $("addrpath").textContent = pathLabel(selectedIndex);
 
   const holder = $("addrqr");
   if (!holder.hidden) {
@@ -2567,7 +2604,7 @@ function drawSelectedAddress(): void {
    * address above it actually came from. Labelling a rendered address with the
    * account the selector has moved on to is the mislabelling this whole row
    * exists to prevent. */
-  $("sfrom").textContent = addressPath(derivedAccount, selectedIndex);
+  $("sfrom").textContent = pathLabel(selectedIndex);
 }
 
 /**
@@ -3507,7 +3544,7 @@ async function logSimulation(
  * mock-device tests, where it belongs.
  */
 async function sign(): Promise<void> {
-  if (!transport || !client) return;
+  if (!qrPairing && (!transport || !client)) return;
 
   $("txresult").textContent = "";
 
@@ -3617,12 +3654,7 @@ async function sign(): Promise<void> {
     /* Before the user is told to walk to the device, not after: a refusal that
      * arrives while someone is already reading the confirmation screen is a
      * refusal they will read as a glitch. */
-    const account = signingAccount();
-
-    deviceAttention("check every page on the device, then approve");
-
-    const SIGN_TIMEOUT_MS = 150000;   // the device gives the user 120 s
-    const tx = {
+    const tx: UnsignedTransaction = {
       chainId: chain.id,
       nonce,
       to: toValue as Address,
@@ -3631,43 +3663,53 @@ async function sign(): Promise<void> {
       gas,
       maxFeePerGas,
       maxPriorityFeePerGas,
-      type: "eip1559" as const,
+      type: "eip1559",
     };
 
-    const reply = await client.call("signTransaction", {
-      index: selectedIndex,
-      account,
-      chainId: chain.id,
-      nonce,
-      to: hexBytes(toValue),
-      value: weiBytes(value),
-      /* The recipient and the amount live in here for a token send. The device
-       * decodes this itself and draws them; it is not taking this app's word
-       * for what the bytes mean. */
-      ...(data !== undefined ? { data: hexBytes(data) } : {}),
-      gas: weiBytes(gas),
-      maxFeePerGas: weiBytes(maxFeePerGas),
-      maxPriorityFeePerGas: weiBytes(maxPriorityFeePerGas),
-    }, SIGN_TIMEOUT_MS);
+    let raw: Hex;
+    if (qrPairing) {
+      raw = await signViaQr(tx, from);
+    } else {
+      const account = signingAccount();
 
-    const r = reply["r"];
-    const sv = reply["s"];
-    if (!(r instanceof Uint8Array) || !(sv instanceof Uint8Array)) {
-      throw new Error("device returned no signature");
-    }
-    /* Reassemble here rather than on the device: the signature covers the
-     * digest the device computed from its own parse, so the serialised form
-     * either matches or the network rejects it. */
-    /* The device sends yParity directly. Deriving it from a legacy v by
-     * masking the low bit inverts the value, which produces a signature that
-     * recovers to an address with no funds - a failure that reads as "you
-     * are broke" rather than "the signature is wrong". */
-    const yParity = reply["yParity"];
-    if (yParity !== 0 && yParity !== 1) {
-      throw new Error(`device returned yParity ${String(yParity)}, expected 0 or 1`);
-    }
+      deviceAttention("check every page on the device, then approve");
 
-    const raw = serializeTransaction(tx, { r: toHex(r), s: toHex(sv), yParity });
+      const SIGN_TIMEOUT_MS = 150000;   // the device gives the user 120 s
+      const reply = await client!.call("signTransaction", {
+        index: selectedIndex,
+        account,
+        chainId: chain.id,
+        nonce,
+        to: hexBytes(toValue),
+        value: weiBytes(value),
+        /* The recipient and the amount live in here for a token send. The device
+         * decodes this itself and draws them; it is not taking this app's word
+         * for what the bytes mean. */
+        ...(data !== undefined ? { data: hexBytes(data) } : {}),
+        gas: weiBytes(gas),
+        maxFeePerGas: weiBytes(maxFeePerGas),
+        maxPriorityFeePerGas: weiBytes(maxPriorityFeePerGas),
+      }, SIGN_TIMEOUT_MS);
+
+      const r = reply["r"];
+      const sv = reply["s"];
+      if (!(r instanceof Uint8Array) || !(sv instanceof Uint8Array)) {
+        throw new Error("device returned no signature");
+      }
+      /* Reassemble here rather than on the device: the signature covers the
+       * digest the device computed from its own parse, so the serialised form
+       * either matches or the network rejects it. */
+      /* The device sends yParity directly. Deriving it from a legacy v by
+       * masking the low bit inverts the value, which produces a signature that
+       * recovers to an address with no funds - a failure that reads as "you
+       * are broke" rather than "the signature is wrong". */
+      const yParity = reply["yParity"];
+      if (yParity !== 0 && yParity !== 1) {
+        throw new Error(`device returned yParity ${String(yParity)}, expected 0 or 1`);
+      }
+
+      raw = serializeTransaction(tx, { r: toHex(r), s: toHex(sv), yParity });
+    }
 
     log("broadcasting…");
     const hash = await rpc.sendRawTransaction({ serializedTransaction: raw });
@@ -3704,7 +3746,11 @@ async function sign(): Promise<void> {
     /* How a signing attempt ended is as much a device event as the request to
      * confirm it was: somebody who was told to walk to the device has to be
      * told what happened when they got there. */
-    if (e instanceof DeviceError && e.code === 0x0200) {
+    if (e instanceof QrCancelled) {
+      /* The user closed the request. Nothing was signed and there is no
+       * session on this path to have been damaged, so it is said as that. */
+      log("cancelled; nothing was signed");
+    } else if (e instanceof DeviceError && e.code === 0x0200) {
       deviceAttention("rejected on the device");
     } else if (e instanceof DeviceError && e.code === 0x0201) {
       deviceAttention("timed out waiting for an answer on the device");
@@ -3715,6 +3761,7 @@ async function sign(): Promise<void> {
     }
   } finally {
     busy(false);
+    if (qrPairing) applyQrControls();
   }
 }
 
@@ -3783,10 +3830,9 @@ function signatureFrom(reply: Record<string, CborValue>): Hex {
  * stuck transaction, not funds, and the device still shows what it signs.
  */
 async function signPlannedTransaction(tx: PlannedTx, broadcast: boolean): Promise<string> {
-  if (!client) throw new Error("no device connected");
+  if (!client && !qrPairing) throw new Error("no device connected");
   const index = addressIndex(tx.from);
   if (index < 0) throw new Error("that address is not one this device has derived");
-  const account = signingAccount();
 
   const info = getChain(tx.chainId);
   if (!info) throw new Error(`this wallet has no RPC for chain ${tx.chainId}`);
@@ -3822,44 +3868,49 @@ async function signPlannedTransaction(tx: PlannedTx, broadcast: boolean): Promis
     data: tx.data as Hex,
   }));
 
-  log("check every page on the device, then approve");
-  const reply = await client.call("signTransaction", {
-    index,
-    account,
+  const unsigned: UnsignedTransaction = {
     chainId: tx.chainId,
     nonce,
-    to: hexBytes(tx.to),
-    value: weiBytes(tx.value),
-    data: hexBytes(tx.data),
-    gas: weiBytes(gas),
-    maxFeePerGas: weiBytes(maxFeePerGas),
-    maxPriorityFeePerGas: weiBytes(maxPriorityFeePerGas),
-  }, 150000);
+    to: tx.to as Address,
+    value: tx.value,
+    data: tx.data as Hex,
+    gas,
+    maxFeePerGas,
+    maxPriorityFeePerGas,
+    type: "eip1559",
+  };
 
-  const r = reply["r"];
-  const s = reply["s"];
-  const yParity = reply["yParity"];
-  if (!(r instanceof Uint8Array) || !(s instanceof Uint8Array)) {
-    throw new Error("device returned no signature");
-  }
-  if (yParity !== 0 && yParity !== 1) {
-    throw new Error(`device returned yParity ${String(yParity)}, expected 0 or 1`);
-  }
-
-  const raw = serializeTransaction(
-    {
+  let raw: Hex;
+  if (qrPairing) {
+    raw = await signViaQr(unsigned, from);
+  } else {
+    const account = signingAccount();
+    log("check every page on the device, then approve");
+    const reply = await client!.call("signTransaction", {
+      index,
+      account,
       chainId: tx.chainId,
       nonce,
-      to: tx.to as Address,
-      value: tx.value,
-      data: tx.data as Hex,
-      gas,
-      maxFeePerGas,
-      maxPriorityFeePerGas,
-      type: "eip1559" as const,
-    },
-    { r: toHex(r), s: toHex(s), yParity },
-  );
+      to: hexBytes(tx.to),
+      value: weiBytes(tx.value),
+      data: hexBytes(tx.data),
+      gas: weiBytes(gas),
+      maxFeePerGas: weiBytes(maxFeePerGas),
+      maxPriorityFeePerGas: weiBytes(maxPriorityFeePerGas),
+    }, 150000);
+
+    const r = reply["r"];
+    const s = reply["s"];
+    const yParity = reply["yParity"];
+    if (!(r instanceof Uint8Array) || !(s instanceof Uint8Array)) {
+      throw new Error("device returned no signature");
+    }
+    if (yParity !== 0 && yParity !== 1) {
+      throw new Error(`device returned yParity ${String(yParity)}, expected 0 or 1`);
+    }
+
+    raw = serializeTransaction(unsigned, { r: toHex(r), s: toHex(s), yParity });
+  }
 
   if (!broadcast) return raw;
   // `lastUrl` once anything has been asked, the head of the order before that:
@@ -3871,6 +3922,12 @@ async function signPlannedTransaction(tx: PlannedTx, broadcast: boolean): Promis
 
 /** EIP-191 message signing. The device renders the message and signs its own digest. */
 async function signPlannedMessage(address: string, message: string): Promise<string> {
+  if (qrPairing) {
+    /* eth-sign-request data-types 2 and 3 exist, but the device side reads
+     * transactions only so far; showing a request it would refuse is a dead
+     * end at the far end of an animation. */
+    throw new Error("signing messages over QR is not supported yet; connect by USB or Bluetooth");
+  }
   if (!client) throw new Error("no device connected");
   const index = addressIndex(address);
   if (index < 0) throw new Error("that address is not one this device has derived");
@@ -3894,6 +3951,12 @@ async function signPlannedTypedData(
   address: string,
   request: Record<string, unknown>,
 ): Promise<string> {
+  if (qrPairing) {
+    /* eth-sign-request data-types 2 and 3 exist, but the device side reads
+     * transactions only so far; showing a request it would refuse is a dead
+     * end at the far end of an animation. */
+    throw new Error("signing messages over QR is not supported yet; connect by USB or Bluetooth");
+  }
   if (!client) throw new Error("no device connected");
   const index = addressIndex(address);
   if (index < 0) throw new Error("that address is not one this device has derived");
@@ -4045,6 +4108,8 @@ const walletConnect = initWalletConnect(walletBridge);
 
 async function disconnect(): Promise<void> {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  qrAbort?.abort();
+  qrPairing = null;
   lastStatus = UNKNOWN_STATUS;
   await transport?.close();
   transport = null;
@@ -4076,6 +4141,164 @@ async function disconnect(): Promise<void> {
   // the launcher, whether Disconnect was pressed directly or via the connect
   // destination's Back button (connectDestBack, above).
   goToLauncher();
+}
+
+/* ------------------------------------------------------------------ QR gap */
+
+/** Aborts whatever the QR panel is doing: the scan, the animation, the wait. */
+let qrAbort: AbortController | null = null;
+
+function openQrPanel(heading: string, instructions: string, signing: boolean): AbortController {
+  qrAbort?.abort();
+  const controller = new AbortController();
+  qrAbort = controller;
+  $("qrhead").textContent = heading;
+  $("qrinstr").textContent = instructions;
+  $("qrauthority").hidden = !signing;
+  $("qrfragrow").hidden = !signing;
+  $("qrnext").hidden = !signing;
+  $("qrprogress").textContent = "";
+  $("qrdisplay").textContent = "";
+  $("qrpanel").hidden = false;
+  $("qrpanel").scrollIntoView({ block: "nearest" });
+  return controller;
+}
+
+function closeQrPanel(controller: AbortController): void {
+  controller.abort();
+  if (qrAbort === controller) qrAbort = null;
+  $("qrpanel").hidden = true;
+  $("qrdisplay").textContent = "";
+  ($("qrvideo") as HTMLVideoElement).hidden = true;
+}
+
+/** The controls while QR-paired: no link to connect or unlock, but a way out. */
+function applyQrControls(): void {
+  ($("connect") as HTMLButtonElement).disabled = true;
+  ($("unlock") as HTMLButtonElement).disabled = true;
+  ($("transport") as HTMLSelectElement).disabled = true;
+  ($("disconnect") as HTMLButtonElement).disabled = false;
+  ($("sign") as HTMLButtonElement).disabled = false;
+}
+
+/**
+ * Pair by scanning the device's `ur:crypto-hdkey`, and hold the addresses it
+ * yields watch-only.
+ *
+ * One direction only: nothing is sent to the device, and nothing here is
+ * secret — an extended public key is public by construction. What it does
+ * reveal is every address in the account, which the note says out loud.
+ */
+async function pairByQr(): Promise<void> {
+  if (transport) {
+    log("disconnect the USB or Bluetooth link before pairing by QR");
+    return;
+  }
+  const controller = openQrPanel(
+    "Pair by QR",
+    "On the device, open the account export so it shows its QR code, and hold it in front of this camera.",
+    false,
+  );
+  try {
+    const cbor = await scanUr(
+      $("qrvideo") as HTMLVideoElement, "crypto-hdkey",
+      (text) => { $("qrprogress").textContent = text; }, controller.signal, log,
+    );
+    const key = decodeCryptoHdkey(cbor);
+    const accounts = deriveAccounts(key, 10);
+    qrPairing = { key, accounts };
+
+    /* The BIP-44 account number, for the parts of the UI that label by it.
+     * Anything that is not m/44'/60'/n' still works; it just has no number. */
+    const c = key.origin.components;
+    const account = c.length === 3 && c[0]?.index === 44 && c[1]?.index === 60 ? c[2]?.index ?? 0 : 0;
+
+    lastStatus = UNKNOWN_STATUS;
+    setConnection("connected", "QR (air-gapped)");
+    const badge = $("mode");
+    badge.textContent = "hardware · QR";
+    badge.dataset["mode"] = "hardware";
+    badge.title = "Paired by QR. The device signs what it decodes from the request QR.";
+    badge.setAttribute("aria-label", badge.title);
+    $("devicehint").textContent =
+      `Paired by QR with the account key at ${describeHdkey(key)}. ` +
+      "This app holds that key, so it can derive every address in the account; " +
+      "it cannot sign. Each signature is a request QR the device scans, decodes and shows on its own screen.";
+    $("pairing").hidden = true;
+    applyQrControls();
+
+    renderAccountSelector();
+    presentAddresses(accounts.map((a) => a.address), account);
+    setShellVisible(true);
+    log(`paired by QR: ${accounts.length} watch-only addresses under ${describeHdkey(key)}`);
+  } catch (e) {
+    if (e instanceof QrCancelled) log("QR pairing cancelled");
+    else log(`QR pairing failed: ${(e as Error).message ?? String(e)}`);
+  } finally {
+    closeQrPanel(controller);
+  }
+}
+
+/**
+ * Sign over the QR gap: show the unsigned transaction as an animated
+ * `ur:eth-sign-request`, then scan the device's `ur:eth-signature`.
+ *
+ * Returns the signed, serialised transaction, or throws — QrCancelled when
+ * the user closes the panel. A signature that answers another request, or
+ * that does not recover to `from` over these exact bytes, is refused in core
+ * before anything reaches the network.
+ */
+async function signViaQr(tx: UnsignedTransaction, from: Address): Promise<Hex> {
+  const pairing = qrPairing;
+  const account = pairing?.accounts.find((a) => a.address.toLowerCase() === from.toLowerCase());
+  if (!account) throw new Error("that address is not one the QR pairing derived");
+
+  /* Fresh per request, so a signature left over from an earlier request that
+   * is still on the device's screen cannot be mistaken for this one's. */
+  const requestId = newRequestId();
+  const cbor = ethSignRequestForTx(tx, requestId, account.path, from);
+
+  const controller = openQrPanel(
+    "Sign on the device",
+    `Scan this with the device. Check every page it shows — chain ${tx.chainId}, nonce ${tx.nonce}, ` +
+    "recipient and amount — then approve there. It will answer with a QR code of its own.",
+    true,
+  );
+  try {
+    let frames: AbortController | null = null;
+    const draw = (): void => {
+      frames?.abort();
+      frames = new AbortController();
+      controller.signal.addEventListener("abort", () => frames?.abort(), { once: true });
+      const size = Number(($("qrfrag") as HTMLSelectElement).value) || DEFAULT_FRAGMENT;
+      const { frames: n } = showUr($("qrdisplay"), "eth-sign-request", cbor, size,
+        (text) => qrSvg(text, "Alphanumeric"), frames.signal);
+      $("qrprogress").textContent = n > 1
+        ? `${cbor.length} bytes in ${n} fragments, animated. A smaller size is easier for the device's camera.`
+        : `${cbor.length} bytes, one frame.`;
+    };
+    $("qrfrag").addEventListener("change", draw, { signal: controller.signal });
+    draw();
+    deviceAttention("scan the request with the device, check every page on it, then approve");
+
+    await new Promise<void>((resolve, reject) => {
+      if (controller.signal.aborted) { reject(new QrCancelled()); return; }
+      $("qrnext").addEventListener("click", () => resolve(), { signal: controller.signal, once: true });
+      controller.signal.addEventListener("abort", () => reject(new QrCancelled()), { once: true });
+    });
+
+    (frames as AbortController | null)?.abort();
+    $("qrnext").hidden = true;
+    $("qrfragrow").hidden = true;
+    $("qrinstr").textContent = "Hold the device's signature QR in front of this camera.";
+    const answer = await scanUr(
+      $("qrvideo") as HTMLVideoElement, "eth-signature",
+      (text) => { $("qrprogress").textContent = text; }, controller.signal, log,
+    );
+    return await signedTxFromEthSignature(answer, requestId, tx, from);
+  } finally {
+    closeQrPanel(controller);
+  }
 }
 
 /* ------------------------------------------------------------------- wiring */
@@ -4221,6 +4444,10 @@ for (const section of SECTIONS) {
 $("connect").addEventListener("click", () => void connect());
 $("unlock").addEventListener("click", () => void unlock());
 $("disconnect").addEventListener("click", () => void disconnect());
+$("qrpair").addEventListener("click", () => void pairByQr());
+/* Cancel ends the QR exchange and nothing else: there is no session on this
+ * path, so closing it cannot leave one half-used. */
+$("qrcancel").addEventListener("click", () => qrAbort?.abort());
 $("sign").addEventListener("click", () => void sign());
 $("usenext").addEventListener("click", () => {
   // Sending to your own next address is the safest possible live test.
