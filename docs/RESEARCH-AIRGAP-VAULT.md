@@ -579,3 +579,62 @@ user is responsible for reading it.
 This is also the honest answer to "is QR less safe than USB". It is not, and it
 is slightly better: the payload is self-contained, there is no session, no
 pairing, no driver and no bidirectional channel for a companion to probe.
+
+## 17. Handshake, WalletConnect and plain sends
+
+### There is no handshake, and that is the point
+
+USB and BLE need a session: pairing, a shared secret, a connection to keep
+alive. QR needs none of it. The device exports its account once, as a
+`crypto-hdkey` shown in animated QR, and the companion stores it. That is the
+entire setup, it is one-directional, and nothing about it is secret — an
+extended public key is public by construction.
+
+The trade is **privacy, not safety**: an xpub lets the companion derive every
+address in the account. A single-address export is the tighter option and
+breaks address discovery. Offer both, default to whichever the account model
+needs, and say which in the UI.
+
+### WalletConnect: the companion is the wallet, the device is the signer
+
+The device is not part of WalletConnect and never touches the network.
+
+```
+dapp ──WC relay (internet)──► companion ──QR──► device
+                              (WC client)       (signer)
+     ◄──────────────────────  companion ◄─QR──  signature
+```
+
+WalletConnect pairs the **dapp with the companion**. When a request arrives the
+companion extracts the raw payload, shows it as animated QR, the device decodes
+and displays it from the bytes, signs, and the companion returns the signature
+over the relay. From WalletConnect's point of view the companion is the wallet.
+From the device's point of view a WalletConnect request is an
+`eth-sign-request` like any other, and it is decoded and refused on the same
+terms. Nothing about the air gap changes.
+
+### Plain sends, and what EIP-4527 does not do
+
+A transfer from one wallet to another is an `eth-sign-request` with empty
+calldata. The device shows chain, destination and amount, which it reads from
+the payload.
+
+EIP-4527 deliberately does **not** cover:
+
+| Job | Who does it |
+|---|---|
+| Broadcasting the signed transaction | companion |
+| Reading nonce, gas price and balance | companion |
+| Resolving ENS | companion |
+| Token metadata and prices | companion |
+
+All of it needs a network, so all of it belongs to the companion. Consequences
+the docs must state:
+
+- **The device cannot sanity-check the nonce or gas**, because it cannot see a
+  chain. A wrong nonce produces a failed transaction, not lost funds.
+- **ENS cannot be verified on device.** A name resolved by the companion is a
+  claim, and rule 1 of section 16 forbids displaying it. So the device shows
+  the raw hex address and the user compares it. That is a real usability cost
+  of being airgapped, and it is paid honestly rather than papered over with a
+  name the device cannot check.
