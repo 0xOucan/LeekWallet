@@ -53,6 +53,10 @@ import {
 import { planSend } from "./send.ts";
 import { QrJobError, QrJobs } from "./qr-job.ts";
 import { pairingFromCbor, type QrPairing } from "./qr-pairing.ts";
+import { qrSignJob, refuseOverQr, routeSigner, SignerRefused, type SignerRoute } from "./qr-sign.ts";
+import { chainRpc, fillTransaction, type TxRequest } from "./tx-fill.ts";
+import type { DerivedAccount } from "../../packages/core/src/eip4527/hdkey.ts";
+import type { Address } from "viem";
 import {
   EIP1193,
   type OwnerCommand, type OwnerEnvelope, type OwnerEvent, type OwnerReply,
@@ -470,36 +474,56 @@ async function grantedAccounts(origin: string): Promise<string[]> {
 }
 
 /**
- * Resolve the address a signing request names, or refuse.
+ * Resolve the address a signing request names to a signer, or refuse.
  *
- * Case-insensitive, because dapps send checksummed, lowercase and (rarely)
- * uppercase forms of the same address and all three are the same account. But
- * the address must be one this origin was actually granted: an origin that can
- * name any address the device derived could ask for a signature from an
- * account the user never connected to it.
+ * The rules are in qr-sign.ts's routeSigner, where a test can reach them:
+ * the address must be granted to this origin, and must be one the USB
+ * session or the QR pairing is offering right now.
  */
-async function indexForAddress(origin: string, address: unknown): Promise<number> {
-  if (typeof address !== "string") {
-    throw new RpcError(EIP1193.invalidParams, "no address was given");
-  }
-  const want = address.toLowerCase();
+async function signerFor(origin: string, address: unknown): Promise<SignerRoute> {
   const granted = await grantedAccounts(origin);
-  if (!granted.includes(want)) {
-    throw new RpcError(
-      EIP1193.unauthorized,
-      "that address has not been connected to this site",
-    );
-  }
   const snap = await ownerSnapshot(true);
-  const index = snap.addresses.findIndex((a) => a.toLowerCase() === want);
-  if (index < 0) {
-    throw new RpcError(
-      EIP1193.unauthorized,
-      "the device is not currently offering that address — it may be locked, " +
-      "or on a different wallet or account than when this site connected",
-    );
+  const device = snap.connected && snap.confirmed ? snap.addresses : null;
+  const pairing = await readQrPairing();
+  try {
+    return routeSigner(address, granted, device, pairing?.accounts ?? null);
+  } catch (e) {
+    if (e instanceof SignerRefused) throw new RpcError(e.code, e.message);
+    throw e;
   }
-  return index;
+}
+
+/** The USB index of a route, or a clear refusal for a method QR cannot do. */
+function deviceIndex(route: SignerRoute, method: string): number {
+  if (route.kind === "device") return route.index;
+  throw new RpcError(EIP1193.unsupportedMethod, refuseOverQr(method) ?? `${method} over QR`);
+}
+
+/**
+ * Sign a transaction over the QR gap and broadcast it.
+ *
+ * Built exactly as the USB path builds it (tx-fill.ts: nonce from `pending`,
+ * fees and gas from the chain unless the dapp named them), then shown to the
+ * device as an eth-sign-request in the scan tab. The scanned eth-signature is
+ * checked here, in the worker, against the request id and the transaction
+ * this function holds - the tab only carries bytes. Closing the tab or
+ * pressing Cancel rejects with 4001.
+ */
+async function sendViaQr(
+  account: DerivedAccount,
+  chainId: number,
+  request: TxRequest,
+  origin: string,
+): Promise<string> {
+  const info = getChain(chainId);
+  if (!info) throw new RpcError(EIP1193.chainDisconnected, `chain ${chainId} has no endpoints`);
+  const rpc = chainRpc(info, { store: memoryStore() });
+  const tx = await fillTransaction(rpc, chainId, account.address as Address, request);
+  const job = qrSignJob(tx, account, origin);
+  const raw = await qrJobs.run(job.view, job.accept);
+  const hash = await rpc.sendRawTransaction({ serializedTransaction: raw });
+  await appendLog(`sent over QR: ${hash}`);
+  return hash;
 }
 
 /**
@@ -668,7 +692,7 @@ async function handle(origin: string, method: string, params: unknown[]): Promis
       const isAddr = (v: unknown): boolean => typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v);
       const address = isAddr(a) ? a : b;
       const payload = isAddr(a) ? b : a;
-      const index = await indexForAddress(origin, address);
+      const index = deviceIndex(await signerFor(origin, address), method);
       await requireDevice();
 
       if (typeof payload !== "string") {
@@ -684,7 +708,7 @@ async function handle(origin: string, method: string, params: unknown[]): Promis
 
     case "eth_signTypedData_v4": {
       const [address, doc] = params;
-      const index = await indexForAddress(origin, address);
+      const index = deviceIndex(await signerFor(origin, address), method);
       await requireDevice();
       let parsed: unknown = doc;
       if (typeof doc === "string") {
@@ -715,8 +739,8 @@ async function handle(origin: string, method: string, params: unknown[]): Promis
     case "eth_sendTransaction": {
       const tx = params[0] as Record<string, unknown> | undefined;
       if (!tx) throw new RpcError(EIP1193.invalidParams, "eth_sendTransaction needs a transaction");
-      const index = await indexForAddress(origin, tx["from"]);
-      await requireDevice();
+      const route = await signerFor(origin, tx["from"]);
+      if (route.kind === "device") await requireDevice();
 
       const to = tx["to"];
       if (typeof to !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(to)) {
@@ -746,11 +770,7 @@ async function handle(origin: string, method: string, params: unknown[]): Promis
       const maxPriority = quantity(tx["maxPriorityFeePerGas"], "maxPriorityFeePerGas");
       const nonce = quantity(tx["nonce"], "nonce");
 
-      const command: OwnerCommand = {
-        cmd: "signTransaction",
-        index,
-        chainId: state.chainId,
-        tx: {
+      const request: TxRequest = {
           to,
           ...(value !== undefined ? { value } : {}),
           /* `"0x"` is how several libraries spell "no calldata". Passing it
@@ -761,14 +781,15 @@ async function handle(origin: string, method: string, params: unknown[]): Promis
           ...(gas !== undefined ? { gas } : {}),
           ...(maxFee !== undefined ? { maxFeePerGas: maxFee } : {}),
           ...(maxPriority !== undefined ? { maxPriorityFeePerGas: maxPriority } : {}),
-        },
-        broadcast: true,
       };
 
       await appendLog(`${origin} asked to send a transaction — check the device`);
       await chrome.storage.session.set({ awaitingDevice: origin });
       try {
-        return await ask<string>(command);
+        if (route.kind === "qr") return await sendViaQr(route.account, state.chainId, request, origin);
+        return await ask<string>({
+          cmd: "signTransaction", index: route.index, chainId: state.chainId, tx: request, broadcast: true,
+        });
       } finally {
         await chrome.storage.session.set({ awaitingDevice: null });
       }
@@ -1022,10 +1043,15 @@ async function handlePopup(command: PopupCommand): Promise<unknown> {
 
     case "send": {
       const { chainId } = await readState();
-      await requireDevice();
-      const addresses = await ask<string[]>({ cmd: "derive", count: 10 });
-      const from = addresses[command.index];
-      if (from === undefined) return { error: "that address index is not derived" };
+      const active = await activeAccounts();
+      const qrAccount = active?.link === "qr" ? active.pairing.accounts[command.index] : undefined;
+      if (active?.link !== "qr") {
+        await requireDevice();
+        const addresses = await ask<string[]>({ cmd: "derive", count: 10 });
+        if (addresses[command.index] === undefined) return { error: "that address index is not derived" };
+      } else if (qrAccount === undefined) {
+        return { error: "that address index is not derived" };
+      }
 
       const token = command.token === undefined
         ? undefined
@@ -1047,19 +1073,18 @@ async function handlePopup(command: PopupCommand): Promise<unknown> {
         /* The same path a dapp's transaction takes -- signed on the device,
          * which decodes and draws it, and broadcast only after. Nothing here
          * is a shortcut around the screen. */
-        const hash = await ask<string>({
-          cmd: "signTransaction",
-          index: command.index,
-          chainId,
-          tx: {
-            to: planned.plan.to,
-            /* Decimal strings, as everywhere else on this bridge: a bigint does
-             * not survive structured cloning to the offscreen document. */
-            ...(planned.plan.value > 0n ? { value: planned.plan.value.toString() } : {}),
-            ...(planned.plan.data !== undefined ? { data: planned.plan.data } : {}),
-          },
-          broadcast: true,
-        });
+        const request: TxRequest = {
+          to: planned.plan.to,
+          /* Decimal strings, as everywhere else on this bridge: a bigint does
+           * not survive structured cloning to the offscreen document. */
+          ...(planned.plan.value > 0n ? { value: planned.plan.value.toString() } : {}),
+          ...(planned.plan.data !== undefined ? { data: planned.plan.data } : {}),
+        };
+        const hash = qrAccount !== undefined
+          ? await sendViaQr(qrAccount, chainId, request, "this extension")
+          : await ask<string>({
+              cmd: "signTransaction", index: command.index, chainId, tx: request, broadcast: true,
+            });
         await appendLog(`sent ${planned.plan.units} to ${planned.plan.recipient}: ${hash}`);
         return { hash };
       } catch (e) {
