@@ -53,6 +53,26 @@
  */
 #define PROTOCOL_VERSION 2
 
+/**
+ * How a transaction signing attempt ended. One list for both entrances, USB/BLE
+ * and the QR air gap, because they share one decision path in protocol.c and a
+ * refusal must mean the same thing whichever way the request came in.
+ */
+typedef enum {
+    TXSIGN_OK = 0,
+    TXSIGN_BUSY,            /* another transaction holds the slot */
+    TXSIGN_LOCKED,          /* no unlocked wallet */
+    TXSIGN_MALFORMED,       /* the request could not be read as a transaction */
+    TXSIGN_PATH_MISMATCH,   /* the request's path does not derive its address */
+    TXSIGN_UNDECODABLE,     /* calldata the device cannot explain */
+    TXSIGN_NO_WALLET,       /* derivation failed */
+    TXSIGN_TIMEOUT,         /* nobody answered */
+    TXSIGN_REJECTED,        /* the user said no */
+    TXSIGN_WALLET_CHANGED,  /* the wallet moved while the screen was up */
+    TXSIGN_UNENCODABLE,
+    TXSIGN_SIGN_FAILED,
+} TxSignResult;
+
 /** Install the USB-Serial-JTAG driver and start the listener task. */
 void protocol_start(void);
 

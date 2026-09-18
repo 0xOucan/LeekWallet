@@ -630,6 +630,170 @@ static bool approval_still_holds(const HDPath *path, const char *shown)
     return strcmp(now.hex, shown) == 0;
 }
 
+/* ------------------------------------------------ the owned transaction */
+
+/**
+ * The one transaction the device holds between parsing and signing.
+ *
+ * It used to be a local in dispatch(). That was correct while one request was
+ * one stack frame: parse, draw, wait, hash and sign all happened inside it and
+ * the struct could not outlive the question. The air gap breaks that shape -
+ * scanning and confirming are separate user actions on a different entrance -
+ * and the invariant that has to survive is RESEARCH-AIRGAP-VAULT.md section 16
+ * rule 5: decode, display and sign read ONE buffer, never re-parsed between
+ * approval and signing.
+ *
+ * So it is owned storage with exactly one slot, and a claim on it. One slot
+ * rather than a queue because the screen shows one transaction at a time, and
+ * a second request arriving mid-approval is a request the user has not seen;
+ * it is refused, not held. Static rather than on a stack also returns roughly
+ * a kilobyte to both request tasks (see protocol_start()).
+ *
+ * The claim is an atomic exchange because two tasks can reach it: the USB and
+ * BLE request tasks both run dispatch(), and the air-gap worker runs
+ * protocol_airgap_sign(). One transport at a time (PROTOCOL.md 3b) means they
+ * should never race, and the flag is what makes "should" into "cannot".
+ */
+static EthTx owned_tx;
+static bool  owned_tx_busy;
+
+static EthTx *owned_tx_claim(void)
+{
+    if (__atomic_exchange_n(&owned_tx_busy, true, __ATOMIC_ACQ_REL)) {
+        return NULL;
+    }
+    memset(&owned_tx, 0, sizeof owned_tx);
+    return &owned_tx;
+}
+
+/* Zeroed on release. Calldata is not a secret, but it is what the user was
+   doing, and nothing needs it once the answer has gone out. */
+static void owned_tx_release(void)
+{
+    memzero(&owned_tx, sizeof owned_tx);
+    __atomic_store_n(&owned_tx_busy, false, __ATOMIC_RELEASE);
+}
+
+/**
+ * Everything between "the slot holds a transaction" and "here is a signature",
+ * shared by both entrances so there is one decision path rather than two that
+ * agree today.
+ *
+ * Reads `owned_tx` and nothing else for the transaction: the screen is handed
+ * a pointer to it, the digest is taken from it, and nothing writes it between
+ * the two. The caller owns the claim and releases it.
+ */
+static TxSignResult sign_owned_tx(const HDPath *sign_path, EthSignature *sig_out)
+{
+    const EthTx *tx = &owned_tx;
+
+    /* Refuse what cannot be explained (T50).
+     *
+     * The alternative is to render a hash and ask for a signature that
+     * means nothing to the person giving it. Every other wallet that took
+     * that road ended up shipping a blind-signing toggle; better to say no
+     * and grow the decodable set deliberately. */
+    EthCall call;
+    if (!eth_tx_is_decodable(tx, &call)) {
+        /* The escape hatch (T16), and the narrowest form of it that is
+         * useful. Two conditions, both required:
+         *
+         *   - the owner turned blind signing on, at the device, having
+         *     read what it costs. No command can do this.
+         *   - the transaction still has a recipient. Contract creation
+         *     stays refused: a blind confirmation is bearable only
+         *     because it can still name who is being paid, and there the
+         *     device would have nothing true left to show.
+         *
+         * Oversized calldata is refused before this and stays refused for a
+         * different reason again — the device never held those bytes, so
+         * it could not even hash what it was signing. */
+        if (!(tx->has_to && blind_signing_enabled())) {
+            return TXSIGN_UNDECODABLE;
+        }
+        ESP_LOGW(TAG, "Blind signing: undecodable calldata, %u bytes",
+                 (unsigned)tx->data_length);
+    }
+
+    /* Derive the source address here, on the task that will do the
+     * signing, and hand it to the screen. Deriving on the UI task shares
+     * state with this one and once produced a signature from a key the
+     * confirmation never named (T47). */
+    EthAddress from_addr;
+    if (wallet_get_address_at_path(sign_path, &from_addr) != WALLET_OK) {
+        return TXSIGN_NO_WALLET;
+    }
+
+    /* Show it and wait. The screen renders the owned slot and the hash
+     * below is taken from the same slot, so what is approved and what is
+     * signed cannot differ. The screen is handed the same path the
+     * signature will be taken at, not a copy of one field of it, so "what
+     * was approved" and "what was signed" stay the same object (T47, T45). */
+    ui_request_sign(tx, sign_path, from_addr.hex);
+
+    SignOutcome outcome = wait_for_user();
+    if (outcome == SIGN_PENDING) {
+        return TXSIGN_TIMEOUT;
+    }
+    if (outcome != SIGN_APPROVED) {
+        return TXSIGN_REJECTED;
+    }
+
+    /* The wallet may have moved while the screen was up. See
+     * approval_still_holds(). */
+    if (!approval_still_holds(sign_path, from_addr.hex)) {
+        ui_sign_report(false);
+        return TXSIGN_WALLET_CHANGED;
+    }
+
+    uint8_t digest[32];
+    if (!eth_tx_hash(tx, digest)) {
+        return TXSIGN_UNENCODABLE;
+    }
+
+    /* Select and sign atomically. Doing these as two calls let the UI
+     * task re-derive in between and the device signed with a key nobody
+     * asked for. `sign_path` is the same struct the confirmation screen
+     * was handed, unchanged since. */
+    if (wallet_sign_hash_at_path(sign_path, digest, sig_out) != WALLET_OK) {
+        ui_sign_report(false);
+        return TXSIGN_SIGN_FAILED;
+    }
+    ui_sign_report(true);
+    return TXSIGN_OK;
+}
+
+/* The USB/BLE wording for each refusal, unchanged from when these were
+   inline, because the app matches on the codes and people read the text. */
+static void send_tx_sign_error(TxSignResult rc)
+{
+    switch (rc) {
+        case TXSIGN_UNDECODABLE:
+            send_error(ERR_UNDECODABLE, "this device cannot show what that call does");
+            break;
+        case TXSIGN_NO_WALLET:
+            send_error(ERR_NO_WALLET, "derivation failed");
+            break;
+        case TXSIGN_TIMEOUT:
+            send_error(ERR_USER_TIMEOUT, "no answer on the device");
+            break;
+        case TXSIGN_REJECTED:
+            send_error(ERR_USER_REJECTED, "rejected on device");
+            break;
+        case TXSIGN_WALLET_CHANGED:
+            send_error(ERR_USER_REJECTED,
+                       "the wallet changed while you were confirming; try again");
+            break;
+        case TXSIGN_UNENCODABLE:
+            send_error(ERR_MALFORMED, "could not encode the transaction");
+            break;
+        case TXSIGN_SIGN_FAILED:
+        default:
+            send_error(ERR_NO_WALLET, "signing failed");
+            break;
+    }
+}
+
 /* Handle one decoded request. */
 static void dispatch(const uint8_t *payload, size_t len)
 {
@@ -805,42 +969,51 @@ static void dispatch(const uint8_t *payload, size_t len)
             return;
         }
 
+        /* Claim the one transaction slot before writing into it. See
+         * owned_tx: decode, display and sign read it, and the air-gap
+         * entrance fills the same slot, so a second request must be refused
+         * rather than allowed to write over one being shown. */
+        EthTx *slot = owned_tx_claim();
+        if (slot == NULL) {
+            send_error(ERR_BUSY, "another transaction is awaiting approval");
+            return;
+        }
+
         /* Build the transaction from the host's fields. Every value is parsed
          * here and nothing the host sends is treated as bytes to sign. */
-        EthTx tx;
-        memset(&tx, 0, sizeof(tx));
-
         if (!cbor_map_find(payload, len, "chainId", &item) || item.type != CBOR_UINT) {
+            owned_tx_release();
             send_error(ERR_MALFORMED, "chainId required");
             return;
         }
-        tx.chain_id = item.value;
+        slot->chain_id = item.value;
 
         if (cbor_map_find(payload, len, "nonce", &item) && item.type == CBOR_UINT) {
-            eth_quantity_set_u64(&tx.nonce, item.value);
+            eth_quantity_set_u64(&slot->nonce, item.value);
         }
 
         if (cbor_map_find(payload, len, "to", &item) &&
             item.type == CBOR_BYTES && item.value == 20) {
-            memcpy(tx.to, item.data, 20);
-            tx.has_to = true;
+            memcpy(slot->to, item.data, 20);
+            slot->has_to = true;
         }
 
         if (cbor_map_find(payload, len, "value", &item) && item.type == CBOR_BYTES) {
-            if (!eth_quantity_set(&tx.value, item.data, item.value)) {
+            if (!eth_quantity_set(&slot->value, item.data, item.value)) {
+                owned_tx_release();
                 send_error(ERR_MALFORMED, "value too large");
                 return;
             }
         }
         if (cbor_map_find(payload, len, "maxFeePerGas", &item) && item.type == CBOR_BYTES) {
-            eth_quantity_set(&tx.max_fee, item.data, item.value);
+            eth_quantity_set(&slot->max_fee, item.data, item.value);
         }
         if (cbor_map_find(payload, len, "maxPriorityFeePerGas", &item) &&
             item.type == CBOR_BYTES) {
-            eth_quantity_set(&tx.max_priority_fee, item.data, item.value);
+            eth_quantity_set(&slot->max_priority_fee, item.data, item.value);
         }
         if (cbor_map_find(payload, len, "gas", &item) && item.type == CBOR_BYTES) {
-            eth_quantity_set(&tx.gas_limit, item.data, item.value);
+            eth_quantity_set(&slot->gas_limit, item.data, item.value);
         }
 
         if (cbor_map_find(payload, len, "data", &item) && item.type == CBOR_BYTES) {
@@ -848,105 +1021,30 @@ static void dispatch(const uint8_t *payload, size_t len)
                 /* Refusing is the honest answer. Truncating would sign
                  * something other than what was asked for, and accepting an
                  * unbounded blob lets the host choose our memory usage. */
+                owned_tx_release();
                 send_error(ERR_MALFORMED, "calldata too large to display");
                 return;
             }
-            memcpy(tx.data, item.data, item.value);
-            tx.data_length = item.value;
+            memcpy(slot->data, item.data, item.value);
+            slot->data_length = item.value;
         }
 
         HDPath sign_path = HDPATH_ETH_DEFAULT;
         request_path(payload, len, &sign_path);
         if (!hd_path_in_range(&sign_path)) {
+            owned_tx_release();
             send_error(ERR_MALFORMED, "derivation path out of range");
             return;
         }
         uint32_t sign_index = sign_path.address_index;
 
-        /* Refuse what cannot be explained (T50).
-         *
-         * The alternative is to render a hash and ask for a signature that
-         * means nothing to the person giving it. Every other wallet that took
-         * that road ended up shipping a blind-signing toggle; better to say no
-         * and grow the decodable set deliberately. */
-        EthCall call;
-        if (!eth_tx_is_decodable(&tx, &call)) {
-            /* The escape hatch (T16), and the narrowest form of it that is
-             * useful. Two conditions, both required:
-             *
-             *   - the owner turned blind signing on, at the device, having
-             *     read what it costs. No command can do this.
-             *   - the transaction still has a recipient. Contract creation
-             *     stays refused: a blind confirmation is bearable only
-             *     because it can still name who is being paid, and there the
-             *     device would have nothing true left to show.
-             *
-             * Oversized calldata is refused above and stays refused for a
-             * different reason again — the device never held those bytes, so
-             * it could not even hash what it was signing. */
-            if (!(tx.has_to && blind_signing_enabled())) {
-                send_error(ERR_UNDECODABLE,
-                           "this device cannot show what that call does");
-                return;
-            }
-            ESP_LOGW(TAG, "Blind signing: undecodable calldata, %u bytes",
-                     (unsigned)tx.data_length);
-        }
-
-        /* Derive the source address here, on the task that will do the
-         * signing, and hand it to the screen. Deriving on the UI task shares
-         * state with this one and once produced a signature from a key the
-         * confirmation never named (T47). */
-        EthAddress from_addr;
-        if (wallet_get_address_at_path(&sign_path, &from_addr) != WALLET_OK) {
-            send_error(ERR_NO_WALLET, "derivation failed");
-            return;
-        }
-
-        /* Show it and wait. The screen renders these exact fields and the hash
-         * below is taken from the same struct, so what is approved and what is
-         * signed cannot differ. */
-        /* The screen is handed the same path the signature will be taken at,
-         * not a copy of one field of it, so "what was approved" and "what was
-         * signed" stay the same object (T47, T45). */
-        ui_request_sign(&tx, &sign_path, from_addr.hex);
-
-        SignOutcome outcome = wait_for_user();
-        if (outcome == SIGN_PENDING) {
-            send_error(ERR_USER_TIMEOUT, "no answer on the device");
-            return;
-        }
-        if (outcome != SIGN_APPROVED) {
-            send_error(ERR_USER_REJECTED, "rejected on device");
-            return;
-        }
-
-        /* The wallet may have moved while the screen was up. See
-         * approval_still_holds(). */
-        if (!approval_still_holds(&sign_path, from_addr.hex)) {
-            ui_sign_report(false);
-            send_error(ERR_USER_REJECTED,
-                       "the wallet changed while you were confirming; try again");
-            return;
-        }
-
-        uint8_t digest[32];
-        if (!eth_tx_hash(&tx, digest)) {
-            send_error(ERR_MALFORMED, "could not encode the transaction");
-            return;
-        }
-
-        /* Select and sign atomically. Doing these as two calls let the UI
-         * task re-derive in between and the device signed with a key nobody
-         * asked for. `sign_path` is the same struct the confirmation screen
-         * was handed, unchanged since. */
         EthSignature sig;
-        if (wallet_sign_hash_at_path(&sign_path, digest, &sig) != WALLET_OK) {
-            ui_sign_report(false);
-            send_error(ERR_NO_WALLET, "signing failed");
+        TxSignResult signed_rc = sign_owned_tx(&sign_path, &sig);
+        owned_tx_release();
+        if (signed_rc != TXSIGN_OK) {
+            send_tx_sign_error(signed_rc);
             return;
         }
-        ui_sign_report(true);
 
         cbor_write_map(&w, 1);
         cbor_write_text(&w, "result");
@@ -1618,11 +1716,15 @@ void protocol_start(void)
      * rebooted the device during unlock.
      *
      * The 8 -> 10 KB step paid for ETH_MAX_DATA going 256 -> 640: the deepest
-     * path is signTransaction, where an EthTx local now carries 640 bytes and
-     * then eth_tx_hash nests a 832-byte payload buffer over eth_tx_encode's
+     * path is signTransaction, where an EthTx local then carried 640 bytes and
+     * eth_tx_hash nests a 832-byte payload buffer over eth_tx_encode's
      * 800-byte body. That is roughly 1.1 KB more than before, and the margin
      * warn_on_thin_stack() watches for is 2 KB -- growing the buffers without
      * growing the stack would have spent that margin rather than kept it.
+     *
+     * The EthTx has since moved to static storage (owned_tx), which gives
+     * about 1 KB of that back. The stack is deliberately NOT shrunk to match:
+     * the hash buffers are still here, and the margin is the point.
      *
      * Raised together with bleproto in ble.c: they must not drift, since either
      * one can serve any request. */

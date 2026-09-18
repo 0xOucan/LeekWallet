@@ -198,7 +198,19 @@ void ui_request_passphrase_confirm(const char *address)
              address ? address : "");
 }
 
-SignOutcome ui_sign_outcome(void) { return scripted_outcome; }
+/* Run once from inside the approval wait, the way a second transport's task
+ * would land while the first request's screen is up. NULL almost always. */
+static void (*while_waiting)(void);
+
+SignOutcome ui_sign_outcome(void)
+{
+    if (while_waiting != NULL) {
+        void (*hook)(void) = while_waiting;
+        while_waiting = NULL;
+        hook();
+    }
+    return scripted_outcome;
+}
 
 /* What the device told the screen about the signature it produced. -1 means
  * it said nothing, which is the bug this records: an approval that silently
@@ -1402,6 +1414,90 @@ static void test_signing_signs_what_it_showed(void)
         CHECK(sign_reports == 1, "the screen was told %d times, expected once", sign_reports);
         CHECK(last_sign_report == 1, "the screen was not told the signature succeeded");
     }
+}
+
+/* The second request, sent while the first is on screen. */
+static uint8_t intruder_to[20];
+
+static void send_intruding_request(void)
+{
+    /* Straight into protocol_handle_frame() with a buffer of its own, which
+     * is what the BLE task does. Going through the USB pump instead would
+     * re-enter the one rx buffer the outer request is still sitting in, and
+     * that is a harness artefact rather than anything the device can do. */
+    uint8_t frame[PROTOCOL_MAX_FRAME];
+    size_t len = native_transfer_request(frame + 3, sizeof(frame) - 3,
+                                         intruder_to, 5);
+    len = host_seal(frame + 3, len);
+    frame[0] = (uint8_t)((len + 1) >> 8);
+    frame[1] = (uint8_t)(len + 1);
+    frame[2] = T_ENC_REQUEST;
+    protocol_handle_frame(frame, len + 3);
+}
+
+static void test_the_displayed_transaction_cannot_be_replaced(void)
+{
+    printf("== a transaction on screen owns its slot until it is answered\n");
+    fresh_device();
+    device_unlocked();
+    confirmed_session(16);
+
+    uint8_t to[20];
+    memset(to, 0x11, sizeof(to));
+    memset(intruder_to, 0x22, sizeof(intruder_to));
+
+    /* EthTx moved from dispatch()'s stack into one owned slot so scan and
+     * confirm can be separate actions. The hazard that creates is a second
+     * request writing into the slot the screen is showing; the claim is what
+     * stops it. With a stack local the intruder got its own struct and its own
+     * prompt, which is survivable - with a shared slot and no claim it would be
+     * the transaction that gets signed. */
+    uint8_t payload[256];
+    size_t len = native_transfer_request(payload, sizeof(payload), to, 3);
+    scripted_outcome = SIGN_APPROVED;
+    while_waiting = send_intruding_request;
+    send_encrypted(payload, len);
+    collect_output();
+
+    CHECK(confirm_requests == 1,
+          "the second request reached the screen (%d prompts)", confirm_requests);
+    CHECK(memcmp(shown_tx.to, to, 20) == 0,
+          "the screen ended up showing the intruder's recipient");
+
+    Frame busy = next_reply();
+    uint32_t code = 0;
+    CHECK(busy.present && error_code(&busy, &code) && code == E_BUSY,
+          "the intruding request was not refused as busy (code 0x%04x)", code);
+
+    Frame f = next_reply();
+    const uint8_t *body;
+    size_t body_len;
+    CborItem it;
+    /* Either framing. `reply_encrypted` in protocol.c is per-frame global
+     * state, and the intruder's frame ending clears it under the outer one,
+     * so the outer answer can come back in the clear. That is the existing
+     * single-transport assumption (PROTOCOL.md 3b) showing through the
+     * harness, not something this test is about; what it is about is WHAT
+     * was signed. */
+    CHECK(f.present && (f.type == T_ENC_RESPONSE || f.type == T_RESPONSE),
+          "the first request was not answered (type 0x%02x)", f.type);
+    if (f.present && result_body(&f, &body, &body_len)) {
+        uint8_t expect_digest[32];
+        CHECK(eth_tx_hash(&shown_tx, expect_digest), "could not re-hash what was shown");
+        CHECK(cbor_map_find(body, body_len, "r", &it) && it.type == CBOR_BYTES &&
+              it.value == 32 && memcmp(it.data, expect_digest, 32) == 0,
+              "the signature is not over the transaction that was displayed");
+        CHECK(cbor_map_find(body, body_len, "index", &it) && it.value == 3,
+              "the reply names the intruder's index");
+    }
+
+    /* And the slot is free again afterwards: a claim that leaked would turn
+     * every later request into "busy". */
+    len = native_transfer_request(payload, sizeof(payload), to, 4);
+    send_encrypted(payload, len);
+    f = next_reply();
+    CHECK(f.present && f.type == T_ENC_RESPONSE,
+          "the slot was not released after the first signature");
 }
 
 static void test_rejection_and_timeout(void)
@@ -4037,6 +4133,7 @@ static int run_all_tests(void)
     test_undecodable_calldata_refused_before_confirmation();
     test_blind_signing_is_off_until_the_device_says_otherwise();
     test_signing_signs_what_it_showed();
+    test_the_displayed_transaction_cannot_be_replaced();
     test_rejection_and_timeout();
     test_errors_stay_encrypted_once_a_session_exists();
     test_malformed_input();
