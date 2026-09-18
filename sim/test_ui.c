@@ -34,6 +34,7 @@ bool fake_protocol_rx_enabled(void);
 #include "memzero.h"
 #include "leek-wallet.h"
 #include "session.h"
+#include "qr-out.h"
 
 /* Test hooks from ui.c and pin.c (compiled with -DLEEK_HOST_TEST). */
 void        pin__reset_static_state_for_test(void);
@@ -44,6 +45,7 @@ void        ui__service_lock_hold_for_test(void);
 void        fake_button_hold(button_id_t id);
 void        fake_button_release(void);
 void        ui__service_host_lock_for_test(void);
+void        ui__service_qr_out_for_test(void);
 const char *ui__master_xfp_for_test(void);
 uint32_t    ui__account_for_test(void);
 bool        ui__wallet_info_pass_shown_for_test(void);
@@ -2853,8 +2855,62 @@ static void test_temp_seed_autolock_is_scoped_to_the_mode(void)
           "a choice made during a temporary session was not stored");
 }
 
+/* The return path's screen. What it must do is small and easy to get wrong in
+ * the ways test_the_signed_acknowledgement_actually_appears() documents: the
+ * frames advance from the task loop, not from a button, so a missing
+ * ui_invalidate() would freeze the animation on part 1 and every test that
+ * calls ui_render() directly would still pass. */
+static void test_qr_out_animates_and_leaves_cleanly(void)
+{
+    printf("== an animated UR steps on its timer and BACK clears it\n");
+    boot_unlocked_with_seed();
+    go(SCREEN_MAIN_MENU);
+
+    uint8_t msg[90];
+    for (size_t i = 0; i < sizeof msg; i++) {
+        msg[i] = (uint8_t)i;
+    }
+    CHECK(ui_show_ur("eth-signature", msg, sizeof msg, SCREEN_MAIN_MENU),
+          "a 90-byte message could not be shown");
+    idle_pump();
+    CHECK(ui_get_screen() == SCREEN_QR_OUT, "the QR screen did not open");
+
+    char first[400];
+    snprintf(first, sizeof first, "%s", fake_oled_qr_data());
+    CHECK(strncmp(first, "UR:ETH-SIGNATURE/1-", 19) == 0,
+          "the first frame is not an uppercase part 1: '%.40s'", first);
+    CHECK(fake_oled_qr_version() == 6 && fake_oled_qr_scale() == 1,
+          "the default mode is v%u x%u, not section 32's v6 x1",
+          fake_oled_qr_version(), fake_oled_qr_scale());
+
+    /* Nothing pressed, time passes: the next part appears. */
+    fake_clock_advance_us(400000);
+    ui__service_qr_out_for_test();
+    idle_pump();
+    CHECK(strncmp(fake_oled_qr_data(), "UR:ETH-SIGNATURE/2-", 19) == 0,
+          "the animation did not advance on its own: '%.40s'", fake_oled_qr_data());
+
+    /* DOWN steps to the next module size and starts that sequence over. */
+    press(BUTTON_DOWN);
+    CHECK(fake_oled_qr_version() == 10, "DOWN did not switch to version 10");
+    CHECK(strncmp(fake_oled_qr_data(), "UR:ETH-SIGNATURE/", 17) == 0,
+          "version 10 frame is not a UR");
+
+    press(BUTTON_CANCEL);
+    CHECK(ui_get_screen() == SCREEN_MAIN_MENU, "BACK did not return where it was told");
+    fake_clock_advance_us(10000000);
+    ui__service_qr_out_for_test();
+    CHECK(!ui_needs_render(), "the animation kept running after the screen closed");
+
+    uint8_t big[QR_OUT_MAX_MESSAGE + 1] = {0};
+    CHECK(!ui_show_ur("eth-signature", big, sizeof big, SCREEN_MAIN_MENU),
+          "an oversized message was accepted");
+    CHECK(ui_get_screen() == SCREEN_MAIN_MENU, "a refused UR still changed screen");
+}
+
 int main(void)
 {
+    test_qr_out_animates_and_leaves_cleanly();
     test_blind_signing_takes_a_deliberate_act();
     test_blind_confirmation_is_marked_and_shows_the_digest();
     test_an_aqua_ship_shows_its_maker_and_every_leg();

@@ -124,6 +124,25 @@ esp_err_t oled_fill_page(uint8_t page, uint8_t pattern);
 esp_err_t oled_draw_qrcode(const char *data);
 
 /**
+ * The largest QR version the 64-row panel can show, at scale 1.
+ * See RESEARCH-AIRGAP-VAULT.md section 32.
+ */
+#define OLED_QR_MAX_VERSION 10
+
+/** True if `version` at `scale` (1 or 2) fits 64 rows with its quiet zone. */
+bool oled_qr_fits(uint8_t version, uint8_t scale);
+
+/**
+ * Draw a QR code at exactly this version and scale, centred.
+ *
+ * For the QR return path, where the caller sized its parts for one version and
+ * must not have the renderer pick another. ESP_ERR_INVALID_ARG if the pair does
+ * not fit the panel; ESP_ERR_INVALID_SIZE if the data does not fit the version.
+ * Pass an uppercased UR so the encoder reaches alphanumeric mode.
+ */
+esp_err_t oled_draw_qrcode_at(const char *data, uint8_t version, uint8_t scale);
+
+/**
  * Set a single pixel on the display
  * @param x X coordinate (0-127)
  * @param y Y coordinate (0-63)

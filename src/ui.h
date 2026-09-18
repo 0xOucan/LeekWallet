@@ -72,6 +72,10 @@ typedef enum {
      * both that and "throw away the session". */
     SCREEN_LOCK_HOLD,
     SCREEN_LOCK_CONFIRM,
+    /* The QR return path: a UR, animated when it needs more than one frame.
+     * Shows whatever ui_show_ur() was handed and nothing else; the screen
+     * that decided to share it is the one that said what it is. */
+    SCREEN_QR_OUT,
     SCREEN_COUNT
 } screen_id_t;
 
@@ -170,6 +174,18 @@ void ui_clear_invalidation(void);
  * @param screen Screen callbacks
  */
 void ui_register_screen(screen_id_t id, const screen_t *screen);
+
+/**
+ * Show `cbor` as a `ur:<type>` QR, animated if it needs several frames, and
+ * return to `back` when the user leaves. The bytes are copied.
+ *
+ * UI task only. It does not say what is being shared: the caller must already
+ * have put that on screen and had it confirmed, because once this is up the
+ * panel is all QR. Returns false (and changes nothing) if the message cannot
+ * be shown.
+ */
+bool ui_show_ur(const char *type, const uint8_t *cbor, size_t len,
+                screen_id_t back);
 
 /**
  * UI main task - runs the screen state machine

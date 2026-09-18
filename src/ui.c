@@ -31,6 +31,7 @@
 #include "ble.h"
 #include "ble-name.h"
 #include "esp_timer.h"
+#include "qr-out.h"
 #include "esp_random.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -167,6 +168,9 @@ static void forget_passphrase_entry(screen_id_t next);
 static void screen_qr_code_enter(void);
 static void screen_qr_code_render(void);
 static void screen_qr_code_on_button(button_id_t btn);
+static void screen_qr_out_render(void);
+static void screen_qr_out_on_button(button_id_t btn);
+static void screen_qr_out_exit(screen_id_t next);
 
 static const screen_t screen_sign_result = {
     .enter = screen_sign_result_enter,
@@ -347,6 +351,13 @@ static const screen_t screen_qr_code = {
     .render = screen_qr_code_render,
     .on_button = screen_qr_code_on_button,
     .exit = NULL
+};
+
+static const screen_t screen_qr_out = {
+    .enter = NULL,
+    .render = screen_qr_out_render,
+    .on_button = screen_qr_out_on_button,
+    .exit = screen_qr_out_exit
 };
 
 /* ============================================================================
@@ -3092,6 +3103,94 @@ static void screen_settings_on_button(button_id_t btn)
     }
 
     ui_invalidate();
+}
+
+/* ============================================================================
+ * QR Out Screen
+ *
+ * The return path (RESEARCH-AIRGAP-VAULT.md section 32). qr-out.c owns which
+ * part is up and guarantees it fits; this only draws it, steps it on a timer
+ * from service_qr_out(), and lets the user try the three module sizes, since
+ * which one a camera reads off this panel is a bench question.
+ *
+ * No stack: `qr_out_back` is where BACK goes, set by whoever called
+ * ui_show_ur().
+ * ============================================================================ */
+
+static screen_id_t qr_out_back = SCREEN_MAIN_MENU;
+
+bool ui_show_ur(const char *type, const uint8_t *cbor, size_t len,
+                screen_id_t back)
+{
+    const int64_t now = esp_timer_get_time();
+    /* The default mode first; the chunky one cannot carry everything, and a
+       message that fits nowhere is refused rather than half shown. */
+    if (!qr_out_start(type, cbor, len, QR_OUT_MODE_DEFAULT, now)) {
+        return false;
+    }
+    qr_out_back = back;
+    ui_set_screen(SCREEN_QR_OUT);
+    return true;
+}
+
+static void screen_qr_out_render(void)
+{
+    const char *frame = qr_out_frame();
+    const QrOutMode *m = qr_out_mode_info(qr_out_current_mode());
+    if (frame == NULL || m == NULL ||
+        oled_draw_qrcode_at(frame, m->version, m->scale) != ESP_OK) {
+        /* qr-out.c measured every frame before showing one, so this is a
+           bug rather than a state; say so instead of a blank panel. */
+        oled_clear();
+        oled_draw_string_centered(3, "QR unavailable");
+        oled_draw_string(7, 0, "BACK");
+    }
+}
+
+static void screen_qr_out_on_button(button_id_t btn)
+{
+    const int64_t now = esp_timer_get_time();
+    switch (btn) {
+        case BUTTON_UP:
+        case BUTTON_DOWN: {
+            /* Step through the module sizes. A mode that cannot carry this
+               message is skipped rather than shown blank. */
+            const uint8_t step = (btn == BUTTON_UP) ? QR_OUT_MODE_COUNT - 1 : 1;
+            uint8_t mode = qr_out_current_mode();
+            for (int i = 0; i < QR_OUT_MODE_COUNT - 1; i++) {
+                mode = (uint8_t)((mode + step) % QR_OUT_MODE_COUNT);
+                if (qr_out_set_mode(mode, now)) {
+                    break;
+                }
+            }
+            break;
+        }
+        case BUTTON_CANCEL:
+        case BUTTON_ACCEPT:
+            ui_set_screen(qr_out_back);
+            break;
+        default:
+            break;
+    }
+    ui_invalidate();
+}
+
+static void screen_qr_out_exit(screen_id_t next)
+{
+    (void)next;
+    qr_out_stop();
+}
+
+/* Advance the animation. Called once per turn of the UI task's loop, which
+ * wakes at least every 100 ms, so a frame period is honoured to within that. */
+static void service_qr_out(void)
+{
+    if (ui_get_screen() != SCREEN_QR_OUT) {
+        return;
+    }
+    if (qr_out_tick(esp_timer_get_time())) {
+        ui_invalidate();
+    }
 }
 
 /* ============================================================================
@@ -6004,6 +6103,7 @@ void ui_init(void)
     screens[SCREEN_SIGN_CONFIRM] = &screen_sign_confirm;
     screens[SCREEN_SIGN_RESULT] = &screen_sign_result;
     screens[SCREEN_HOST_PASSPHRASE_CONFIRM] = &screen_host_passphrase;
+    screens[SCREEN_QR_OUT] = &screen_qr_out;
 
     current_screen = SCREEN_BOOT;
     needs_render = true;
@@ -6213,6 +6313,7 @@ void ui_task(void *pvParameters)
         }
 
         service_lock_hold();
+        service_qr_out();
 
         /* A companion that died without saying so. Tears down the channel
          * only: the wallet stays unlocked and a temporary seed survives, so
@@ -6285,6 +6386,7 @@ bool ui__check_autolock_for_test(void) { return lock_check_timeout(); }
 void ui__service_sign_expiry_for_test(void) { service_sign_expiry(); }
 void ui__service_lock_hold_for_test(void) { service_lock_hold(); }
 void ui__service_host_lock_for_test(void) { service_host_lock(); }
+void ui__service_qr_out_for_test(void) { service_qr_out(); }
 
 /* The cached fingerprint, which is not on any screen while the device is
  * locked and so cannot be asserted through the framebuffer - the stale-XFP

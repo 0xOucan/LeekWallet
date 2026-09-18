@@ -40,7 +40,7 @@ VAULT_CRYPTO :=                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/aes/aestab.c $(CRYPTO)/aes/aes_modes.c \
                 $(CRYPTO)/aes/aesgcm.c $(CRYPTO)/aes/gf128mul.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39 test_temp_seed test_ur test_ur_fountain test_ur_decoder test_qrcode test_eip4527 test_eip4527_encode
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39 test_temp_seed test_ur test_ur_fountain test_ur_decoder test_qrcode test_eip4527 test_eip4527_encode test_ur_encoder test_qr_out test_oled_qr
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
@@ -60,6 +60,33 @@ $(BUILD)/test_qrcode: test_qrcode.c host_stubs.c ../src/qrcode.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD)/test_ur_decoder: test_ur_decoder.c host_stubs.c ../src/ur-decoder.c ../src/ur.c ../src/ur-fountain.c ../src/cbor.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# The sending half, checked against bc-ur's own parts and then read back by
+# ur-decoder.c with frames dropped.
+UR_ENCODER_SRC := test_ur_encoder.c host_stubs.c ../src/ur-encoder.c ../src/ur-decoder.c ../src/ur.c ../src/ur-fountain.c ../src/cbor.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c
+
+$(BUILD)/test_ur_encoder: $(UR_ENCODER_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+$(BUILD)/test_ur_encoder_asan: $(UR_ENCODER_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all \
+	      -fno-omit-frame-pointer -o $@ $^
+
+# The return path's schedule, against the real QR encoder: every frame of every
+# mode has to fit the version it will be drawn at.
+QR_OUT_SRC := test_qr_out.c host_stubs.c ../src/qr-out.c ../src/ur-encoder.c ../src/ur-decoder.c ../src/ur.c ../src/ur-fountain.c ../src/cbor.c ../src/qrcode.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c
+
+$(BUILD)/test_qr_out: $(QR_OUT_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+$(BUILD)/test_qr_out_asan: $(QR_OUT_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all \
+	      -fno-omit-frame-pointer -o $@ $^
+
+# The renderer itself, into oled-core.c's framebuffer. Pins the address QR to
+# the pixels it drew before the version choice existed.
+$(BUILD)/test_oled_qr: test_oled_qr.c host_stubs.c ../src/oled-core.c ../src/qrcode.c ../src/ur.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD)/test_ur_fountain: test_ur_fountain.c host_stubs.c ../src/ur-fountain.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c | $(BUILD)
@@ -215,6 +242,7 @@ $(BUILD)/test_ui: test_ui.c esp_stubs.c host_stubs.c fake_oled.c fake_wallet.c \
                   ../src/entropy.c ../src/session.c ../src/text-entry.c \
                   ../src/eth-tx.c ../src/eth-decode.c ../src/eip712.c ../src/blind-signing.c \
                   ../src/cbor.c ../src/device-wipe.c \
+                  ../src/qr-out.c ../src/ur-encoder.c ../src/ur.c ../src/ur-fountain.c \
                   $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                   $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
                   $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
@@ -313,13 +341,15 @@ $(BUILD)/test_eip4527_asan: test_eip4527.c host_stubs.c ../src/eip4527.c | $(BUI
 	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all \
 	      -fno-omit-frame-pointer -o $@ $^
 
-asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan $(BUILD)/test_slip39_asan $(BUILD)/test_eip712_asan $(BUILD)/test_eip4527_asan $(BUILD)/test_eip4527_encode_asan
+asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan $(BUILD)/test_slip39_asan $(BUILD)/test_eip712_asan $(BUILD)/test_eip4527_asan $(BUILD)/test_eip4527_encode_asan $(BUILD)/test_ur_encoder_asan $(BUILD)/test_qr_out_asan
 	./$(BUILD)/test_protocol_asan
 	./$(BUILD)/test_eip712_asan
 	./$(BUILD)/test_ble_chunk_asan
 	./$(BUILD)/test_slip39_asan
 	./$(BUILD)/test_eip4527_asan
 	./$(BUILD)/test_eip4527_encode_asan
+	./$(BUILD)/test_ur_encoder_asan
+	./$(BUILD)/test_qr_out_asan
 
 # What the six-digit passkey costs a relay. Measurement, not assertion, so it
 # is built on request and never by `make test`. See passkey_grind.c.
