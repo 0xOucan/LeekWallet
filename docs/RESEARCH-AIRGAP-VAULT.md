@@ -678,3 +678,63 @@ funds.** The same is true of balances: the device cannot check a balance either,
 and signing a transfer larger than the balance produces a failed transaction,
 not a loss. These are usability failures, and it is honest to call them that
 rather than to imply the device is checking something it is not.
+
+## 19. "Stagnant" does not mean abandoned
+
+EIP-4527 is marked **Stagnant** on eips.ethereum.org, which measures activity in
+the EIP *process*, not use in the world. The distinction matters here because
+the market went the other way:
+
+- **Keystone** implements it and publishes the SDKs.
+- **AirGap and imToken** interoperate over it, and imToken documents the pairing
+  as "the EIP-4527 standard".
+- **TokenPocket** documents an EIP-4527 flow.
+- **MetaMask, Sparrow, Solflare and Keplr** consume BC-UR account types.
+
+There is **no successor EIP**. The nearest thing is NGRAVE's
+[NBCR-2023-002](https://github.com/ngraveio/Research/blob/main/papers/nbcr-2023-002-multi-layer-sync.md),
+which explicitly says it "is based on existing sync protocols, e.g. EIP-4527"
+and extends BC-UR to be chain-agnostic with `coin-identity` and `portfolio`
+types. It **complements rather than replaces**, and its Layer 3 additions are
+so far mostly NGRAVE's own.
+
+So the decision stands, with one adjustment to how we hold it:
+
+> **BC-UR is the durable layer; EIP-4527 is the Ethereum profile on top.**
+
+Build the codec against BC-UR, keep the 4527 UR types behind a small mapping,
+and a future chain-agnostic profile is an addition rather than a rewrite. This
+also matches how the ecosystem is actually layered, and it means the Stagnant
+label costs us nothing: what we interoperate with is the set of wallets above,
+not the EIP's editorial state.
+
+## 20. The handshake exports chosen accounts, not the master key
+
+Revises section 17. The xpub export is the wrong default.
+
+Use **`crypto-multi-accounts`**: the device exports the specific accounts the
+user picked, each as a public key with its derivation path. NGRAVE calls this
+Layer 2 and it is what Keystone already sends.
+
+What this buys:
+
+| | xpub export | chosen accounts |
+|---|---|---|
+| Companion can derive addresses you did not approve | **yes** | no |
+| Companion learns about future accounts | **yes** | no |
+| Adding an account later | automatic | one more QR handshake |
+| Account discovery after restore | automatic | manual |
+
+The cost is real but small and one-time, and it is the right trade for a wallet
+whose whole argument is minimising what any one party holds.
+
+**And it is what makes the nonce work.** The companion *is* the wallet in every
+sense that needs a network: it queries `eth_getTransactionCount(account,
+"pending")` for exactly the accounts the handshake pinned, exactly as MetaMask
+does. The nonce problem is solved in the ordinary way, at the companion, and
+the handshake is what defines the account set it is solved for.
+
+That leaves the device's nonce ledger (section 18) as **defence in depth
+against a malicious companion**, not as the primary mechanism — and it is keyed
+on `(chain id, account)`, which is the same set the handshake pinned. The two
+halves line up because both are scoped by the accounts the user chose.
