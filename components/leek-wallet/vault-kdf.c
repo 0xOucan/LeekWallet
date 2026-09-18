@@ -48,12 +48,22 @@ static void build_salt(const uint8_t salt[VAULT_SALT_SIZE], const char *domain,
     *out_len = VAULT_SALT_SIZE + dlen;
 }
 
-/* PBKDF2-HMAC-SHA512 truncated to 32 bytes. */
-static void derive_v2(const char *pin, size_t pin_len,
-                      const uint8_t salt[VAULT_SALT_SIZE],
-                      const char *domain,
-                      uint8_t out32[32])
+/* PBKDF2-HMAC-SHA512 truncated to 32 bytes, at the caller's work factor. */
+static void derive_pbkdf2(const char *pin, size_t pin_len,
+                          const uint8_t salt[VAULT_SALT_SIZE],
+                          const char *domain,
+                          uint32_t iterations,
+                          uint8_t out32[32])
 {
+    /* A zero iteration count is not a cheap key, it is an unrelated one: it
+     * would open no existing vault and protect nothing. Refusing to go below
+     * the shipped floor means a corrupt or truncated parameter blob degrades
+     * to "derives like every device already out there" rather than to
+     * "silently derives garbage". */
+    if (iterations < VAULT_KDF_V2_ITERATIONS) {
+        iterations = VAULT_KDF_V2_ITERATIONS;
+    }
+
     uint8_t full_salt[VAULT_SALT_SIZE + MAX_DOMAIN_LEN];
     size_t  full_salt_len = 0;
     build_salt(salt, domain, full_salt, sizeof(full_salt), &full_salt_len);
@@ -61,12 +71,153 @@ static void derive_v2(const char *pin, size_t pin_len,
     uint8_t out64[64];
     pbkdf2_hmac_sha512((const uint8_t *)pin, (int)pin_len,
                        full_salt, (int)full_salt_len,
-                       VAULT_KDF_V2_ITERATIONS, out64, 64);
+                       (uint32_t)iterations, out64, 64);
 
     memcpy(out32, out64, 32);
 
     memzero(out64, sizeof(out64));
     memzero(full_salt, sizeof(full_salt));
+}
+
+/* ========== Stored parameters ==========
+ *
+ * See vault-kdf.h. The invariant here is one sentence: a vault with no
+ * recorded parameters derives exactly as it always did.
+ */
+
+void vault_params_default(VaultKdfVersion version, VaultKdfParams *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->blob_version = VAULT_PARAMS_BLOB_V1;
+
+    if (version == VAULT_KDF_V1_LEGACY) {
+        out->family     = VAULT_KDF_FAMILY_LEGACY_SHA256;
+        out->iterations = 0;   /* v1 has no work factor to speak of. */
+        return;
+    }
+
+    out->family     = VAULT_KDF_FAMILY_PBKDF2_SHA512;
+    out->iterations = VAULT_KDF_V2_ITERATIONS;
+}
+
+static void put_u32le(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v      );
+    p[1] = (uint8_t)(v >>  8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+static uint32_t get_u32le(const uint8_t *p)
+{
+    return (uint32_t)p[0]        | ((uint32_t)p[1] <<  8) |
+          ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+size_t vault_params_serialize(const VaultKdfParams *params,
+                              uint8_t *out, size_t out_size)
+{
+    if (!params || !out || out_size < VAULT_PARAMS_BLOB_SIZE) {
+        return 0;
+    }
+
+    /* Fixed size and explicitly little-endian: this blob outlives the build
+     * that wrote it, so it may not depend on struct padding or host byte
+     * order. The tail is reserved and written as zeroes - Argon2id will claim
+     * part of it without the layout moving. */
+    memset(out, 0, VAULT_PARAMS_BLOB_SIZE);
+    out[0] = VAULT_PARAMS_BLOB_V1;
+    out[1] = params->family;
+    put_u32le(out + 2,  params->iterations);
+    put_u32le(out + 6,  params->mem_kib);
+    put_u32le(out + 10, params->time_cost);
+    out[14] = params->parallelism;
+    return VAULT_PARAMS_BLOB_SIZE;
+}
+
+bool vault_params_parse(const uint8_t *blob, size_t length,
+                        VaultKdfVersion fallback, VaultKdfParams *out)
+{
+    if (!out) {
+        return false;
+    }
+
+    /* Defaults first, unconditionally. Every failure path below leaves these
+     * in place, so there is no way out of this function with an uninitialized
+     * work factor. */
+    vault_params_default(fallback, out);
+
+    if (!blob || length == 0) {
+        /* A vault from before parameters were stored. Not an error: the
+         * defaults ARE its parameters, which is what keeps existing devices
+         * unlocking. */
+        return true;
+    }
+
+    if (length < VAULT_PARAMS_BLOB_SIZE || blob[0] != VAULT_PARAMS_BLOB_V1) {
+        return false;
+    }
+
+    VaultKdfParams parsed;
+    memset(&parsed, 0, sizeof(parsed));
+    parsed.blob_version = blob[0];
+    parsed.family       = blob[1];
+    parsed.iterations   = get_u32le(blob + 2);
+    parsed.mem_kib      = get_u32le(blob + 6);
+    parsed.time_cost    = get_u32le(blob + 10);
+    parsed.parallelism  = blob[14];
+
+    /* A family this build cannot compute is not something to guess at: say so
+     * and leave the defaults, rather than deriving under the wrong algorithm
+     * and writing ciphertext nobody can read back. */
+    if (parsed.family != VAULT_KDF_FAMILY_PBKDF2_SHA512 &&
+        parsed.family != VAULT_KDF_FAMILY_LEGACY_SHA256) {
+        return false;
+    }
+
+    *out = parsed;
+    return true;
+}
+
+void vault_derive_key_with(const VaultKdfParams *params,
+                           const char *pin, size_t pin_len,
+                           const uint8_t salt[VAULT_SALT_SIZE],
+                           uint8_t key_out[VAULT_KEY_SIZE])
+{
+    VaultKdfParams fallback;
+    if (!params) {
+        vault_params_default(VAULT_KDF_CURRENT, &fallback);
+        params = &fallback;
+    }
+
+    if (params->family == VAULT_KDF_FAMILY_LEGACY_SHA256) {
+        vault_derive_key(VAULT_KDF_V1_LEGACY, pin, pin_len, salt, key_out);
+        return;
+    }
+
+    derive_pbkdf2(pin, pin_len, salt, DOMAIN_ENC, params->iterations, key_out);
+}
+
+void vault_derive_verifier_with(const VaultKdfParams *params,
+                                const char *pin, size_t pin_len,
+                                const uint8_t salt[VAULT_SALT_SIZE],
+                                uint8_t hash_out[VAULT_HASH_SIZE])
+{
+    VaultKdfParams fallback;
+    if (!params) {
+        vault_params_default(VAULT_KDF_CURRENT, &fallback);
+        params = &fallback;
+    }
+
+    if (params->family == VAULT_KDF_FAMILY_LEGACY_SHA256) {
+        vault_derive_verifier(VAULT_KDF_V1_LEGACY, pin, pin_len, salt, hash_out);
+        return;
+    }
+
+    derive_pbkdf2(pin, pin_len, salt, DOMAIN_VER, params->iterations, hash_out);
 }
 
 void vault_derive_key(VaultKdfVersion version,
@@ -86,7 +237,13 @@ void vault_derive_key(VaultKdfVersion version,
         return;
     }
 
-    derive_v2(pin, pin_len, salt, DOMAIN_ENC, key_out);
+    /* Everything above v1 is one family today, at the default work factor.
+     * Callers that hold a vault's STORED parameters must use
+     * vault_derive_key_with() instead - this entry point can only speak for
+     * what this build would choose. */
+    VaultKdfParams params;
+    vault_params_default(version, &params);
+    derive_pbkdf2(pin, pin_len, salt, DOMAIN_ENC, params.iterations, key_out);
 }
 
 void vault_derive_verifier(VaultKdfVersion version,
@@ -104,7 +261,9 @@ void vault_derive_verifier(VaultKdfVersion version,
         return;
     }
 
-    derive_v2(pin, pin_len, salt, DOMAIN_VER, hash_out);
+    VaultKdfParams params;
+    vault_params_default(version, &params);
+    derive_pbkdf2(pin, pin_len, salt, DOMAIN_VER, params.iterations, hash_out);
 }
 
 bool vault_hash_equals(const uint8_t a[VAULT_HASH_SIZE],
