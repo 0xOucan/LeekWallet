@@ -40,9 +40,12 @@ VAULT_CRYPTO :=                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/aes/aestab.c $(CRYPTO)/aes/aes_modes.c \
                 $(CRYPTO)/aes/aesgcm.c $(CRYPTO)/aes/gf128mul.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39 test_temp_seed test_ur test_ur_fountain test_ur_decoder
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39 test_temp_seed test_ur test_ur_fountain test_ur_decoder test_qrcode
 
 all: $(addprefix $(BUILD)/,$(TESTS))
+
+$(BUILD)/test_qrcode: test_qrcode.c host_stubs.c ../src/qrcode.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD)/test_ur_decoder: test_ur_decoder.c host_stubs.c ../src/ur-decoder.c ../src/ur.c ../src/ur-fountain.c ../src/cbor.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
