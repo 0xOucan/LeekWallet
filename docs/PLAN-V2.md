@@ -107,13 +107,33 @@ device *draws* has to be decoded by the device: deleting those changes firmware
 behaviour and is a deliberate decision of its own, not a side effect of removing
 an app.
 
-## Standing rules for this work
-
 - Every phase ends green under QEMU before the next begins.
 - Every phase ends with the older boards still building.
 - Branch per phase, merged into `research/airgap-vault-cloak`.
 - Nothing irreversible on hardware: no eFuse burn, no `provision`, and the Pixie
   is flashed only with `./flash-both.sh dev`.
+## Decisions taken, so they are not re-litigated
+
+**Distribution is "build it yourself", not "trust our release."** An audit
+flagged that `app/src/flasher.ts` pins firmware updates to one personal GitHub
+account, making it a single point of failure for the supply chain. The answer
+is not an organisation account and a signing key the user still has to trust:
+it is tutorials that walk people through compiling and signing **their own**
+firmware and their own companion APK. That is what self-custody means here, and
+it turns the release channel into a convenience rather than a dependency. The
+signed `SHA256SUMS` stays for people who take the convenience.
+
+**The Android signing key stays where it is.** It lives outside the repository,
+`app/.gitignore` and the Android gitignore both exclude it, and `git ls-files`
+does not know it. Its file mode was 0664 and is now 0600. It is not being
+rotated, and that is a deliberate call: it signs a convenience build, and the
+recommended path for anyone who cares is to build and sign their own. The
+constraint that has always applied still applies - no keystore, password or
+signing key ever enters this repository, and passwords never appear on a
+command line.
+
+## Standing rules for this work
+
 - Commit messages follow joelparkerhenderson/git-commit-message: imperative
   summary of 50 characters or less, blank line, body wrapped at 72 explaining
   why rather than what. No bump section. Author 0xoucan, Claude as co-author.

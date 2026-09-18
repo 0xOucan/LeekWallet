@@ -962,30 +962,57 @@ PIN is entered through those, and a wrong value does the ordinary thing the app
 would have done anyway. There is never a "wrong PIN" message, because there is
 nothing on screen that looks like a PIN.
 
-| App | Entry | Digits | Combinations | Submit is |
-|---|---|---|---|---|
-| **Calculator** | type a number | any length, 0-9 | **unbounded** | pressing `=` |
-| **Clock** | set HH:MM:SS | 6, constrained | 86,400 | confirming seconds |
-| **Timer** | countdown MM:SS | 4, constrained | 3,600 | starting the timer |
-| **Dice** | N dice, M sides, S rolls | 3 | ~1,000 | rolling |
-| **Snake** | difficulty, lives, speed | 3, each 1-9 | 729 | starting the game |
-| **Metronome** | BPM, 40-240 | 3 | 201 | starting the beat |
+**The rule: a cloak app needs at least six input slots.** Anything less is not
+a PIN, and an app that cannot carry six does not get cloak duty. 86,400 is the
+floor, because that is what a full HH:MM:SS gives and it is the weakest thing
+worth shipping.
 
-**The calculator is the strongest and should be the default.** It is the only
-one with no ceiling: a fourteen-digit PIN looks exactly like arithmetic, and a
-wrong entry simply computes a number. The clock is the friendliest. Snake and
-the metronome are the most fun and the weakest, and the UI must say so when one
-is picked rather than letting someone discover it later.
+| App | Entry | Slots | Combinations |
+|---|---|---|---|
+| **Calculator** | type a number, press `=` | any | **unbounded** |
+| **Clock** | set HH:MM:SS | 6 | 86,400 |
+| **Timer** | countdown HH:MM:SS | 6 | 86,400 |
+| **Snake** | difficulty, lives, speed, board, walls, fruit | 6, each 1-9 | 531,441 |
 
-Say the entropy out loud, because it is the part that is easy to get wrong:
-**729 combinations is not a PIN, it is a speed bump.** What protects the vault
-is Argon2id making each guess cost about a second and a BIP-39 passphrase
-sitting outside the device entirely. The cloak buys deniability, not strength,
-and a user who picks Snake and no passphrase should be told plainly that they
-have chosen a fun lock.
+The timer carries hours for exactly this reason: MM:SS alone is 3,600, which is
+not enough, and adding the hours field costs one line of UI and multiplies the
+space by 24.
 
-Apps that are real either way and need no cloak duty: a QR tool, a flashlight,
-and a dice roller that is genuinely used for seed generation.
+Snake gets six settings rather than three, which it wanted anyway - a game with
+difficulty, lives, speed, board size, wall wrapping and fruit count is a more
+convincing settings screen than one with three, and each is a real setting that
+changes the game when the value is not a PIN.
+
+**Dropped from cloak duty: dice and the metronome.** A dice roller is three
+fields and a metronome is one, and neither stretches to six without becoming
+strange. Both stay as real apps; they just do not carry the PIN. The dice
+roller in particular has a genuine job already, which is seed generation.
+
+**The calculator is still the default**, because it is the only one with no
+ceiling: a fourteen-digit PIN looks exactly like arithmetic, and a wrong entry
+computes a number.
+
+Apps that are real and carry no PIN: the QR tool, the dice roller used for seed
+generation, the metronome and a flashlight.
+
+### Why a stolen card is not a stolen wallet
+
+Worth stating because it is the payoff of the whole design and it is easy to
+miss.
+
+The vault key is in the vault. There is nothing on the board to attack: **no
+card means nothing to break into**, not a harder thing to break into. And if
+the card itself is taken, a BIP-39 passphrase means that cracking the PIN does
+not reveal the owner's wallet - it reveals *a* wallet, derived from the seed
+with no passphrase, which is empty. An attacker who succeeds cannot tell
+whether they have finished or whether a passphrase exists at all, because both
+outcomes look identical: a valid vault, a valid seed, and an address with
+nothing in it.
+
+That is real deniability, and unlike the cloak it is cryptographic rather than
+operational. It is also the strongest argument for teaching the passphrase as
+the default rather than as an advanced option, which is what the grant
+milestones already commit to.
 
 ## 24. What the README has to say, once this ships
 
