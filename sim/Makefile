@@ -40,12 +40,21 @@ VAULT_CRYPTO :=                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/aes/aestab.c $(CRYPTO)/aes/aes_modes.c \
                 $(CRYPTO)/aes/aesgcm.c $(CRYPTO)/aes/gf128mul.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39 test_temp_seed test_ur test_ur_fountain test_ur_decoder test_qrcode test_eip4527
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39 test_temp_seed test_ur test_ur_fountain test_ur_decoder test_qrcode test_eip4527 test_eip4527_encode
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
 $(BUILD)/test_eip4527: test_eip4527.c host_stubs.c ../src/eip4527.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
+
+# The writer, checked against the strict reader: an eth-signature the device
+# emits has to be one its own grammar accepts.
+$(BUILD)/test_eip4527_encode: test_eip4527_encode.c host_stubs.c ../src/eip4527-encode.c ../src/eip4527.c ../src/cbor.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+$(BUILD)/test_eip4527_encode_asan: test_eip4527_encode.c host_stubs.c ../src/eip4527-encode.c ../src/eip4527.c ../src/cbor.c | $(BUILD)
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all \
+	      -fno-omit-frame-pointer -o $@ $^
 
 $(BUILD)/test_qrcode: test_qrcode.c host_stubs.c ../src/qrcode.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
@@ -304,12 +313,13 @@ $(BUILD)/test_eip4527_asan: test_eip4527.c host_stubs.c ../src/eip4527.c | $(BUI
 	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all \
 	      -fno-omit-frame-pointer -o $@ $^
 
-asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan $(BUILD)/test_slip39_asan $(BUILD)/test_eip712_asan $(BUILD)/test_eip4527_asan
+asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan $(BUILD)/test_slip39_asan $(BUILD)/test_eip712_asan $(BUILD)/test_eip4527_asan $(BUILD)/test_eip4527_encode_asan
 	./$(BUILD)/test_protocol_asan
 	./$(BUILD)/test_eip712_asan
 	./$(BUILD)/test_ble_chunk_asan
 	./$(BUILD)/test_slip39_asan
 	./$(BUILD)/test_eip4527_asan
+	./$(BUILD)/test_eip4527_encode_asan
 
 # What the six-digit passkey costs a relay. Measurement, not assertion, so it
 # is built on request and never by `make test`. See passkey_grind.c.
@@ -388,12 +398,14 @@ UR_FOUNTAIN_VECTORS := ../app/packages/core/test/ur-fountain-vectors.json
 
 UR_ASSEMBLY_VECTORS := ../app/packages/core/test/ur-assembly-vectors.json
 EIP4527_VECTORS := ../app/packages/core/test/eip4527-vectors.json
+HDKEY_VECTORS := ../app/packages/core/test/hdkey-vectors.json
 
-ur-conformance: $(BUILD)/test_ur $(BUILD)/test_ur_fountain $(BUILD)/test_ur_decoder $(BUILD)/test_eip4527
+ur-conformance: $(BUILD)/test_ur $(BUILD)/test_ur_fountain $(BUILD)/test_ur_decoder $(BUILD)/test_eip4527 $(BUILD)/test_eip4527_encode
 	./$(BUILD)/test_ur --emit-vectors $(UR_VECTORS)
 	./$(BUILD)/test_ur_fountain --emit-vectors $(UR_FOUNTAIN_VECTORS)
 	./$(BUILD)/test_ur_decoder --emit-vectors $(UR_ASSEMBLY_VECTORS)
 	./$(BUILD)/test_eip4527 --emit-vectors $(EIP4527_VECTORS)
+	./$(BUILD)/test_eip4527_encode --emit-vectors $(HDKEY_VECTORS)
 
 clean:
 	rm -rf $(BUILD)
