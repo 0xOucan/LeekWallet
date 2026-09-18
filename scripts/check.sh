@@ -70,7 +70,7 @@ if [[ "$WHAT" == "all" || "$WHAT" == "app" ]]; then
     # TypeScript mirror. Same reason as the two above - the device and three
     # companions must agree byte for byte, and a corpus from an older ur.c
     # would let them agree with an encoder nobody runs.
-    run "ur conformance vectors" make -C sim ur-conformance
+    run "ur and eip-4527 conformance vectors" make -C sim ur-conformance
 
     if command -v pnpm >/dev/null 2>&1; then
         run "app tests" pnpm --dir app test

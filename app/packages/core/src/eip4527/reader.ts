@@ -157,22 +157,40 @@ export class Reader {
     return this.expect(MT_UINT, "an unsigned integer");
   }
 
-  expectBytes(exactLength?: number): Uint8Array {
+  /**
+   * A byte string, with the schema's limits applied in the firmware's order.
+   *
+   * `maxLength` is not an implementation detail of the C side. The firmware
+   * copies into a fixed buffer and refuses anything larger, so the limit is a
+   * property of the schema and both decoders have to enforce it — otherwise a
+   * frame the device rejects is one the companion happily forwards. The
+   * declared length is therefore checked against the schema BEFORE it is
+   * checked against what is actually present, so an absurd length is
+   * BAD_LENGTH on both sides rather than BAD_LENGTH here and MALFORMED there.
+   * Found by the differential corpus.
+   */
+  expectBytes(exactLength?: number, maxLength?: number): Uint8Array {
     const len = this.expect(MT_BYTES, "a byte string");
-    if (this.pos + len > this.buf.length) {
-      this.fail(E4527.MALFORMED, "byte string runs past the end of the input");
-    }
     if (exactLength !== undefined && len !== exactLength) {
       this.fail(E4527.BAD_LENGTH, `expected ${exactLength} bytes, got ${len}`);
+    }
+    if (maxLength !== undefined && len > maxLength) {
+      this.fail(E4527.BAD_LENGTH, `${len} bytes exceeds the schema maximum ${maxLength}`);
+    }
+    if (len > this.buf.length - this.pos) {
+      this.fail(E4527.MALFORMED, "byte string runs past the end of the input");
     }
     const out = this.buf.slice(this.pos, this.pos + len);
     this.pos += len;
     return out;
   }
 
-  expectText(): string {
+  expectText(maxLength?: number): string {
     const len = this.expect(MT_TEXT, "a text string");
-    if (this.pos + len > this.buf.length) {
+    if (maxLength !== undefined && len > maxLength) {
+      this.fail(E4527.BAD_LENGTH, `${len} bytes exceeds the schema maximum ${maxLength}`);
+    }
+    if (len > this.buf.length - this.pos) {
       this.fail(E4527.MALFORMED, "text string runs past the end of the input");
     }
     const out = new TextDecoder("utf-8", { fatal: true }).decode(

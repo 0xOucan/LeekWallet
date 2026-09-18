@@ -20,6 +20,11 @@
  */
 
 import { E4527 } from "./errors.ts";
+
+/* The same limits as src/eip4527.h. They are schema properties, not C buffer
+   sizes: a frame the device refuses must not be one the companion forwards. */
+export const MAX_SIGN_DATA = 1024;
+export const MAX_ORIGIN = 64;
 import {
   Reader,
   TAG_UUID,
@@ -129,7 +134,7 @@ export function decodeEthSignRequest(cbor: Uint8Array): EthSignRequest {
         });
         break;
       case 2:
-        signData = r.in("sign-data", () => r.expectBytes());
+        signData = r.in("sign-data", () => r.expectBytes(undefined, MAX_SIGN_DATA));
         break;
       case 3:
         dataType = r.in("data-type", () => {
@@ -154,7 +159,7 @@ export function decodeEthSignRequest(cbor: Uint8Array): EthSignRequest {
         address = r.in("address", () => r.expectBytes(20));
         break;
       case 7:
-        origin = r.in("origin", () => r.expectText());
+        origin = r.in("origin", () => r.expectText(MAX_ORIGIN));
         break;
     }
   });
@@ -205,7 +210,7 @@ export function decodeEthSignature(cbor: Uint8Array): EthSignature {
         signature = r.in("signature", () => r.expectBytes(65));
         break;
       case 3:
-        origin = r.in("origin", () => r.expectText());
+        origin = r.in("origin", () => r.expectText(MAX_ORIGIN));
         break;
     }
   });
