@@ -10,7 +10,8 @@
 
 static char    text[FAKE_OLED_ROWS][FAKE_OLED_COLS + 1];
 static uint8_t fb[OLED_PAGES][OLED_WIDTH];   /* SSD1306 order: one byte = 8 rows */
-static char    qr_data[256];
+static char    qr_data[400];   /* a version 10 frame is 395 characters */
+static uint8_t qr_version, qr_scale;
 static int     flush_count;
 static uint8_t contrast = 0;
 
@@ -34,6 +35,8 @@ void fake_oled_reset(void)
     blank_text();
     memset(fb, 0, sizeof(fb));
     qr_data[0] = '\0';
+    qr_version = 0;
+    qr_scale = 0;
     flush_count = 0;
     contrast = 0;
     cursor_page = 0;
@@ -243,5 +246,30 @@ esp_err_t oled_draw_qrcode(const char *data)
     snprintf(qr_data, sizeof(qr_data), "%s", data);
     return ESP_OK;
 }
+
+/* The return path records the string and the mode it was asked for. Whether
+ * that pair fits is decided by the real rule, so a screen cannot pass here by
+ * asking for a version the panel cannot show. */
+bool oled_qr_fits(uint8_t version, uint8_t scale)
+{
+    if (version < 1 || version > OLED_QR_MAX_VERSION || scale < 1 || scale > 2) {
+        return false;
+    }
+    return (unsigned)(version * 4 + 17) * scale + 4 <= OLED_HEIGHT;
+}
+
+esp_err_t oled_draw_qrcode_at(const char *data, uint8_t version, uint8_t scale)
+{
+    if (!data || !oled_qr_fits(version, scale)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    snprintf(qr_data, sizeof(qr_data), "%s", data);
+    qr_version = version;
+    qr_scale = scale;
+    return ESP_OK;
+}
+
+uint8_t fake_oled_qr_version(void) { return qr_version; }
+uint8_t fake_oled_qr_scale(void)   { return qr_scale; }
 
 esp_err_t oled_refresh(void) { return oled_flush(); }

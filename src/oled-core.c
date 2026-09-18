@@ -279,6 +279,63 @@ esp_err_t oled_set_pixel(uint8_t x, uint8_t y, bool on)
     return ESP_OK;
 }
 
+/*
+ * The module grid, static and sized for the largest version the panel can
+ * show (OLED_QR_MAX_VERSION, 407 bytes).
+ *
+ * It was a VLA on the caller's stack sized for version 4, which was fine for
+ * one 42-character address. The QR return path draws up to version 10 from
+ * the UI task's 8 KB stack, and qrcode.c already puts its own working buffers
+ * there (about 1.1 KB at version 10: codewords, the function-module grid and
+ * the error-correction block). This grid is the one piece that outlives the
+ * encode, so it moves off the stack and the transient ones stay where they
+ * are. Only the UI task draws, so one buffer is enough.
+ */
+static uint8_t qr_modules[((OLED_QR_MAX_VERSION * 4 + 17) *
+                           (OLED_QR_MAX_VERSION * 4 + 17) + 7) / 8];
+
+/* Blank the panel to light and draw dark modules, centred, with a 2 px quiet
+ * zone. Shared by both entry points so the address QR is drawn by exactly the
+ * code that always drew it. */
+static esp_err_t render_qr(QRCode *qrcode, uint8_t scale)
+{
+    uint8_t qr_size = qrcode->size;
+
+    uint8_t total_size = qr_size * scale;
+    uint8_t quiet_zone = 2;  /* 2px quiet zone */
+    uint8_t total_with_quiet = total_size + quiet_zone * 2;
+
+    /* Center on display */
+    uint8_t offset_x = (OLED_WIDTH - total_with_quiet) / 2 + quiet_zone;
+    uint8_t offset_y = (OLED_HEIGHT - total_with_quiet) / 2 + quiet_zone;
+
+    /*
+     * IMPORTANT: QR codes need dark modules on light background!
+     * Fill framebuffer with WHITE (all 0xFF), then draw dark modules.
+     */
+    memset(framebuffer, 0xFF, sizeof(framebuffer));
+
+    /* Draw QR code dark modules (turn pixels OFF) */
+    for (uint8_t y = 0; y < qr_size; y++) {
+        for (uint8_t x = 0; x < qr_size; x++) {
+            if (qrcode_getModule(qrcode, x, y)) {
+                /* Dark module - turn pixels OFF (false) */
+                for (uint8_t sy = 0; sy < scale; sy++) {
+                    for (uint8_t sx = 0; sx < scale; sx++) {
+                        uint8_t px = offset_x + x * scale + sx;
+                        uint8_t py = offset_y + y * scale + sy;
+                        if (px < OLED_WIDTH && py < OLED_HEIGHT) {
+                            oled_set_pixel(px, py, false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return oled_refresh();
+}
+
 esp_err_t oled_draw_qrcode(const char *data)
 {
     /*
@@ -291,14 +348,13 @@ esp_err_t oled_draw_qrcode(const char *data)
 
     /* Try version 3 first (29x29), fallback to version 4 if needed */
     uint8_t qr_version = 3;
-    uint8_t qr_buffer[qrcode_getBufferSize(4)];  /* Allocate for v4 max */
     QRCode qrcode;
 
-    int result = qrcode_initText(&qrcode, qr_buffer, qr_version, ECC_LOW, data);
+    int result = qrcode_initText(&qrcode, qr_modules, qr_version, ECC_LOW, data);
     if (result != 0) {
         /* Try version 4 (33x33 modules, 78 byte capacity) */
         qr_version = 4;
-        result = qrcode_initText(&qrcode, qr_buffer, qr_version, ECC_LOW, data);
+        result = qrcode_initText(&qrcode, qr_modules, qr_version, ECC_LOW, data);
         if (result != 0) {
             ESP_LOGE(TAG, "QR code generation failed for: %s", data);
             return ESP_FAIL;
@@ -324,37 +380,35 @@ esp_err_t oled_draw_qrcode(const char *data)
         scale = 1;  /* 1px per module for larger codes */
     }
 
-    uint8_t total_size = qr_size * scale;
-    uint8_t quiet_zone = 2;  /* 2px quiet zone */
-    uint8_t total_with_quiet = total_size + quiet_zone * 2;
+    return render_qr(&qrcode, scale);
+}
 
-    /* Center on display */
-    uint8_t offset_x = (OLED_WIDTH - total_with_quiet) / 2 + quiet_zone;
-    uint8_t offset_y = (OLED_HEIGHT - total_with_quiet) / 2 + quiet_zone;
+bool oled_qr_fits(uint8_t version, uint8_t scale)
+{
+    if (version < 1 || version > OLED_QR_MAX_VERSION || scale < 1 || scale > 2) {
+        return false;
+    }
+    /* Modules times scale plus the 2 px quiet zone each side, in 64 rows.
+       That gives version 10 at scale 1 and version 3 at scale 2, the two
+       ceilings RESEARCH-AIRGAP-VAULT.md section 32 measured. */
+    const unsigned px = (unsigned)(version * 4 + 17) * scale + 4;
+    return px <= OLED_HEIGHT;
+}
 
-    /*
-     * IMPORTANT: QR codes need dark modules on light background!
-     * Fill framebuffer with WHITE (all 0xFF), then draw dark modules.
-     */
-    memset(framebuffer, 0xFF, sizeof(framebuffer));
-
-    /* Draw QR code dark modules (turn pixels OFF) */
-    for (uint8_t y = 0; y < qr_size; y++) {
-        for (uint8_t x = 0; x < qr_size; x++) {
-            if (qrcode_getModule(&qrcode, x, y)) {
-                /* Dark module - turn pixels OFF (false) */
-                for (uint8_t sy = 0; sy < scale; sy++) {
-                    for (uint8_t sx = 0; sx < scale; sx++) {
-                        uint8_t px = offset_x + x * scale + sx;
-                        uint8_t py = offset_y + y * scale + sy;
-                        if (px < OLED_WIDTH && py < OLED_HEIGHT) {
-                            oled_set_pixel(px, py, false);
-                        }
-                    }
-                }
-            }
-        }
+esp_err_t oled_draw_qrcode_at(const char *data, uint8_t version, uint8_t scale)
+{
+    if (data == NULL || !oled_qr_fits(version, scale)) {
+        return ESP_ERR_INVALID_ARG;
     }
 
-    return oled_refresh();
+    /* Exactly the version asked for, never a fallback. An animation's part
+       length was chosen for this version's capacity; quietly growing a frame
+       would change the module size under a camera mid-sequence, and the
+       caller is the only one who knows which trade it made. The payload is
+       not logged: on this path it is a signature or an xpub. */
+    QRCode qrcode;
+    if (qrcode_initText(&qrcode, qr_modules, version, ECC_LOW, data) != 0) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return render_qr(&qrcode, scale);
 }

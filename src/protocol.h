@@ -14,6 +14,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "eip4527.h"
+
 /**
  * Largest frame the device will assemble in either direction.
  *
@@ -52,6 +54,43 @@
  * version at all and are caught by the first.
  */
 #define PROTOCOL_VERSION 2
+
+/**
+ * How a transaction signing attempt ended. One list for both entrances, USB/BLE
+ * and the QR air gap, because they share one decision path in protocol.c and a
+ * refusal must mean the same thing whichever way the request came in.
+ */
+typedef enum {
+    TXSIGN_OK = 0,
+    TXSIGN_BUSY,            /* another transaction holds the slot */
+    TXSIGN_LOCKED,          /* no unlocked wallet */
+    TXSIGN_MALFORMED,       /* the request could not be read as a transaction */
+    TXSIGN_PATH_MISMATCH,   /* the request's path does not derive its address */
+    TXSIGN_UNDECODABLE,     /* calldata the device cannot explain */
+    TXSIGN_NO_WALLET,       /* derivation failed */
+    TXSIGN_TIMEOUT,         /* nobody answered */
+    TXSIGN_REJECTED,        /* the user said no */
+    TXSIGN_WALLET_CHANGED,  /* the wallet moved while the screen was up */
+    TXSIGN_UNENCODABLE,
+    TXSIGN_SIGN_FAILED,
+} TxSignResult;
+
+/**
+ * The air-gap entrance: sign a decoded `eth-sign-request`.
+ *
+ * Runs the same decision path as signTransaction - the owned transaction
+ * slot, eth-decode.c's refusal of what it cannot show, the confirmation
+ * screen, approval_still_holds() - after the checks only this entrance needs:
+ * a typed transaction, a BIP44 path whose derived address matches the one the
+ * request claims, the request's seed fingerprint, and a chain id that agrees
+ * with the one inside the signed bytes.
+ *
+ * Blocks until the user answers (up to two minutes), so it must be called from
+ * a task that may block - never the UI task, which has to draw the question.
+ * On TXSIGN_OK `signature_out` is r || s || yParity.
+ */
+TxSignResult protocol_airgap_sign(const E4527SignRequest *req,
+                                  uint8_t signature_out[65]);
 
 /** Install the USB-Serial-JTAG driver and start the listener task. */
 void protocol_start(void);

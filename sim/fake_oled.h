@@ -42,6 +42,10 @@ int fake_oled_find_row(const char *needle);
 /** Payload of the last oled_draw_qrcode(), or "" if none. */
 const char *fake_oled_qr_data(void);
 
+/** Version and scale of the last oled_draw_qrcode_at(), 0 if none. */
+uint8_t fake_oled_qr_version(void);
+uint8_t fake_oled_qr_scale(void);
+
 /** Times the frame was pushed to the (imaginary) panel. */
 int fake_oled_flush_count(void);
 

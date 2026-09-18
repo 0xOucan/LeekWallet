@@ -40,17 +40,75 @@ VAULT_CRYPTO :=                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/aes/aestab.c $(CRYPTO)/aes/aes_modes.c \
                 $(CRYPTO)/aes/aesgcm.c $(CRYPTO)/aes/gf128mul.c
 
-TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39 test_temp_seed test_ur test_ur_fountain test_ur_decoder test_qrcode test_eip4527
+TESTS := test_mnemonic_entry test_pin test_passphrase test_entropy test_vault_kdf test_cbor test_session test_text_entry test_vault_crypt test_eth_tx test_eth_decode test_eip712 test_device_wipe test_ui test_button test_pin_change test_protocol test_ble_chunk test_xfp test_slip39 test_temp_seed test_ur test_ur_fountain test_ur_decoder test_qrcode test_eip4527 test_eip4527_encode test_ur_encoder test_qr_out test_oled_qr
 
 all: $(addprefix $(BUILD)/,$(TESTS))
 
 $(BUILD)/test_eip4527: test_eip4527.c host_stubs.c ../src/eip4527.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
+# The writer, checked against the strict reader: an eth-signature the device
+# emits has to be one its own grammar accepts.
+# The vectors are real BIP32 keys, so this links the derivation too.
+EIP4527_ENCODE_SRC := test_eip4527_encode.c host_stubs.c ../src/eip4527-encode.c \
+                      ../src/eip4527.c ../src/cbor.c ../src/ur.c \
+                      $(CRYPTO)/bip32.c $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
+                      $(CRYPTO)/ecdsa.c $(CRYPTO)/bignum.c $(CRYPTO)/secp256k1.c \
+                      $(CRYPTO)/nist256p1.c $(CRYPTO)/curves.c $(CRYPTO)/ripemd160.c \
+                      $(CRYPTO)/base58.c $(CRYPTO)/blake256.c $(CRYPTO)/blake2b.c \
+                      $(CRYPTO)/hasher.c $(CRYPTO)/address.c $(CRYPTO)/segwit_addr.c \
+                      $(CRYPTO)/base32.c $(CRYPTO)/groestl.c \
+                      $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/hmac.c \
+                      $(CRYPTO)/pbkdf2.c $(CRYPTO)/rfc6979.c $(CRYPTO)/hmac_drbg.c \
+                      $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
+                      $(CRYPTO)/ed25519-donna/ed25519.c \
+                      $(CRYPTO)/ed25519-donna/curve25519-donna-32bit.c \
+                      $(CRYPTO)/ed25519-donna/curve25519-donna-helpers.c \
+                      $(CRYPTO)/ed25519-donna/curve25519-donna-scalarmult-base.c \
+                      $(CRYPTO)/ed25519-donna/ed25519-donna-32bit-tables.c \
+                      $(CRYPTO)/ed25519-donna/ed25519-donna-impl-base.c \
+                      $(CRYPTO)/ed25519-donna/modm-donna-32bit.c \
+                      $(CRYPTO)/ed25519-donna/ed25519-sha3.c \
+                      $(CRYPTO)/ed25519-donna/ed25519-keccak.c
+
+$(BUILD)/test_eip4527_encode: $(EIP4527_ENCODE_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -o $@ $^
+
+$(BUILD)/test_eip4527_encode_asan: $(EIP4527_ENCODE_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CRYPTO)/ed25519-donna -fsanitize=address,undefined \
+	      -fno-sanitize-recover=all -fno-omit-frame-pointer -o $@ $^
+
 $(BUILD)/test_qrcode: test_qrcode.c host_stubs.c ../src/qrcode.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD)/test_ur_decoder: test_ur_decoder.c host_stubs.c ../src/ur-decoder.c ../src/ur.c ../src/ur-fountain.c ../src/cbor.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# The sending half, checked against bc-ur's own parts and then read back by
+# ur-decoder.c with frames dropped.
+UR_ENCODER_SRC := test_ur_encoder.c host_stubs.c ../src/ur-encoder.c ../src/ur-decoder.c ../src/ur.c ../src/ur-fountain.c ../src/cbor.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c
+
+$(BUILD)/test_ur_encoder: $(UR_ENCODER_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+$(BUILD)/test_ur_encoder_asan: $(UR_ENCODER_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all \
+	      -fno-omit-frame-pointer -o $@ $^
+
+# The return path's schedule, against the real QR encoder: every frame of every
+# mode has to fit the version it will be drawn at.
+QR_OUT_SRC := test_qr_out.c host_stubs.c ../src/qr-out.c ../src/ur-encoder.c ../src/ur-decoder.c ../src/ur.c ../src/ur-fountain.c ../src/cbor.c ../src/qrcode.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c
+
+$(BUILD)/test_qr_out: $(QR_OUT_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+$(BUILD)/test_qr_out_asan: $(QR_OUT_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all \
+	      -fno-omit-frame-pointer -o $@ $^
+
+# The renderer itself, into oled-core.c's framebuffer. Pins the address QR to
+# the pixels it drew before the version choice existed.
+$(BUILD)/test_oled_qr: test_oled_qr.c host_stubs.c ../src/oled-core.c ../src/qrcode.c ../src/ur.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD)/test_ur_fountain: test_ur_fountain.c host_stubs.c ../src/ur-fountain.c $(CRYPTO)/sha2.c $(CRYPTO)/memzero.c | $(BUILD)
@@ -206,6 +264,9 @@ $(BUILD)/test_ui: test_ui.c esp_stubs.c host_stubs.c fake_oled.c fake_wallet.c \
                   ../src/entropy.c ../src/session.c ../src/text-entry.c \
                   ../src/eth-tx.c ../src/eth-decode.c ../src/eip712.c ../src/blind-signing.c \
                   ../src/cbor.c ../src/device-wipe.c \
+                  ../src/qr-out.c ../src/ur-encoder.c ../src/ur.c ../src/ur-fountain.c \
+                  ../src/airgap.c ../src/camera.c ../src/ur-decoder.c ../src/eip4527.c \
+                  ../src/eip4527-encode.c \
                   $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                   $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
                   $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
@@ -235,6 +296,9 @@ PROTOCOL_SRC := test_protocol.c esp_stubs.c host_stubs.c fake_usb.c fake_wallet.
                 ../src/protocol.c ../src/cbor.c ../src/session.c ../src/pin.c \
                 ../src/ble-chunk.c ../src/ble.c ../src/ble-name.c ../src/transport.c ../src/entropy.c \
                 ../src/eth-tx.c ../src/eth-decode.c ../src/eip712.c ../src/blind-signing.c \
+                ../src/eip4527.c ../src/eth-tx-rlp.c ../src/eip4527-encode.c \
+                ../src/airgap.c ../src/ur-decoder.c ../src/ur-encoder.c ../src/ur.c \
+                ../src/ur-fountain.c ../src/qr-out.c \
                 $(CRYPTO)/bip39.c $(CRYPTO)/bip39_english.c \
                 $(CRYPTO)/sha2.c $(CRYPTO)/sha3.c $(CRYPTO)/pbkdf2.c \
                 $(CRYPTO)/hmac.c $(CRYPTO)/memzero.c $(CRYPTO)/rand.c \
@@ -304,12 +368,15 @@ $(BUILD)/test_eip4527_asan: test_eip4527.c host_stubs.c ../src/eip4527.c | $(BUI
 	$(CC) $(CFLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all \
 	      -fno-omit-frame-pointer -o $@ $^
 
-asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan $(BUILD)/test_slip39_asan $(BUILD)/test_eip712_asan $(BUILD)/test_eip4527_asan
+asan: $(BUILD)/test_protocol_asan $(BUILD)/test_ble_chunk_asan $(BUILD)/test_slip39_asan $(BUILD)/test_eip712_asan $(BUILD)/test_eip4527_asan $(BUILD)/test_eip4527_encode_asan $(BUILD)/test_ur_encoder_asan $(BUILD)/test_qr_out_asan
 	./$(BUILD)/test_protocol_asan
 	./$(BUILD)/test_eip712_asan
 	./$(BUILD)/test_ble_chunk_asan
 	./$(BUILD)/test_slip39_asan
 	./$(BUILD)/test_eip4527_asan
+	./$(BUILD)/test_eip4527_encode_asan
+	./$(BUILD)/test_ur_encoder_asan
+	./$(BUILD)/test_qr_out_asan
 
 # What the six-digit passkey costs a relay. Measurement, not assertion, so it
 # is built on request and never by `make test`. See passkey_grind.c.
@@ -388,12 +455,14 @@ UR_FOUNTAIN_VECTORS := ../app/packages/core/test/ur-fountain-vectors.json
 
 UR_ASSEMBLY_VECTORS := ../app/packages/core/test/ur-assembly-vectors.json
 EIP4527_VECTORS := ../app/packages/core/test/eip4527-vectors.json
+HDKEY_VECTORS := ../app/packages/core/test/hdkey-vectors.json
 
-ur-conformance: $(BUILD)/test_ur $(BUILD)/test_ur_fountain $(BUILD)/test_ur_decoder $(BUILD)/test_eip4527
+ur-conformance: $(BUILD)/test_ur $(BUILD)/test_ur_fountain $(BUILD)/test_ur_decoder $(BUILD)/test_eip4527 $(BUILD)/test_eip4527_encode
 	./$(BUILD)/test_ur --emit-vectors $(UR_VECTORS)
 	./$(BUILD)/test_ur_fountain --emit-vectors $(UR_FOUNTAIN_VECTORS)
 	./$(BUILD)/test_ur_decoder --emit-vectors $(UR_ASSEMBLY_VECTORS)
 	./$(BUILD)/test_eip4527 --emit-vectors $(EIP4527_VECTORS)
+	./$(BUILD)/test_eip4527_encode --emit-vectors $(HDKEY_VECTORS)
 
 clean:
 	rm -rf $(BUILD)
