@@ -1178,3 +1178,51 @@ transaction — and that is what the decoder will accept. If a Keystone or
 AirGap sends something else, the result must be a clear refusal naming the
 field, never a silent misparse. This is written down so the first failure is
 recognised as this, and not chased as a camera fault.
+
+---
+
+# Part 6: scope, settled
+
+## 30. The cloak is for every board, not just the CAM
+
+Earlier sections treat the cloak as a CAM-board feature because the separated
+vault is. They are different things and should not be coupled: **the PIN
+launcher ships on all three boards.** The reference S3 and the Pixie keep their
+flash vault and still get a device that does not announce itself as a wallet.
+
+The Pixie makes the case by itself — it already has a Space Invaders-style game
+in the Firefly firmware, on a 240x240 panel with four buttons. A wallet that
+boots into a game it can actually play is more convincing than one that boots
+into a settings screen nobody would open.
+
+### Losing the game as the way in
+
+A variant worth building rather than only the settings screens of section 23:
+**play, lose, and the game-over screen asks for something.** Initials for a high
+score table, a level to restart at, a difficulty for the next run. That is where
+the digits go.
+
+Why it is better than a settings page: nobody is surprised by a prompt after a
+game over, the prompt is *expected* rather than merely plausible, and a wrong
+entry produces a high-score entry or a restarted game, which is what the screen
+was going to do anyway. It also gives a reason to sit there entering digits that
+survives someone watching.
+
+The same six-slot rule from section 23 applies: three initials is not a PIN.
+
+## 31. Companions, and what each one is for
+
+| Client | Transports | Cloak |
+|---|---|---|
+| **Desktop** — Linux, Windows, macOS | QR airgap, USB, BLE | n/a |
+| **Android** — a port of the desktop app | QR airgap, USB, BLE | n/a |
+| **Chrome extension** | USB, BLE, **or QR pairing** | **none, deliberately** |
+
+The cloak is a property of the **device**, not of the companions. A companion
+runs on a general-purpose computer where hiding a wallet achieves nothing: the
+browser history, the extension list and the window title all say what it is.
+
+The extension therefore stays what it is — straight pairing over USB or BLE, or
+an airgapped pairing for the CAM board, feeding a dapp in the browser through
+EIP-6963. No games, no disguise, no mini-apps. Its job is to be the thing a
+website talks to, and the device is what refuses.

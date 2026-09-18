@@ -15,6 +15,10 @@ drops a board is a release we do not ship.
 | ESP32-S3-N16R8 (reference, no cam) | **supported today** | USB, BLE | flash |
 | Firefly Pixie (ESP32-C3) | **supported today** | BLE | flash |
 | ESP32-S3-N16R8 CAM + OV5640 | **new** | QR default, USB/BLE on request | microSD |
+
+The **PIN launcher ships on all three boards**, not only the CAM: the cloak and
+the separated vault are different features and were coupled by accident. See
+RESEARCH-AIRGAP-VAULT section 30.
 | ESP32-S3 mini / C3 mini | **researching** | unknown | unknown |
 
 The mini boards are a research item, not a commitment. They are listed so the
