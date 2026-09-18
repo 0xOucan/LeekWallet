@@ -648,10 +648,16 @@ that gets signed.
 
 Three levels of answer, and the middle one is worth building.
 
-**1. Display it.** The device decodes the nonce and shows it. Costs nothing and
-catches the obvious case where a user is signing something they did not expect.
+**0. It is already solved, at the companion.** The companion reads
+`eth_getTransactionCount(address, "pending")` from its RPC provider when it
+builds the transaction, exactly as any wallet does. Nothing is stored and
+nothing is outstanding. Everything below is optional hardening on top of a
+working answer.
 
-**2. Keep a nonce ledger on the device.** Store the highest nonce signed per
+**1. Display it. This is what ships.** The nonce is in the RLP, so the device
+decodes it and puts it on screen for free. No state, no storage.
+
+**2. Keep a nonce ledger on the device — ROADMAP, not now.** Store the highest nonce signed per
 `(chain id, address)` in the vault, and compare before signing:
 
 | Observed | Meaning | Device does |
@@ -660,8 +666,13 @@ catches the obvious case where a user is signing something they did not expect.
 | already signed | **reuse** | refuse, or warn hard and require a second confirmation |
 | a gap ahead | companion skipped, or another wallet is spending | warn, allow |
 
-This is worth building because it defends against a real attack, not just a
-mistake. A malicious companion can ask for two different transactions at the
+This is **not** scheduled. It defends against a malicious companion, which is
+not the threat model for a wallet used at home and at hackathons on testnets,
+and it is the only part of this design that would need new vault state. Level 1
+costs nothing and is what ships. This paragraph exists so the reason is on
+record if real funds ever change the calculation.
+
+The attack it would defend against, for that record: A malicious companion can ask for two different transactions at the
 **same nonce**: the user approves the harmless one, and the attacker broadcasts
 the other. Only one can confirm, and the attacker chooses which. A device that
 remembers refuses the second request without needing a chain. It is a few
