@@ -1043,3 +1043,53 @@ about the board, so provenance assurance gets worse, not better. Open source
 does not make the binary on the device honest, which is what reproducible
 builds and signed releases are for. And invasive physical attack is explicitly
 out of scope.
+
+## 25. Where the seed can live, per board
+
+Three modes on the CAM board, one on the others. The mode is chosen at setup
+and shown on screen whenever it is not the safe one.
+
+| Mode | Seed lives | Boards | Default |
+|---|---|---|---|
+| **Separated vault** | encrypted, on the microSD | **CAM only** | yes, on CAM |
+| **On-board vault** | encrypted, in flash, as today | all three | yes, on S3 and Pixie |
+| **Stateless** | nowhere; entered per session | all three | no |
+
+**Separated vault** is the CAM board's reason to exist. It is not offered on the
+reference S3 or the Pixie, because neither has a card slot and pretending
+otherwise would be a menu entry that cannot work.
+
+**On-board vault** is exactly what ships today, and stays supported forever.
+On the CAM board it is a deliberate downgrade, so it is labelled one: the
+device says **"seed stored on the board"** in settings and at unlock, not a
+scare screen, just an accurate standing statement. A user on a bench with no
+card should be able to work, and should know which mode they are in.
+
+**Stateless** keeps nothing at all. The seed is entered, used, and zeroised on
+exit or power loss. Slow and deliberate, and the right mode for travelling: a
+device carrying nothing is a device with nothing to surrender.
+
+### The cloak choice lives on the board, always
+
+It has to. The device boots into the cloak app **before** any card is read, so a
+preference stored on the card could not be honoured on the boot where it
+matters most - and a device that shows a different face depending on whether a
+card is in is worse than no cloak at all. So the chosen app, and its
+configuration, sit in NVS on the board with the rest of the device settings.
+
+That has a consequence worth being clear about: **the cloak setting is not
+secret.** It is stored unencrypted, because it must be readable before any
+credential exists. Someone reading the flash learns which app the device
+pretends to be. They do not learn the PIN, and without the card they learn
+nothing else at all.
+
+### Digits, not real ranges
+
+Each of the six slots accepts **0-9**, rather than being clamped to what a
+clock would allow. That is 1,000,000 combinations instead of 86,400.
+
+One honest caveat, and then it is the user's call: a **clock** reading 97:64:88
+is not a convincing clock, so realism and entropy pull against each other there.
+A **timer** does not have that problem, since counting down from 99:59:59 is
+ordinary. If the clock face is ever the chosen cloak, clamping it to real time
+and accepting 86,400 is the more convincing option.
