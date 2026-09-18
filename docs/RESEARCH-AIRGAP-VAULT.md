@@ -950,3 +950,69 @@ Two engineering constraints that follow, and they matter more than the size:
 - **There is no head pointer.** The head is found by scanning for the highest
   sequence number at startup. A separate pointer is one more thing that can tear
   on a power cut and disagree with the data it points at.
+
+## 23. Choosing a cloak, and what each one can carry
+
+The cloak app is a setting. Whichever is chosen is what the device boots into,
+every time, so the device is consistent to anyone who picks it up rather than
+being a wallet wearing a costume it takes off.
+
+Each app defines two things: a **digit alphabet** and a **submit gesture**. The
+PIN is entered through those, and a wrong value does the ordinary thing the app
+would have done anyway. There is never a "wrong PIN" message, because there is
+nothing on screen that looks like a PIN.
+
+| App | Entry | Digits | Combinations | Submit is |
+|---|---|---|---|---|
+| **Calculator** | type a number | any length, 0-9 | **unbounded** | pressing `=` |
+| **Clock** | set HH:MM:SS | 6, constrained | 86,400 | confirming seconds |
+| **Timer** | countdown MM:SS | 4, constrained | 3,600 | starting the timer |
+| **Dice** | N dice, M sides, S rolls | 3 | ~1,000 | rolling |
+| **Snake** | difficulty, lives, speed | 3, each 1-9 | 729 | starting the game |
+| **Metronome** | BPM, 40-240 | 3 | 201 | starting the beat |
+
+**The calculator is the strongest and should be the default.** It is the only
+one with no ceiling: a fourteen-digit PIN looks exactly like arithmetic, and a
+wrong entry simply computes a number. The clock is the friendliest. Snake and
+the metronome are the most fun and the weakest, and the UI must say so when one
+is picked rather than letting someone discover it later.
+
+Say the entropy out loud, because it is the part that is easy to get wrong:
+**729 combinations is not a PIN, it is a speed bump.** What protects the vault
+is Argon2id making each guess cost about a second and a BIP-39 passphrase
+sitting outside the device entirely. The cloak buys deniability, not strength,
+and a user who picks Snake and no passphrase should be told plainly that they
+have chosen a fun lock.
+
+Apps that are real either way and need no cloak duty: a QR tool, a flashlight,
+and a dice roller that is genuinely used for seed generation.
+
+## 24. What the README has to say, once this ships
+
+Not written yet - the README is being edited elsewhere as the hackathon
+material comes out. Recording the argument here so it goes in intact.
+
+**Why there is no secure element, stated without overclaiming.** Not "secure
+elements are pointless": they are not, and on resistance to invasive physical
+key extraction a certified one wins. The argument is that a secure element
+protects a secret inside a chip and does nothing about the database that knows
+who bought the chip. Ledger's 2020 breach exposed roughly 272,000 records with
+names, postal addresses and phone numbers while no device or seed was
+compromised, and tampered replacement devices were then mailed to people on
+that list. Trezor's 2024 support incident exposed names and email addresses and
+an attacker contacted 40 users asking for their recovery seeds. A generic
+ESP32-S3 bought with cash at an electronics shop carries no such association.
+
+**And what replaces it here.** Separation, not silicon: the vault lives on a
+removable microSD card, so **a device without its card holds no seed, no xpub,
+no address list and nothing to extract**. Argon2id makes a copied card
+expensive to attack and a BIP-39 passphrase makes it useless. The ATECC608B is
+not cancelled by this argument and stays on the roadmap for the one thing
+neither approach gives: a monotonic attempt counter that reflashing cannot
+reset.
+
+**The honest costs, in the same breath.** Buying anywhere means knowing less
+about the board, so provenance assurance gets worse, not better. Open source
+does not make the binary on the device honest, which is what reproducible
+builds and signed releases are for. And invasive physical attack is explicitly
+out of scope.
