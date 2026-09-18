@@ -145,10 +145,9 @@ Copyright © 2025 Degensoft Ltd. Full text ships in the package: `LICENSE`.
 
 ### Why it is not a dependency
 
-`docs/apps/AQUA-1INCH.md` notes that calling the deployed Aqua contracts is
-unaffected by this licence. That is right, and it is what the app does. Putting
-the SDK *into a signed release binary* is a different act, and it fails on five
-independent clauses:
+Calling the deployed Aqua contracts is unaffected by this licence, and that is
+all the app that used to be here ever did. Putting the SDK *into a signed
+release binary* is a different act, and it fails on five independent clauses:
 
 - **§2.1 vs §1.7.** The grant covers distributing *unmodified* source or object
   forms. §1.7 defines Modification to include static or dynamic linking and

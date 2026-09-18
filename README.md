@@ -1105,10 +1105,9 @@ this are worth more to the project than stars.
 
 ---
 
-Built for ETHGlobal's Continuity Track: see
-**[ETHGLOBAL.md](ETHGLOBAL.md)** for what was built during the event, which
-sponsor tracks it answers, and links to the on-chain transactions and the code
-behind each one.
+Built during ETHGlobal's Continuity Track. The demo apps written for that
+event have since been removed from the wallet; the device, its firmware and
+the companion shell are what remains and what this README describes.
 
 ---
 
