@@ -428,3 +428,91 @@ header pin to confirm the meter works first.
    Measure before connecting anything of your own to those nets.
 
 Record the results in this document before step 4 of section 6.
+
+---
+
+# Part 3: what Tomb actually does, and the radio rule
+
+## 14. Anatomy of a Tomb
+
+Tomb is a zsh script. It invents no cryptography; it orchestrates `cryptsetup`,
+GnuPG and the kernel loop device. The structure is worth knowing exactly,
+because **the structure is the part that ports**.
+
+```
+tomb dig     secret.tomb filled with /dev/urandom
+             (so used and free space are indistinguishable)
+
+tomb forge   random key material
+             encrypted with GnuPG symmetric:
+               AES-256, SHA-512 s2k, iterated+salted, max iteration count
+             -> secret.tomb.key, an ASCII-armoured file
+
+tomb lock    losetup secret.tomb
+             cryptsetup luksFormat, using the *decrypted key file contents*
+             as the LUKS passphrase  (aes-xts-plain64, 512-bit key by default)
+             mkfs.ext4 inside
+
+tomb open    prompt passphrase -> gpg decrypts the key file
+             -> cryptsetup luksOpen -> mount
+tomb slam    kill holders, unmount, close, forget
+```
+
+So there are **two chained layers**, and this is the whole idea:
+
+```
+passphrase ──GPG s2k (salted, heavily iterated)──► key file contents
+                                                        │
+                                          LUKS keyslot (PBKDF2)
+                                                        ▼
+                                              LUKS master key
+                                                        │
+                                            AES-XTS over the volume
+```
+
+The passphrase never touches the volume's master key. It unlocks a *stored
+secret*, and that secret unlocks the master key. That indirection is exactly
+why changing the passphrase is cheap and why the key file can be kept
+separately from the tomb, on a different USB stick.
+
+That is the same shape as section 8, and it is what we are reimplementing:
+Argon2id in place of GPG's s2k, AES-256-GCM in place of AES-XTS, our own header
+in place of LUKS's. Nothing is copied; the architecture is convergent because
+it is the right architecture.
+
+Two further habits worth stealing:
+
+- **`dig` fills the file with random first.** Our vault file should be a fixed
+  size, pre-filled with random, so its contents reveal nothing about how much
+  is stored. It still looks like high-entropy data, which section 11 already
+  admits.
+- **`slam` exists.** Closing is a first-class operation that assumes something
+  went wrong. Our equivalent is zeroising the key on card eject, on timeout and
+  on exit, and it should be written before the opening path is.
+
+One thing **not** to steal: Tomb can hide the key file inside a JPEG with
+steghide. It is the same operational-not-cryptographic trade as our cloak, and
+steghide is old and weakly analysed. If a decoy is ever wanted, it should be
+designed deliberately rather than inherited.
+
+Two honest caveats on this section: defaults such as the exact cipher string
+have varied across Tomb versions, and Tomb has optional extra PBKDF2 stretching
+on the key file. Neither changes the shape above, which is what we use.
+
+## 15. The radio rule
+
+The ESP32-S3 has Wi-Fi 802.11 b/g/n and Bluetooth LE 5 sharing one antenna.
+
+**An airgapped wallet with a working radio is not airgapped.** So:
+
+- Wi-Fi and Bluetooth are **compiled out** of the wallet build, not merely left
+  uninitialised. `CONFIG_ESP_WIFI_ENABLED=n` and the Bluetooth stack disabled
+  in sdkconfig, so the code is absent from the image rather than dormant.
+- This is checkable by a third party: the release notes can state the symbols
+  are not in the binary, and a reproducible build lets anyone confirm it.
+- BLE therefore stays a **separate build**, not a runtime toggle. A user who
+  wants BLE flashes the BLE image and knowingly gives up the air gap.
+
+Same reasoning for the relevant SoC facts: the S3's AES and SHA accelerators do
+help the vault, and its ECC accelerator covers P-256 rather than **secp256k1**,
+so Ethereum signing stays in software either way — as it already is.
