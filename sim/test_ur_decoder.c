@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <stdlib.h>
+
 #include "ur-decoder.h"
 
 static int failures = 0;
@@ -203,9 +205,77 @@ static void test_garbage_is_refused(void)
     CHECK(r == UR_PART_REJECTED, "a corrupted part was accepted");
 }
 
-int main(void)
+
+/*
+ * The assembly leg of the shared corpus.
+ *
+ * Unlike the other two, these part strings did not come from our own encoder —
+ * they were emitted by Blockchain Commons' UREncoder and are embedded above.
+ * What this mode records is what OUR decoder makes of them, so the TypeScript
+ * mirror is checked against the same two things at once: the reference's
+ * output, and this decoder's reading of it.
+ */
+static int emit_vectors(const char *path)
+{
+    FILE *f = fopen(path, "w");
+    if (f == NULL) {
+        perror(path);
+        return 1;
+    }
+
+    ur_decoder_init(&dec, fragments, sizeof fragments, mixed, sizeof mixed);
+
+    /* Assemble once so the expected message is this decoder's answer, not a
+       constant somebody typed. */
+    UrPartResult r = UR_PART_REJECTED;
+    for (size_t i = 0; i < N_PARTS && r != UR_PART_COMPLETE; i++) {
+        r = ur_decoder_receive(&dec, PARTS[i], strlen(PARTS[i]));
+    }
+    if (r != UR_PART_COMPLETE) {
+        fclose(f);
+        return 1;
+    }
+    size_t n = 0;
+    const uint8_t *m = ur_decoder_message(&dec, &n);
+
+    fprintf(f, "{\n  \"messageHex\": \"");
+    for (size_t i = 0; i < n; i++) {
+        fprintf(f, "%02x", m[i]);
+    }
+    fprintf(f, "\",\n  \"parts\": [\n");
+    for (size_t i = 0; i < N_PARTS; i++) {
+        fprintf(f, "    \"%s\"%s\n", PARTS[i], i + 1 == N_PARTS ? "" : ",");
+    }
+    fprintf(f, "  ],\n");
+
+    ur_decoder_reset(&dec);
+    r = ur_decoder_receive(&dec, SINGLE, strlen(SINGLE));
+    if (r != UR_PART_COMPLETE) {
+        fclose(f);
+        return 1;
+    }
+    m = ur_decoder_message(&dec, &n);
+    fprintf(f, "  \"single\": \"%s\",\n  \"singleHex\": \"", SINGLE);
+    for (size_t i = 0; i < n; i++) {
+        fprintf(f, "%02x", m[i]);
+    }
+    fprintf(f, "\"\n}\n");
+
+    if (fclose(f) != 0) {
+        perror(path);
+        return 1;
+    }
+    printf("wrote %zu assembly parts to %s\n", N_PARTS, path);
+    return 0;
+}
+
+int main(int argc, char **argv)
 {
     ur_decoder_init(&dec, fragments, sizeof fragments, mixed, sizeof mixed);
+
+    if (argc == 3 && strcmp(argv[1], "--emit-vectors") == 0) {
+        return emit_vectors(argv[2]);
+    }
 
     test_in_order();
     test_starting_late();

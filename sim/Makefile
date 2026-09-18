@@ -374,9 +374,12 @@ UR_VECTORS := ../app/packages/core/test/ur-vectors.json
 
 UR_FOUNTAIN_VECTORS := ../app/packages/core/test/ur-fountain-vectors.json
 
-ur-conformance: $(BUILD)/test_ur $(BUILD)/test_ur_fountain
+UR_ASSEMBLY_VECTORS := ../app/packages/core/test/ur-assembly-vectors.json
+
+ur-conformance: $(BUILD)/test_ur $(BUILD)/test_ur_fountain $(BUILD)/test_ur_decoder
 	./$(BUILD)/test_ur --emit-vectors $(UR_VECTORS)
 	./$(BUILD)/test_ur_fountain --emit-vectors $(UR_FOUNTAIN_VECTORS)
+	./$(BUILD)/test_ur_decoder --emit-vectors $(UR_ASSEMBLY_VECTORS)
 
 clean:
 	rm -rf $(BUILD)
