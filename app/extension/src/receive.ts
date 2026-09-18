@@ -34,20 +34,25 @@
 import qrcodegen from "qrcode-generator";
 
 /**
- * An address as a scannable QR, as an SVG element.
+ * Any text as a QR, as an SVG element.
  *
- * Error correction M and a 4-module quiet zone: a phone camera pointed at a
- * laptop screen has good light and a short distance, and a smaller matrix
- * reads faster than a denser one at this size.
+ * `mode` is for the caller who knows the text's alphabet. An uppercase UR is
+ * entirely within QR's alphanumeric set, which packs 5.5 bits a character
+ * instead of 8 - a third fewer modules for the same frame, and module size is
+ * what the device's small camera is short of. The library's default is byte
+ * mode, which is always correct and never smallest, so nothing here guesses.
  *
- * The payload is the bare address, not an EIP-681 URI. A URI carries a chain
- * and often an amount, and a QR that silently names a chain is one a payer can
- * follow onto the wrong network. The chain is on the screen in words instead,
- * where the person reads it.
+ * Error correction M and a 4-module quiet zone, as on the desktop: a camera
+ * pointed at a laptop screen has good light and a short distance, and a
+ * smaller matrix reads faster than a denser one at this size.
  */
-export function addressQr(address: string, doc: Document = document): SVGSVGElement {
+export function qrSvg(
+  text: string,
+  opts: { size: number; label: string; mode?: "Alphanumeric" },
+  doc: Document = document,
+): SVGSVGElement {
   const qr = qrcodegen(0, "M");
-  qr.addData(address);
+  qr.addData(text, opts.mode);
   qr.make();
   const n = qr.getModuleCount();
   const quiet = 4;
@@ -55,10 +60,10 @@ export function addressQr(address: string, doc: Document = document): SVGSVGElem
 
   const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
-  svg.setAttribute("width", "160");
-  svg.setAttribute("height", "160");
+  svg.setAttribute("width", String(opts.size));
+  svg.setAttribute("height", String(opts.size));
   svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", `QR code for ${address}`);
+  svg.setAttribute("aria-label", opts.label);
 
   /* White plate first: a transparent QR on a dark popup is unreadable, and a
    * QR nobody can scan is worse than no QR because it looks like one. */
@@ -69,7 +74,7 @@ export function addressQr(address: string, doc: Document = document): SVGSVGElem
   svg.append(bg);
 
   /* One path for every dark module rather than one rect each: a 40-module code
-   * is 1600 elements, and the popup redraws on every state change. */
+   * is 1600 elements, and an animated UR redraws several times a second. */
   let d = "";
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
@@ -81,4 +86,16 @@ export function addressQr(address: string, doc: Document = document): SVGSVGElem
   path.setAttribute("fill", "#000000");
   svg.append(path);
   return svg;
+}
+
+/**
+ * An address as a scannable QR.
+ *
+ * The payload is the bare address, not an EIP-681 URI. A URI carries a chain
+ * and often an amount, and a QR that silently names a chain is one a payer can
+ * follow onto the wrong network. The chain is on the screen in words instead,
+ * where the person reads it.
+ */
+export function addressQr(address: string, doc: Document = document): SVGSVGElement {
+  return qrSvg(address, { size: 160, label: `QR code for ${address}` }, doc);
 }

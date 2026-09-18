@@ -16,7 +16,7 @@
     "@noble/curves": "1.9.1",
     "@noble/hashes": "1.8.0",
     "viem": "^2.55.13",
-    "qrcode-generator": "^1.4.4"
+    "qrcode-generator": "2.0.4"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.287",
