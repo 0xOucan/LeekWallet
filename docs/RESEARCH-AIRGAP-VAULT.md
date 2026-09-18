@@ -520,3 +520,62 @@ The ESP32-S3 has Wi-Fi 802.11 b/g/n and Bluetooth LE 5 sharing one antenna.
 Same reasoning for the relevant SoC facts: the S3's AES and SHA accelerators do
 help the vault, and its ECC accelerator covers P-256 rather than **secp256k1**,
 so Ethereum signing stays in software either way — as it already is.
+
+---
+
+# Part 4: the device keeps the decoder
+
+## 16. Raw calldata crosses the gap, nothing else
+
+`eth-sign-request` carries the **unsigned transaction itself**: chain id, to,
+value, gas, nonce and the full `data` field, as bytes. It does not carry a
+description of the transaction. That is what makes QR a transport change rather
+than a security change:
+
+```
+companion                                         device
+──────────                                        ──────
+build unsigned tx                                 
+simulate it, preview it, label it  ── none of ──►  (not sent)
+                                      this          
+RLP bytes + derivation path        ──── QR ─────►  eth-sign-request
+                                                        │
+                                                   eth-decode.c
+                                                   23 signatures, two gates
+                                                        │
+                                                   draw it on OUR screen
+                                                        │
+                                                   buttons: approve / reject
+                                                        │
+signature  ◄──────────── QR ─────────────────────  eth-signature
+```
+
+The existing decoder does not change at all. `eth-decode.c`, the 23 signatures,
+the two-gate decode and the 60 shared vectors carry over untouched, because
+they operate on calldata and calldata is exactly what arrives.
+
+**The rules that make this hold, and they are the whole point:**
+
+1. **Nothing the companion says about the transaction is displayed.** No label,
+   no token name, no fiat value, no simulation result, no ERC-7730 text is read
+   off the wire and shown. If it is on the device screen, the device derived it
+   from the bytes.
+2. **What cannot be decoded is refused.** Unchanged from today. A transport that
+   is easier to use must not become a reason to relax this.
+3. **The chain id comes from the signed payload**, never from a side channel,
+   so the screen cannot say Base while the signature is valid on mainnet.
+4. **The derivation path is verified, not trusted.** `eth-sign-request` carries
+   a path and an address. The device derives the address from the path itself
+   and refuses if they disagree, rather than displaying the address it was
+   handed.
+5. **The signature covers exactly what was displayed.** Decode, display and sign
+   all read one buffer, and it is not re-parsed between approval and signing.
+
+Companion-side simulation and preview stay, and they are genuinely useful — but
+they are a convenience for the person at the computer, not an input to the
+device. The device screen is authoritative, and the README already says the
+user is responsible for reading it.
+
+This is also the honest answer to "is QR less safe than USB". It is not, and it
+is slightly better: the payload is self-contained, there is no session, no
+pairing, no driver and no bidirectional channel for a companion to probe.
