@@ -738,3 +738,51 @@ That leaves the device's nonce ledger (section 18) as **defence in depth
 against a malicious companion**, not as the primary mechanism — and it is keyed
 on `(chain id, account)`, which is the same set the handshake pinned. The two
 halves line up because both are scoped by the accounts the user chose.
+
+## 21. No pairing at all: ask for the address when you need it
+
+Supersedes the default in section 20. There is no pairing step, no stored
+extended key, and nothing the companion has to keep.
+
+```
+companion needs to act for an account
+        │
+        ├─► "show me the address"      ── user picks it on the DEVICE
+        │
+        │   device shows one QR: address + its derivation path
+        │
+        ├─► companion reads it, queries its RPC provider:
+        │        eth_getTransactionCount(address, "pending")
+        │        eth_getBalance, gas, token data
+        │
+        ├─► builds the unsigned tx, shows it as animated QR
+        │
+        └─► device decodes, verifies, displays, signs
+```
+
+The companion holds a **plain address** for as long as it is working, which is
+the least it can possibly hold and still be a wallet. No xpub, no account list,
+no derived future addresses, no secret, nothing to leak later, nothing to keep
+in sync, and no state that can go stale against a device that has been
+restored, re-ordered or re-passphrased.
+
+The nonce follows for free: it comes from the RPC provider like any wallet's
+does, per address, at the moment it is needed. **Nothing is stored to make the
+nonce work.**
+
+**Why the path travels with the address.** The QR carries both, and the
+companion echoes the path back inside `eth-sign-request`. The device then
+re-derives the address from that path and refuses if it does not match the
+`from` it was given — rule 4 of section 16, unchanged. Carrying the path is what
+keeps the device from having to search its accounts to find which key signs,
+and it leaks nothing: a path beside an address the user just chose to reveal
+tells an observer nothing new.
+
+`crypto-multi-accounts` from section 20 stays available for users who want a
+companion that watches several accounts at once without rescanning. It becomes
+a convenience, not the default, and it is the user's explicit choice to hand
+over more.
+
+This is the same principle as the vault on a removable card and the device that
+holds nothing without it: **keep the parts separate, and make the state
+somebody else holds as small as it can be.**
