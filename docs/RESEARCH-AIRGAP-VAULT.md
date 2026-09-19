@@ -1548,3 +1548,33 @@ The diagnostics report `State: QR (air-gapped)` and `Link: USB cable
 (selected)` at the same time. Both are true of different things, the air-gap
 session and the transport selector, but printed together they read as a
 contradiction in the one screen a user is asked to trust.
+
+## 42. Who does the air gap, settled by what the optics allow
+
+Section 40 closed the laptop-webcam path and section 41 opened the phone one.
+That decides which client does what, and it needs no new hardware:
+
+| Client | Air-gapped QR | Cable / radio |
+|---|---|---|
+| **Android companion** | **yes, the air-gap client** | USB OTG, BLE |
+| Desktop companion | no: its webcam cannot read the panel | USB, BLE |
+| Chrome extension | no, same reason | USB, BLE |
+
+**A desktop user is not shut out, and does not need the desktop companion.**
+The dapp runs in the PC browser, WalletConnect shows its pairing QR on a large
+bright screen, and the **phone** scans that - an ordinary QR at ordinary size,
+nothing to do with the 0.96" panel. From there the phone is the wallet, and the
+air gap runs phone-to-device: the device's camera reads the request off the
+phone's screen, and the phone's camera reads the signature off the panel. The
+companion already pairs WalletConnect by scanning or by a pasted `wc:` URI.
+
+So the desktop's role is the dapp, not the signer, and the extension's job
+stays what it was: a browser provider over USB or BLE.
+
+### The requirement to put in the build guide
+
+Not "an Android phone" but **an Android phone whose camera focuses at 10-20 cm**.
+The Motorola Edge 50 Neo does; the Galaxy Tab A7 does not, and a user holding
+one would otherwise conclude the wallet is broken. A larger 128x64 panel (1.3"
+or 2.42", same driver, no firmware change) is what widens that requirement, and
+it is also what would let the extension and desktop read the panel at all.
