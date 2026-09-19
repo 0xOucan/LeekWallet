@@ -29,6 +29,8 @@
 #include "esp_log.h"
 #include "quirc.h"
 
+#include "viewfinder.h"
+
 static const char *TAG = "camera";
 
 /*
@@ -45,6 +47,18 @@ static const char *TAG = "camera";
 #define FRAME_W     320
 #define FRAME_H     240
 
+/*
+ * How often a captured frame is also turned into a preview.
+ *
+ * No frame is ever *spent* on the viewfinder: the preview is rendered from the
+ * same frame that was just handed to quirc, so the decode loop never gives up
+ * a capture for it. What it does cost is the downsample itself - 2 x 7168
+ * sampled reads - on one frame in four. That ratio is here rather than inline
+ * so it can be named in a test and moved with one edit if the bench says the
+ * preview is measurably slowing the decode rate.
+ */
+#define PREVIEW_EVERY   4
+
 static struct quirc *quirc_ctx;
 static bool running;
 
@@ -56,6 +70,10 @@ static bool running;
  */
 static struct quirc_code scan_code;
 static struct quirc_data scan_data;
+
+static uint8_t  preview[VIEWFINDER_BYTES];
+static bool     preview_fresh;
+static uint32_t preview_tick;
 
 static uint32_t stat_frames;
 static uint32_t stat_decodes;
@@ -127,6 +145,8 @@ bool camera_start(void)
         return false;
     }
 
+    preview_fresh = false;
+    preview_tick = 0;
     stat_frames = 0;
     stat_decodes = 0;
     running = true;
@@ -143,6 +163,8 @@ void camera_stop(void)
     esp_camera_deinit();
     quirc_destroy(quirc_ctx);
     quirc_ctx = NULL;
+    preview_fresh = false;
+    memset(preview, 0, sizeof preview);
 }
 
 bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
@@ -161,6 +183,11 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
 
     if (fb->format == PIXFORMAT_GRAYSCALE &&
         fb->width == FRAME_W && fb->height == FRAME_H) {
+
+        if (++preview_tick % PREVIEW_EVERY == 0) {
+            viewfinder_render(fb->buf, FRAME_W, FRAME_H, preview);
+            preview_fresh = true;
+        }
 
         /*
          * One copy, and it is not avoidable through quirc's public API: the
@@ -214,6 +241,15 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
     return got;
 }
 
+const uint8_t *camera_preview_take(void)
+{
+    if (!preview_fresh) {
+        return NULL;
+    }
+    preview_fresh = false;
+    return preview;
+}
+
 void camera_stats(uint32_t *frames, uint32_t *decodes)
 {
     if (frames != NULL)  { *frames = stat_frames; }
@@ -241,6 +277,8 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
     (void)out_len;
     return false;
 }
+
+const uint8_t *camera_preview_take(void) { return NULL; }
 
 void camera_stats(uint32_t *frames, uint32_t *decodes)
 {

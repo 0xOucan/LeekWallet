@@ -32,6 +32,16 @@ void camera_stop(void);
 bool camera_next_qr(char *out, size_t out_size, size_t *out_len);
 
 /**
+ * The newest viewfinder bitmap, if one has been rendered since the last call.
+ *
+ * VIEWFINDER_BYTES of SSD1306 page layout, ready to blit; NULL when nothing is
+ * new, so a caller that polls faster than frames arrive redraws nothing. It is
+ * produced from raw sensor pixels and from nothing else: no decoded byte has a
+ * path to the panel through here.
+ */
+const uint8_t *camera_preview_take(void);
+
+/**
  * Frames captured and QR symbols decoded since camera_start().
  *
  * For the on-device decode-rate bench (research/qr-spike). Counted in the same
