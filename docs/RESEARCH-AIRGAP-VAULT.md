@@ -1506,3 +1506,45 @@ No combination decoded from the laptop webcam. The phone read the same frames.
 The panel-side changes stay, because they cost nothing and reduce glare for
 any reader, but the laptop-webcam path is closed on this panel: it is a focus
 limit, and no firmware or processing recovers detail the lens never resolved.
+
+## 41. Pairing by QR, working on hardware
+
+2026-09-19, CAM board to an Android phone, over the air:
+
+```
+scan: camera 1080x1920, focus continuous
+paired by QR: 10 watch-only addresses under m/44'/60'/0'
+```
+
+The phone read the animated `ur:crypto-hdkey` off the 0.96" panel in its
+default v3 x2 framed mode, assembled the fountain parts, decoded the account
+key and derived ten addresses. The device's account and the phone's list agree.
+That is the whole handshake of section 35, end to end, through optics.
+
+### Which camera, precisely
+
+| Device | Reads the panel? |
+|---|---|
+| Motorola Edge 50 Neo (autofocus) | **yes** |
+| Samsung Galaxy Tab A7 SM-T500 | **no** — no autofocus |
+| Laptop integrated webcam (fixed focus) | no, see section 40 |
+
+So the requirement is not "a phone", it is **a camera that can focus at 10-20
+cm**. Most phones can; many tablets and all fixed-focus webcams cannot. The
+build guide has to say that, because "use your phone" would strand anyone whose
+device is like the Tab A7.
+
+### What this leaves
+
+The companion built a real Sepolia transaction against the paired account, read
+the nonce and fees, showed its simulation as untrusted, and waited for the
+device to scan the request. The device could not: its camera is still the stub
+from phase 2a. That is the only remaining gap in the loop, and it is the
+direction with margin — a big bright screen read by a camera we control.
+
+### One cosmetic fault to fix
+
+The diagnostics report `State: QR (air-gapped)` and `Link: USB cable
+(selected)` at the same time. Both are true of different things, the air-gap
+session and the transport selector, but printed together they read as a
+contradiction in the one screen a user is asked to trust.
