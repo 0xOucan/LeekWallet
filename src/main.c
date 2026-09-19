@@ -42,6 +42,7 @@
 #include "protocol.h"
 #include "transport.h"
 #include "airgap.h"
+#include "qr-bench.h"
 
 static const char *TAG = "leekwallet";
 
@@ -51,6 +52,15 @@ void app_main(void)
     ESP_LOGI(TAG, "LeekWallet - %s", BOARD_NAME);
     ESP_LOGI(TAG, "Hardware wallet with HD support");
     ESP_LOGI(TAG, "========================================");
+
+#if LEEK_QR_BENCH
+    /* An instrument build. It takes the camera and never gives it back, so
+       nothing below this point runs - no wallet, no UI, no transports. The
+       number it prints is what research/qr-spike could not measure without a
+       board; see research/qr-spike/README.md. */
+    qr_bench_start();
+    return;
+#endif
 
     /* Initialize NVS (required for wallet and PIN storage) */
     esp_err_t ret = nvs_flash_init();
