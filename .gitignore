@@ -82,3 +82,6 @@ DEMO-SCRIPT.md
 research/qr-spike/quirc/
 research/qr-spike/frames.gray
 research/qr-spike/bench
+
+# Python bytecode from scripts/board-model.py
+__pycache__/

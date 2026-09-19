@@ -58,7 +58,19 @@ export { firstAccepted, QR_UNAVAILABLE, qrScanningAvailable, qrUnavailable, scan
  * 'self' like everything else. */
 import zxingWasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";
 
-prepareZXingModule({ overrides: { locateFile: () => zxingWasmUrl } });
+/* `fireImmediately`: compile the decoder now, when this module loads, rather
+ * than inside the first frame of the first scan. Left lazy, the compile landed
+ * on the click that opened the camera and froze the desktop window for several
+ * seconds before the preview appeared -- reported from the first CAM-board
+ * pairing attempt. Loading it here moves that cost to app start, where nobody
+ * is waiting on a button. */
+void prepareZXingModule({
+  overrides: { locateFile: () => zxingWasmUrl },
+  fireImmediately: true,
+}).catch(() => {
+  /* A failure here resurfaces on the first scan, which reports it; nothing
+     useful can be done with it at import time. */
+});
 
 export interface QrScan {
   /** Stops the camera and releases the device. Safe to call twice. */
@@ -214,6 +226,15 @@ export async function scanQr<T>(
   // nothing, which looks identical from here unless the value is checked.
   resolution.focusMode = String(
     (track?.getSettings?.() as { focusMode?: string } | undefined)?.focusMode ?? "",
+  );
+
+  /* Say what the camera actually delivered, not what was asked for. A laptop
+   * webcam that settles for 640x480 cannot resolve a device QR whose modules are
+   * a single 0.17 mm OLED pixel, and without this line that looks identical to
+   * the code simply not being there. */
+  onStatus?.(
+    `camera ${resolution.width}x${resolution.height}` +
+      (resolution.focusMode ? `, focus ${resolution.focusMode}` : ""),
   );
 
   // The dismissal may already have happened while the prompt was up.
