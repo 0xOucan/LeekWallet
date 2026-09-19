@@ -56,7 +56,13 @@ typedef struct {
 } QrOutMode;
 
 #define QR_OUT_MODE_COUNT 3
-#define QR_OUT_MODE_DEFAULT 0
+/* v3 at scale 2: the chunkiest modules, 2 panel pixels each. Measured by
+   rendering this panel's framebuffer and blurring it: the scale-1 modes need a
+   camera to resolve at least 3 of its pixels per 0.17 mm OLED pixel, which a
+   1080p webcam only manages within about 7 cm -- inside most webcams' focus
+   distance. v3 x2 decodes at 2. The first CAM-board pairing, at v6 x1 on a
+   laptop webcam, never saw a code at all. Frames are the price, not failure. */
+#define QR_OUT_MODE_DEFAULT 2
 
 const QrOutMode *qr_out_mode_info(uint8_t mode);
 

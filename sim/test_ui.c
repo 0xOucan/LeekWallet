@@ -2888,9 +2888,16 @@ static void test_qr_out_animates_and_leaves_cleanly(void)
     snprintf(first, sizeof first, "%s", fake_oled_qr_data());
     CHECK(strncmp(first, "UR:ETH-SIGNATURE/1-", 19) == 0,
           "the first frame is not an uppercase part 1: '%.40s'", first);
-    CHECK(fake_oled_qr_version() == 6 && fake_oled_qr_scale() == 1,
-          "the default mode is v%u x%u, not section 32's v6 x1",
+    /* v3 at scale 2 is the default: the first CAM-board pairing, at v6 x1,
+       was never read by a laptop webcam, and the rendered framebuffer shows
+       the scale-1 modes need three camera pixels per OLED pixel where v3 x2
+       needs two. */
+    CHECK(fake_oled_qr_version() == 3 && fake_oled_qr_scale() == 2,
+          "the default mode is v%u x%u, not v3 x2",
           fake_oled_qr_version(), fake_oled_qr_scale());
+    CHECK(fake_oled_contrast() == 0xFF,
+          "a QR is showing at contrast 0x%02x, not full brightness",
+          fake_oled_contrast());
 
     /* Nothing pressed, time passes: the next part appears. */
     fake_clock_advance_us(400000);
@@ -2899,7 +2906,10 @@ static void test_qr_out_animates_and_leaves_cleanly(void)
     CHECK(strncmp(fake_oled_qr_data(), "UR:ETH-SIGNATURE/2-", 19) == 0,
           "the animation did not advance on its own: '%.40s'", fake_oled_qr_data());
 
-    /* DOWN steps to the next module size and starts that sequence over. */
+    /* DOWN steps to the next module size in the table and starts that
+       sequence over: from v3 x2 it wraps to v6, then on to v10. */
+    press(BUTTON_DOWN);
+    CHECK(fake_oled_qr_version() == 6, "DOWN did not switch to version 6");
     press(BUTTON_DOWN);
     CHECK(fake_oled_qr_version() == 10, "DOWN did not switch to version 10");
     CHECK(strncmp(fake_oled_qr_data(), "UR:ETH-SIGNATURE/", 17) == 0,
@@ -2907,6 +2917,12 @@ static void test_qr_out_animates_and_leaves_cleanly(void)
 
     press(BUTTON_CANCEL);
     CHECK(ui_get_screen() == SCREEN_MAIN_MENU, "BACK did not return where it was told");
+    /* The suite runs at the default brightness (High, 0xA0), so full
+       brightness surviving the exit means the user's setting was not put
+       back. */
+    CHECK(fake_oled_contrast() == 0xA0,
+          "leaving the QR left the panel at contrast 0x%02x, not the user's 0xa0",
+          fake_oled_contrast());
     fake_clock_advance_us(10000000);
     ui__service_qr_out_for_test();
     CHECK(!ui_needs_render(), "the animation kept running after the screen closed");

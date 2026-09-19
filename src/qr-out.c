@@ -7,9 +7,10 @@
 #include "memzero.h"
 #include "ur-encoder.h"
 
-/* Index 0 is the default. Section 32's three strategies, in the order a user
-   stepping through them would want: readable first, then fewer frames, then
-   bigger modules. Periods are a starting guess for the bench to replace. */
+/* Section 32's three strategies. The table order is fixed because tests and
+   the UP/DOWN cycle refer to modes by index; which one comes up first is
+   QR_OUT_MODE_DEFAULT in qr-out.h, and it is the chunky one. Periods are a
+   starting guess for the bench to replace. */
 static const QrOutMode MODES[QR_OUT_MODE_COUNT] = {
     { 6,  1, 300, "v6"    },
     { 10, 1, 400, "v10"   },

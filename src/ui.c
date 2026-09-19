@@ -180,6 +180,7 @@ static void screen_scan_on_button(button_id_t btn);
 static void screen_scan_exit(screen_id_t next);
 static void screen_qr_out_render(void);
 static void screen_qr_out_on_button(button_id_t btn);
+static void screen_qr_out_enter(void);
 static void screen_qr_out_exit(screen_id_t next);
 
 static const screen_t screen_sign_result = {
@@ -378,7 +379,7 @@ static const screen_t screen_scan = {
 };
 
 static const screen_t screen_qr_out = {
-    .enter = NULL,
+    .enter = screen_qr_out_enter,
     .render = screen_qr_out_render,
     .on_button = screen_qr_out_on_button,
     .exit = screen_qr_out_exit
@@ -3171,9 +3172,15 @@ bool ui_show_ur(const char *type, const uint8_t *cbor, size_t len,
                 screen_id_t back)
 {
     const int64_t now = esp_timer_get_time();
-    /* The default mode first; the chunky one cannot carry everything, and a
-       message that fits nowhere is refused rather than half shown. */
-    if (!qr_out_start(type, cbor, len, QR_OUT_MODE_DEFAULT, now)) {
+    /* Most readable first. v3 x2 cannot carry everything, so a message that
+       does not fit there falls back to the next most readable mode, and one
+       that fits nowhere is refused rather than half shown. */
+    static const uint8_t ORDER[] = { QR_OUT_MODE_DEFAULT, 0, 1 };
+    bool started = false;
+    for (size_t i = 0; i < sizeof ORDER && !started; i++) {
+        started = qr_out_start(type, cbor, len, ORDER[i], now);
+    }
+    if (!started) {
         return false;
     }
     qr_out_back = back;
@@ -3223,10 +3230,20 @@ static void screen_qr_out_on_button(button_id_t btn)
     ui_invalidate();
 }
 
+/* Full brightness while a QR is up, whatever the user chose for everything
+ * else. A camera reading 0.17 mm modules is limited by contrast as much as by
+ * resolution, and the first pairing attempt was made with brightness on Low.
+ * The user's own setting comes back the moment the QR leaves the screen. */
+static void screen_qr_out_enter(void)
+{
+    oled_set_contrast(0xFF);
+}
+
 static void screen_qr_out_exit(screen_id_t next)
 {
     (void)next;
     qr_out_stop();
+    oled_set_contrast(BRIGHTNESS_LEVELS[brightness_choice]);
 }
 
 /* Advance the animation. Called once per turn of the UI task's loop, which
