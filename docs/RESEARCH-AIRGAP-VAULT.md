@@ -1485,3 +1485,24 @@ already draws each pixel 1.875 times larger.
 
 USB and BLE remain the desktop's cable and radio paths, off by default and
 chosen deliberately, exactly as before.
+
+### Confirmed after every panel-side remedy
+
+Section 40's conclusion was re-tested after trying everything on the panel
+side, and holds:
+
+- **Lit area removed.** Only the code and its four-module quiet zone lit, the
+  rest of the panel off (the user's diagnosis: the lit side areas glowed into
+  the code). Commit `eaff5c8`.
+- **Inverted.** Lit modules on a dark background, at Dim. Commit `4e833a3`.
+- **Brightness.** Every level from Min to Max, stepped on the QR screen.
+- **Camera side.** Automatic and manual short exposure; crop, CLAHE, Otsu,
+  inversion, nearest-neighbour upscaling; OpenCV's detector and zxing with
+  tryHarder and tryInvert.
+- **An independent reader.** A dedicated webcam QR reader app, used by the
+  user, also read nothing.
+
+No combination decoded from the laptop webcam. The phone read the same frames.
+The panel-side changes stay, because they cost nothing and reduce glare for
+any reader, but the laptop-webcam path is closed on this panel: it is a focus
+limit, and no firmware or processing recovers detail the lens never resolved.
