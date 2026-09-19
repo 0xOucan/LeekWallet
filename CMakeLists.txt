@@ -61,7 +61,7 @@ endif()
 # source of truth and not two that can disagree.
 # ---------------------------------------------------------------------------
 if(NOT LEEK_CAMERA_DRIVER)
-    set(EXCLUDE_COMPONENTS esp32-camera esp_jpeg)
+    set(EXCLUDE_COMPONENTS esp32-camera esp_jpeg quirc)
 endif()
 
 project(leekwallet)

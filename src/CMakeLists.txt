@@ -22,7 +22,7 @@ set(app_requires driver nvs_flash esp_hw_support bootloader_support
 # Naming these unconditionally would fail the build on every other environment,
 # since a REQUIRES entry that resolves to nothing is an error, not a no-op.
 if(LEEK_CAMERA_DRIVER)
-    list(APPEND app_requires esp32-camera)
+    list(APPEND app_requires esp32-camera quirc)
 endif()
 
 idf_component_register(

@@ -11,6 +11,7 @@ govern those files. Nothing here is relicensed.
 | trezor-crypto | `components/trezor-crypto/` | MIT | Yes |
 | chacha20poly1305 | `components/trezor-crypto/chacha20poly1305/` | MIT | Yes |
 | QRCode | `src/qrcode.c`, `src/qrcode.h` | MIT | Yes |
+| quirc | `components/quirc/` | ISC | Yes |
 | esp32-camera | `components/esp32-camera/` | Apache-2.0 | Yes |
 | esp_jpeg (TJpgDec) | `components/esp_jpeg/` | Apache-2.0, wrapping TJpgDec's own | Yes |
 | ESP-IDF | build dependency, not vendored | Apache-2.0 | Yes |
@@ -51,6 +52,22 @@ Glozer. Full text in that directory's `LICENSE`.
 `src/qrcode.c` / `src/qrcode.h` — QR generation for receive addresses.
 MIT, Copyright (c) 2017 Richard Moore. Upstream:
 https://github.com/ricmoo/QRCode
+
+## quirc
+
+`components/quirc/` — QR *decoding* on the device: finding the symbol in a
+camera frame and reading it. The third QR entry in this file and the only one
+that runs on the wallet's own camera; `QRCode` generates codes on the device
+and `zxing-wasm` reads them on the companion.
+
+License: ISC, Copyright (c) 2010-2012 Daniel Beer. ISC is permissive and
+imposes only attribution, so it travels inside this Apache-2.0 project on the
+same terms as the MIT components above. Full text: `components/quirc/LICENSE`.
+Upstream: https://github.com/dlbeer/quirc at
+`927d680904dc95fdff4cd9d022eb374b438ff8f2`.
+
+Only `lib/` is vendored, unmodified. The demo and test programs upstream pull
+in SDL and a Linux camera API, neither of which belongs in a firmware tree.
 
 ## esp32-camera
 

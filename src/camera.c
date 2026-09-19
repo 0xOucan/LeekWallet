@@ -27,6 +27,7 @@
 
 #include "esp_camera.h"
 #include "esp_log.h"
+#include "quirc.h"
 
 static const char *TAG = "camera";
 
@@ -44,7 +45,17 @@ static const char *TAG = "camera";
 #define FRAME_W     320
 #define FRAME_H     240
 
+static struct quirc *quirc_ctx;
 static bool running;
+
+/*
+ * Static, not automatic. Together these are about 13 KB, and camera_next_qr()
+ * is called from the UI task's loop; 13 KB of stack frame would overflow that
+ * task and most others in this firmware. The bench in research/qr-spike puts
+ * them on the stack because a host has megabytes of it.
+ */
+static struct quirc_code scan_code;
+static struct quirc_data scan_data;
 
 static uint32_t stat_frames;
 static uint32_t stat_decodes;
@@ -104,6 +115,18 @@ bool camera_start(void)
         return false;
     }
 
+    quirc_ctx = quirc_new();
+    if (quirc_ctx == NULL || quirc_resize(quirc_ctx, FRAME_W, FRAME_H) < 0) {
+        /* quirc's image and pixel planes are 77 KB each and land in PSRAM.
+           Failing here means PSRAM did not come up, which is worth a log of
+           its own because everything else on this board still works. */
+        ESP_LOGE(TAG, "quirc_resize failed; is PSRAM up?");
+        quirc_destroy(quirc_ctx);
+        quirc_ctx = NULL;
+        esp_camera_deinit();
+        return false;
+    }
+
     stat_frames = 0;
     stat_decodes = 0;
     running = true;
@@ -118,28 +141,77 @@ void camera_stop(void)
     }
     running = false;
     esp_camera_deinit();
+    quirc_destroy(quirc_ctx);
+    quirc_ctx = NULL;
 }
 
 bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
 {
-    (void)out;
-    (void)out_size;
-    (void)out_len;
-
-    if (!running) {
+    if (!running || out == NULL || out_size == 0) {
         return false;
     }
 
-    /* Capture only, for now: this commit brings the sensor up and proves
-       frames arrive at the rate and in the format the decoder will want.
-       quirc, and therefore an actual decoded string, is the next commit. */
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb == NULL) {
         return false;
     }
     stat_frames++;
+
+    bool got = false;
+
+    if (fb->format == PIXFORMAT_GRAYSCALE &&
+        fb->width == FRAME_W && fb->height == FRAME_H) {
+
+        /*
+         * One copy, and it is not avoidable through quirc's public API: the
+         * library owns its image plane, hands it out through quirc_begin() and
+         * then overwrites it in place with the thresholded image during
+         * identify. Pointing it at the driver's framebuffer would mean reaching
+         * into quirc_internal.h and would also corrupt the buffer the driver is
+         * about to reuse. 77 KB PSRAM to PSRAM is a small fraction of what the
+         * identify stage on the very next line costs.
+         */
+        int w = 0, h = 0;
+        uint8_t *img = quirc_begin(quirc_ctx, &w, &h);
+        memcpy(img, fb->buf, (size_t)w * (size_t)h);
+        quirc_end(quirc_ctx);
+
+        const int n = quirc_count(quirc_ctx);
+        for (int i = 0; i < n && !got; i++) {
+            quirc_extract(quirc_ctx, i, &scan_code);
+            if (quirc_decode(&scan_code, &scan_data) != QUIRC_SUCCESS) {
+                continue;   /* blur, glare, a half-refreshed screen */
+            }
+            stat_decodes++;
+
+            const size_t len = (size_t)scan_data.payload_len;
+
+            /*
+             * Anything that is not a UR is dropped here without a word. A
+             * wallet pointed at the world sees Wi-Fi codes, URLs and product
+             * labels, and none of them is a failure of anything - reporting
+             * them upward would fill the status line with complaints about
+             * whatever happened to be in frame. The decoder above is
+             * case-insensitive about the scheme, so both spellings pass.
+             */
+            if (len < 3 || len + 1 > out_size ||
+                (scan_data.payload[0] != 'u' && scan_data.payload[0] != 'U') ||
+                (scan_data.payload[1] != 'r' && scan_data.payload[1] != 'R') ||
+                scan_data.payload[2] != ':') {
+                continue;
+            }
+
+            memcpy(out, scan_data.payload, len);
+            out[len] = '\0';
+            if (out_len != NULL) {
+                *out_len = len;
+            }
+            got = true;
+        }
+    }
+
     esp_camera_fb_return(fb);
-    return false;
+    return got;
 }
 
 void camera_stats(uint32_t *frames, uint32_t *decodes)

@@ -1,9 +1,9 @@
 /**
  * The camera, as far as the wallet needs one: a source of decoded QR strings.
  *
- * Behind this seam sits esp32-camera: an OV5640 captured at QVGA grayscale into
- * PSRAM. Finding and decoding the symbol in the frame is quirc's job and is
- * not wired up yet. Everything above - UR assembly, the EIP-4527 reader, signing - was written
+ * Behind this seam sit esp32-camera and quirc: an OV5640 captured at QVGA
+ * grayscale into PSRAM, and quirc finding and decoding the symbol in the frame.
+ * Everything above it - UR assembly, the EIP-4527 reader, signing - was written
  * and host-tested before any of it existed, which is why none of that had to
  * change when it landed.
  *
