@@ -297,7 +297,7 @@ static uint8_t qr_modules[((OLED_QR_MAX_VERSION * 4 + 17) *
 /* Blank the panel to light and draw dark modules, centred, with a 2 px quiet
  * zone. Shared by both entry points so the address QR is drawn by exactly the
  * code that always drew it. */
-static esp_err_t render_qr(QRCode *qrcode, uint8_t scale)
+static esp_err_t render_qr(QRCode *qrcode, uint8_t scale, bool inverted)
 {
     uint8_t qr_size = qrcode->size;
 
@@ -310,12 +310,19 @@ static esp_err_t render_qr(QRCode *qrcode, uint8_t scale)
     uint8_t offset_y = (OLED_HEIGHT - total_with_quiet) / 2 + quiet_zone;
 
     /*
-     * IMPORTANT: QR codes need dark modules on light background!
-     * Fill framebuffer with WHITE (all 0xFF), then draw dark modules.
+     * Normally dark modules on a lit background, as ISO 18004 draws them: fill
+     * the framebuffer lit (0xFF) and turn the dark modules off.
+     *
+     * `inverted` lights the modules on a dark background instead. On this panel
+     * most of the screen is background, so the normal code is mostly lit
+     * pixels; a webcam then exposes for a bright rectangle and the glow from
+     * the lit area swallows the one-module dark rings of the finder patterns.
+     * Inverted, far less of the panel is lit. Decoders that try inverted codes
+     * (zxing's tryInvert, which the companion uses) read it as normal.
      */
-    memset(framebuffer, 0xFF, sizeof(framebuffer));
+    memset(framebuffer, inverted ? 0x00 : 0xFF, sizeof(framebuffer));
 
-    /* Draw QR code dark modules (turn pixels OFF) */
+    /* Draw the dark modules (or, inverted, the lit ones) */
     for (uint8_t y = 0; y < qr_size; y++) {
         for (uint8_t x = 0; x < qr_size; x++) {
             if (qrcode_getModule(qrcode, x, y)) {
@@ -325,7 +332,7 @@ static esp_err_t render_qr(QRCode *qrcode, uint8_t scale)
                         uint8_t px = offset_x + x * scale + sx;
                         uint8_t py = offset_y + y * scale + sy;
                         if (px < OLED_WIDTH && py < OLED_HEIGHT) {
-                            oled_set_pixel(px, py, false);
+                            oled_set_pixel(px, py, inverted);
                         }
                     }
                 }
@@ -380,7 +387,7 @@ esp_err_t oled_draw_qrcode(const char *data)
         scale = 1;  /* 1px per module for larger codes */
     }
 
-    return render_qr(&qrcode, scale);
+    return render_qr(&qrcode, scale, false);
 }
 
 bool oled_qr_fits(uint8_t version, uint8_t scale)
@@ -397,6 +404,12 @@ bool oled_qr_fits(uint8_t version, uint8_t scale)
 
 esp_err_t oled_draw_qrcode_at(const char *data, uint8_t version, uint8_t scale)
 {
+    return oled_draw_qrcode_ex(data, version, scale, false);
+}
+
+esp_err_t oled_draw_qrcode_ex(const char *data, uint8_t version, uint8_t scale,
+                              bool inverted)
+{
     if (data == NULL || !oled_qr_fits(version, scale)) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -410,5 +423,5 @@ esp_err_t oled_draw_qrcode_at(const char *data, uint8_t version, uint8_t scale)
     if (qrcode_initText(&qrcode, qr_modules, version, ECC_LOW, data) != 0) {
         return ESP_ERR_INVALID_SIZE;
     }
-    return render_qr(&qrcode, scale);
+    return render_qr(&qrcode, scale, inverted);
 }

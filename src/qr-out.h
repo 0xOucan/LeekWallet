@@ -53,9 +53,10 @@ typedef struct {
     uint8_t     scale;
     uint16_t    period_ms;
     const char *name;        /* six characters or fewer, for the footer */
+    bool        inverted;    /* lit modules on a dark background */
 } QrOutMode;
 
-#define QR_OUT_MODE_COUNT 3
+#define QR_OUT_MODE_COUNT 5
 /* v3 at scale 2: the chunkiest modules, 2 panel pixels each. Measured by
    rendering this panel's framebuffer and blurring it: the scale-1 modes need a
    camera to resolve at least 3 of its pixels per 0.17 mm OLED pixel, which a

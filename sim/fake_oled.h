@@ -52,6 +52,9 @@ int fake_oled_flush_count(void);
 /** Last contrast level written. */
 uint8_t fake_oled_contrast(void);
 
+/** Whether the last QR was drawn inverted (lit modules, dark background). */
+bool fake_oled_qr_inverted(void);
+
 /** Print the character grid, boxed. For eyeballing a failure. */
 void fake_oled_dump(void);
 

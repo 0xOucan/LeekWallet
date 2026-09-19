@@ -12,9 +12,14 @@
    QR_OUT_MODE_DEFAULT in qr-out.h, and it is the chunky one. Periods are a
    starting guess for the bench to replace. */
 static const QrOutMode MODES[QR_OUT_MODE_COUNT] = {
-    { 6,  1, 300, "v6"    },
-    { 10, 1, 400, "v10"   },
-    { 3,  2, 250, "v3 x2" },
+    { 6,  1, 300, "v6",    false },
+    { 10, 1, 400, "v10",   false },
+    { 3,  2, 250, "v3 x2", false },
+    /* Inverted variants, appended so the indices above do not move. They
+       follow the default in the UP/DOWN cycle, so one press from the default
+       compares the same module size with the lit area swapped. */
+    { 3,  2, 250, "v3 x2i", true },
+    { 6,  1, 300, "v6 i",   true },
 };
 
 /* ISO 18004 table 7, alphanumeric column at level L. */

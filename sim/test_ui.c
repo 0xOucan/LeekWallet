@@ -2918,10 +2918,20 @@ static void test_qr_out_animates_and_leaves_cleanly(void)
     CHECK(strncmp(fake_oled_qr_data(), "UR:ETH-SIGNATURE/2-", 19) == 0,
           "the animation did not advance on its own: '%.40s'", fake_oled_qr_data());
 
-    /* DOWN steps to the next module size in the table and starts that
-       sequence over: from v3 x2 it wraps to v6, then on to v10. */
+    CHECK(!fake_oled_qr_inverted(), "the default QR is drawn inverted");
+
+    /* DOWN steps through the table and starts each sequence over: from the
+       default, the same v3 x2 inverted, then v6 inverted, then it wraps to
+       v6 and on to v10. */
     press(BUTTON_DOWN);
-    CHECK(fake_oled_qr_version() == 6, "DOWN did not switch to version 6");
+    CHECK(fake_oled_qr_version() == 3 && fake_oled_qr_scale() == 2 &&
+          fake_oled_qr_inverted(), "DOWN did not switch to v3 x2 inverted");
+    press(BUTTON_DOWN);
+    CHECK(fake_oled_qr_version() == 6 && fake_oled_qr_inverted(),
+          "DOWN did not switch to v6 inverted");
+    press(BUTTON_DOWN);
+    CHECK(fake_oled_qr_version() == 6 && !fake_oled_qr_inverted(),
+          "DOWN did not wrap to plain v6");
     press(BUTTON_DOWN);
     CHECK(fake_oled_qr_version() == 10, "DOWN did not switch to version 10");
     CHECK(strncmp(fake_oled_qr_data(), "UR:ETH-SIGNATURE/", 17) == 0,

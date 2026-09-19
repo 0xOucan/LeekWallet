@@ -307,7 +307,15 @@ export async function scanQr<T>(
      * phone at a screen wondering why. */
     /* `tryHarder` is the point of this decoder: it is what reads a pairing code
      * off a screen, with a logo in the middle of it, through a camera. */
-    const found = await readBarcodes(frame, { formats: ["QRCode"], tryHarder: true });
+    /* `tryInvert` explicitly rather than by the library's default: the device
+     * can draw its QR inverted, lit modules on a dark background, because on a
+     * small OLED the normal code is mostly lit pixels and blooms on a webcam. A
+     * default that changed under us would silently stop reading those. */
+    const found = await readBarcodes(frame, {
+      formats: ["QRCode"],
+      tryHarder: true,
+      tryInvert: true,
+    });
     decodeFailures = 0;                 // this frame got through the decoder
     if (found.length === 0) return undefined;
     return firstAccepted(found.map((f) => ({ rawValue: f.text })), accept);

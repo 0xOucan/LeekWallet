@@ -142,6 +142,10 @@ bool oled_qr_fits(uint8_t version, uint8_t scale);
  */
 esp_err_t oled_draw_qrcode_at(const char *data, uint8_t version, uint8_t scale);
 
+/** As oled_draw_qrcode_at, optionally with lit modules on a dark background. */
+esp_err_t oled_draw_qrcode_ex(const char *data, uint8_t version, uint8_t scale,
+                              bool inverted);
+
 /**
  * Set a single pixel on the display
  * @param x X coordinate (0-127)

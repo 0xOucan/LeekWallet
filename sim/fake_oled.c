@@ -258,7 +258,10 @@ bool oled_qr_fits(uint8_t version, uint8_t scale)
     return (unsigned)(version * 4 + 17) * scale + 4 <= OLED_HEIGHT;
 }
 
-esp_err_t oled_draw_qrcode_at(const char *data, uint8_t version, uint8_t scale)
+static bool qr_inverted;
+
+esp_err_t oled_draw_qrcode_ex(const char *data, uint8_t version, uint8_t scale,
+                              bool inverted)
 {
     if (!data || !oled_qr_fits(version, scale)) {
         return ESP_ERR_INVALID_ARG;
@@ -266,8 +269,16 @@ esp_err_t oled_draw_qrcode_at(const char *data, uint8_t version, uint8_t scale)
     snprintf(qr_data, sizeof(qr_data), "%s", data);
     qr_version = version;
     qr_scale = scale;
+    qr_inverted = inverted;
     return ESP_OK;
 }
+
+esp_err_t oled_draw_qrcode_at(const char *data, uint8_t version, uint8_t scale)
+{
+    return oled_draw_qrcode_ex(data, version, scale, false);
+}
+
+bool fake_oled_qr_inverted(void) { return qr_inverted; }
 
 uint8_t fake_oled_qr_version(void) { return qr_version; }
 uint8_t fake_oled_qr_scale(void)   { return qr_scale; }

@@ -3220,7 +3220,7 @@ static void screen_qr_out_render(void)
     const char *frame = qr_out_frame();
     const QrOutMode *m = qr_out_mode_info(qr_out_current_mode());
     if (frame == NULL || m == NULL ||
-        oled_draw_qrcode_at(frame, m->version, m->scale) != ESP_OK) {
+        oled_draw_qrcode_ex(frame, m->version, m->scale, m->inverted) != ESP_OK) {
         /* qr-out.c measured every frame before showing one, so this is a
            bug rather than a state; say so instead of a blank panel. */
         oled_clear();
