@@ -79,9 +79,43 @@ wallet, so **quirc's working image belongs in PSRAM**. At 640x480 it would be
 about 920 KB, still fine in 8 MB PSRAM. This is the second thing the R8 buys,
 after Argon2id.
 
+## On hardware
+
+The board cannot run `bench.c` as it stands - `bench.c` reads frames from a
+file, and the board has a sensor instead. `src/qr-bench.c` is the same
+measurement against the real source: it calls `camera_next_qr()`, the exact
+function the Scan screen calls, as fast as it will go, and prints sustained
+frames/second and decodes/second once a second over the serial log.
+
+```sh
+pio run -e esp32s3cam-bench -t upload
+pio device monitor -e esp32s3cam-bench
+```
+
+Point the sensor at a phone or laptop animating a `ur:eth-sign-request`. Expect
+lines like:
+
+```
+I (2145) qr-bench: starting; point the sensor at an animated ur:eth-sign-request
+I (2146) qr-bench: internal free 236144, psram free 8386216
+I (2450) camera: camera up: 320x240 grayscale
+I (2451) qr-bench: after camera_start: internal free 232016, psram free 8078568
+I (3455) qr-bench: 11.8 frames/s  7.9 decodes/s  (12 frames, 8 decodes, stack headroom 9216 B)
+```
+
+`frames/s` is capture plus decode together, which is what bounds the transfer.
+`decodes/s` is how many of those frames yielded a symbol - the miss rate
+`budget.py` has been guessing at. The numbers in the sample line above are
+illustrative formatting, not measurements; nothing in this repository has run
+on the sensor yet.
+
+That build is an instrument and not firmware: `app_main()` hands it the board
+and returns, so there is no wallet, no UI and no BLE in it. Flash the ordinary
+`esp32s3cam` image afterwards.
+
 ## Next, on hardware
 
-1. Run `bench` on the board, unchanged, to replace the 40x guess with a fact.
+1. Run `esp32s3cam-bench` on the board to replace the 40x guess with a fact.
 2. Measure real capture fps at QVGA grayscale into PSRAM.
 3. Re-run `bench` against **photographed** frames rather than rendered ones,
    which is the honest decode rate.

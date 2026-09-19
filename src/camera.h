@@ -1,12 +1,15 @@
 /**
  * The camera, as far as the wallet needs one: a source of decoded QR strings.
  *
- * Everything the air gap does after a string arrives - UR assembly, the
- * EIP-4527 reader, signing - is host-tested. What is not written yet is
- * everything before it: OV5640 bring-up, frame capture into PSRAM, and quirc
- * finding and decoding the symbol (RESEARCH-AIRGAP-VAULT.md section 38, step 2,
- * which needs the board on the bench). This header is the seam that work will
- * fill, so the scan screen above it does not change when it lands.
+ * Behind this seam sit esp32-camera and quirc: an OV5640 captured at QVGA
+ * grayscale into PSRAM, and quirc finding and decoding the symbol in the frame.
+ * Everything above it - UR assembly, the EIP-4527 reader, signing - was written
+ * and host-tested before any of it existed, which is why none of that had to
+ * change when it landed.
+ *
+ * Only two boards in three have a sensor, and the QEMU target for the third has
+ * the pins and no silicon, so every function here has a no-camera answer and
+ * none of them is an error. A Scan screen on a board that cannot see says so.
  */
 
 #ifndef LEEK_CAMERA_H
@@ -14,6 +17,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /** Power the sensor and start capturing. False on a board without one. */
 bool camera_start(void);
@@ -26,5 +30,24 @@ void camera_stop(void);
  * Never blocks: the scan screen calls this from the UI task's loop.
  */
 bool camera_next_qr(char *out, size_t out_size, size_t *out_len);
+
+/**
+ * The newest viewfinder bitmap, if one has been rendered since the last call.
+ *
+ * VIEWFINDER_BYTES of SSD1306 page layout, ready to blit; NULL when nothing is
+ * new, so a caller that polls faster than frames arrive redraws nothing. It is
+ * produced from raw sensor pixels and from nothing else: no decoded byte has a
+ * path to the panel through here.
+ */
+const uint8_t *camera_preview_take(void);
+
+/**
+ * Frames captured and QR symbols decoded since camera_start().
+ *
+ * For the on-device decode-rate bench (research/qr-spike). Counted in the same
+ * path the Scan screen uses, so the number measured is the number a user gets
+ * rather than one from a loop written to look good.
+ */
+void camera_stats(uint32_t *frames, uint32_t *decodes);
 
 #endif /* LEEK_CAMERA_H */

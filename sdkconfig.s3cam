@@ -1,0 +1,53 @@
+# ============================================================================
+# CAM board overlay - PSRAM
+#
+# Applied on top of sdkconfig.defaults, never instead of it, so the reference
+# board and the Pixie are untouched by anything in here. Their images are
+# byte-identical before and after this file existed; that was checked, not
+# assumed.
+#
+# sdkconfig.defaults explains why PSRAM is off everywhere else and names the
+# one case that would justify turning it on: a camera framebuffer. That case
+# is now here. Two QVGA grayscale frames are 154 KB and quirc's working image
+# and pixel buffer are another 154 KB; the S3 has 512 KB of internal SRAM with
+# the wallet, BLE and the UI already in it. There is no arrangement in which
+# this fits on-die.
+#
+# The N16R8 carries 8 MB of OCTAL PSRAM. Mode matters: a quad configuration on
+# octal silicon does not fall back, it fails to train and the chip boots
+# without the memory it was told it had.
+# ============================================================================
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# ----------------------------------------------------------------------------
+# What is allowed to live off-die.
+#
+# The standing rule from sdkconfig.defaults is that a seed, a mnemonic or a
+# derived key must not land in external memory, because PSRAM is reached over
+# a bus and the S3's external-memory encryption rides on flash encryption,
+# which is T11 and not burned yet.
+#
+# SPIRAM_USE_MALLOC with a high ALWAYSINTERNAL threshold keeps that rule: every
+# allocation under 16 KB is served from internal SRAM exactly as before, so
+# nothing the wallet allocates changes address space. Only the deliberately
+# huge buffers - the camera's two framebuffers, quirc's image and pixel planes,
+# all 77 KB and up - spill outward, and none of them ever holds key material.
+# Static and stack storage is internal by construction and is where this
+# firmware keeps its secrets anyway.
+#
+# RESERVE_INTERNAL keeps a floor of internal heap for the allocations that
+# cannot be served from PSRAM at all - DMA descriptors, interrupt-safe buffers
+# - so enabling this cannot starve the drivers that were working yesterday.
+#
+# This is a mitigation, not the fix. The fix is external memory encryption on
+# top of burned flash encryption (T11); until then the CAM board's threat model
+# is "the big image buffers are readable off the bus", which is a QR code
+# someone is already pointing a camera at.
+# ----------------------------------------------------------------------------
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+CONFIG_SPIRAM_IGNORE_NOTFOUND=n

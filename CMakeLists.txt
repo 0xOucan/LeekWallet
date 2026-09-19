@@ -45,4 +45,23 @@ if(GIT_FOUND)
     endforeach()
 endif()
 
+# ---------------------------------------------------------------------------
+# The camera stack belongs to one board.
+#
+# components/ is scanned for every environment, so esp32-camera, esp_jpeg and
+# quirc would otherwise be compiled into the reference board and the Pixie -
+# a megabyte of image sensors and JPEG for two boards that have no lens, and on
+# the C3 a driver for a peripheral the chip does not have. EXCLUDE_COMPONENTS
+# is the supported way to say so, and it must be set before project().
+#
+# The flag arrives from platformio.ini through cmake_extra_args rather than
+# from build_flags, because CMake has to know at configure time, before any
+# compiler flag is read. src/CMakeLists.txt turns the same flag into the
+# LEEK_CAMERA_DRIVER preprocessor symbol camera.c switches on, so there is one
+# source of truth and not two that can disagree.
+# ---------------------------------------------------------------------------
+if(NOT LEEK_CAMERA_DRIVER)
+    set(EXCLUDE_COMPONENTS esp32-camera esp_jpeg quirc)
+endif()
+
 project(leekwallet)

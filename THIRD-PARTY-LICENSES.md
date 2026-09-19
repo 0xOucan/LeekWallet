@@ -11,6 +11,9 @@ govern those files. Nothing here is relicensed.
 | trezor-crypto | `components/trezor-crypto/` | MIT | Yes |
 | chacha20poly1305 | `components/trezor-crypto/chacha20poly1305/` | MIT | Yes |
 | QRCode | `src/qrcode.c`, `src/qrcode.h` | MIT | Yes |
+| quirc | `components/quirc/` | ISC | Yes |
+| esp32-camera | `components/esp32-camera/` | Apache-2.0 | Yes |
+| esp_jpeg (TJpgDec) | `components/esp_jpeg/` | Apache-2.0, wrapping TJpgDec's own | Yes |
 | ESP-IDF | build dependency, not vendored | Apache-2.0 | Yes |
 | zxing-wasm | `app/` npm dependency, WASM bundled into the app | MIT | Yes |
 | @1inch/aqua-sdk | no longer used — was a test-only devDependency of a deleted mini-app | LicenseRef-Degensoft-Aqua-Source-1.1 | **No — see below** |
@@ -49,6 +52,55 @@ Glozer. Full text in that directory's `LICENSE`.
 `src/qrcode.c` / `src/qrcode.h` — QR generation for receive addresses.
 MIT, Copyright (c) 2017 Richard Moore. Upstream:
 https://github.com/ricmoo/QRCode
+
+## quirc
+
+`components/quirc/` — QR *decoding* on the device: finding the symbol in a
+camera frame and reading it. The third QR entry in this file and the only one
+that runs on the wallet's own camera; `QRCode` generates codes on the device
+and `zxing-wasm` reads them on the companion.
+
+License: ISC, Copyright (c) 2010-2012 Daniel Beer. ISC is permissive and
+imposes only attribution, so it travels inside this Apache-2.0 project on the
+same terms as the MIT components above. Full text: `components/quirc/LICENSE`.
+Upstream: https://github.com/dlbeer/quirc at
+`927d680904dc95fdff4cd9d022eb374b438ff8f2`.
+
+Only `lib/` is vendored, unmodified. The demo and test programs upstream pull
+in SDL and a Linux camera API, neither of which belongs in a firmware tree.
+
+## esp32-camera
+
+`components/esp32-camera/` — Espressif's DVP/LCD_CAM driver. It is what brings
+the CAM board's OV5640 up and delivers QVGA grayscale frames into PSRAM.
+
+License: Apache-2.0. Full text: `components/esp32-camera/LICENSE`.
+Upstream: https://github.com/espressif/esp32-camera at
+`3fb41a99d61a853313d1cd5543ebf2c109ef7c0e`.
+
+**Vendored, not managed.** The IDF component manager would fetch this at
+configure time and write the resolution into `dependencies.lock`, which makes
+the build depend on the network and on whatever the registry serves that day.
+This repository publishes a firmware whose whole claim is that anyone can
+rebuild the same bytes (`CONFIG_APP_REPRODUCIBLE_BUILD`, `scripts/repro-check.sh`),
+and a build that phones out cannot make that claim. Vendoring costs 2 MB of
+source in git and buys an offline, pinned, auditable tree — the same trade
+already made for trezor-crypto.
+
+Two local edits, both marked `LEEK:` in the files and explained in
+`components/esp32-camera/LEEK-CHANGES.md`.
+
+## esp_jpeg
+
+`components/esp_jpeg/` — Espressif's wrapper around ELM ChaN's TJpgDec, taken
+from `idf-extra-components` at version 1.3.1.
+
+License: Apache-2.0 for the wrapper; `tjpgd/` carries TJpgDec's own permissive
+licence, reproduced in `components/esp_jpeg/license.txt`.
+
+It is here only because `esp_camera.h` includes `img_converters.h`, which
+includes `jpeg_decoder.h`. This firmware captures grayscale and decodes no
+JPEG; nothing in the JPEG path is reached at runtime.
 
 ## zxing-wasm
 

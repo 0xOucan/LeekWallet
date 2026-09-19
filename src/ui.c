@@ -35,6 +35,7 @@
 #include "airgap.h"
 #include "board.h"
 #include "camera.h"
+#include "viewfinder.h"
 #include "eip4527-encode.h"
 #include "esp_random.h"
 #include "nvs.h"
@@ -3411,14 +3412,34 @@ static void show_address_run(void)
 /* ============================================================================
  * Scan Screen
  *
- * The camera loop's host. Frames arrive from camera.c (a stub until the driver
- * exists), each is fed to the UR assembler, and a complete eth-sign-request is
+ * The camera loop's host. Frames arrive from camera.c, each decoded symbol is
+ * fed to the UR assembler, and a complete eth-sign-request is
  * handed to the airgap worker - which then asks the user on SCREEN_SIGN_CONFIRM
  * exactly as a USB request would. Nothing on this screen reads the request's
  * contents out loud; the confirmation draws what the device decoded.
  * ============================================================================ */
 
 static char scan_status[22];
+
+/*
+ * The viewfinder.
+ *
+ * Aiming a camera you cannot see through is guesswork, and the failure it
+ * produces - "nothing is happening" - looks identical whether the QR is out of
+ * frame, out of focus or absent. A 128x56 one-bit preview answers that at a
+ * glance, and the status line below it answers the other half: whether the
+ * device is reading and how much is left.
+ *
+ * `scan_preview_live` stays false until the camera has actually produced a
+ * frame, so a board whose sensor did not start keeps the plain text screen
+ * rather than showing an empty rectangle.
+ *
+ * Nothing decoded is ever drawn here. The preview is raw sensor pixels and the
+ * status line is one of a fixed set of strings this file owns, so a QR code
+ * cannot put words of its choosing on the trusted display.
+ */
+static uint8_t scan_preview[VIEWFINDER_BYTES];
+static bool    scan_preview_live;
 
 /* One decoded QR string: the same function service_scan() calls per frame,
  * named so the host can drive it without a camera. */
@@ -3453,6 +3474,11 @@ static void scan_handle(const char *ur, size_t len)
 static void screen_scan_enter(void)
 {
     airgap_scan_reset();
+    scan_preview_live = false;
+    memset(scan_preview, 0, sizeof scan_preview);
+    /* A camera that refuses to start is a screen that says so, not a hang and
+       not a reboot. The rest of this screen works either way: BACK still
+       leaves, and the host-driven test path still feeds it strings. */
     snprintf(scan_status, sizeof scan_status,
              camera_start() ? "Point at the QR" : "No camera");
 }
@@ -3460,6 +3486,20 @@ static void screen_scan_enter(void)
 static void screen_scan_render(void)
 {
     oled_clear();
+
+    if (scan_preview_live) {
+        /* Pages 0-6 are the preview, page 7 is the status line. Written a page
+           at a time through the ordinary raw path so the host harness sees the
+           same bytes the panel does. */
+        for (uint8_t page = 0; page < VIEWFINDER_H / 8; page++) {
+            oled_set_cursor(page, 0);
+            oled_draw_raw(&scan_preview[(size_t)page * VIEWFINDER_W],
+                          VIEWFINDER_W);
+        }
+        oled_draw_string_centered(7, scan_status);
+        return;
+    }
+
     oled_draw_string_centered(0, "Scan request");
     oled_draw_string_centered(3, scan_status);
     oled_draw_string(7, 0, "BACK");
@@ -3479,6 +3519,8 @@ static void screen_scan_exit(screen_id_t next)
     (void)next;
     camera_stop();
     airgap_scan_reset();
+    scan_preview_live = false;
+    memset(scan_preview, 0, sizeof scan_preview);
 }
 
 /* Drain whatever the camera decoded since the last turn of the loop. Bounded,
@@ -3493,6 +3535,27 @@ static void service_scan(void)
     size_t len = 0;
     for (int i = 0; i < 4 && camera_next_qr(frame, sizeof frame, &len); i++) {
         scan_handle(frame, len);
+    }
+
+    /* The preview costs no frame: camera.c renders it from a frame it has
+       already handed to the decoder, one in every CAMERA_PREVIEW_EVERY. What
+       arrives here is whatever the last of those produced, or nothing. */
+    const uint8_t *shot = camera_preview_take();
+    if (shot != NULL) {
+        memcpy(scan_preview, shot, sizeof scan_preview);
+        scan_preview_live = true;
+        /* Once parts are landing, the status line says how many are left
+           rather than still inviting the user to aim. */
+        const uint32_t left = airgap_scan_remaining();
+        if (left > 0) {
+            /* Clamped at three digits, which is both what the row fits and
+               more parts than any message this device accepts can be cut
+               into. The count is the decoder's own, never anything a scanned
+               frame chose. */
+            snprintf(scan_status, sizeof scan_status, "%u parts to go",
+                     (unsigned)(left > 999 ? 999 : left));
+        }
+        ui_invalidate();
     }
 }
 
