@@ -2895,8 +2895,20 @@ static void test_qr_out_animates_and_leaves_cleanly(void)
     CHECK(fake_oled_qr_version() == 3 && fake_oled_qr_scale() == 2,
           "the default mode is v%u x%u, not v3 x2",
           fake_oled_qr_version(), fake_oled_qr_scale());
-    CHECK(fake_oled_contrast() == 0xFF,
-          "a QR is showing at contrast 0x%02x, not full brightness",
+    /* The QR starts at the user's brightness (High in this suite) rather than
+       forcing full: an OLED at full drive can bloom on a webcam. */
+    CHECK(fake_oled_contrast() == 0xA0,
+          "a QR opened at contrast 0x%02x, not the user's 0xa0", fake_oled_contrast());
+    /* OK steps this QR's brightness, dimmest to brightest, and wraps. */
+    press(BUTTON_ACCEPT);
+    CHECK(ui_get_screen() == SCREEN_QR_OUT, "OK left the QR screen");
+    CHECK(fake_oled_contrast() == 0xFF, "OK after High gave 0x%02x, not Max",
+          fake_oled_contrast());
+    press(BUTTON_ACCEPT);
+    CHECK(fake_oled_contrast() == 0x00, "OK after Max gave 0x%02x, not Min (wrap)",
+          fake_oled_contrast());
+    press(BUTTON_ACCEPT);
+    CHECK(fake_oled_contrast() == 0x04, "OK after Min gave 0x%02x, not Dim",
           fake_oled_contrast());
 
     /* Nothing pressed, time passes: the next part appears. */
@@ -2917,11 +2929,9 @@ static void test_qr_out_animates_and_leaves_cleanly(void)
 
     press(BUTTON_CANCEL);
     CHECK(ui_get_screen() == SCREEN_MAIN_MENU, "BACK did not return where it was told");
-    /* The suite runs at the default brightness (High, 0xA0), so full
-       brightness surviving the exit means the user's setting was not put
-       back. */
+    /* The QR was left at Dim; the user's own High must come back. */
     CHECK(fake_oled_contrast() == 0xA0,
-          "leaving the QR left the panel at contrast 0x%02x, not the user's 0xa0",
+          "leaving the QR left the panel at 0x%02x, not the user's 0xa0",
           fake_oled_contrast());
     fake_clock_advance_us(10000000);
     ui__service_qr_out_for_test();

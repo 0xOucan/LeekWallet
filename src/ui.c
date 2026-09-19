@@ -821,9 +821,23 @@ static int64_t  last_activity_us = 0;
 /* Four steps rather than a slider: the OLED is legible across the whole range,
  * so fine control buys nothing and costs presses. Low is genuinely useful -
  * a dim screen is harder to read over someone's shoulder. */
-static const uint8_t BRIGHTNESS_LEVELS[] = { 0x10, 0x50, 0xA0, 0xFF };
+/*
+ * Indices are what NVS stores, so they only ever grow at the end: Min and Dim
+ * were added after the first four had shipped, and putting them in front would
+ * have turned every saved "Low" into "Min". The order a user steps through is
+ * BRIGHTNESS_CYCLE, which is dimmest to brightest regardless of storage order.
+ *
+ * Min and Dim exist for two reasons. A dark room, where Low is still a lamp.
+ * And a camera reading a QR off this panel: at full brightness an OLED blooms
+ * on a webcam's sensor, the lit pixels bleed into the dark modules, and a
+ * dimmer panel can be the one that decodes.
+ */
+static const uint8_t BRIGHTNESS_LEVELS[] = { 0x10, 0x50, 0xA0, 0xFF, 0x00, 0x04 };
 #define BRIGHTNESS_COUNT (sizeof(BRIGHTNESS_LEVELS) / sizeof(BRIGHTNESS_LEVELS[0]))
+static const uint8_t BRIGHTNESS_CYCLE[] = { 4, 5, 0, 1, 2, 3 };
 static int brightness_choice = 2;
+/* The QR screen's own level, stepped with OK; see screen_qr_out_enter. */
+static int qr_brightness = 2;
 
 static const char *brightness_label(int choice)
 {
@@ -832,8 +846,21 @@ static const char *brightness_label(int choice)
         case 1:  return "Mid";
         case 2:  return "High";
         case 3:  return "Max";
+        case 4:  return "Min";
+        case 5:  return "Dim";
         default: return "?";
     }
+}
+
+/* The level after `choice` in dimmest-to-brightest order, wrapping. */
+static int brightness_next(int choice)
+{
+    for (size_t i = 0; i < BRIGHTNESS_COUNT; i++) {
+        if (BRIGHTNESS_CYCLE[i] == choice) {
+            return BRIGHTNESS_CYCLE[(i + 1) % BRIGHTNESS_COUNT];
+        }
+    }
+    return 2;
 }
 
 /* One setting, both selectors (T60).
@@ -3097,7 +3124,7 @@ static void screen_settings_on_button(button_id_t btn)
                     break;
 
                 case SET_BRIGHTNESS:
-                    brightness_choice = (brightness_choice + 1) % (int)BRIGHTNESS_COUNT;
+                    brightness_choice = brightness_next(brightness_choice);
                     brightness_apply_and_save();
                     ESP_LOGI(TAG, "Brightness set to %s",
                              brightness_label(brightness_choice));
@@ -3220,8 +3247,12 @@ static void screen_qr_out_on_button(button_id_t btn)
             }
             break;
         }
-        case BUTTON_CANCEL:
         case BUTTON_ACCEPT:
+            /* Brightness for this QR only; see screen_qr_out_enter. */
+            qr_brightness = brightness_next(qr_brightness);
+            oled_set_contrast(BRIGHTNESS_LEVELS[qr_brightness]);
+            break;
+        case BUTTON_CANCEL:
             ui_set_screen(qr_out_back);
             break;
         default:
@@ -3230,13 +3261,19 @@ static void screen_qr_out_on_button(button_id_t btn)
     ui_invalidate();
 }
 
-/* Full brightness while a QR is up, whatever the user chose for everything
- * else. A camera reading 0.17 mm modules is limited by contrast as much as by
- * resolution, and the first pairing attempt was made with brightness on Low.
- * The user's own setting comes back the moment the QR leaves the screen. */
+/*
+ * The QR has its own brightness, stepped with OK, starting from the user's.
+ *
+ * An earlier version forced full brightness here, on the theory that contrast
+ * limits a blurred read. It did not help the first webcam, and it can hurt: an
+ * OLED at full drive blooms on a camera sensor and the dark modules drown.
+ * Which level a given camera reads best is not something the firmware can
+ * know, so the user finds it, and the setting everywhere else is untouched.
+ */
 static void screen_qr_out_enter(void)
 {
-    oled_set_contrast(0xFF);
+    qr_brightness = brightness_choice;
+    oled_set_contrast(BRIGHTNESS_LEVELS[qr_brightness]);
 }
 
 static void screen_qr_out_exit(screen_id_t next)
