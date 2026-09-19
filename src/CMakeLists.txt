@@ -15,10 +15,24 @@ else()
   list(REMOVE_ITEM app_sources ${CMAKE_SOURCE_DIR}/src/oled-pixie.c)
 endif()
 
+set(app_requires driver nvs_flash esp_hw_support bootloader_support
+                 esp_driver_usb_serial_jtag trezor-crypto leek-wallet)
+
+# The camera stack, only where the top-level CMakeLists did not exclude it.
+# Naming these unconditionally would fail the build on every other environment,
+# since a REQUIRES entry that resolves to nothing is an error, not a no-op.
+if(LEEK_CAMERA_DRIVER)
+    list(APPEND app_requires esp32-camera)
+endif()
+
 idf_component_register(
     SRCS ${app_sources}
-    REQUIRES driver nvs_flash esp_hw_support bootloader_support esp_driver_usb_serial_jtag trezor-crypto leek-wallet
+    REQUIRES ${app_requires}
     # firefly-display is registered empty off the C3, so requiring it always is
     # harmless and keeps this list from needing its own branch.
     PRIV_REQUIRES firefly-display
 )
+
+if(LEEK_CAMERA_DRIVER)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE LEEK_CAMERA_DRIVER=1)
+endif()
