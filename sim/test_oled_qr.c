@@ -84,6 +84,40 @@ static void dark_bounds(unsigned *top, unsigned *bottom, unsigned *left, unsigne
     }
 }
 
+/* Bounds of the lit pixels, and of the dark pixels inside a box. The QR screen
+   draws only the code and its quiet zone lit, with the rest of the panel off,
+   so the code is found as the dark pixels within the lit frame. */
+static void lit_bounds(unsigned *top, unsigned *bottom, unsigned *left, unsigned *right)
+{
+    *top = OLED_HEIGHT; *bottom = 0; *left = OLED_WIDTH; *right = 0;
+    for (unsigned y = 0; y < OLED_HEIGHT; y++) {
+        for (unsigned x = 0; x < OLED_WIDTH; x++) {
+            if (!pixel_dark(x, y)) {
+                if (y < *top) *top = y;
+                if (y > *bottom) *bottom = y;
+                if (x < *left) *left = x;
+                if (x > *right) *right = x;
+            }
+        }
+    }
+}
+
+static void dark_bounds_in(unsigned t0, unsigned b0, unsigned l0, unsigned r0,
+                           unsigned *top, unsigned *bottom, unsigned *left, unsigned *right)
+{
+    *top = OLED_HEIGHT; *bottom = 0; *left = OLED_WIDTH; *right = 0;
+    for (unsigned y = t0; y <= b0; y++) {
+        for (unsigned x = l0; x <= r0; x++) {
+            if (pixel_dark(x, y)) {
+                if (y < *top) *top = y;
+                if (y > *bottom) *bottom = y;
+                if (x < *left) *left = x;
+                if (x > *right) *right = x;
+            }
+        }
+    }
+}
+
 static void test_the_two_ceilings(void)
 {
     printf("== version 10 at scale 1 and version 3 at scale 2, nothing past them\n");
@@ -108,13 +142,22 @@ static void test_the_two_ceilings(void)
         CHECK(oled_draw_qrcode_at("UR:ETH-SIGNATURE/1-2/LPAD", MODES[i].v,
                                   MODES[i].s) == ESP_OK,
               "version %u scale %u did not draw", MODES[i].v, MODES[i].s);
-        unsigned t, b, l, r;
-        dark_bounds(&t, &b, &l, &r);
+        unsigned ft, fb, fl, fr, t, b, l, r;
+        lit_bounds(&ft, &fb, &fl, &fr);
+        dark_bounds_in(ft, fb, fl, fr, &t, &b, &l, &r);
         const unsigned side = (MODES[i].v * 4u + 17u) * MODES[i].s;
         CHECK(t >= 2 && b <= OLED_HEIGHT - 3 && b - t + 1 == side &&
               r - l + 1 == side,
               "version %u scale %u spans rows %u-%u cols %u-%u, want a %u px square",
               MODES[i].v, MODES[i].s, t, b, l, r, side);
+        /* Four modules of lit quiet zone left and right, and the panel beyond
+           the frame dark: the lit slabs either side are what blinded a webcam. */
+        const unsigned margin = 4u * MODES[i].s;
+        CHECK(l - fl == margin && fr - r == margin,
+              "version %u scale %u has a %u/%u px side margin, want %u",
+              MODES[i].v, MODES[i].s, l - fl, fr - r, margin);
+        CHECK(pixel_dark(0, 32) && pixel_dark(OLED_WIDTH - 1, 32),
+              "version %u scale %u left the panel edges lit", MODES[i].v, MODES[i].s);
     }
 }
 

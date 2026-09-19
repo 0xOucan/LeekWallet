@@ -297,8 +297,12 @@ static uint8_t qr_modules[((OLED_QR_MAX_VERSION * 4 + 17) *
 /* Blank the panel to light and draw dark modules, centred, with a 2 px quiet
  * zone. Shared by both entry points so the address QR is drawn by exactly the
  * code that always drew it. */
-static esp_err_t render_qr(QRCode *qrcode, uint8_t scale, bool inverted)
+/* How the space around a QR is drawn. See render_qr. */
+enum { QR_STYLE_FILL, QR_STYLE_FRAMED, QR_STYLE_INVERTED };
+
+static esp_err_t render_qr(QRCode *qrcode, uint8_t scale, int style)
 {
+    const bool inverted = (style == QR_STYLE_INVERTED);
     uint8_t qr_size = qrcode->size;
 
     uint8_t total_size = qr_size * scale;
@@ -320,7 +324,34 @@ static esp_err_t render_qr(QRCode *qrcode, uint8_t scale, bool inverted)
      * Inverted, far less of the panel is lit. Decoders that try inverted codes
      * (zxing's tryInvert, which the companion uses) read it as normal.
      */
-    memset(framebuffer, inverted ? 0x00 : 0xFF, sizeof(framebuffer));
+    memset(framebuffer, (style == QR_STYLE_FILL) ? 0xFF : 0x00, sizeof(framebuffer));
+
+    /*
+     * FRAMED: normal polarity, but only the QR and its quiet zone are lit and
+     * the rest of the panel is off. With FILL the two blank areas beside a
+     * 58-pixel code are more than half the screen, all of it lit, and a webcam
+     * saw them as a bright slab whose glow drowned the code between them - the
+     * user's diagnosis from looking at the panel, confirmed by the captures.
+     * The quiet zone is the four modules ISO 18004 asks for where the panel has
+     * room (left and right) and whatever fits top and bottom.
+     */
+    if (style == QR_STYLE_FRAMED) {
+        const int margin_x = 4 * scale;
+        int margin_y = 4 * scale;
+        const int room_y = (OLED_HEIGHT - (int)total_size) / 2;
+        if (margin_y > room_y) {
+            margin_y = room_y;
+        }
+        const int x0 = (int)offset_x - margin_x;
+        const int y0 = (int)offset_y - margin_y;
+        for (int y = y0; y < (int)offset_y + (int)total_size + margin_y; y++) {
+            for (int x = x0; x < (int)offset_x + (int)total_size + margin_x; x++) {
+                if (x >= 0 && x < OLED_WIDTH && y >= 0 && y < OLED_HEIGHT) {
+                    oled_set_pixel((uint8_t)x, (uint8_t)y, true);
+                }
+            }
+        }
+    }
 
     /* Draw the dark modules (or, inverted, the lit ones) */
     for (uint8_t y = 0; y < qr_size; y++) {
@@ -387,7 +418,7 @@ esp_err_t oled_draw_qrcode(const char *data)
         scale = 1;  /* 1px per module for larger codes */
     }
 
-    return render_qr(&qrcode, scale, false);
+    return render_qr(&qrcode, scale, QR_STYLE_FILL);
 }
 
 bool oled_qr_fits(uint8_t version, uint8_t scale)
@@ -423,5 +454,6 @@ esp_err_t oled_draw_qrcode_ex(const char *data, uint8_t version, uint8_t scale,
     if (qrcode_initText(&qrcode, qr_modules, version, ECC_LOW, data) != 0) {
         return ESP_ERR_INVALID_SIZE;
     }
-    return render_qr(&qrcode, scale, inverted);
+    return render_qr(&qrcode, scale,
+                     inverted ? QR_STYLE_INVERTED : QR_STYLE_FRAMED);
 }
