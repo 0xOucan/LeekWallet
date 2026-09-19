@@ -1443,3 +1443,45 @@ That makes the flag a correctness property that depends on an invariant in a
 different file. It should become per-frame state passed down the call chain
 before anything relaxes that invariant, and whoever relaxes it must fix this
 first.
+
+## 40. Measured: who can read the device's screen
+
+The first optical test of the return path, on the CAM board's 0.96" SSD1306.
+
+**A phone reads it.** A phone camera decoded a `ur:crypto-hdkey` fountain
+part (part 28 of 10) straight off the panel at v3 x2. The frames are valid and
+the optics work; nothing about the firmware's QR output is in question.
+
+**A laptop webcam does not, and cannot.** The integrated 1080p camera tested
+has fixed focus, set for a face at arm's length. Captured frames showed the
+trade-off directly: close enough to give ~3 camera pixels per 0.17 mm OLED
+pixel (about 10 cm) is far inside its focus distance and the code blurs to grey;
+at a distance it focuses, it has under 1 pixel per OLED pixel. Neither
+sharpening, thresholding, white padding, lower panel brightness, nor manual
+short exposure (which did cure the bloom) produced a single decode across 80
+frames. There is no setting on this hardware that fixes a lens that cannot
+focus that close.
+
+The module size cannot grow to compensate. On 64 rows, 2 px modules (v3 x2) is
+the largest that still carries data: 3 px only fits version 1, whose 25
+alphanumeric characters are consumed by the UR part header alone.
+
+### What that means for the design
+
+The air gap runs in two directions and they are not equal:
+
+| Direction | Reader | Works with what users own? |
+|---|---|---|
+| companion -> device | the device's OV5640, reading a laptop or phone screen | expected yes: a large bright screen and a camera we control |
+| device -> companion | the companion's camera, reading a 0.96" OLED | **phone: yes. Laptop webcam: no.** |
+
+So for the device-to-companion leg, **the reader is a phone**, which most users
+already carry and which costs nothing extra on a $12 build. A desktop user
+pairing or signing over QR needs either a phone in the loop, an external
+autofocus webcam, or a larger panel. Two hardware options keep the firmware
+unchanged: a 1.3" or 2.42" 128x64 OLED (SSD1309 on the larger ones) gives
+physically larger pixels at the same resolution, and the Pixie's 240x240 panel
+already draws each pixel 1.875 times larger.
+
+USB and BLE remain the desktop's cable and radio paths, off by default and
+chosen deliberately, exactly as before.
