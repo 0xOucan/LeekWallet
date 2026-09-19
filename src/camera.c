@@ -56,8 +56,19 @@ static const char *TAG = "camera";
  * sampled reads - on one frame in four. That ratio is here rather than inline
  * so it can be named in a test and moved with one edit if the bench says the
  * preview is measurably slowing the decode rate.
+ *
+ * Overridable from the build, and 0 turns the preview off entirely, so the
+ * bench can answer "what does the viewfinder cost?" as a measurement rather
+ * than an argument:
+ *
+ *   pio run -e esp32s3cam-bench                                  preview on
+ *   pio run -e esp32s3cam-bench -a "--build-flag=-DCAMERA_PREVIEW_EVERY=0"
+ *
+ * Two runs, two frames/s numbers, and the difference is the answer.
  */
-#define PREVIEW_EVERY   4
+#ifndef CAMERA_PREVIEW_EVERY
+#  define CAMERA_PREVIEW_EVERY   4
+#endif
 
 static struct quirc *quirc_ctx;
 static bool running;
@@ -184,7 +195,8 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
     if (fb->format == PIXFORMAT_GRAYSCALE &&
         fb->width == FRAME_W && fb->height == FRAME_H) {
 
-        if (++preview_tick % PREVIEW_EVERY == 0) {
+        if (CAMERA_PREVIEW_EVERY > 0 &&
+            ++preview_tick % CAMERA_PREVIEW_EVERY == 0) {
             viewfinder_render(fb->buf, FRAME_W, FRAME_H, preview);
             preview_fresh = true;
         }
