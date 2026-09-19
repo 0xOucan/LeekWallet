@@ -3412,8 +3412,8 @@ static void show_address_run(void)
 /* ============================================================================
  * Scan Screen
  *
- * The camera loop's host. Frames arrive from camera.c (a stub until the driver
- * exists), each is fed to the UR assembler, and a complete eth-sign-request is
+ * The camera loop's host. Frames arrive from camera.c, each decoded symbol is
+ * fed to the UR assembler, and a complete eth-sign-request is
  * handed to the airgap worker - which then asks the user on SCREEN_SIGN_CONFIRM
  * exactly as a USB request would. Nothing on this screen reads the request's
  * contents out loud; the confirmation draws what the device decoded.
