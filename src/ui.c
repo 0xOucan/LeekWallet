@@ -3511,6 +3511,21 @@ static void screen_scan_on_button(button_id_t btn)
         ui_set_screen(SCREEN_MAIN_MENU);
         return;
     }
+    /* UP and DOWN step the four mirror/flip combinations. How the module is
+       mounted decides which one shows the world as it is, and a mirrored view
+       decodes nothing at all, so this is the difference between a working
+       camera and one that looks broken. */
+    if (btn == BUTTON_ACCEPT) {
+        /* One frame over the cable, to be looked at rather than guessed about:
+           the panel's 1-bit preview cannot show blur or exposure. */
+        camera_dump_frame();
+        ui_invalidate();
+        return;
+    }
+    if (btn == BUTTON_UP || btn == BUTTON_DOWN) {
+        const uint8_t step = (btn == BUTTON_UP) ? 3u : 1u;
+        camera_set_orientation((uint8_t)((camera_orientation() + step) % 4u));
+    }
     ui_invalidate();
 }
 
@@ -3559,9 +3574,13 @@ static void service_scan(void)
 
         const uint32_t left = airgap_scan_remaining();
         if (left == 0) {
-            snprintf(scan_status, sizeof scan_status, "seen %u read %u",
-                     (unsigned)(cam_seen > 999 ? 999 : cam_seen),
-                     (unsigned)(cam_read > 999 ? 999 : cam_read));
+            /* "f0 s12 r0": flip mode, codes seen, codes read. Short because
+               the row is 21 characters and the numbers matter more than the
+               words. */
+            snprintf(scan_status, sizeof scan_status, "f%u s%u r%u",
+                     (unsigned)(camera_orientation() & 3u),
+                     (unsigned)(cam_seen > 99 ? 99 : cam_seen),
+                     (unsigned)(cam_read > 99 ? 99 : cam_read));
         }
         if (left > 0) {
             /* Clamped at three digits, which is both what the row fits and

@@ -26,6 +26,30 @@ bool camera_start(void);
 void camera_stop(void);
 
 /**
+ * Mirror and flip, as bit 0 (hmirror) and bit 1 (vflip) of `mode`.
+ *
+ * Which combination shows the world the right way up depends on how the module
+ * is mounted, and it is not a cosmetic question: a MIRRORED image is not a QR
+ * code at all and will never decode, however sharp it is, while a 180-degree
+ * rotation reads fine. Both bits set is a rotation; exactly one is a mirror.
+ * Adjustable because the answer is a property of the board in someone's hand,
+ * and a wrong guess here looks exactly like a camera that does not work.
+ */
+void camera_set_orientation(uint8_t mode);
+
+/**
+ * Print one raw frame over the console as base64, between FRAME markers.
+ *
+ * For judging focus, exposure and distance from the other end of the cable:
+ * "nothing decodes" says nothing about why, and the panel's 1-bit preview
+ * cannot show blur. Raw sensor pixels only, never anything decoded.
+ */
+void camera_dump_frame(void);
+
+/** The current mirror/flip bits. */
+uint8_t camera_orientation(void);
+
+/**
  * The next QR symbol decoded since the last call, as text, if there is one.
  * Never blocks: the scan screen calls this from the UI task's loop.
  */

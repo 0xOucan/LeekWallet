@@ -80,6 +80,12 @@ static void test_quadrants(void)
         { FW/2, FH/2, FW,    FH,     "bottom-right"},
     };
 
+    /* The picture is letterboxed to the camera's aspect ratio, so a quadrant
+       fills half of that image rather than half of the panel, and the bars
+       either side stay dark. */
+    const int vw = VIEWFINDER_H * FW / FH;
+    const int vx0 = (VIEWFINDER_W - vw) / 2;
+
     for (int i = 0; i < 4; i++) {
         frame_fill(0x20);
         frame_rect(q[i].x0, q[i].y0, q[i].x1, q[i].y1, 0xF0);
@@ -88,8 +94,9 @@ static void test_quadrants(void)
         int inside = 0, outside = 0;
         for (int y = 0; y < VIEWFINDER_H; y++) {
             for (int x = 0; x < VIEWFINDER_W; x++) {
-                const bool want_x = (q[i].x0 == 0) ? (x < VIEWFINDER_W / 2)
-                                                   : (x >= VIEWFINDER_W / 2);
+                const bool want_x = (q[i].x0 == 0)
+                        ? (x >= vx0 && x < vx0 + vw / 2)
+                        : (x >= vx0 + vw / 2 && x < vx0 + vw);
                 const bool want_y = (q[i].y0 == 0) ? (y < VIEWFINDER_H / 2)
                                                    : (y >= VIEWFINDER_H / 2);
                 if (panel_pixel(x, y)) {
@@ -99,9 +106,19 @@ static void test_quadrants(void)
         }
         CHECK(outside == 0, "%s: %d lit pixels outside the quadrant",
               q[i].name, outside);
-        CHECK(inside == VIEWFINDER_W / 2 * (VIEWFINDER_H / 2),
+        CHECK(inside == (vw / 2) * (VIEWFINDER_H / 2),
               "%s: %d lit inside, expected %d", q[i].name, inside,
-              VIEWFINDER_W / 2 * (VIEWFINDER_H / 2));
+              (vw / 2) * (VIEWFINDER_H / 2));
+        /* And the letterbox bars are dark, which is what makes a square code
+           look square. */
+        int bars = 0;
+        for (int y = 0; y < VIEWFINDER_H; y++) {
+            for (int x = 0; x < VIEWFINDER_W; x++) {
+                if ((x < vx0 || x >= vx0 + vw) && panel_pixel(x, y)) { bars++; }
+            }
+        }
+        CHECK(bars == 0, "%s: %d lit pixels in the letterbox bars",
+              q[i].name, bars);
     }
 }
 
@@ -123,7 +140,8 @@ static void test_centred_block(void)
           "bottom-right corner is lit");
 
     const int lit = panel_lit();
-    const int want = (VIEWFINDER_W / 2) * (VIEWFINDER_H / 2);
+    /* Half the letterboxed image, not half the panel. */
+    const int want = ((VIEWFINDER_H * FW / FH) / 2) * (VIEWFINDER_H / 2);
     CHECK(lit > want * 9 / 10 && lit < want * 11 / 10,
           "lit area %d, expected about %d", lit, want);
 }

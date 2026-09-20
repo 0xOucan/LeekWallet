@@ -95,6 +95,14 @@ static uint32_t stat_decodes;
    it is seen and the modules are not resolved - blur, glare, or a refresh
    caught mid-frame. */
 static uint32_t stat_located;
+/*
+ * Bit 0 hmirror, bit 1 vflip. See camera.h: one of them alone mirrors the
+ * image, which no decoder can read.
+ *
+ * 2 (vflip) is what this module needs, found on the bench: with both off the
+ * picture came out mirrored and upside down, which is a vertical flip.
+ */
+static uint8_t orientation = 2;
 
 bool camera_start(void)
 {
@@ -149,6 +157,28 @@ bool camera_start(void)
            says so - see camera.h. */
         ESP_LOGE(TAG, "esp_camera_init: %s", esp_err_to_name(err));
         return false;
+    }
+
+    /*
+     * Mirror and flip, set rather than inherited.
+     *
+     * We took whatever the sensor powered up with, and OV5640 modules commonly
+     * come up mirrored. A 180-degree rotation is harmless - the finder patterns
+     * tell a decoder which way is up - but a MIRRORED code is not a QR code at
+     * all, and quirc will never read one however sharp it is. That is a fault
+     * with no symptom except silence, which is what the bench saw: a clear
+     * picture on the panel and nothing ever decoded.
+     *
+     * Both off. What matters is that the count is even: both on is a rotation,
+     * one on is a mirror. If the module is physically mounted upside down the
+     * picture will be too, and that costs nothing.
+     */
+    camera_set_orientation(orientation);
+    sensor_t *sensor = esp_camera_sensor_get();
+    if (sensor != NULL) {
+        ESP_LOGI(TAG, "sensor 0x%04x, hmirror %d, vflip %d",
+                 (unsigned)sensor->id.PID, sensor->status.hmirror,
+                 sensor->status.vflip);
     }
 
     quirc_ctx = quirc_new();
@@ -280,6 +310,61 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
     return got;
 }
 
+void camera_set_orientation(uint8_t mode)
+{
+    orientation = (uint8_t)(mode & 0x03);
+    sensor_t *sensor = esp_camera_sensor_get();
+    if (sensor == NULL) {
+        return;
+    }
+    if (sensor->set_hmirror != NULL) {
+        sensor->set_hmirror(sensor, (orientation & 1) ? 1 : 0);
+    }
+    if (sensor->set_vflip != NULL) {
+        sensor->set_vflip(sensor, (orientation & 2) ? 1 : 0);
+    }
+}
+
+uint8_t camera_orientation(void) { return orientation; }
+
+void camera_dump_frame(void)
+{
+    static const char B64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if (!running) {
+        return;
+    }
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb == NULL || fb->format != PIXFORMAT_GRAYSCALE) {
+        if (fb != NULL) { esp_camera_fb_return(fb); }
+        return;
+    }
+
+    printf("FRAME_BEGIN %u %u\n", (unsigned)fb->width, (unsigned)fb->height);
+    /* 57 input bytes per line keeps each printed line under 80 characters,
+       which is what a serial monitor and a log capture both handle without
+       wrapping surprises. */
+    const size_t CHUNK = 57;
+    for (size_t i = 0; i < fb->len; i += CHUNK) {
+        char line[80];
+        size_t o = 0;
+        for (size_t j = i; j < i + CHUNK && j < fb->len; j += 3) {
+            const uint32_t a = fb->buf[j];
+            const uint32_t b = (j + 1 < fb->len) ? fb->buf[j + 1] : 0;
+            const uint32_t c = (j + 2 < fb->len) ? fb->buf[j + 2] : 0;
+            const uint32_t v = (a << 16) | (b << 8) | c;
+            line[o++] = B64[(v >> 18) & 0x3F];
+            line[o++] = B64[(v >> 12) & 0x3F];
+            line[o++] = (j + 1 < fb->len) ? B64[(v >> 6) & 0x3F] : '=';
+            line[o++] = (j + 2 < fb->len) ? B64[v & 0x3F] : '=';
+        }
+        line[o] = '\0';
+        printf("%s\n", line);
+    }
+    printf("FRAME_END\n");
+    esp_camera_fb_return(fb);
+}
+
 const uint8_t *camera_preview_take(void)
 {
     if (!preview_fresh) {
@@ -319,6 +404,10 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
 }
 
 const uint8_t *camera_preview_take(void) { return NULL; }
+
+void camera_set_orientation(uint8_t mode) { (void)mode; }
+void camera_dump_frame(void) { }
+uint8_t camera_orientation(void) { return 0; }
 
 void camera_stats(uint32_t *frames, uint32_t *decodes, uint32_t *located)
 {
