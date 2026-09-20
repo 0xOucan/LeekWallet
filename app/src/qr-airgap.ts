@@ -69,10 +69,24 @@ export function scanUr(
   }).finally(() => { video.hidden = true; });
 }
 
-/** Default fragment size, in bytes of payload per frame. */
-export const DEFAULT_FRAGMENT = 90;
-/** Frame period. Slow enough for a small camera to settle on each frame. */
-const FRAME_MS = 300;
+/**
+ * Default fragment size, in bytes of payload per frame.
+ *
+ * Small by default after the bench: a request sent whole came out around 78
+ * modules across, version 17, and the device's camera never located it at all.
+ * Fewer bytes per frame means fewer modules, and module size is what a camera
+ * can or cannot resolve.
+ */
+export const DEFAULT_FRAGMENT = 40;
+
+/**
+ * Default frame period.
+ *
+ * The device captures one or two frames a second at VGA, so 300 ms meant it
+ * missed most frames outright and caught others mid-change. A frame it cannot
+ * finish reading is worth nothing, however many of them go past.
+ */
+export const DEFAULT_FRAME_MS = 700;
 
 /**
  * Show `cbor` as a UR in `holder` until `signal` fires: one static code if it
@@ -89,6 +103,7 @@ export function showUr(
   fragmentLen: number,
   render: (text: string) => SVGSVGElement,
   signal: AbortSignal,
+  frameMs: number = DEFAULT_FRAME_MS,
 ): { frames: number } {
   const frames = urFrames(type, cbor, fragmentLen);
   const draw = (text: string): void => {
@@ -101,7 +116,7 @@ export function showUr(
   }
   const encoder = frames.encoder;
   draw(encoder.nextPart());
-  const timer = setInterval(() => draw(encoder.nextPart()), FRAME_MS);
+  const timer = setInterval(() => draw(encoder.nextPart()), frameMs);
   signal.addEventListener("abort", () => { clearInterval(timer); holder.textContent = ""; }, { once: true });
   return { frames: encoder.seqLen };
 }

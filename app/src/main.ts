@@ -78,7 +78,7 @@ import {
   decodeCryptoHdkey, deriveAccounts, describeHdkey, type CryptoHdkey, type DerivedAccount,
 } from "../packages/core/src/eip4527/hdkey.ts";
 import { formatKeypath } from "../packages/core/src/eip4527/sign-request.ts";
-import { DEFAULT_FRAGMENT, QrCancelled, scanUr, showUr } from "./qr-airgap.ts";
+import { DEFAULT_FRAGMENT, QrCancelled, scanUr, showUr, DEFAULT_FRAME_MS } from "./qr-airgap.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -4271,13 +4271,15 @@ async function signViaQr(tx: UnsignedTransaction, from: Address): Promise<Hex> {
       frames = new AbortController();
       controller.signal.addEventListener("abort", () => frames?.abort(), { once: true });
       const size = Number(($("qrfrag") as HTMLSelectElement).value) || DEFAULT_FRAGMENT;
+      const speed = Number(($("qrspeed") as HTMLSelectElement).value) || DEFAULT_FRAME_MS;
       const { frames: n } = showUr($("qrdisplay"), "eth-sign-request", cbor, size,
-        (text) => qrSvg(text, "Alphanumeric"), frames.signal);
+        (text) => qrSvg(text, "Alphanumeric"), frames.signal, speed);
       $("qrprogress").textContent = n > 1
         ? `${cbor.length} bytes in ${n} fragments, animated. A smaller size is easier for the device's camera.`
         : `${cbor.length} bytes, one frame.`;
     };
     $("qrfrag").addEventListener("change", draw, { signal: controller.signal });
+    $("qrspeed").addEventListener("change", draw, { signal: controller.signal });
     draw();
     deviceAttention("scan the request with the device, check every page on it, then approve");
 
