@@ -3546,7 +3546,23 @@ static void service_scan(void)
         scan_preview_live = true;
         /* Once parts are landing, the status line says how many are left
            rather than still inviting the user to aim. */
+        /*
+         * What the camera is making of the view, on the panel, because the
+         * person aiming it cannot watch a serial log. `seen` is codes quirc
+         * located; the gap between seen and read is the diagnosis: nothing
+         * seen means too small, too dim or out of frame, while seen without
+         * read means the modules are not being resolved. None of it comes
+         * from a decoded payload, only from counters.
+         */
+        uint32_t cam_frames = 0, cam_read = 0, cam_seen = 0;
+        camera_stats(&cam_frames, &cam_read, &cam_seen);
+
         const uint32_t left = airgap_scan_remaining();
+        if (left == 0) {
+            snprintf(scan_status, sizeof scan_status, "seen %u read %u",
+                     (unsigned)(cam_seen > 999 ? 999 : cam_seen),
+                     (unsigned)(cam_read > 999 ? 999 : cam_read));
+        }
         if (left > 0) {
             /* Clamped at three digits, which is both what the row fits and
                more parts than any message this device accepts can be cut

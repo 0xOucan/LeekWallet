@@ -48,6 +48,13 @@ const uint8_t *camera_preview_take(void);
  * path the Scan screen uses, so the number measured is the number a user gets
  * rather than one from a loop written to look good.
  */
-void camera_stats(uint32_t *frames, uint32_t *decodes);
+/**
+ * Frames grabbed, codes decoded, and codes LOCATED but unreadable.
+ *
+ * The third is what makes a bench session diagnosable: none located means the
+ * code is too small, too dim or out of frame; located without decodes means it
+ * is seen but its modules are not resolved.
+ */
+void camera_stats(uint32_t *frames, uint32_t *decodes, uint32_t *located);
 
 #endif /* LEEK_CAMERA_H */

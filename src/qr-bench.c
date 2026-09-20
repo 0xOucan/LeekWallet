@@ -69,8 +69,8 @@ static void bench_task(void *arg)
             continue;
         }
 
-        uint32_t frames = 0, decodes = 0;
-        camera_stats(&frames, &decodes);
+        uint32_t frames = 0, decodes = 0, located = 0;
+        camera_stats(&frames, &decodes, &located);
 
         const double secs = (double)elapsed / 1000000.0;
         const double fps = (frames - last_frames) / secs;
@@ -80,9 +80,10 @@ static void bench_task(void *arg)
            what bounds the transfer; decodes per second is how many of those
            frames actually yielded a symbol, which is the miss rate budget.py
            has been guessing at. */
-        ESP_LOGI(TAG, "%.1f frames/s  %.1f decodes/s  (%u frames, %u decodes, "
-                      "stack headroom %u B)",
-                 fps, dps, (unsigned)frames, (unsigned)decodes,
+        ESP_LOGI(TAG, "%.1f frames/s  %.1f decodes/s  (%u frames, %u located, "
+                      "%u decodes, stack headroom %u B)",
+                 fps, dps, (unsigned)frames, (unsigned)located,
+                 (unsigned)decodes,
                  (unsigned)uxTaskGetStackHighWaterMark(NULL));
 
         last_frames = frames;

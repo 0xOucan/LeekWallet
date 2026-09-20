@@ -27,6 +27,7 @@
 
 #include "esp_camera.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "quirc.h"
 
 #include "viewfinder.h"
@@ -88,6 +89,12 @@ static uint32_t preview_tick;
 
 static uint32_t stat_frames;
 static uint32_t stat_decodes;
+/* Codes quirc LOCATED but could not read. The difference between this and
+   stat_decodes is the whole diagnosis on a bench: zero located means the code
+   is too small, too dim or out of frame, while located-but-not-decoded means
+   it is seen and the modules are not resolved - blur, glare, or a refresh
+   caught mid-frame. */
+static uint32_t stat_located;
 
 bool camera_start(void)
 {
@@ -160,6 +167,7 @@ bool camera_start(void)
     preview_tick = 0;
     stat_frames = 0;
     stat_decodes = 0;
+    stat_located = 0;
     running = true;
     ESP_LOGI(TAG, "camera up: %dx%d grayscale", FRAME_W, FRAME_H);
     return true;
@@ -190,6 +198,24 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
     }
     stat_frames++;
 
+    /*
+     * One line a second while scanning, so a bench session is diagnosable over
+     * the cable without swapping in the benchmark image. `located` is the
+     * useful number: none means the code is too small, too dim or out of
+     * frame; located without decodes means it is seen and its modules are not
+     * resolved. Nothing here is derived from a decoded payload.
+     */
+    {
+        static int64_t last_log_us;
+        const int64_t now_us = esp_timer_get_time();
+        if (now_us - last_log_us > 1000000) {
+            last_log_us = now_us;
+            ESP_LOGI(TAG, "scanning: %u frames, %u located, %u decoded",
+                     (unsigned)stat_frames, (unsigned)stat_located,
+                     (unsigned)stat_decodes);
+        }
+    }
+
     bool got = false;
 
     if (fb->format == PIXFORMAT_GRAYSCALE &&
@@ -216,6 +242,7 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
         quirc_end(quirc_ctx);
 
         const int n = quirc_count(quirc_ctx);
+        stat_located += (uint32_t)n;
         for (int i = 0; i < n && !got; i++) {
             quirc_extract(quirc_ctx, i, &scan_code);
             if (quirc_decode(&scan_code, &scan_data) != QUIRC_SUCCESS) {
@@ -262,10 +289,11 @@ const uint8_t *camera_preview_take(void)
     return preview;
 }
 
-void camera_stats(uint32_t *frames, uint32_t *decodes)
+void camera_stats(uint32_t *frames, uint32_t *decodes, uint32_t *located)
 {
     if (frames != NULL)  { *frames = stat_frames; }
     if (decodes != NULL) { *decodes = stat_decodes; }
+    if (located != NULL) { *located = stat_located; }
 }
 
 #else /* !LEEK_CAMERA_DRIVER */
@@ -292,10 +320,11 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
 
 const uint8_t *camera_preview_take(void) { return NULL; }
 
-void camera_stats(uint32_t *frames, uint32_t *decodes)
+void camera_stats(uint32_t *frames, uint32_t *decodes, uint32_t *located)
 {
     if (frames != NULL)  { *frames = 0; }
     if (decodes != NULL) { *decodes = 0; }
+    if (located != NULL) { *located = 0; }
 }
 
 #endif
