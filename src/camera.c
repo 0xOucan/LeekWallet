@@ -27,6 +27,12 @@
 
 #include "esp_camera.h"
 #include "esp_camera_af.h"
+
+#ifdef CONFIG_CAMERA_AF_SUPPORT
+#  define CONFIG_CAMERA_AF_ENABLED 1
+#else
+#  define CONFIG_CAMERA_AF_ENABLED 0
+#endif
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "quirc.h"
@@ -227,7 +233,10 @@ bool camera_start(void)
          * mode, because the user moves the device until it reads and the lens
          * should follow rather than wait to be asked.
          */
-        if (esp_camera_af_is_supported(sensor)) {
+        /* Guarded twice over: the call is compiled out unless the build asks
+           for AF, because on a module with no focus motor it waited for a
+           reply that never came and took camera start down with it. */
+        if (CONFIG_CAMERA_AF_ENABLED && esp_camera_af_is_supported(sensor)) {
             const esp_camera_af_config_t af = {
                 .mode = ESP_CAMERA_AF_MODE_AUTO,
                 .step_size = 1,

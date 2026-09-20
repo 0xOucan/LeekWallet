@@ -19,15 +19,29 @@ Run it with the device on the Scan screen:
 Press q or Escape to quit. It only reads; nothing is sent to the device.
 """
 import base64
+import os
 import re
 import sys
+import tempfile
 import tkinter as tk
 
 import serial
-from PIL import Image, ImageTk
+from PIL import Image
 
 PORT = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyACM0"
 BEGIN = re.compile(rb"FRAME_BEGIN (\d+) (\d+)\s*\n")
+
+
+_VIEW_PNG = os.path.join(tempfile.gettempdir(), "leek-camera-view.png")
+
+
+def tk_photo(img: "Image.Image") -> tk.PhotoImage:
+    """Tk 8.6 reads PNG files by itself, which avoids needing ImageTk - a
+    separate package (python3-pil.imagetk) that is often not installed, and was
+    not here. A temp file per frame is nothing at a frame a second, and it
+    beats making the tool need another install."""
+    img.save(_VIEW_PNG)
+    return tk.PhotoImage(file=_VIEW_PNG).zoom(2, 2)
 
 
 def sharpness(img: Image.Image) -> float:
@@ -102,8 +116,7 @@ def main() -> int:
                 continue
             img = Image.frombytes("L", (w, h), raw)
             state["frames"] += 1
-            shown = img.resize((w * 2, h * 2), Image.NEAREST)
-            photo = ImageTk.PhotoImage(shown)
+            photo = tk_photo(img)
             label.configure(image=photo)
             label.image = photo
             status.configure(

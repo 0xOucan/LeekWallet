@@ -68,10 +68,11 @@ CONFIG_SPIRAM_IGNORE_NOTFOUND=n
 CONFIG_SCCB_HARDWARE_I2C_DRIVER_LEGACY=y
 CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=n
 
-# OV5640 autofocus.
+# OV5640 autofocus: OFF.
 #
-# The first sharp bench frame still had soft QR modules: the lens sits wherever
-# it powered up, and a code held 15 cm away is not where that is. The module
-# has a focus motor and the driver ships the firmware for it; it is off by
-# default, and leaving it off looks exactly like a camera that cannot read.
-CONFIG_CAMERA_AF_SUPPORT=y
+# Enabling it stopped the camera starting at all on the bench module
+# (VVS-OV5640-CSP-825N-V, no visible focus motor). esp_camera_af_init uploads
+# firmware to a VCM over SCCB and waits for it; with no motor to answer, camera
+# start never returned and the Scan screen never opened. A fixed lens is worth
+# far less than a camera that starts.
+# CONFIG_CAMERA_AF_SUPPORT is not set
