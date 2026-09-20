@@ -3488,13 +3488,13 @@ static void screen_scan_render(void)
     oled_clear();
 
     if (scan_preview_live) {
-        /* Pages 0-6 are the preview, page 7 is the status line. Written a page
-           at a time through the ordinary raw path so the host harness sees the
-           same bytes the panel does. */
+        /* Pages 0-6 are the preview, page 7 is the status line. Into the
+           framebuffer, not straight to the panel: one flush then paints the
+           image and the text together, which is what stopped the viewfinder
+           flickering. */
         for (uint8_t page = 0; page < VIEWFINDER_H / 8; page++) {
-            oled_set_cursor(page, 0);
-            oled_draw_raw(&scan_preview[(size_t)page * VIEWFINDER_W],
-                          VIEWFINDER_W);
+            oled_blit_page(page, &scan_preview[(size_t)page * VIEWFINDER_W],
+                           VIEWFINDER_W);
         }
         oled_draw_string_centered(7, scan_status);
         return;

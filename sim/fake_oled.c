@@ -215,6 +215,17 @@ esp_err_t oled_fill_page(uint8_t page, uint8_t pattern)
     return ESP_OK;
 }
 
+void oled_blit_page(uint8_t page, const uint8_t *cols, size_t len)
+{
+    if (cols == NULL || page >= OLED_PAGES) {
+        return;
+    }
+    if (len > OLED_WIDTH) {
+        len = OLED_WIDTH;
+    }
+    memcpy(&fb[page][0], cols, len);
+}
+
 esp_err_t oled_draw_raw(const uint8_t *data, size_t len)
 {
     for (size_t i = 0; i < len && cursor_col < OLED_WIDTH; i++) {

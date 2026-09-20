@@ -144,6 +144,17 @@ static uint8_t cursor_col = 0;
 
 uint8_t *oled_core_framebuffer(void) { return framebuffer; }
 
+void oled_blit_page(uint8_t page, const uint8_t *cols, size_t len)
+{
+    if (cols == NULL || page >= OLED_PAGES) {
+        return;
+    }
+    if (len > OLED_WIDTH) {
+        len = OLED_WIDTH;
+    }
+    memcpy(&framebuffer[(size_t)page * OLED_WIDTH], cols, len);
+}
+
 const uint8_t *font_5x7_glyph(char c)
 {
     if (c < 32 || c > 126) { c = ' '; }

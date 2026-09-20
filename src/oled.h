@@ -109,6 +109,18 @@ esp_err_t oled_set_cursor(uint8_t page, uint8_t col);
 esp_err_t oled_draw_raw(const uint8_t *data, size_t len);
 
 /**
+ * Copy one page of column bytes INTO the framebuffer, to be shown by the next
+ * flush.
+ *
+ * Unlike oled_draw_raw, which sends to the panel immediately. The viewfinder
+ * used that and flickered hard on the bench: the preview reached the glass,
+ * and then the frame's ordinary flush wrote the framebuffer - which had never
+ * seen the preview - straight over it. Every frame drew the image and then
+ * erased it.
+ */
+void oled_blit_page(uint8_t page, const uint8_t *cols, size_t len);
+
+/**
  * Fill a page with a pattern (useful for selection highlight)
  * @param page Page number (0-7)
  * @param pattern Byte pattern to fill
