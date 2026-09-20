@@ -66,7 +66,9 @@ case "$BOARD" in
   *)     echo "unknown board '$BOARD' (s3, s3cam or pixie)" >&2; exit 2 ;;
 esac
 
-PROBE="${PROBE:-python3 scripts/board-model.py}"   # overridable for testing
+# Wrapped in `timeout`: a probe that blocks on the serial port must not be able
+# to hang a flash. Belt and braces with board-model.py's own write timeout.
+PROBE="${PROBE:-timeout 10 python3 scripts/board-model.py}"   # overridable for testing
 ESPTOOL="${ESPTOOL:-esptool.py}"
 command -v "$ESPTOOL" >/dev/null || ESPTOOL="$HOME/.platformio/packages/tool-esptoolpy/esptool.py"
 

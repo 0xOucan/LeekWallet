@@ -51,3 +51,19 @@ CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 CONFIG_SPIRAM_IGNORE_NOTFOUND=n
+
+# SCCB (the camera's control bus) on the LEGACY I2C driver.
+#
+# ESP-IDF 5.5 refuses to have both I2C drivers in one image: the camera's
+# default is the new driver, src/oled.c uses the old one, and the result was
+# not a build error but a boot loop on the bench -
+#   E i2c: CONFLICT! driver_ng is not allowed to be used with this old driver
+#   abort() was called
+# twenty-one reboots a second, with nothing servicing USB, so the board also
+# looked dead to the flashing tool. The camera goes legacy because that is one
+# line here; migrating the panel to the new driver is the tidier fix and is
+# worth doing when the old driver is actually removed.
+#
+# No port conflict either way: the panel is on I2C0, SCCB defaults to I2C1.
+CONFIG_SCCB_HARDWARE_I2C_DRIVER_LEGACY=y
+CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=n

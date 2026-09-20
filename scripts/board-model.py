@@ -87,6 +87,11 @@ def probe(path, boot_wait, timeout):
     port.port = path
     port.baudrate = 115200
     port.timeout = 0.2
+    # Without a write timeout, writing to a device that is not draining its USB
+    # endpoint blocks forever. It did: a flash sat for twenty minutes on this
+    # probe with no output at all, which reads as a dead board rather than a
+    # stuck host.
+    port.write_timeout = 2.0
     port.dtr = False
     port.rts = False
     try:
@@ -96,8 +101,15 @@ def probe(path, boot_wait, timeout):
     try:
         time.sleep(boot_wait)
         port.reset_input_buffer()
-        port.write(request("getFeatures"))
-        port.flush()
+        try:
+            # No flush(): it calls tcdrain, which blocks until the device reads
+            # its endpoint and ignores write_timeout entirely. A device sitting
+            # on a screen that is not servicing USB hung a flash for twenty
+            # minutes here. The write itself is enough; if nothing reads it, the
+            # read below times out and the answer is "none", which is honest.
+            port.write(request("getFeatures"))
+        except (serial.SerialTimeoutException, serial.SerialException):
+            return None
         ftype, payload = read_frame(port, timeout)
         if ftype != 0x02 or payload is None:
             return None
