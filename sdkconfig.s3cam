@@ -67,3 +67,11 @@ CONFIG_SPIRAM_IGNORE_NOTFOUND=n
 # No port conflict either way: the panel is on I2C0, SCCB defaults to I2C1.
 CONFIG_SCCB_HARDWARE_I2C_DRIVER_LEGACY=y
 CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=n
+
+# OV5640 autofocus.
+#
+# The first sharp bench frame still had soft QR modules: the lens sits wherever
+# it powered up, and a code held 15 cm away is not where that is. The module
+# has a focus motor and the driver ships the firmware for it; it is off by
+# default, and leaving it off looks exactly like a camera that cannot read.
+CONFIG_CAMERA_AF_SUPPORT=y

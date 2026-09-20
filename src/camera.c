@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "esp_camera.h"
+#include "esp_camera_af.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "quirc.h"
@@ -45,8 +46,30 @@ static const char *TAG = "camera";
  * read the QR versions a phone animates from a comfortable distance. If bench
  * numbers from the board say otherwise, this is the constant to move.
  */
-#define FRAME_W     320
-#define FRAME_H     240
+/*
+ * VGA, not QVGA.
+ *
+ * The first bench frames settled this: at 320x240 a companion's request code
+ * filled about 160 pixels, and with that many modules each one was barely two
+ * camera pixels. quirc located nothing at all - not blur, simply not enough
+ * pixels to see modules with. VGA doubles the linear resolution, so the same
+ * distance gives four to six pixels per module.
+ *
+ * The cost is quirc's image plane and the decode, both four times larger:
+ * about 1.2 MB of PSRAM against 8 MB, and fewer frames per second. Frames are
+ * the cheaper thing to spend here, because a frame that cannot resolve a
+ * module is worth nothing however many of them arrive.
+ */
+/* A debug session can force QVGA: the live viewer on the other end of the
+   cable wants frames often more than it wants pixels, and a VGA frame is four
+   times the bytes to push through the log. */
+#if defined(CAMERA_FORCE_QVGA) && CAMERA_FORCE_QVGA
+#  define FRAME_W   320
+#  define FRAME_H   240
+#else
+#  define FRAME_W   640
+#  define FRAME_H   480
+#endif
 
 /*
  * How often a captured frame is also turned into a preview.
@@ -139,7 +162,7 @@ bool camera_start(void)
         .ledc_channel   = LEDC_CHANNEL_0,
 
         .pixel_format   = PIXFORMAT_GRAYSCALE,
-        .frame_size     = FRAMESIZE_QVGA,
+        .frame_size     = (FRAME_W == 320) ? FRAMESIZE_QVGA : FRAMESIZE_VGA,
 
         /* Two buffers and LATEST: the decoder wants the newest view of the
            companion's screen, not a queue of stale ones. A backlog would make
@@ -176,6 +199,47 @@ bool camera_start(void)
     camera_set_orientation(orientation);
     sensor_t *sensor = esp_camera_sensor_get();
     if (sensor != NULL) {
+        /*
+         * Expose for the screen, not for the room.
+         *
+         * The first VGA frames off this board were smeared into streaks: a
+         * dark room, so automatic exposure held the shutter open, and a
+         * handheld device turned that into motion blur across every frame.
+         * quirc located nothing, and no amount of resolution fixes a smear.
+         *
+         * What this camera is always pointed at is a phone or a monitor, which
+         * is far brighter than the room around it. Biasing exposure down lets
+         * the screen land correctly exposed with a much shorter shutter, which
+         * is what stops the blur; the room going dark around it costs nothing,
+         * since nothing there needs reading. Gain control stays on to make up
+         * the difference on dimmer screens.
+         */
+        if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 1); }
+        if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 1); }
+        if (sensor->set_ae_level != NULL)      { sensor->set_ae_level(sensor, -2); }
+
+        /*
+         * Autofocus, if this module has the motor for it.
+         *
+         * The lens otherwise stays wherever it powered up, which is not where
+         * a QR held at arm's length is: the first sharp frames off this board
+         * still had soft modules, greys where blacks should be. Continuous
+         * mode, because the user moves the device until it reads and the lens
+         * should follow rather than wait to be asked.
+         */
+        if (esp_camera_af_is_supported(sensor)) {
+            const esp_camera_af_config_t af = {
+                .mode = ESP_CAMERA_AF_MODE_AUTO,
+                .step_size = 1,
+                .range_min = 0,
+                .range_max = 1023,
+                .timeout_ms = 2000,
+            };
+            const esp_err_t af_err = esp_camera_af_init(sensor, &af);
+            ESP_LOGI(TAG, "autofocus init: %s", esp_err_to_name(af_err));
+        } else {
+            ESP_LOGW(TAG, "this module has no autofocus; focus is fixed");
+        }
         ESP_LOGI(TAG, "sensor 0x%04x, hmirror %d, vflip %d",
                  (unsigned)sensor->id.PID, sensor->status.hmirror,
                  sensor->status.vflip);
@@ -235,6 +299,26 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
      * frame; located without decodes means it is seen and its modules are not
      * resolved. Nothing here is derived from a decoded payload.
      */
+    /*
+     * Optional: a frame every so often while scanning, without anyone pressing
+     * anything. Off by default; built with -DCAMERA_AUTODUMP_MS=5000 for a
+     * bench session, because pressing OK at the moment somebody on the other
+     * end of the cable happens to be listening is a coordination problem that
+     * wasted several attempts.
+     */
+#if defined(CAMERA_AUTODUMP_MS) && CAMERA_AUTODUMP_MS > 0
+    {
+        static int64_t last_dump_us;
+        const int64_t now_us = esp_timer_get_time();
+        if (now_us - last_dump_us > (int64_t)CAMERA_AUTODUMP_MS * 1000) {
+            last_dump_us = now_us;
+            esp_camera_fb_return(fb);
+            camera_dump_frame();
+            return false;
+        }
+    }
+#endif
+
     {
         static int64_t last_log_us;
         const int64_t now_us = esp_timer_get_time();
