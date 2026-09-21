@@ -150,8 +150,13 @@ static bool exposure_locked;
 
 /* Live preview to the PC viewer, off until OK on the scan screen asks. */
 static bool streaming;
-#define STREAM_PERIOD_US  (200 * 1000)
-static void emit_frame(const uint8_t *buf, unsigned w, unsigned h, unsigned step);
+/* The centre of the frame at native resolution: 103 KB of base64, which
+   the cable carries a couple of times a second. */
+#define STREAM_W          320
+#define STREAM_H          240
+#define STREAM_PERIOD_US  (400 * 1000)
+static void emit_frame(const uint8_t *buf, unsigned w, unsigned x0, unsigned y0,
+                       unsigned ow, unsigned oh, unsigned step);
 static int64_t last_decode_us;
 
 /* How long a lock outlives the last decode. A lock is only right for the
@@ -424,7 +429,8 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
             const int64_t now_us = esp_timer_get_time();
             if (now_us - last_stream_us > STREAM_PERIOD_US) {
                 last_stream_us = now_us;
-                emit_frame(fb->buf, FRAME_W, FRAME_H, 4);
+                emit_frame(fb->buf, FRAME_W, (FRAME_W - STREAM_W) / 2,
+                           (FRAME_H - STREAM_H) / 2, STREAM_W, STREAM_H, 1);
             }
         }
 
@@ -532,17 +538,18 @@ void camera_set_exposure_bias(int8_t level)
 int8_t camera_exposure_bias(void) { return exposure_bias; }
 
 /*
- * One grayscale image over the console as base64 between FRAME markers,
- * every `step`-th pixel of every `step`-th row. step 1 is the full frame for
- * judging focus; the live stream uses 4, a 160x120 image small enough to go
- * out several times a second without starving the scanner that shares this
- * task.
+ * One grayscale image over the console as base64 between FRAME markers: an
+ * ow x oh window at (x0, y0) of a frame `w` pixels wide, taking every
+ * `step`-th pixel. The full dump is the whole frame at step 1; the live
+ * stream is the centre 320x240 at step 1, the decoder's own pixels, because a
+ * downscaled stream looked blurred for reasons that were the stream's and not
+ * the camera's.
  */
-static void emit_frame(const uint8_t *buf, unsigned w, unsigned h, unsigned step)
+static void emit_frame(const uint8_t *buf, unsigned w, unsigned x0, unsigned y0,
+                       unsigned ow, unsigned oh, unsigned step)
 {
     static const char B64[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const unsigned ow = w / step, oh = h / step;
     const size_t total = (size_t)ow * oh;
 
     printf("FRAME_BEGIN %u %u\n", ow, oh);
@@ -550,7 +557,7 @@ static void emit_frame(const uint8_t *buf, unsigned w, unsigned h, unsigned step
        which is what a serial monitor and a log capture both handle without
        wrapping surprises. */
     const size_t CHUNK = 57;
-    #define PX(k) buf[((size_t)((k) / ow) * step) * w + ((k) % ow) * step]
+    #define PX(k) buf[((size_t)y0 + ((k) / ow) * step) * w + x0 + ((k) % ow) * step]
     for (size_t i = 0; i < total; i += CHUNK) {
         char line[80];
         size_t o = 0;
@@ -581,7 +588,7 @@ void camera_dump_frame(void)
         if (fb != NULL) { esp_camera_fb_return(fb); }
         return;
     }
-    emit_frame(fb->buf, fb->width, fb->height, 1);
+    emit_frame(fb->buf, fb->width, 0, 0, fb->width, fb->height, 1);
     esp_camera_fb_return(fb);
 }
 

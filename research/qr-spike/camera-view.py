@@ -131,19 +131,17 @@ def main() -> int:
                 continue
             img = Image.frombytes("L", (w, h), raw)
             state["frames"] += 1
-            # The live stream is 160x120; blow it up for a person to look
-            # at, with hard pixel edges so blur on screen is the camera's.
-            live = w < 400
-            shown = img.resize((w * 4, h * 4), Image.NEAREST) if live else img
+            # The live stream is the centre 320x240 at native resolution;
+            # doubled with hard pixel edges, so blur on screen is the camera's.
+            live = w < 640
+            shown = img.resize((w * 2, h * 2), Image.NEAREST) if live else img
             photo = tk_photo(shown)
             label.configure(image=photo)
             label.image = photo
             status.configure(
                 text=f"frame {state['frames']}  {w}x{h}   "
                      f"sharp {sharpness(img):7.0f}   "
-                     # zbar on a 160x120 copy reads nothing and costs a
-                     # process per frame; decode only full frames.
-                     + ("live" if live else f"QR {decode(img)}"))
+                     + (f"live QR {decode(img)}" if live else f"QR {decode(img)}"))
         # Never let an unterminated frame grow without bound.
         state["buf"] = buf[-2_000_000:]
         root.after(30, tick)
