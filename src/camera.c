@@ -147,15 +147,12 @@ static uint8_t orientation = 2;
 static int8_t exposure_bias = -4;
 
 /*
- * Exposure and gain run automatically until the first code decodes, then
- * freeze. A decode proves the settings are right for the screen being read,
- * and a multipart request is several more frames of that same screen, so
- * letting the loops keep hunting only risks a frame that breathes brighter
- * or darker mid-sequence. Locking earlier - after a fixed count of warm-up
- * frames - would freeze whatever the camera was pointed at while the user
- * was still aiming, usually the room. Every camera start unlocks again.
+ * Exposure stays automatic throughout; only its target is biased. Locking it
+ * on the first decode froze the device: switching this sensor to manual
+ * exposure applies the manual exposure registers, not the value automatic
+ * exposure had just settled on, and what those held stretched each frame
+ * until capture timed out.
  */
-static bool exposure_locked;
 
 /* Live preview to the PC viewer, off until OK on the scan screen asks. */
 static bool streaming;
@@ -166,15 +163,6 @@ static bool streaming;
 #define STREAM_PERIOD_US  (400 * 1000)
 static void emit_frame(const uint8_t *buf, unsigned w, unsigned x0, unsigned y0,
                        unsigned ow, unsigned oh, unsigned step);
-static int64_t last_decode_us;
-
-/* How long a lock outlives the last decode. A lock is only right for the
-   screen it was taken on: the phone dims itself, the user tilts it into a
-   reflection or points at something else, and a frozen exposure then shows
-   a frame that is all white or all black and never recovers. Two seconds is
-   two fragment periods at the companion's default, so a lock survives the
-   gaps inside a sequence and is released when reading has truly stopped. */
-#define EXPOSURE_UNLOCK_US  (2 * 1000 * 1000)
 
 bool camera_start(void)
 {
@@ -289,7 +277,6 @@ bool camera_start(void)
         if (sensor->set_lenc != NULL)          { sensor->set_lenc(sensor, 1); }
         if (sensor->set_whitebal != NULL)      { sensor->set_whitebal(sensor, 0); }
         if (sensor->set_awb_gain != NULL)      { sensor->set_awb_gain(sensor, 0); }
-        exposure_locked = false;
 
         /*
          * Autofocus, if this module has the motor for it.
@@ -351,15 +338,11 @@ void camera_stop(void)
     running = false;
     streaming = false;
     /*
-     * Put the sensor to sleep before letting go of it. This board has no
-     * power-down pin wired, so the OV5640 stays powered after deinit, and
-     * it runs hot. Software standby (SYSTEM_CTROL0 bit 6) stops its analog
-     * front end. The next camera_start() resets the sensor, which wakes it.
+     * No software standby here, though the sensor runs warm. This board has
+     * no power-down or reset pin wired, so the OV5640 stays powered through
+     * a chip reset, and a sensor left in standby answered the next probe
+     * with 0xffff: "No camera" until the board was unplugged.
      */
-    sensor_t *sensor = esp_camera_sensor_get();
-    if (sensor != NULL && sensor->set_reg != NULL) {
-        sensor->set_reg(sensor, 0x3008, 0xff, 0x42);
-    }
     esp_camera_deinit();
     quirc_destroy(quirc_ctx);
     quirc_ctx = NULL;
@@ -417,17 +400,6 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
         }
     }
 
-    if (exposure_locked &&
-        esp_timer_get_time() - last_decode_us > EXPOSURE_UNLOCK_US) {
-        sensor_t *sensor = esp_camera_sensor_get();
-        if (sensor != NULL) {
-            if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 1); }
-            if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 1); }
-            ESP_LOGI(TAG, "exposure and gain unlocked; nothing read for 2 s");
-        }
-        exposure_locked = false;
-    }
-
     bool got = false;
 
     if (fb->format == PIXFORMAT_GRAYSCALE &&
@@ -471,16 +443,6 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
                 continue;   /* blur, glare, a half-refreshed screen */
             }
             stat_decodes++;
-            last_decode_us = esp_timer_get_time();
-            if (!exposure_locked) {
-                sensor_t *sensor = esp_camera_sensor_get();
-                if (sensor != NULL) {
-                    if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 0); }
-                    if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 0); }
-                    ESP_LOGI(TAG, "exposure and gain locked on first decode");
-                }
-                exposure_locked = true;
-            }
 
             const size_t len = (size_t)scan_data.payload_len;
 
@@ -536,11 +498,6 @@ void camera_set_exposure_bias(int8_t level)
     if (!running || sensor == NULL) {
         return;
     }
-    /* A new bias means nothing if a lock holds the old exposure, so hand
-       control back to the loops and let them move to the new target. */
-    if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 1); }
-    if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 1); }
-    exposure_locked = false;
     if (sensor->set_ae_level != NULL)      { sensor->set_ae_level(sensor, exposure_bias); }
 }
 
