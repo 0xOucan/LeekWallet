@@ -82,11 +82,16 @@ export const DEFAULT_FRAGMENT = 40;
 /**
  * Default frame period.
  *
- * The device captures one or two frames a second at VGA, so 300 ms meant it
- * missed most frames outright and caught others mid-change. A frame it cannot
- * finish reading is worth nothing, however many of them go past.
+ * Each fragment must stay up for at least TWICE the camera's capture interval.
+ * The two clocks cannot be synchronised - there is no link between them - and
+ * they do not need to be: held that long, every fragment gets at least one
+ * capture that lands wholly inside it rather than across a change, whatever
+ * the phase. The device captures about every half second, so one second.
+ *
+ * 300 ms was the first value, and it meant the device missed most fragments
+ * outright and caught others mid-change.
  */
-export const DEFAULT_FRAME_MS = 700;
+export const DEFAULT_FRAME_MS = 1000;
 
 /**
  * Show `cbor` as a UR in `holder` until `signal` fires: one static code if it
