@@ -3516,10 +3516,14 @@ static void screen_scan_on_button(button_id_t btn)
        bright phone, -5 turned everything else black. The orientation these
        buttons used to cycle is settled for this board. */
     if (btn == BUTTON_ACCEPT) {
-        /* Live video to the PC viewer, on and off: the panel's 1-bit preview
-           cannot show blur or exposure. A small image, so scanning goes on
-           while it streams. */
-        camera_set_stream(!camera_streaming());
+        /* OK steps the capture size. With UP held it toggles live video to
+           the PC viewer instead, since the panel's 1-bit preview cannot show
+           blur or exposure; there is no long press to spare for it. */
+        if (button_is_pressed(BUTTON_UP)) {
+            camera_set_stream(!camera_streaming());
+        } else {
+            camera_next_frame_size();
+        }
         ui_invalidate();
         return;
     }
@@ -3578,8 +3582,10 @@ static void service_scan(void)
             /* "f0 s12 r0": flip mode, codes seen, codes read. Short because
                the row is 21 characters and the numbers matter more than the
                words. */
-            /* "e-2 s12 r0": exposure bias, codes seen, codes read. */
-            snprintf(scan_status, sizeof scan_status, "e%d s%u r%u",
+            /* "640 e-4 s12 r0": capture width, exposure bias, codes seen,
+               codes read. */
+            snprintf(scan_status, sizeof scan_status, "%u e%d s%u r%u",
+                     (unsigned)camera_frame_width(),
                      (int)camera_exposure_bias(),
                      (unsigned)(cam_seen > 99 ? 99 : cam_seen),
                      (unsigned)(cam_read > 99 ? 99 : cam_read));

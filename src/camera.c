@@ -66,16 +66,25 @@ static const char *TAG = "camera";
  * the cheaper thing to spend here, because a frame that cannot resolve a
  * module is worth nothing however many of them arrive.
  */
-/* A debug session can force QVGA: the live viewer on the other end of the
-   cable wants frames often more than it wants pixels, and a VGA frame is four
-   times the bytes to push through the log. */
+/*
+ * Capture size, chosen on the scan screen. VGA is the default: the size the
+ * first air-gapped signature was read at. QVGA is four times fewer pixels to
+ * decode, for a code held close; SVGA gives a small or distant code more
+ * pixels per module, at fewer frames a second. Applied at the next start.
+ */
+static const struct { uint16_t w, h; framesize_t size; } FRAME_MODES[] = {
+    { 320, 240, FRAMESIZE_QVGA },
+    { 640, 480, FRAMESIZE_VGA  },
+    { 800, 600, FRAMESIZE_SVGA },
+};
+#define FRAME_MODE_COUNT (sizeof FRAME_MODES / sizeof FRAME_MODES[0])
 #if defined(CAMERA_FORCE_QVGA) && CAMERA_FORCE_QVGA
-#  define FRAME_W   320
-#  define FRAME_H   240
+static uint8_t frame_mode = 0;
 #else
-#  define FRAME_W   640
-#  define FRAME_H   480
+static uint8_t frame_mode = 1;
 #endif
+#define FRAME_W   (FRAME_MODES[frame_mode].w)
+#define FRAME_H   (FRAME_MODES[frame_mode].h)
 
 /*
  * How often a captured frame is also turned into a preview.
@@ -202,7 +211,7 @@ bool camera_start(void)
         .ledc_channel   = LEDC_CHANNEL_0,
 
         .pixel_format   = PIXFORMAT_GRAYSCALE,
-        .frame_size     = (FRAME_W == 320) ? FRAMESIZE_QVGA : FRAMESIZE_VGA,
+        .frame_size     = FRAME_MODES[frame_mode].size,
 
         /* Two buffers and LATEST: the decoder wants the newest view of the
            companion's screen, not a queue of stale ones. A backlog would make
@@ -537,6 +546,18 @@ void camera_set_exposure_bias(int8_t level)
 
 int8_t camera_exposure_bias(void) { return exposure_bias; }
 
+uint16_t camera_frame_width(void) { return FRAME_W; }
+
+void camera_next_frame_size(void)
+{
+    frame_mode = (uint8_t)((frame_mode + 1) % FRAME_MODE_COUNT);
+    /* The driver fixes the frame size at init, so a change is a restart. */
+    if (running) {
+        camera_stop();
+        camera_start();
+    }
+}
+
 /*
  * One grayscale image over the console as base64 between FRAME markers: an
  * ow x oh window at (x0, y0) of a frame `w` pixels wide, taking every
@@ -641,6 +662,8 @@ uint8_t camera_orientation(void) { return 0; }
 void camera_set_stream(bool on) { (void)on; }
 bool camera_streaming(void) { return false; }
 void camera_set_exposure_bias(int8_t level) { (void)level; }
+uint16_t camera_frame_width(void) { return 0; }
+void camera_next_frame_size(void) { }
 int8_t camera_exposure_bias(void) { return 0; }
 
 void camera_stats(uint32_t *frames, uint32_t *decodes, uint32_t *located)

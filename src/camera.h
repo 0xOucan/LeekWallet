@@ -68,6 +68,13 @@ void camera_set_exposure_bias(int8_t level);
 int8_t camera_exposure_bias(void);
 
 /**
+ * Step the capture size QVGA -> VGA -> SVGA -> QVGA, restarting the camera if
+ * it is running. camera_frame_width() reports the current width.
+ */
+void camera_next_frame_size(void);
+uint16_t camera_frame_width(void);
+
+/**
  * The next QR symbol decoded since the last call, as text, if there is one.
  * Never blocks: the scan screen calls this from the UI task's loop.
  */
