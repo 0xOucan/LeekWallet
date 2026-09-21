@@ -3516,9 +3516,10 @@ static void screen_scan_on_button(button_id_t btn)
        bright phone, -5 turned everything else black. The orientation these
        buttons used to cycle is settled for this board. */
     if (btn == BUTTON_ACCEPT) {
-        /* One frame over the cable, to be looked at rather than guessed about:
-           the panel's 1-bit preview cannot show blur or exposure. */
-        camera_dump_frame();
+        /* Live video to the PC viewer, on and off: the panel's 1-bit preview
+           cannot show blur or exposure. A small image, so scanning goes on
+           while it streams. */
+        camera_set_stream(!camera_streaming());
         ui_invalidate();
         return;
     }

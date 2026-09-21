@@ -46,6 +46,14 @@ void camera_set_orientation(uint8_t mode);
  */
 void camera_dump_frame(void);
 
+/**
+ * Stream a 160x120 copy of every scanned frame, about five a second, in the
+ * same FRAME format, for a live view on the PC. Off whenever the camera
+ * stops. Raw sensor pixels only, never anything decoded.
+ */
+void camera_set_stream(bool on);
+bool camera_streaming(void);
+
 /** The current mirror/flip bits. */
 uint8_t camera_orientation(void);
 

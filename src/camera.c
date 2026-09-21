@@ -147,6 +147,11 @@ static int8_t exposure_bias = -4;
  * was still aiming, usually the room. Every camera start unlocks again.
  */
 static bool exposure_locked;
+
+/* Live preview to the PC viewer, off until OK on the scan screen asks. */
+static bool streaming;
+#define STREAM_PERIOD_US  (200 * 1000)
+static void emit_frame(const uint8_t *buf, unsigned w, unsigned h, unsigned step);
 static int64_t last_decode_us;
 
 /* How long a lock outlives the last decode. A lock is only right for the
@@ -330,6 +335,17 @@ void camera_stop(void)
         return;
     }
     running = false;
+    streaming = false;
+    /*
+     * Put the sensor to sleep before letting go of it. This board has no
+     * power-down pin wired, so the OV5640 stays powered after deinit, and
+     * it runs hot. Software standby (SYSTEM_CTROL0 bit 6) stops its analog
+     * front end. The next camera_start() resets the sensor, which wakes it.
+     */
+    sensor_t *sensor = esp_camera_sensor_get();
+    if (sensor != NULL && sensor->set_reg != NULL) {
+        sensor->set_reg(sensor, 0x3008, 0xff, 0x42);
+    }
     esp_camera_deinit();
     quirc_destroy(quirc_ctx);
     quirc_ctx = NULL;
@@ -402,6 +418,15 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
 
     if (fb->format == PIXFORMAT_GRAYSCALE &&
         fb->width == FRAME_W && fb->height == FRAME_H) {
+
+        if (streaming) {
+            static int64_t last_stream_us;
+            const int64_t now_us = esp_timer_get_time();
+            if (now_us - last_stream_us > STREAM_PERIOD_US) {
+                last_stream_us = now_us;
+                emit_frame(fb->buf, FRAME_W, FRAME_H, 4);
+            }
+        }
 
         if (CAMERA_PREVIEW_EVERY > 0 &&
             ++preview_tick % CAMERA_PREVIEW_EVERY == 0) {
@@ -506,10 +531,48 @@ void camera_set_exposure_bias(int8_t level)
 
 int8_t camera_exposure_bias(void) { return exposure_bias; }
 
-void camera_dump_frame(void)
+/*
+ * One grayscale image over the console as base64 between FRAME markers,
+ * every `step`-th pixel of every `step`-th row. step 1 is the full frame for
+ * judging focus; the live stream uses 4, a 160x120 image small enough to go
+ * out several times a second without starving the scanner that shares this
+ * task.
+ */
+static void emit_frame(const uint8_t *buf, unsigned w, unsigned h, unsigned step)
 {
     static const char B64[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const unsigned ow = w / step, oh = h / step;
+    const size_t total = (size_t)ow * oh;
+
+    printf("FRAME_BEGIN %u %u\n", ow, oh);
+    /* 57 input bytes per line keeps each printed line under 80 characters,
+       which is what a serial monitor and a log capture both handle without
+       wrapping surprises. */
+    const size_t CHUNK = 57;
+    #define PX(k) buf[((size_t)((k) / ow) * step) * w + ((k) % ow) * step]
+    for (size_t i = 0; i < total; i += CHUNK) {
+        char line[80];
+        size_t o = 0;
+        for (size_t j = i; j < i + CHUNK && j < total; j += 3) {
+            const uint32_t a = PX(j);
+            const uint32_t b = (j + 1 < total) ? PX(j + 1) : 0;
+            const uint32_t c = (j + 2 < total) ? PX(j + 2) : 0;
+            const uint32_t v = (a << 16) | (b << 8) | c;
+            line[o++] = B64[(v >> 18) & 0x3F];
+            line[o++] = B64[(v >> 12) & 0x3F];
+            line[o++] = (j + 1 < total) ? B64[(v >> 6) & 0x3F] : '=';
+            line[o++] = (j + 2 < total) ? B64[v & 0x3F] : '=';
+        }
+        line[o] = '\0';
+        printf("%s\n", line);
+    }
+    #undef PX
+    printf("FRAME_END\n");
+}
+
+void camera_dump_frame(void)
+{
     if (!running) {
         return;
     }
@@ -518,31 +581,12 @@ void camera_dump_frame(void)
         if (fb != NULL) { esp_camera_fb_return(fb); }
         return;
     }
-
-    printf("FRAME_BEGIN %u %u\n", (unsigned)fb->width, (unsigned)fb->height);
-    /* 57 input bytes per line keeps each printed line under 80 characters,
-       which is what a serial monitor and a log capture both handle without
-       wrapping surprises. */
-    const size_t CHUNK = 57;
-    for (size_t i = 0; i < fb->len; i += CHUNK) {
-        char line[80];
-        size_t o = 0;
-        for (size_t j = i; j < i + CHUNK && j < fb->len; j += 3) {
-            const uint32_t a = fb->buf[j];
-            const uint32_t b = (j + 1 < fb->len) ? fb->buf[j + 1] : 0;
-            const uint32_t c = (j + 2 < fb->len) ? fb->buf[j + 2] : 0;
-            const uint32_t v = (a << 16) | (b << 8) | c;
-            line[o++] = B64[(v >> 18) & 0x3F];
-            line[o++] = B64[(v >> 12) & 0x3F];
-            line[o++] = (j + 1 < fb->len) ? B64[(v >> 6) & 0x3F] : '=';
-            line[o++] = (j + 2 < fb->len) ? B64[v & 0x3F] : '=';
-        }
-        line[o] = '\0';
-        printf("%s\n", line);
-    }
-    printf("FRAME_END\n");
+    emit_frame(fb->buf, fb->width, fb->height, 1);
     esp_camera_fb_return(fb);
 }
+
+void camera_set_stream(bool on) { streaming = on; }
+bool camera_streaming(void) { return streaming; }
 
 const uint8_t *camera_preview_take(void)
 {
@@ -587,6 +631,8 @@ const uint8_t *camera_preview_take(void) { return NULL; }
 void camera_set_orientation(uint8_t mode) { (void)mode; }
 void camera_dump_frame(void) { }
 uint8_t camera_orientation(void) { return 0; }
+void camera_set_stream(bool on) { (void)on; }
+bool camera_streaming(void) { return false; }
 void camera_set_exposure_bias(int8_t level) { (void)level; }
 int8_t camera_exposure_bias(void) { return 0; }
 
