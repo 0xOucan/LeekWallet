@@ -133,6 +133,10 @@ static uint32_t stat_located;
  */
 static uint8_t orientation = 2;
 
+/* -2: the first value that stopped handheld blur without blacking out the
+   frame. -5 read a phone at full brightness and nothing else. */
+static int8_t exposure_bias = -2;
+
 /*
  * Exposure and gain run automatically until the first code decodes, then
  * freeze. A decode proves the settings are right for the screen being read,
@@ -238,13 +242,12 @@ bool camera_start(void)
          * the screen land correctly exposed with a much shorter shutter, which
          * is what stops the blur; the room going dark around it costs nothing,
          * since nothing there needs reading. Gain control stays on to make up
-         * the difference on dimmer screens. Five steps down, the driver's floor (it takes
-         * -5..5): at two and at four, a phone at full brightness still bloomed white
-         * modules into the black ones next to them.
+         * the difference on dimmer screens. How far down is
+         * camera_set_exposure_bias(), set live from the scan screen.
          */
         if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 1); }
         if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 1); }
-        if (sensor->set_ae_level != NULL)      { sensor->set_ae_level(sensor, -5); }
+        if (sensor->set_ae_level != NULL)      { sensor->set_ae_level(sensor, exposure_bias); }
 
         /*
          * A QR profile, not a photo profile: nothing here is looked at by a
@@ -486,6 +489,23 @@ void camera_set_orientation(uint8_t mode)
 
 uint8_t camera_orientation(void) { return orientation; }
 
+void camera_set_exposure_bias(int8_t level)
+{
+    exposure_bias = (int8_t)(level < -5 ? -5 : (level > 0 ? 0 : level));
+    sensor_t *sensor = esp_camera_sensor_get();
+    if (!running || sensor == NULL) {
+        return;
+    }
+    /* A new bias means nothing if a lock holds the old exposure, so hand
+       control back to the loops and let them move to the new target. */
+    if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 1); }
+    if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 1); }
+    exposure_locked = false;
+    if (sensor->set_ae_level != NULL)      { sensor->set_ae_level(sensor, exposure_bias); }
+}
+
+int8_t camera_exposure_bias(void) { return exposure_bias; }
+
 void camera_dump_frame(void)
 {
     static const char B64[] =
@@ -567,6 +587,8 @@ const uint8_t *camera_preview_take(void) { return NULL; }
 void camera_set_orientation(uint8_t mode) { (void)mode; }
 void camera_dump_frame(void) { }
 uint8_t camera_orientation(void) { return 0; }
+void camera_set_exposure_bias(int8_t level) { (void)level; }
+int8_t camera_exposure_bias(void) { return 0; }
 
 void camera_stats(uint32_t *frames, uint32_t *decodes, uint32_t *located)
 {

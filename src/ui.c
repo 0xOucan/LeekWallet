@@ -3511,10 +3511,10 @@ static void screen_scan_on_button(button_id_t btn)
         ui_set_screen(SCREEN_MAIN_MENU);
         return;
     }
-    /* UP and DOWN step the four mirror/flip combinations. How the module is
-       mounted decides which one shows the world as it is, and a mirrored view
-       decodes nothing at all, so this is the difference between a working
-       camera and one that looks broken. */
+    /* UP brightens, DOWN darkens. The right exposure depends on the phone's
+       brightness and the room, and no fixed value served both: -2 bloomed a
+       bright phone, -5 turned everything else black. The orientation these
+       buttons used to cycle is settled for this board. */
     if (btn == BUTTON_ACCEPT) {
         /* One frame over the cable, to be looked at rather than guessed about:
            the panel's 1-bit preview cannot show blur or exposure. */
@@ -3523,8 +3523,8 @@ static void screen_scan_on_button(button_id_t btn)
         return;
     }
     if (btn == BUTTON_UP || btn == BUTTON_DOWN) {
-        const uint8_t step = (btn == BUTTON_UP) ? 3u : 1u;
-        camera_set_orientation((uint8_t)((camera_orientation() + step) % 4u));
+        camera_set_exposure_bias((int8_t)(camera_exposure_bias() +
+                                          (btn == BUTTON_UP ? 1 : -1)));
     }
     ui_invalidate();
 }
@@ -3577,8 +3577,9 @@ static void service_scan(void)
             /* "f0 s12 r0": flip mode, codes seen, codes read. Short because
                the row is 21 characters and the numbers matter more than the
                words. */
-            snprintf(scan_status, sizeof scan_status, "f%u s%u r%u",
-                     (unsigned)(camera_orientation() & 3u),
+            /* "e-2 s12 r0": exposure bias, codes seen, codes read. */
+            snprintf(scan_status, sizeof scan_status, "e%d s%u r%u",
+                     (int)camera_exposure_bias(),
                      (unsigned)(cam_seen > 99 ? 99 : cam_seen),
                      (unsigned)(cam_read > 99 ? 99 : cam_read));
         }

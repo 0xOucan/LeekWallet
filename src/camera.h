@@ -50,6 +50,16 @@ void camera_dump_frame(void);
 uint8_t camera_orientation(void);
 
 /**
+ * Exposure bias, -5 (darkest) to 0 (the sensor's own choice). Set live from
+ * the scan screen, because the right value depends on the phone's brightness
+ * and the room, and a fixed guess was either blooming white or all black.
+ * Out-of-range values are clamped. Remembered across camera restarts until
+ * reboot.
+ */
+void camera_set_exposure_bias(int8_t level);
+int8_t camera_exposure_bias(void);
+
+/**
  * The next QR symbol decoded since the last call, as text, if there is one.
  * Never blocks: the scan screen calls this from the UI task's loop.
  */
