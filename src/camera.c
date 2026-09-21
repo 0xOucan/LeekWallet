@@ -133,9 +133,9 @@ static uint32_t stat_located;
  */
 static uint8_t orientation = 2;
 
-/* -2: the first value that stopped handheld blur without blacking out the
-   frame. -5 read a phone at full brightness and nothing else. */
-static int8_t exposure_bias = -2;
+/* -4, measured on the bench with a phone screen: -2 bloomed the white
+   modules, -5 blacked out everything but a phone at full brightness. */
+static int8_t exposure_bias = -4;
 
 /*
  * Exposure and gain run automatically until the first code decodes, then
