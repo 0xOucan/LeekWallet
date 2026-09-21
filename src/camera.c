@@ -229,13 +229,13 @@ bool camera_start(void)
          * the screen land correctly exposed with a much shorter shutter, which
          * is what stops the blur; the room going dark around it costs nothing,
          * since nothing there needs reading. Gain control stays on to make up
-         * the difference on dimmer screens. Four steps down (the driver takes
-         * -5..5): at two, a phone at full brightness still bloomed white
+         * the difference on dimmer screens. Five steps down, the driver's floor (it takes
+         * -5..5): at two and at four, a phone at full brightness still bloomed white
          * modules into the black ones next to them.
          */
         if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 1); }
         if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 1); }
-        if (sensor->set_ae_level != NULL)      { sensor->set_ae_level(sensor, -4); }
+        if (sensor->set_ae_level != NULL)      { sensor->set_ae_level(sensor, -5); }
 
         /*
          * A QR profile, not a photo profile: nothing here is looked at by a

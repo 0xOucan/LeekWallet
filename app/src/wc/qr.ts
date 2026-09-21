@@ -222,6 +222,44 @@ export async function scanQr<T>(
   } catch {
     /* Nothing to do: the camera keeps whatever focus it had. */
   }
+  /* A QR profile, the same one the device's own camera uses: darker than
+   * automatic, because whatever this points at is a screen, far brighter than
+   * the room, and an exposed-for-the-room screen blooms its white modules into
+   * the black ones; contrast and sharpness a step up to keep module edges hard.
+   *
+   * Each value comes from the camera's own reported range, never a constant:
+   * the units differ per driver (exposure compensation is stops on one webcam
+   * and raw steps on another). One constraint per call, because a camera that
+   * rejects one should still take the others. Unsupported means untouched. */
+  const caps = (track?.getCapabilities?.() ?? {}) as Record<string, unknown>;
+  const range = (name: string): { min: number; max: number; step: number } | null => {
+    const r = caps[name] as { min?: number; max?: number; step?: number } | undefined;
+    return r && typeof r.min === "number" && typeof r.max === "number" && r.max > r.min
+      ? { min: r.min, max: r.max, step: r.step || 0 }
+      : null;
+  };
+  // A fraction of the way along a control's range, snapped to its step.
+  const along = (r: { min: number; max: number; step: number }, f: number): number => {
+    const v = r.min + (r.max - r.min) * f;
+    return r.step > 0 ? r.min + Math.round((v - r.min) / r.step) * r.step : v;
+  };
+  const profile: [string, number][] = [];
+  const ev = range("exposureCompensation");
+  if (ev) profile.push(["exposureCompensation", along(ev, 0.2)]);
+  const contrast = range("contrast");
+  if (contrast) profile.push(["contrast", along(contrast, 0.75)]);
+  const sharpness = range("sharpness");
+  if (sharpness) profile.push(["sharpness", along(sharpness, 0.65)]);
+  for (const [name, value] of profile) {
+    try {
+      await track?.applyConstraints?.({
+        advanced: [{ [name]: value } as unknown as MediaTrackConstraintSet],
+      });
+    } catch {
+      /* This camera keeps its own value for this control. */
+    }
+  }
+
   // Read back rather than assume: applyConstraints can succeed and change
   // nothing, which looks identical from here unless the value is checked.
   resolution.focusMode = String(
@@ -234,7 +272,13 @@ export async function scanQr<T>(
    * the code simply not being there. */
   onStatus?.(
     `camera ${resolution.width}x${resolution.height}` +
-      (resolution.focusMode ? `, focus ${resolution.focusMode}` : ""),
+      (resolution.focusMode ? `, focus ${resolution.focusMode}` : "") +
+      profile
+        // What the camera took, read back, not what was asked for.
+        .map(([n]) => [n, (track?.getSettings?.() as Record<string, unknown>)?.[n]])
+        .filter(([, v]) => v !== undefined)
+        .map(([n, v]) => `, ${n} ${v}`)
+        .join(""),
   );
 
   // The dismissal may already have happened while the prompt was up.
