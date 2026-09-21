@@ -96,7 +96,22 @@ def main() -> int:
     state = {"buf": b"", "frames": 0}
 
     def tick() -> None:
-        state["buf"] += port.read(65536)
+        # The port vanishes whenever the board resets, is flashed or is
+        # replugged. Wait for it to come back instead of dying with a
+        # traceback, so the viewer can stay open across a flash.
+        try:
+            if not port.is_open:
+                port.open()
+                status.config(text="reconnected; waiting for a frame…")
+            state["buf"] += port.read(65536)
+        except (serial.SerialException, OSError):
+            try:
+                port.close()
+            except Exception:
+                pass
+            status.config(text=f"{PORT} gone (reset, flash or unplug); retrying…")
+            root.after(500, tick)
+            return
         buf = state["buf"]
         while True:
             m = BEGIN.search(buf)
