@@ -133,6 +133,17 @@ static uint32_t stat_located;
  */
 static uint8_t orientation = 2;
 
+/*
+ * Exposure and gain run automatically until the first code decodes, then
+ * freeze. A decode proves the settings are right for the screen being read,
+ * and a multipart request is several more frames of that same screen, so
+ * letting the loops keep hunting only risks a frame that breathes brighter
+ * or darker mid-sequence. Locking earlier - after a fixed count of warm-up
+ * frames - would freeze whatever the camera was pointed at while the user
+ * was still aiming, usually the room. Every camera start unlocks again.
+ */
+static bool exposure_locked;
+
 bool camera_start(void)
 {
     if (running) {
@@ -223,6 +234,29 @@ bool camera_start(void)
         if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 1); }
         if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 1); }
         if (sensor->set_ae_level != NULL)      { sensor->set_ae_level(sensor, -2); }
+
+        /*
+         * A QR profile, not a photo profile: nothing here is looked at by a
+         * person except through a 128x64 preview. Night mode off, because it
+         * exists to choose long exposures. Gain capped at 4x, because gain
+         * noise lands exactly on the module edges quirc thresholds. Contrast
+         * up to separate black from white modules, a little sharpening and a
+         * little denoise - more of either softens or haloes the edges. White
+         * balance off: the frame is grayscale and one fewer automatic loop
+         * moving the picture between frames is one fewer cause of a miss.
+         */
+        if (sensor->set_aec2 != NULL)          { sensor->set_aec2(sensor, 0); }
+        if (sensor->set_gainceiling != NULL)   { sensor->set_gainceiling(sensor, GAINCEILING_4X); }
+        if (sensor->set_contrast != NULL)      { sensor->set_contrast(sensor, 2); }
+        if (sensor->set_sharpness != NULL)     { sensor->set_sharpness(sensor, 1); }
+        if (sensor->set_denoise != NULL)       { sensor->set_denoise(sensor, 1); }
+        if (sensor->set_bpc != NULL)           { sensor->set_bpc(sensor, 1); }
+        if (sensor->set_wpc != NULL)           { sensor->set_wpc(sensor, 1); }
+        if (sensor->set_raw_gma != NULL)       { sensor->set_raw_gma(sensor, 1); }
+        if (sensor->set_lenc != NULL)          { sensor->set_lenc(sensor, 1); }
+        if (sensor->set_whitebal != NULL)      { sensor->set_whitebal(sensor, 0); }
+        if (sensor->set_awb_gain != NULL)      { sensor->set_awb_gain(sensor, 0); }
+        exposure_locked = false;
 
         /*
          * Autofocus, if this module has the motor for it.
@@ -372,6 +406,15 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
                 continue;   /* blur, glare, a half-refreshed screen */
             }
             stat_decodes++;
+            if (!exposure_locked) {
+                sensor_t *sensor = esp_camera_sensor_get();
+                if (sensor != NULL) {
+                    if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 0); }
+                    if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 0); }
+                    ESP_LOGI(TAG, "exposure and gain locked on first decode");
+                }
+                exposure_locked = true;
+            }
 
             const size_t len = (size_t)scan_data.payload_len;
 
