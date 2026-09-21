@@ -143,6 +143,15 @@ static uint8_t orientation = 2;
  * was still aiming, usually the room. Every camera start unlocks again.
  */
 static bool exposure_locked;
+static int64_t last_decode_us;
+
+/* How long a lock outlives the last decode. A lock is only right for the
+   screen it was taken on: the phone dims itself, the user tilts it into a
+   reflection or points at something else, and a frozen exposure then shows
+   a frame that is all white or all black and never recovers. Two seconds is
+   two fragment periods at the companion's default, so a lock survives the
+   gaps inside a sequence and is released when reading has truly stopped. */
+#define EXPOSURE_UNLOCK_US  (2 * 1000 * 1000)
 
 bool camera_start(void)
 {
@@ -375,6 +384,17 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
         }
     }
 
+    if (exposure_locked &&
+        esp_timer_get_time() - last_decode_us > EXPOSURE_UNLOCK_US) {
+        sensor_t *sensor = esp_camera_sensor_get();
+        if (sensor != NULL) {
+            if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 1); }
+            if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 1); }
+            ESP_LOGI(TAG, "exposure and gain unlocked; nothing read for 2 s");
+        }
+        exposure_locked = false;
+    }
+
     bool got = false;
 
     if (fb->format == PIXFORMAT_GRAYSCALE &&
@@ -408,6 +428,7 @@ bool camera_next_qr(char *out, size_t out_size, size_t *out_len)
                 continue;   /* blur, glare, a half-refreshed screen */
             }
             stat_decodes++;
+            last_decode_us = esp_timer_get_time();
             if (!exposure_locked) {
                 sensor_t *sensor = esp_camera_sensor_get();
                 if (sensor != NULL) {
