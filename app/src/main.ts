@@ -4273,7 +4273,19 @@ async function signViaQr(tx: UnsignedTransaction, from: Address): Promise<Hex> {
       const size = Number(($("qrfrag") as HTMLSelectElement).value) || DEFAULT_FRAGMENT;
       const speed = Number(($("qrspeed") as HTMLSelectElement).value) || DEFAULT_FRAME_MS;
       const { frames: n } = showUr($("qrdisplay"), "eth-sign-request", cbor, size,
-        (text) => qrSvg(text, "Alphanumeric"), frames.signal, speed);
+        (text) => {
+          /* As big as the screen allows: the device's camera is fixed-focus
+             and low-resolution, so every extra pixel per module helps it,
+             where a 220 px code suits a phone camera reading an address. */
+          const svg = qrSvg(text, "Alphanumeric");
+          svg.removeAttribute("width");
+          svg.removeAttribute("height");
+          svg.style.width = "min(96vw, 70vh)";
+          svg.style.height = "auto";
+          svg.style.display = "block";
+          svg.style.margin = "0 auto";
+          return svg;
+        }, frames.signal, speed);
       $("qrprogress").textContent = n > 1
         ? `${cbor.length} bytes in ${n} fragments, animated. A smaller size is easier for the device's camera.`
         : `${cbor.length} bytes, one frame.`;
