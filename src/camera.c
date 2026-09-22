@@ -145,9 +145,10 @@ static uint32_t stat_located;
  */
 static uint8_t orientation = 2;
 
-/* -4, measured on the bench with a phone screen: -2 bloomed the white
-   modules, -5 blacked out everything but a phone at full brightness. */
-static int8_t exposure_bias = -4;
+/* -5, measured on the bench once decoding was fast: with the phone at half
+   brightness it read a whole send in two to three seconds. -4 was the best
+   before that, -2 bloomed the white modules. */
+static int8_t exposure_bias = -5;
 
 /*
  * Exposure stays automatic throughout; only its target is biased. Locking it

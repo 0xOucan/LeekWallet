@@ -76,8 +76,12 @@ export function scanUr(
  * modules across, version 17, and the device's camera never located it at all.
  * Fewer bytes per frame means fewer modules, and module size is what a camera
  * can or cannot resolve.
+ *
+ * 90 once the device's decoder was built optimised: medium fragments, fast
+ * frames, device at 640x480 and e-5, phone at half brightness read a whole
+ * send in two to three seconds.
  */
-export const DEFAULT_FRAGMENT = 40;
+export const DEFAULT_FRAGMENT = 90;
 
 /**
  * Default frame period.
@@ -90,8 +94,11 @@ export const DEFAULT_FRAGMENT = 40;
  *
  * 300 ms was the first value, and it meant the device missed most fragments
  * outright and caught others mid-change.
+ *
+ * 500 ms after the device's decoder was built optimised and stopped idling
+ * between frames: it now captures well inside a quarter second.
  */
-export const DEFAULT_FRAME_MS = 1000;
+export const DEFAULT_FRAME_MS = 500;
 
 /**
  * Show `cbor` as a UR in `holder` until `signal` fires: one static code if it
