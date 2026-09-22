@@ -113,6 +113,9 @@ const SCAN_INTERVAL_MS = 100;
 /** Consecutive decoder exceptions tolerated before the scan gives up. */
 const MAX_DECODE_FAILURES = 20;
 
+/** Digital zoom for desktop webcams; see the frame capture in scanQr. */
+const ZOOM = /Android/i.test(navigator.userAgent) ? 1 : 2;
+
 const DARK_CAMERA_KEY = "leek.darkCamera";
 
 /**
@@ -217,6 +220,14 @@ export async function scanQr<T>(
      profile below is still being applied. */
   const invoke = invoker();
   let native = "";
+  /* The preview zooms with the decoder, so what is aimed is what is read.
+     Clipped to the centre first, so the enlarged video lands exactly in its
+     own box rather than over the controls around it. */
+  if (ZOOM > 1) {
+    const edge = `${(50 - 50 / ZOOM).toFixed(2)}%`;
+    video.style.clipPath = `inset(${edge})`;
+    video.style.transform = `scale(${ZOOM})`;
+  }
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const stop = (): void => {
@@ -225,6 +236,8 @@ export async function scanQr<T>(
     if (timer) clearTimeout(timer);
     release();
     video.srcObject = null;
+    video.style.transform = "";
+    video.style.clipPath = "";
     // Hand the webcam back on automatic exposure for everything else.
     if (native) void invoke?.("camera_exposure", { dark: false })?.catch?.(() => {});
     signal?.removeEventListener("abort", stop);
@@ -397,14 +410,23 @@ export async function scanQr<T>(
      * A 1080x1920 frame is about 2 megapixels and costs roughly 25 ms to
      * decode, which the self-pacing loop absorbs by scanning a little less
      * often. The cap only engages on cameras larger than this. */
-    const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(w, h));
-    const dw = Math.max(1, Math.round(w * scale));
-    const dh = Math.max(1, Math.round(h * scale));
+    /* Except on a desktop webcam: a 2x digital zoom, the centre quarter at
+     * native resolution. A landscape 1080p webcam has pixels to spare, and
+     * the device's panel is small, so the user can hold it farther from the
+     * lens - less distortion - and the decoder still gets every pixel of it,
+     * in a quarter of the work. Not on phones, for the reason above. */
+    const sw = Math.round(w / ZOOM);
+    const sh = Math.round(h / ZOOM);
+    const sx = Math.round((w - sw) / 2);
+    const sy = Math.round((h - sh) / 2);
+    const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(sw, sh));
+    const dw = Math.max(1, Math.round(sw * scale));
+    const dh = Math.max(1, Math.round(sh * scale));
     if (canvas.width !== dw || canvas.height !== dh) {
       canvas.width = dw;
       canvas.height = dh;
     }
-    ctx.drawImage(video, 0, 0, dw, dh);
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, dw, dh);
     const frame = ctx.getImageData(0, 0, dw, dh);
 
     /* Both inversion attempts: a QR printed light-on-dark is still a QR, and
