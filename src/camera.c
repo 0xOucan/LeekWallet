@@ -257,13 +257,10 @@ bool camera_start(void)
     };
 
     sccb_recover();
+    /* No retry. The bench case this was for had the bus free and a sensor
+       that answered nothing at all, which only a power cycle clears; a
+       second probe only doubled a 17 s freeze. */
     esp_err_t err = esp_camera_init(&cfg);
-    if (err != ESP_OK) {
-        /* Once more: a failed probe can itself leave the bus mid-byte. */
-        esp_camera_deinit();
-        sccb_recover();
-        err = esp_camera_init(&cfg);
-    }
     if (err != ESP_OK) {
         /* Not fatal, and deliberately not an abort. A board with no ribbon
            seated, or none fitted at all, must still show a Scan screen that
