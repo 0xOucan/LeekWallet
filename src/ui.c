@@ -3518,25 +3518,13 @@ static void screen_scan_on_button(button_id_t btn)
         ui_set_screen(SCREEN_MAIN_MENU);
         return;
     }
-    /* UP brightens, DOWN darkens. The right exposure depends on the phone's
-       brightness and the room, and no fixed value served both: -2 bloomed a
-       bright phone, -5 turned everything else black. The orientation these
-       buttons used to cycle is settled for this board. */
-    if (btn == BUTTON_ACCEPT) {
-        /* OK steps the capture size. With UP held it toggles live video to
-           the PC viewer instead, since the panel's 1-bit preview cannot show
-           blur or exposure; there is no long press to spare for it. */
-        if (button_is_pressed(BUTTON_UP)) {
-            camera_set_stream(!camera_streaming());
-        } else {
-            camera_next_frame_size();
-        }
-        ui_invalidate();
-        return;
-    }
-    if (btn == BUTTON_UP || btn == BUTTON_DOWN) {
-        camera_set_exposure_bias((int8_t)(camera_exposure_bias() +
-                                          (btn == BUTTON_UP ? 1 : -1)));
+    /* Nothing here changes the camera. Orientation, size and exposure are the
+       values the bench settled on (camera.c), and a setting a user can nudge
+       mid-scan is one more way for a scan to fail with no visible cause.
+       UP held with OK toggles live video to the PC viewer, a bench aid that
+       changes nothing the decoder sees. */
+    if (btn == BUTTON_ACCEPT && button_is_pressed(BUTTON_UP)) {
+        camera_set_stream(!camera_streaming());
     }
     ui_invalidate();
 }
@@ -3589,11 +3577,8 @@ static void service_scan(void)
             /* "f0 s12 r0": flip mode, codes seen, codes read. Short because
                the row is 21 characters and the numbers matter more than the
                words. */
-            /* "640 e-4 s12 r0": capture width, exposure bias, codes seen,
-               codes read. */
-            snprintf(scan_status, sizeof scan_status, "%u e%d s%u r%u",
-                     (unsigned)camera_frame_width(),
-                     (int)camera_exposure_bias(),
+            /* "seen 12 read 0": codes located, codes read. */
+            snprintf(scan_status, sizeof scan_status, "seen %u read %u",
                      (unsigned)(cam_seen > 99 ? 99 : cam_seen),
                      (unsigned)(cam_read > 99 ? 99 : cam_read));
         }

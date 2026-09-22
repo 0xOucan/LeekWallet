@@ -33,6 +33,8 @@
 #else
 #  define CONFIG_CAMERA_AF_ENABLED 0
 #endif
+#include "driver/gpio.h"
+#include "esp_rom_sys.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "quirc.h"
@@ -67,24 +69,19 @@ static const char *TAG = "camera";
  * module is worth nothing however many of them arrive.
  */
 /*
- * Capture size, chosen on the scan screen. VGA is the default: the size the
- * first air-gapped signature was read at. QVGA is four times fewer pixels to
- * decode, for a code held close; SVGA gives a small or distant code more
- * pixels per module, at fewer frames a second. Applied at the next start.
+ * Fixed at VGA. QVGA and SVGA were tried from the scan screen on the bench:
+ * VGA with exposure -5 read a whole send in two to three seconds, and neither
+ * beat it. A debug build can still force QVGA for a lighter live stream.
  */
-static const struct { uint16_t w, h; framesize_t size; } FRAME_MODES[] = {
-    { 320, 240, FRAMESIZE_QVGA },
-    { 640, 480, FRAMESIZE_VGA  },
-    { 800, 600, FRAMESIZE_SVGA },
-};
-#define FRAME_MODE_COUNT (sizeof FRAME_MODES / sizeof FRAME_MODES[0])
 #if defined(CAMERA_FORCE_QVGA) && CAMERA_FORCE_QVGA
-static uint8_t frame_mode = 0;
+#  define FRAME_W     320
+#  define FRAME_H     240
+#  define FRAME_SIZE  FRAMESIZE_QVGA
 #else
-static uint8_t frame_mode = 1;
+#  define FRAME_W     640
+#  define FRAME_H     480
+#  define FRAME_SIZE  FRAMESIZE_VGA
 #endif
-#define FRAME_W   (FRAME_MODES[frame_mode].w)
-#define FRAME_H   (FRAME_MODES[frame_mode].h)
 
 /*
  * How often a captured frame is also turned into a preview.
@@ -148,7 +145,7 @@ static uint8_t orientation = 2;
 /* -5, measured on the bench once decoding was fast: with the phone at half
    brightness it read a whole send in two to three seconds. -4 was the best
    before that, -2 bloomed the white modules. */
-static int8_t exposure_bias = -5;
+static const int8_t exposure_bias = -5;
 
 /*
  * Exposure stays automatic throughout; only its target is biased. Locking it
@@ -167,6 +164,51 @@ static bool streaming;
 #define STREAM_PERIOD_US  (400 * 1000)
 static void emit_frame(const uint8_t *buf, unsigned w, unsigned x0, unsigned y0,
                        unsigned ow, unsigned oh, unsigned step);
+
+/*
+ * Free the camera's control bus before probing it.
+ *
+ * This board has no power-down or reset pin wired, so the OV5640 stays
+ * powered through a chip reset, a flash or a panic. A reset that lands while
+ * the sensor is mid-reply leaves it holding SDA low, waiting for clocks that
+ * never come, and every probe after that fails: "No camera" until the board
+ * is unplugged. The standard I2C recovery: clock SCL until the sensor lets go
+ * of SDA (at most nine bits), then a STOP. Harmless on a healthy bus.
+ * Returns whether SDA ended up released.
+ */
+static bool sccb_recover(void)
+{
+    const gpio_num_t sda = PIN_CAM_SIOD, scl = PIN_CAM_SIOC;
+    const gpio_config_t io = {
+        .pin_bit_mask = (1ULL << sda) | (1ULL << scl),
+        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    gpio_config(&io);
+    gpio_set_level(sda, 1);
+    gpio_set_level(scl, 1);
+    esp_rom_delay_us(10);
+    const int sda_before = gpio_get_level(sda), scl_before = gpio_get_level(scl);
+    for (int i = 0; i < 9 && gpio_get_level(sda) == 0; i++) {
+        gpio_set_level(scl, 0);
+        esp_rom_delay_us(10);
+        gpio_set_level(scl, 1);
+        esp_rom_delay_us(10);
+    }
+    /* STOP: SDA rises while SCL is high. */
+    gpio_set_level(sda, 0);
+    esp_rom_delay_us(10);
+    gpio_set_level(scl, 1);
+    esp_rom_delay_us(10);
+    gpio_set_level(sda, 1);
+    esp_rom_delay_us(10);
+    const bool ok = gpio_get_level(sda) == 1 && gpio_get_level(scl) == 1;
+    ESP_LOGI(TAG, "sccb bus before probe: SDA %d SCL %d -> %s", sda_before,
+             scl_before, ok ? "free" : "still held");
+    gpio_reset_pin(sda);
+    gpio_reset_pin(scl);
+    return ok;
+}
 
 bool camera_start(void)
 {
@@ -203,7 +245,7 @@ bool camera_start(void)
         .ledc_channel   = LEDC_CHANNEL_0,
 
         .pixel_format   = PIXFORMAT_GRAYSCALE,
-        .frame_size     = FRAME_MODES[frame_mode].size,
+        .frame_size     = FRAME_SIZE,
 
         /* Two buffers and LATEST: the decoder wants the newest view of the
            companion's screen, not a queue of stale ones. A backlog would make
@@ -214,7 +256,14 @@ bool camera_start(void)
         .grab_mode      = CAMERA_GRAB_LATEST,
     };
 
+    sccb_recover();
     esp_err_t err = esp_camera_init(&cfg);
+    if (err != ESP_OK) {
+        /* Once more: a failed probe can itself leave the bus mid-byte. */
+        esp_camera_deinit();
+        sccb_recover();
+        err = esp_camera_init(&cfg);
+    }
     if (err != ESP_OK) {
         /* Not fatal, and deliberately not an abort. A board with no ribbon
            seated, or none fitted at all, must still show a Scan screen that
@@ -253,8 +302,7 @@ bool camera_start(void)
          * the screen land correctly exposed with a much shorter shutter, which
          * is what stops the blur; the room going dark around it costs nothing,
          * since nothing there needs reading. Gain control stays on to make up
-         * the difference on dimmer screens. How far down is
-         * camera_set_exposure_bias(), set live from the scan screen.
+         * the difference on dimmer screens. How far down is exposure_bias.
          */
         if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 1); }
         if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 1); }
@@ -495,29 +543,7 @@ void camera_set_orientation(uint8_t mode)
 
 uint8_t camera_orientation(void) { return orientation; }
 
-void camera_set_exposure_bias(int8_t level)
-{
-    exposure_bias = (int8_t)(level < -5 ? -5 : (level > 0 ? 0 : level));
-    sensor_t *sensor = esp_camera_sensor_get();
-    if (!running || sensor == NULL) {
-        return;
-    }
-    if (sensor->set_ae_level != NULL)      { sensor->set_ae_level(sensor, exposure_bias); }
-}
 
-int8_t camera_exposure_bias(void) { return exposure_bias; }
-
-uint16_t camera_frame_width(void) { return FRAME_W; }
-
-void camera_next_frame_size(void)
-{
-    frame_mode = (uint8_t)((frame_mode + 1) % FRAME_MODE_COUNT);
-    /* The driver fixes the frame size at init, so a change is a restart. */
-    if (running) {
-        camera_stop();
-        camera_start();
-    }
-}
 
 /*
  * One grayscale image over the console as base64 between FRAME markers: an
@@ -622,10 +648,6 @@ void camera_dump_frame(void) { }
 uint8_t camera_orientation(void) { return 0; }
 void camera_set_stream(bool on) { (void)on; }
 bool camera_streaming(void) { return false; }
-void camera_set_exposure_bias(int8_t level) { (void)level; }
-uint16_t camera_frame_width(void) { return 0; }
-void camera_next_frame_size(void) { }
-int8_t camera_exposure_bias(void) { return 0; }
 
 void camera_stats(uint32_t *frames, uint32_t *decodes, uint32_t *located)
 {
