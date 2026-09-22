@@ -288,7 +288,9 @@ export async function scanQr<T>(
   const time = tuned ? range("exposureTime") : null;
   if (time) {
     profile.push(["exposureMode", "manual" as unknown as number]);
-    profile.push(["exposureTime", along(time, 0.05)]);
+    /* 100 us units, as in the spec: 12.8 ms is two refreshes of the
+       device's panel showing a QR, so no dark bands. src-tauri camera.rs. */
+    profile.push(["exposureTime", Math.min(time.max, Math.max(time.min, 128))]);
   } else {
     const ev = tuned ? range("exposureCompensation") : null;
     if (ev) profile.push(["exposureCompensation", along(ev, 0.1)]);

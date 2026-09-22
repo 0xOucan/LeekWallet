@@ -127,6 +127,12 @@ esp_err_t oled_flush(void)
 
 esp_err_t oled_clear_panel_now(void) { return oled_clear(); }
 
+esp_err_t oled_set_fast_refresh(bool fast)
+{
+    (void)fast;
+    return ESP_OK;
+}
+
 esp_err_t oled_set_contrast(uint8_t level)
 {
     contrast = level;

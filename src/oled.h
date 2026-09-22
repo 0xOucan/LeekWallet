@@ -54,6 +54,18 @@ esp_err_t oled_clear_panel_now(void);
 esp_err_t oled_set_contrast(uint8_t level);
 
 /**
+ * Refresh the panel as fast as the controller allows, or back to normal.
+ *
+ * The SSD1306 lights one row at a time. At its default ~88 Hz a camera with
+ * a short exposure catches only part of each sweep, and the rows not lit in
+ * that window come out as dark bands across a QR. Fast refresh (maximum
+ * oscillator, shortest pre-charge) is about 156 Hz, so the same exposure
+ * spans whole sweeps. For QR screens; normal refresh everywhere else keeps
+ * the panel's stock drive.
+ */
+esp_err_t oled_set_fast_refresh(bool fast);
+
+/**
  * Clear a single page (8-pixel row)
  * @param page Page number (0-7)
  * @return ESP_OK on success

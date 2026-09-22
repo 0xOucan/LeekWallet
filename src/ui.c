@@ -3280,12 +3280,14 @@ static void screen_qr_out_enter(void)
 {
     qr_brightness = 5;   /* Dim */
     oled_set_contrast(BRIGHTNESS_LEVELS[qr_brightness]);
+    oled_set_fast_refresh(true);   /* no dark bands on a camera; oled.h */
 }
 
 static void screen_qr_out_exit(screen_id_t next)
 {
     (void)next;
     qr_out_stop();
+    oled_set_fast_refresh(false);
     oled_set_contrast(BRIGHTNESS_LEVELS[brightness_choice]);
 }
 

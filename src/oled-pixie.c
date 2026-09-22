@@ -142,6 +142,13 @@ esp_err_t oled_flush(void)
     return ESP_OK;
 }
 
+esp_err_t oled_set_fast_refresh(bool fast)
+{
+    /* An LCD holds its image; there is no row scan to beat against. */
+    (void)fast;
+    return ESP_OK;
+}
+
 esp_err_t oled_set_contrast(uint8_t level)
 {
     /* An ST7789 has no contrast register. The setting is accepted and kept by

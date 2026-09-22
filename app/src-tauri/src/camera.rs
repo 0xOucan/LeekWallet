@@ -8,8 +8,11 @@
 //! V4L2 driver - the same controls `v4l2-ctl` sets - and is put back to
 //! automatic when the scan ends.
 //!
-//! Every value is read from the camera's own reported range; nothing here
-//! assumes a particular webcam.
+//! The exposure is a time, not a fraction of the range: 12.8 ms, two full
+//! refreshes of the device's panel while it shows a QR (about 156 Hz). An
+//! OLED lights one row at a time, and an exposure shorter than a refresh
+//! records the rows not lit in that window as dark bands across the code.
+//! Clamped to the camera's own reported range.
 
 #[cfg(target_os = "linux")]
 mod v4l2 {
@@ -67,9 +70,9 @@ mod v4l2 {
         unsafe { libc::ioctl(fd, VIDIOC_S_CTRL as _, &mut c) == 0 }
     }
 
-    /// `fraction` of the way along the exposure range, 0 = shortest.
-    /// None puts every camera back on automatic exposure.
-    pub fn apply(fraction: Option<f64>) -> String {
+    /// Manual exposure of `units` (UVC's 100 us steps), clamped to each
+    /// camera's range. None puts every camera back on automatic exposure.
+    pub fn apply(units: Option<i32>) -> String {
         let mut done = Vec::new();
         let Ok(dir) = std::fs::read_dir("/dev") else {
             return "no /dev".into();
@@ -93,10 +96,9 @@ mod v4l2 {
                 continue; // a metadata node, or a camera with no exposure control
             };
             let name = path.display().to_string();
-            match fraction {
-                Some(f) => {
-                    let raw = min as f64 + (max - min) as f64 * f;
-                    let value = min + (((raw - min as f64) / step as f64).round() as i32) * step;
+            match units {
+                Some(u) => {
+                    let value = min + ((u.clamp(min, max) - min) / step) * step;
                     // Frame rate may not stretch to fit a longer exposure.
                     let _ = set(fd, V4L2_CID_EXPOSURE_AUTO_PRIORITY, 0);
                     if set(fd, V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_MANUAL)
@@ -126,9 +128,10 @@ mod v4l2 {
 pub fn camera_exposure(dark: bool) -> String {
     #[cfg(target_os = "linux")]
     {
-        // 5% along the range: short enough that the panel's white modules
-        // stop blooming, the desktop counterpart of the device's e-5.
-        v4l2::apply(dark.then_some(0.05))
+        // 12.8 ms: two panel refreshes, so no dark bands, and still short
+        // enough that the white modules do not bloom. The desktop
+        // counterpart of the device's e-5.
+        v4l2::apply(dark.then_some(128))
     }
     #[cfg(not(target_os = "linux"))]
     {
