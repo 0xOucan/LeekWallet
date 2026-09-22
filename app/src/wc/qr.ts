@@ -244,11 +244,15 @@ export async function scanQr<T>(
     return r.step > 0 ? r.min + Math.round((v - r.min) / r.step) * r.step : v;
   };
   const profile: [string, number][] = [];
-  const ev = range("exposureCompensation");
+  /* Desktop webcams only. A phone's own camera pipeline already read the
+   * device's QR well, and on the bench darkening it made it worse; a phone
+   * camera left alone is the one that works. */
+  const tuned = !/Android/i.test(navigator.userAgent);
+  const ev = tuned ? range("exposureCompensation") : null;
   if (ev) profile.push(["exposureCompensation", along(ev, 0.2)]);
-  const contrast = range("contrast");
+  const contrast = tuned ? range("contrast") : null;
   if (contrast) profile.push(["contrast", along(contrast, 0.75)]);
-  const sharpness = range("sharpness");
+  const sharpness = tuned ? range("sharpness") : null;
   if (sharpness) profile.push(["sharpness", along(sharpness, 0.65)]);
   for (const [name, value] of profile) {
     try {

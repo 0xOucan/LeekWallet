@@ -836,9 +836,11 @@ static int64_t  last_activity_us = 0;
 static const uint8_t BRIGHTNESS_LEVELS[] = { 0x10, 0x50, 0xA0, 0xFF, 0x00, 0x04 };
 #define BRIGHTNESS_COUNT (sizeof(BRIGHTNESS_LEVELS) / sizeof(BRIGHTNESS_LEVELS[0]))
 static const uint8_t BRIGHTNESS_CYCLE[] = { 4, 5, 0, 1, 2, 3 };
-static int brightness_choice = 2;
+/* Dim by default: an OLED is bright in a dark room, and it is the level a
+   phone camera reads this panel's QR codes best at. */
+static int brightness_choice = 5;
 /* The QR screen's own level, stepped with OK; see screen_qr_out_enter. */
-static int qr_brightness = 2;
+static int qr_brightness = 5;
 
 static const char *brightness_label(int choice)
 {
@@ -3263,17 +3265,20 @@ static void screen_qr_out_on_button(button_id_t btn)
 }
 
 /*
- * The QR has its own brightness, stepped with OK, starting from the user's.
+ * The QR has its own brightness: Dim on entry, stepped with OK.
  *
  * An earlier version forced full brightness here, on the theory that contrast
  * limits a blurred read. It did not help the first webcam, and it can hurt: an
  * OLED at full drive blooms on a camera sensor and the dark modules drown.
- * Which level a given camera reads best is not something the firmware can
- * know, so the user finds it, and the setting everywhere else is untouched.
+ * Starting from the user's own level was no better: at High a phone camera
+ * showed rolling lines across the panel - its shutter beating against the
+ * OLED's refresh - where at Dim it read cleanly. So Dim for every QR,
+ * pairing and signature alike, whatever the panel is set to elsewhere; OK
+ * still steps it for a camera that wants otherwise.
  */
 static void screen_qr_out_enter(void)
 {
-    qr_brightness = brightness_choice;
+    qr_brightness = 5;   /* Dim */
     oled_set_contrast(BRIGHTNESS_LEVELS[qr_brightness]);
 }
 
@@ -6937,7 +6942,7 @@ void ui__reset_static_state_for_test(void)
 
     lock_timeout_choice = 1;
     lock_timeout_stored_choice = 1;
-    brightness_choice = 2;
+    brightness_choice = 5;
     memzero(master_xfp, sizeof(master_xfp));
     last_activity_us = 0;
 }
