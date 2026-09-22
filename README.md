@@ -31,7 +31,7 @@ change what the screen shows.
 ```mermaid
 flowchart LR
     subgraph HOST["Companion — NOT trusted"]
-        APP["Mini-app"] --> SCREEN["screenProposal<br/>ERC-7730"]
+        APP["Dapp or send"] --> SCREEN["screenProposal<br/>ERC-7730"]
     end
     subgraph DEV["Device — trusted"]
         DEC["eth-decode.c<br/>its own decoder"] --> PAGES["one page per field"] --> KEY["seed, never leaves"]
@@ -74,8 +74,36 @@ refuses to sign.
 | **BLE name** | User-set, 1-29 printable ASCII, refused rather than truncated — an over-long name would silently stop advertising |
 | **Session** | X25519 with a commit-then-reveal nonce exchange, passkey bound to the whole transcript and compared on the device's own screen; ChaCha20-Poly1305 frames |
 | **QR codes** | Display addresses as scannable QR codes |
+| **Air-gapped QR signing** | ESP32-S3 CAM board with an OV5640: EIP-4527 `eth-sign-request` in by camera, `eth-signature` out on the panel, animated BC-UR both ways, no cable and no radio. Works with the **Android** companion — see [Air-gapped signing](#air-gapped-signing-needs-a-phone) for why not the desktop |
 | **Companion app** | Tauri v2 on Linux/macOS/Windows and an Android APK, with WalletConnect v2 for real dapps |
 | **Browser extension** | Chromium MV3, an EIP-1193 provider announced over **EIP-6963** so it sits beside other wallets rather than fighting for `window.ethereum`. Talks to the board over Web Serial with **no relay and no QR**. It holds no key and ships no descriptors: a dapp's calldata goes straight to the device, which decodes it. Verified against a live `app.aave.com` session. Connecting resets the board — Web Serial cannot suppress the DTR toggle — so the PIN is re-entered each time |
+
+### Air-gapped signing needs a phone
+
+The CAM board signs without a cable: it reads the companion's
+`eth-sign-request` off the phone's screen with its camera, you check every
+page on its own screen, and it shows the `eth-signature` back as an animated
+QR on its panel for the phone to read. Pairing works the same way, by the
+device showing its account key as a QR.
+
+**Use the Android companion for this, not the desktop.** The device's panel
+is 0.96 inches and 128x64: each QR module is a single 0.17 mm OLED pixel. A
+phone camera focuses close and resolves that; a laptop webcam is fixed-focus
+and wide-angle, so held close enough to fill its frame the code distorts past
+reading, and held back it is too few pixels. The desktop companion darkens
+and zooms its webcam to try, and it is still not reliable. On a desktop,
+connect by USB or BLE instead, or use WalletConnect with the phone.
+
+What worked best on the bench, and what both sides now default to: device
+at 640x480 with exposure -5, companion at medium fragments and fast frames
+(0.5 s), phone screen at about half brightness. The device shows its own QR
+codes at Dim. A fixed-focus tablet camera reads the panel with the
+companion's **Dark camera** switch on.
+
+**For a desktop air-gapped build, fit a bigger, higher-resolution screen.**
+The limit is the panel, not the protocol: a larger display with more pixels
+gives each module several camera pixels at a comfortable distance, which is
+what a webcam needs.
 
 ### Also runs on the Firefly Pixie
 
@@ -103,7 +131,7 @@ firmware, the release and the board are fine; the browser tooling is not.
 comes out of files that port untouched.
 
 Not everything will follow. Airgapped QR signing needs a camera and PSRAM; the
-Pixie has neither, and the S3 keeps that lane. The S3 also has hardware SHA-512
+Pixie has neither, and the S3 CAM board keeps that lane. The S3 also has hardware SHA-512
 where the C3 stops at SHA-256, so the two boards are close today and will not
 stay close once the KDF is accelerated.
 
@@ -1154,12 +1182,6 @@ open items as the honest list of what is missing rather than a formality.
 
 Bug reports, review of the cryptographic paths, and someone finding a hole in
 this are worth more to the project than stars.
-
----
-
-Built during ETHGlobal's Continuity Track. The demo apps written for that
-event have since been removed from the wallet; the device, its firmware and
-the companion shell are what remains and what this README describes.
 
 ---
 
