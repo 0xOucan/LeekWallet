@@ -3524,8 +3524,11 @@ static void screen_scan_on_button(button_id_t btn)
     if (btn == BUTTON_ACCEPT) {
         if (button_is_pressed(BUTTON_UP)) {
             camera_set_stream(!camera_streaming());
-        } else {
-            camera_next_frame_size();
+        } else if (!camera_next_frame_size()) {
+            /* Said on the screen, not left as a view that stopped moving;
+               OK again moves on to the next size. */
+            snprintf(scan_status, sizeof scan_status, "%u failed; OK=next",
+                     (unsigned)camera_frame_width());
         }
     } else if (btn == BUTTON_UP || btn == BUTTON_DOWN) {
         camera_set_exposure_bias((int8_t)(camera_exposure_bias() +

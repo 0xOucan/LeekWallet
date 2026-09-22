@@ -77,10 +77,9 @@ CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=n
 # far less than a camera that starts.
 # CONFIG_CAMERA_AF_SUPPORT is not set
 
-# 160 MHz, the default. 240 MHz decoded faster but, together with the
-# OV5640, got the board very hot on the bench; the optimised quirc build
-# is fast enough at 160.
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+# 240 MHz. It runs hotter with the OV5640 beside it, but at 160 MHz the
+# larger capture sizes could not keep up on the bench.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # Let the camera DMA write frames straight into PSRAM instead of copying
 # each line through internal RAM on the CPU the decoder needs.
 CONFIG_CAMERA_PSRAM_DMA=y

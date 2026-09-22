@@ -61,8 +61,8 @@ uint8_t camera_orientation(void);
 void camera_set_exposure_bias(int8_t level);
 int8_t camera_exposure_bias(void);
 
-/** Step the capture size VGA -> SVGA -> QVGA, restarting a running camera. */
-void camera_next_frame_size(void);
+/** Step the capture size VGA -> QVGA -> SVGA and (re)start the camera. */
+bool camera_next_frame_size(void);
 uint16_t camera_frame_width(void);
 
 /**

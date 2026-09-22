@@ -75,12 +75,12 @@ static const char *TAG = "camera";
  */
 static const struct { uint16_t w, h; framesize_t size; } FRAME_MODES[] = {
     { 640, 480, FRAMESIZE_VGA  },
-    { 800, 600, FRAMESIZE_SVGA },
     { 320, 240, FRAMESIZE_QVGA },
+    { 800, 600, FRAMESIZE_SVGA },
 };
 #define FRAME_MODE_COUNT (sizeof FRAME_MODES / sizeof FRAME_MODES[0])
 #if defined(CAMERA_FORCE_QVGA) && CAMERA_FORCE_QVGA
-static uint8_t frame_mode = 2;
+static uint8_t frame_mode = 1;
 #else
 static uint8_t frame_mode = 0;
 #endif
@@ -559,14 +559,14 @@ int8_t camera_exposure_bias(void) { return exposure_bias; }
 
 uint16_t camera_frame_width(void) { return FRAME_W; }
 
-void camera_next_frame_size(void)
+bool camera_next_frame_size(void)
 {
     frame_mode = (uint8_t)((frame_mode + 1) % FRAME_MODE_COUNT);
-    /* The driver fixes the frame size at init, so a change is a restart. */
-    if (running) {
-        camera_stop();
-        camera_start();
-    }
+    /* The driver fixes the frame size at init, so a change is a restart.
+       Started even if the previous size failed to start, or one size that
+       will not come up would strand OK there for good. */
+    camera_stop();
+    return camera_start();
 }
 
 
@@ -675,7 +675,7 @@ uint8_t camera_orientation(void) { return 0; }
 void camera_set_exposure_bias(int8_t level) { (void)level; }
 int8_t camera_exposure_bias(void) { return 0; }
 uint16_t camera_frame_width(void) { return 0; }
-void camera_next_frame_size(void) { }
+bool camera_next_frame_size(void) { return false; }
 void camera_set_stream(bool on) { (void)on; }
 bool camera_streaming(void) { return false; }
 
