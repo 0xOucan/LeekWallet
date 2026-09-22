@@ -69,21 +69,19 @@ static const char *TAG = "camera";
  * module is worth nothing however many of them arrive.
  */
 /*
- * Capture size, stepped with OK on the scan screen for bench comparison. VGA
- * is the default: with exposure -5 it read a whole send in two to three
- * seconds. Applied by restarting the camera.
+ * Capture size, stepped with OK on the scan screen for bench comparison.
+ * QVGA is the default: compared on the bench at exposure -4 against VGA and
+ * SVGA, it read best - four times fewer pixels per frame, so several times
+ * the frames a second, and the companion's medium fragments still resolve
+ * with the phone held close. Applied by restarting the camera.
  */
 static const struct { uint16_t w, h; framesize_t size; } FRAME_MODES[] = {
-    { 640, 480, FRAMESIZE_VGA  },
     { 320, 240, FRAMESIZE_QVGA },
+    { 640, 480, FRAMESIZE_VGA  },
     { 800, 600, FRAMESIZE_SVGA },
 };
 #define FRAME_MODE_COUNT (sizeof FRAME_MODES / sizeof FRAME_MODES[0])
-#if defined(CAMERA_FORCE_QVGA) && CAMERA_FORCE_QVGA
-static uint8_t frame_mode = 1;
-#else
 static uint8_t frame_mode = 0;
-#endif
 #define FRAME_W     (FRAME_MODES[frame_mode].w)
 #define FRAME_H     (FRAME_MODES[frame_mode].h)
 #define FRAME_SIZE  (FRAME_MODES[frame_mode].size)

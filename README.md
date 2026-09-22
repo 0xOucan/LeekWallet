@@ -95,7 +95,7 @@ and zooms its webcam to try, and it is still not reliable. On a desktop,
 connect by USB or BLE instead, or use WalletConnect with the phone.
 
 What worked best on the bench, and what both sides now default to: device
-at 640x480 with exposure -5, companion at medium fragments and fast frames
+at 320x240 with exposure -4, companion at medium fragments and fast frames
 (0.5 s), phone screen at about half brightness. The device shows its own QR
 codes at Dim. A fixed-focus tablet camera reads the panel with the
 companion's **Dark camera** switch on.
