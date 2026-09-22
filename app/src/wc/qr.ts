@@ -49,6 +49,7 @@
 
 import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import { firstAccepted, QR_UNAVAILABLE, qrScanningAvailable, scanStep } from "./qr-loop.ts";
+import { invoker } from "../tauri-transport.ts";
 
 export { firstAccepted, QR_UNAVAILABLE, qrScanningAvailable, qrUnavailable, scanStep } from "./qr-loop.ts";
 /* Bundled, not fetched. zxing-wasm downloads its .wasm from a CDN by default,
@@ -111,6 +112,36 @@ const SCAN_INTERVAL_MS = 100;
 
 /** Consecutive decoder exceptions tolerated before the scan gives up. */
 const MAX_DECODE_FAILURES = 20;
+
+const DARK_CAMERA_KEY = "leek.darkCamera";
+
+/**
+ * Whether the scanner darkens the camera for reading the device's OLED.
+ *
+ * On by default for desktop webcams, which expose for the room and bloom the
+ * panel's lit pixels over its dark modules. Off by default on Android, whose
+ * phone cameras read the panel fine untouched and got worse darkened; a
+ * switch, because a fixed-focus tablet camera may still want it. Stored per
+ * device; storage that is unavailable just means the default.
+ */
+export function darkCamera(): boolean {
+  try {
+    const v = localStorage.getItem(DARK_CAMERA_KEY);
+    if (v === "1") return true;
+    if (v === "0") return false;
+  } catch {
+    /* default below */
+  }
+  return !/Android/i.test(navigator.userAgent);
+}
+
+export function setDarkCamera(on: boolean): void {
+  try {
+    localStorage.setItem(DARK_CAMERA_KEY, on ? "1" : "0");
+  } catch {
+    /* the setting lasts this session only */
+  }
+}
 
 /**
  * Scan until `accept` recognises a code, then stop.
@@ -182,6 +213,10 @@ export async function scanQr<T>(
   };
 
   let stopped = false;
+  /* Declared before stop(), which reads them: a dismissal can land while the
+     profile below is still being applied. */
+  const invoke = invoker();
+  let native = "";
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const stop = (): void => {
@@ -190,6 +225,8 @@ export async function scanQr<T>(
     if (timer) clearTimeout(timer);
     release();
     video.srcObject = null;
+    // Hand the webcam back on automatic exposure for everything else.
+    if (native) void invoke?.("camera_exposure", { dark: false })?.catch?.(() => {});
     signal?.removeEventListener("abort", stop);
   };
 
@@ -244,12 +281,18 @@ export async function scanQr<T>(
     return r.step > 0 ? r.min + Math.round((v - r.min) / r.step) * r.step : v;
   };
   const profile: [string, number][] = [];
-  /* Desktop webcams only. A phone's own camera pipeline already read the
-   * device's QR well, and on the bench darkening it made it worse; a phone
-   * camera left alone is the one that works. */
-  const tuned = !/Android/i.test(navigator.userAgent);
-  const ev = tuned ? range("exposureCompensation") : null;
-  if (ev) profile.push(["exposureCompensation", along(ev, 0.2)]);
+  /* Only when the dark-camera switch is on; see darkCamera(). */
+  const tuned = darkCamera();
+  /* A short manual exposure where the camera offers one - the counterpart of
+   * the device's e-5 - otherwise exposure compensation near its floor. */
+  const time = tuned ? range("exposureTime") : null;
+  if (time) {
+    profile.push(["exposureMode", "manual" as unknown as number]);
+    profile.push(["exposureTime", along(time, 0.05)]);
+  } else {
+    const ev = tuned ? range("exposureCompensation") : null;
+    if (ev) profile.push(["exposureCompensation", along(ev, 0.1)]);
+  }
   const contrast = tuned ? range("contrast") : null;
   if (contrast) profile.push(["contrast", along(contrast, 0.75)]);
   const sharpness = tuned ? range("sharpness") : null;
@@ -261,6 +304,16 @@ export async function scanQr<T>(
       });
     } catch {
       /* This camera keeps its own value for this control. */
+    }
+  }
+
+  /* WebKitGTK offers none of those controls, so on the Linux desktop the
+   * backend sets the webcam's exposure through V4L2 and reports what took. */
+  if (tuned && invoke) {
+    try {
+      native = String(await invoke("camera_exposure", { dark: true }));
+    } catch {
+      /* an older backend without the command */
     }
   }
 
@@ -282,7 +335,9 @@ export async function scanQr<T>(
         .map(([n]) => [n, (track?.getSettings?.() as Record<string, unknown>)?.[n]])
         .filter(([, v]) => v !== undefined)
         .map(([n, v]) => `, ${n} ${v}`)
-        .join(""),
+        .join("") +
+      (native ? `, ${native}` : "") +
+      (tuned ? "" : ", camera untouched"),
   );
 
   // The dismissal may already have happened while the prompt was up.

@@ -122,6 +122,8 @@ tokio = { version = "1", features = ["sync", "rt"] }
 # different webkit2gtk in the tree would be two bindings to one library.
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"
+# V4L2 ioctls for the webcam exposure the webview cannot set (src/camera.rs).
+libc = "0.2"
 
 # Android gets the same BLE transport crate with its other backend selected:
 # `blec` swaps btleplug for `tauri-plugin-blec`, which is a Tauri mobile plugin

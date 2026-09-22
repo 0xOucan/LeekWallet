@@ -90,6 +90,9 @@
             <!-- Not a Link option: QR is a second entrance with no session,
                  so it is its own action rather than a transport to select. -->
             <button id="qrpair" type="button" class="secondary">Pair by QR</button>
+            <label class="muted" title="Darker camera exposure, so the device's bright screen does not glow. On for desktop webcams; try it on a tablet.">
+              <input type="checkbox" id="darkcam"> Dark camera
+            </label>
           </div>
           <div id="pairing" hidden style="margin-top: var(--space-4)"
                role="group" aria-label="Passkey to compare with the device">

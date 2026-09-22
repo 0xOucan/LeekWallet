@@ -2498,6 +2498,7 @@ dependencies = [
  "hex",
  "leek-transport-ble",
  "leek-transport-serial",
+ "libc",
  "reqwest",
  "rustls",
  "serde",

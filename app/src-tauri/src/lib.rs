@@ -21,6 +21,7 @@
 // and so are the commands they export. See each crate's `android.rs` for why
 // the phone needs a different way in rather than a different transport.
 mod ble;
+mod camera;
 mod serial;
 
 // The one thing in this backend that is not "move bytes to the device": an
@@ -193,7 +194,8 @@ pub fn run() {
             flash::flash_capability,
             flash::flash_ports,
             flash::flash_detect,
-            flash::flash_write
+            flash::flash_write,
+            camera::camera_exposure
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the LeekWallet companion");

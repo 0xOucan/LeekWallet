@@ -52,7 +52,14 @@ import {
 } from "../packages/core/src/token-list.ts";
 import { BUNDLED_TOKENS } from "../packages/core/src/token-list-bundled.ts";
 import { fetchAllowances } from "../packages/core/src/allowances.ts";
-import { qrScanningAvailable, qrUnavailable, scanQr, type QrScan } from "./wc/qr.ts";
+import {
+  darkCamera,
+  qrScanningAvailable,
+  qrUnavailable,
+  scanQr,
+  setDarkCamera,
+  type QrScan,
+} from "./wc/qr.ts";
 import {
   endpointOrder, FailoverRpc, fetchRpcSend, preferredRpc, rememberRpc,
   type RpcSend,
@@ -4459,6 +4466,12 @@ $("connect").addEventListener("click", () => void connect());
 $("unlock").addEventListener("click", () => void unlock());
 $("disconnect").addEventListener("click", () => void disconnect());
 $("qrpair").addEventListener("click", () => void pairByQr());
+{
+  // Read at each scan's start, so a change applies to the next scan.
+  const box = $("darkcam") as HTMLInputElement;
+  box.checked = darkCamera();
+  box.addEventListener("change", () => setDarkCamera(box.checked));
+}
 /* Cancel ends the QR exchange and nothing else: there is no session on this
  * path, so closing it cannot leave one half-used. */
 $("qrcancel").addEventListener("click", () => qrAbort?.abort());
