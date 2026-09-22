@@ -137,12 +137,13 @@ static uint32_t stat_located;
  * Bit 0 hmirror, bit 1 vflip. See camera.h: one of them alone mirrors the
  * image, which no decoder can read.
  *
- * 2 (vflip) was found on the bench to be the unmirrored image: codes decoded
- * with it, and the first air-gapped signature was read at it. But it showed
- * the world upside down. 1 (hmirror) is that same image turned 180 degrees -
- * two mirrors - so it decodes identically and is the right way up.
+ * 2 (vflip) is the unmirrored image on this module, confirmed on the bench
+ * twice: codes decode with it and the first air-gapped signature was read at
+ * it. 1 (hmirror) should in theory be the same image turned 180 degrees, but
+ * on this sensor it showed a mirror image; the driver's bits do not map onto
+ * the optics the way the names suggest. Change it only against the bench.
  */
-static uint8_t orientation = 1;
+static uint8_t orientation = 2;
 
 /* -4, measured on the bench with a phone screen: -2 bloomed the white
    modules, -5 blacked out everything but a phone at full brightness. */
