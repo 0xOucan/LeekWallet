@@ -57,7 +57,7 @@ bool camera_streaming(void);
 /** The current mirror/flip bits. */
 uint8_t camera_orientation(void);
 
-/** Exposure bias, -5 (darkest) to 0; clamped. Default -5. Bench control. */
+/** Exposure bias, -5 (darkest) to 0; clamped. Default -4. Bench control. */
 void camera_set_exposure_bias(int8_t level);
 int8_t camera_exposure_bias(void);
 

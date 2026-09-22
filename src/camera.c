@@ -147,10 +147,10 @@ static uint32_t stat_located;
  */
 static uint8_t orientation = 2;
 
-/* -5, measured on the bench once decoding was fast: with the phone at half
-   brightness it read a whole send in two to three seconds. -4 was the best
-   before that, -2 bloomed the white modules. */
-static int8_t exposure_bias = -5;
+/* -4 by default, stepped from the scan screen. -5 read fastest against a
+   phone at half brightness, but at -5 the view went black within seconds
+   of opening the scanner; -4 is the user's pick after bench testing. */
+static int8_t exposure_bias = -4;
 
 /*
  * Exposure stays automatic throughout; only its target is biased. Locking it
