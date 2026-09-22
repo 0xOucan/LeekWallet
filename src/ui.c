@@ -6717,8 +6717,13 @@ void ui_task(void *pvParameters)
     lock_note_activity();
 
     while (1) {
-        /* Wait for button event with timeout for periodic refresh */
-        if (xQueueReceive(queue, &event, pdMS_TO_TICKS(100)) == pdTRUE) {
+        /* Wait for button event with timeout for periodic refresh. Not while
+         * scanning: this wait came before every frame, so up to 100 ms of
+         * each capture cycle was spent idle on top of the decode, and the
+         * camera's newest frame went stale waiting for it. */
+        const TickType_t wait = (ui_get_screen() == SCREEN_SCAN)
+                                    ? pdMS_TO_TICKS(1) : pdMS_TO_TICKS(100);
+        if (xQueueReceive(queue, &event, wait) == pdTRUE) {
             lock_note_activity();
             ui_handle_button(event.id);
         } else if (lock_check_timeout()) {

@@ -76,3 +76,11 @@ CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=n
 # start never returned and the Scan screen never opened. A fixed lens is worth
 # far less than a camera that starts.
 # CONFIG_CAMERA_AF_SUPPORT is not set
+
+# Scanning is CPU-bound: quirc on a VGA frame is most of each frame's time.
+# 240 MHz is half as fast again as the 160 MHz default, for more heat while
+# the camera runs.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# Let the camera DMA write frames straight into PSRAM instead of copying
+# each line through internal RAM on the CPU the decoder needs.
+CONFIG_CAMERA_PSRAM_DMA=y

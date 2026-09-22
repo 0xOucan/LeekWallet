@@ -137,10 +137,12 @@ static uint32_t stat_located;
  * Bit 0 hmirror, bit 1 vflip. See camera.h: one of them alone mirrors the
  * image, which no decoder can read.
  *
- * 2 (vflip) is what this module needs, found on the bench: with both off the
- * picture came out mirrored and upside down, which is a vertical flip.
+ * 2 (vflip) was found on the bench to be the unmirrored image: codes decoded
+ * with it, and the first air-gapped signature was read at it. But it showed
+ * the world upside down. 1 (hmirror) is that same image turned 180 degrees -
+ * two mirrors - so it decodes identically and is the right way up.
  */
-static uint8_t orientation = 2;
+static uint8_t orientation = 1;
 
 /* -4, measured on the bench with a phone screen: -2 bloomed the white
    modules, -5 blacked out everything but a phone at full brightness. */
