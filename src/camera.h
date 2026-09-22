@@ -57,6 +57,14 @@ bool camera_streaming(void);
 /** The current mirror/flip bits. */
 uint8_t camera_orientation(void);
 
+/** Exposure bias, -5 (darkest) to 0; clamped. Default -5. Bench control. */
+void camera_set_exposure_bias(int8_t level);
+int8_t camera_exposure_bias(void);
+
+/** Step the capture size VGA -> SVGA -> QVGA, restarting a running camera. */
+void camera_next_frame_size(void);
+uint16_t camera_frame_width(void);
+
 /**
  * The next QR symbol decoded since the last call, as text, if there is one.
  * Never blocks: the scan screen calls this from the UI task's loop.

@@ -69,19 +69,24 @@ static const char *TAG = "camera";
  * module is worth nothing however many of them arrive.
  */
 /*
- * Fixed at VGA. QVGA and SVGA were tried from the scan screen on the bench:
- * VGA with exposure -5 read a whole send in two to three seconds, and neither
- * beat it. A debug build can still force QVGA for a lighter live stream.
+ * Capture size, stepped with OK on the scan screen for bench comparison. VGA
+ * is the default: with exposure -5 it read a whole send in two to three
+ * seconds. Applied by restarting the camera.
  */
+static const struct { uint16_t w, h; framesize_t size; } FRAME_MODES[] = {
+    { 640, 480, FRAMESIZE_VGA  },
+    { 800, 600, FRAMESIZE_SVGA },
+    { 320, 240, FRAMESIZE_QVGA },
+};
+#define FRAME_MODE_COUNT (sizeof FRAME_MODES / sizeof FRAME_MODES[0])
 #if defined(CAMERA_FORCE_QVGA) && CAMERA_FORCE_QVGA
-#  define FRAME_W     320
-#  define FRAME_H     240
-#  define FRAME_SIZE  FRAMESIZE_QVGA
+static uint8_t frame_mode = 2;
 #else
-#  define FRAME_W     640
-#  define FRAME_H     480
-#  define FRAME_SIZE  FRAMESIZE_VGA
+static uint8_t frame_mode = 0;
 #endif
+#define FRAME_W     (FRAME_MODES[frame_mode].w)
+#define FRAME_H     (FRAME_MODES[frame_mode].h)
+#define FRAME_SIZE  (FRAME_MODES[frame_mode].size)
 
 /*
  * How often a captured frame is also turned into a preview.
@@ -145,7 +150,7 @@ static uint8_t orientation = 2;
 /* -5, measured on the bench once decoding was fast: with the phone at half
    brightness it read a whole send in two to three seconds. -4 was the best
    before that, -2 bloomed the white modules. */
-static const int8_t exposure_bias = -5;
+static int8_t exposure_bias = -5;
 
 /*
  * Exposure stays automatic throughout; only its target is biased. Locking it
@@ -299,7 +304,8 @@ bool camera_start(void)
          * the screen land correctly exposed with a much shorter shutter, which
          * is what stops the blur; the room going dark around it costs nothing,
          * since nothing there needs reading. Gain control stays on to make up
-         * the difference on dimmer screens. How far down is exposure_bias.
+         * the difference on dimmer screens. How far down is exposure_bias,
+         * stepped from the scan screen.
          */
         if (sensor->set_gain_ctrl != NULL)     { sensor->set_gain_ctrl(sensor, 1); }
         if (sensor->set_exposure_ctrl != NULL) { sensor->set_exposure_ctrl(sensor, 1); }
@@ -540,6 +546,29 @@ void camera_set_orientation(uint8_t mode)
 
 uint8_t camera_orientation(void) { return orientation; }
 
+void camera_set_exposure_bias(int8_t level)
+{
+    exposure_bias = (int8_t)(level < -5 ? -5 : (level > 0 ? 0 : level));
+    sensor_t *sensor = esp_camera_sensor_get();
+    if (running && sensor != NULL && sensor->set_ae_level != NULL) {
+        sensor->set_ae_level(sensor, exposure_bias);
+    }
+}
+
+int8_t camera_exposure_bias(void) { return exposure_bias; }
+
+uint16_t camera_frame_width(void) { return FRAME_W; }
+
+void camera_next_frame_size(void)
+{
+    frame_mode = (uint8_t)((frame_mode + 1) % FRAME_MODE_COUNT);
+    /* The driver fixes the frame size at init, so a change is a restart. */
+    if (running) {
+        camera_stop();
+        camera_start();
+    }
+}
+
 
 
 /*
@@ -643,6 +672,10 @@ const uint8_t *camera_preview_take(void) { return NULL; }
 void camera_set_orientation(uint8_t mode) { (void)mode; }
 void camera_dump_frame(void) { }
 uint8_t camera_orientation(void) { return 0; }
+void camera_set_exposure_bias(int8_t level) { (void)level; }
+int8_t camera_exposure_bias(void) { return 0; }
+uint16_t camera_frame_width(void) { return 0; }
+void camera_next_frame_size(void) { }
 void camera_set_stream(bool on) { (void)on; }
 bool camera_streaming(void) { return false; }
 

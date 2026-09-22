@@ -3518,13 +3518,18 @@ static void screen_scan_on_button(button_id_t btn)
         ui_set_screen(SCREEN_MAIN_MENU);
         return;
     }
-    /* Nothing here changes the camera. Orientation, size and exposure are the
-       values the bench settled on (camera.c), and a setting a user can nudge
-       mid-scan is one more way for a scan to fail with no visible cause.
-       UP held with OK toggles live video to the PC viewer, a bench aid that
-       changes nothing the decoder sees. */
-    if (btn == BUTTON_ACCEPT && button_is_pressed(BUTTON_UP)) {
-        camera_set_stream(!camera_streaming());
+    /* Bench controls for comparing combinations; orientation stays f2.
+       UP brighter, DOWN darker, OK steps the capture size, and OK with UP
+       held toggles live video to the PC viewer. */
+    if (btn == BUTTON_ACCEPT) {
+        if (button_is_pressed(BUTTON_UP)) {
+            camera_set_stream(!camera_streaming());
+        } else {
+            camera_next_frame_size();
+        }
+    } else if (btn == BUTTON_UP || btn == BUTTON_DOWN) {
+        camera_set_exposure_bias((int8_t)(camera_exposure_bias() +
+                                          (btn == BUTTON_UP ? 1 : -1)));
     }
     ui_invalidate();
 }
@@ -3577,10 +3582,19 @@ static void service_scan(void)
             /* "f0 s12 r0": flip mode, codes seen, codes read. Short because
                the row is 21 characters and the numbers matter more than the
                words. */
-            /* "seen 12 read 0": codes located, codes read. */
-            snprintf(scan_status, sizeof scan_status, "seen %u read %u",
+            /* "640 e-5 f123 s3 r1": capture width, exposure, frames
+               captured, codes seen, codes read. Frames still climbing on a
+               blank view means the camera is live and the picture is dark;
+               frames stopped means capture itself stopped. */
+            char line[48];
+            snprintf(line, sizeof line, "%u e%d f%u s%u r%u",
+                     (unsigned)camera_frame_width(),
+                     (int)camera_exposure_bias(),
+                     (unsigned)(cam_frames > 999 ? 999 : cam_frames),
                      (unsigned)(cam_seen > 99 ? 99 : cam_seen),
                      (unsigned)(cam_read > 99 ? 99 : cam_read));
+            /* 20 characters at most in practice; the row holds 21. */
+            snprintf(scan_status, sizeof scan_status, "%.21s", line);
         }
         if (left > 0) {
             /* Clamped at three digits, which is both what the row fits and
