@@ -254,6 +254,26 @@ missing selector rather than a limitation of the crypto.
 └─────────────────────────────────────┘
 ```
 
+**The air-gapped variant** swaps the board for one with a camera and PSRAM:
+
+```
+┌─────────────────────────────────────┐
+│      LeekWallet CAM (air-gap)       │
+├─────────────────────────────────────┤
+│  MCU:     ESP32-S3 N16R8, 8MB PSRAM │
+│  Camera:  OV5640 over DVP           │
+│  Display: SSD1306 OLED 128x64       │
+│  Input:   4 tactile buttons         │
+│  Links:   camera in, screen out —   │
+│           USB and BLE optional      │
+└─────────────────────────────────────┘
+```
+
+Its pins differ from the board above, because the camera occupies most of the
+low GPIOs: the map is in
+[docs/BOARD-S3CAM-PINOUT.md](docs/BOARD-S3CAM-PINOUT.md), and `src/board.h` is
+the authority. PSRAM is required here and disabled on the board above.
+
 **Button Mapping:**
 - **K1** (GPIO10) → UP / Increment
 - **K2** (GPIO5)  → DOWN / Decrement
@@ -280,6 +300,17 @@ are with shipping.
 | 1 | Dupont jumper wires, female-female | 8 minimum | $1 |
 | 1 | USB-C data cable | Charge-only cables are the #1 "device not found" cause | — |
 | — | Perfboard or 400-pt breadboard | Optional, for a non-flying-wire build | $1-2 |
+
+**For the air-gapped camera build**, replace the first row and add one part:
+
+| Qty | Part | Notes | Approx. |
+|-----|------|-------|---------|
+| 1 | ESP32-S3 N16R8 dev board with a DVP camera header | **8 MB PSRAM is required** — the frame buffers and the decoder live there | $6-10 |
+| 1 | OV5640 camera module, 24-pin DVP | Fixed focus is fine and is what this was measured on; the autofocus variant's motor is not used | $4-8 |
+
+Tape the camera's flex cable down near its connector. A flex that moves gives
+blank frames and a camera that sometimes will not start, which looks exactly
+like a firmware fault and is not one.
 
 **Sourcing.** These are generic parts sold by hundreds of AliExpress vendors under rotating
 listing IDs, so specific product links rot within months. The searches below are stable; sort by
@@ -485,6 +516,20 @@ pio run -e esp32s3                 # build
 pio run -e esp32s3 -t upload       # flash over USB-C
 ./monitor.sh                       # serial monitor (Ctrl-] to exit)
 ```
+
+Other boards build from their own environment: `pixie` for the Firefly Pixie
+and `esp32s3cam` for the camera board. Two boards that are both ESP32-S3
+cannot be told apart by the chip, and the wrong image drives I2C and buttons
+on pins that are camera data lines, so flashing goes through a script that
+asks the running firmware which board it is:
+
+```bash
+./flash-board.sh s3cam             # or s3 / pixie; refuses a mismatch
+./flash-board.sh s3cam --port /dev/ttyACM0 --fresh   # a blank board
+./flash-both.sh dev                # the reference S3 and the Pixie
+```
+
+Both write the app only, at `0x10000`, so a device keeps its seeds.
 
 A healthy boot log ends with something like:
 
@@ -934,10 +979,13 @@ You do not need hardware to work on most of this firmware:
 make -C sim test
 ```
 
-That is **18 suites and they all pass** — PIN, PIN change under crash injection, vault KDF and
+That is **31 suites and they all pass** — PIN, PIN change under crash injection, vault KDF and
 AES-GCM, entropy health, mnemonic and text entry, CBOR, session, protocol conformance, BLE
-chunking, transaction encoding, calldata decoding, device wipe, UI screens, buttons, master
-fingerprint. `make -C sim asan` builds the protocol and chunking suites under sanitizers.
+chunking, transaction encoding, calldata decoding, EIP-712, device wipe, UI screens, buttons,
+master fingerprint, SLIP-39, temporary seeds, and the whole QR path: BC-UR, its fountain
+encoder and decoder, the strict EIP-4527 reader and writer, QR rendering and the viewfinder.
+The QR suites run the same vectors the TypeScript companion runs, so the two implementations
+are held to one another rather than each to itself. `make -C sim asan` builds the protocol and chunking suites under sanitizers.
 
 Three tiers are available — host-native logic tests, the ESP-IDF Linux target, and QEMU's
 `esp32s3` machine (which emulates eFuses, so flash encryption and secure boot can be developed
@@ -999,15 +1047,20 @@ not a preference: the session layer holds one pair of nonce counters, the framin
 has no request IDs, and a device advertising while you believe you are on a cable
 is reachable by someone you cannot see.
 
-| | USB | BLE |
-|---|---|---|
-| Wire | USB-Serial-JTAG CDC, sync-marked so it shares the console port | NimBLE GATT, chunked to the negotiated MTU |
-| Default | yes | no |
-| Advertised name | — | `LeekWallet`, or whatever you set in Settings → BLE Name |
+| | USB | BLE | QR (camera board) |
+|---|---|---|---|
+| Wire | USB-Serial-JTAG CDC, sync-marked so it shares the console port | NimBLE GATT, chunked to the negotiated MTU | none: a camera reads the phone's screen, the panel answers |
+| Default | yes | no | no link is needed at all |
+| Advertised name | — | `LeekWallet`, or whatever you set in Settings → BLE Name | — |
 
 Both carry identical frames, and `sim/test_protocol.c` runs every conformance
 case down both channels and compares the replies — which is how a `getMnemonic`
 that was answered on the cable and silently dropped on the radio was found.
+
+**QR is not a transport.** It carries no session, no key exchange and no
+commands: the device accepts an EIP-4527 signing request, shows it, and answers
+with a signature. It is reachable from the main menu as Scan, and it is the one
+path where the device has no electrical connection to anything.
 
 **Wi-Fi is gone from the default build** (AUDIT S8g). `pio run -e esp32s3-wifi`
 still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
@@ -1054,6 +1107,12 @@ still builds the old AP test — SSID `LeekWallet`, password `leek1234`,
       detects a dead radio rather than a dead app
 - [x] Locking held for three seconds against a filling bar, and naming what it
       costs when a passphrase or temporary seed is live
+- [x] Air-gapped QR signing on the camera board: EIP-4527 requests read by
+      camera, signatures shown as animated BC-UR, pairing by QR, with the C and
+      TypeScript implementations driven by shared vectors
+- [ ] Encrypted vault on a removable microSD card — designed in
+      [docs/RESEARCH-AIRGAP-VAULT.md](docs/RESEARCH-AIRGAP-VAULT.md), **not
+      implemented**
 - [ ] At-rest protection — **nothing yet.** A flash dump still yields the vault and the
       PIN falls in minutes. HMAC-eFuse binding is the cheapest fix; flash encryption
       and secure boot are the fuller one, and optional per user
