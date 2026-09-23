@@ -2,7 +2,8 @@
  * LeekWallet - ESP32-S3 firmware
  *
  * Hardware (from physical inspection):
- *   - ESP32-S3-N16R8: 16MB flash, 8MB PSRAM (off; see ROADMAP T58c), USB-C
+ *   - ESP32-S3-N16R8: 16MB flash, 8MB PSRAM (off except on the CAM board,
+ *     where the camera and quirc need it - see sdkconfig.s3cam), USB-C
  *   - SSD1306 OLED: 128x64, I2C address 0x3C
  *   - 4 buttons: K1-K4, active-low, directly wired to GPIOs
  *   - Header pin order: GND, VCC, SCL, SDA, K4, K3, K2, K1
@@ -41,6 +42,8 @@
 #include "device-wipe.h"
 #include "protocol.h"
 #include "transport.h"
+#include "airgap.h"
+#include "qr-bench.h"
 
 static const char *TAG = "leekwallet";
 
@@ -50,6 +53,15 @@ void app_main(void)
     ESP_LOGI(TAG, "LeekWallet - %s", BOARD_NAME);
     ESP_LOGI(TAG, "Hardware wallet with HD support");
     ESP_LOGI(TAG, "========================================");
+
+#if LEEK_QR_BENCH
+    /* An instrument build. It takes the camera and never gives it back, so
+       nothing below this point runs - no wallet, no UI, no transports. The
+       number it prints is what research/qr-spike could not measure without a
+       board; see research/qr-spike/README.md. */
+    qr_bench_start();
+    return;
+#endif
 
     /* Initialize NVS (required for wallet and PIN storage) */
     esp_err_t ret = nvs_flash_init();
@@ -145,11 +157,43 @@ void app_main(void)
      * with a transport chosen, may frames be answered. */
     protocol_start();
 
-    /* Start UI task */
+#if LEEK_HAS_CAMERA
+    /* The QR entrance's signing worker. Only where there is a camera to feed
+     * it: elsewhere nothing can submit, and 10 KB of idle stack is 10 KB. */
+    airgap_start();
+#endif
+
+    /*
+     * Start UI task.
+     *
+     * The stack is board-dependent, and the reason is quirc. camera_next_qr()
+     * is called from this task's loop, and quirc_decode() puts a `struct
+     * datastream` on the caller's stack: QUIRC_MAX_PAYLOAD is 8896, so that
+     * one frame is ~8.9 KB on its own. Against the 8192 this task had, the
+     * first QR the device ever decoded would have smashed it - not a crash
+     * with a useful backtrace, but a corrupted neighbour and a reboot
+     * somewhere else.
+     *
+     * Found by reading quirc's source rather than by running it, because the
+     * board is not on this bench. The arithmetic: 8192 that the UI already
+     * needed, plus ~8.9 KB for quirc_decode, plus the identify and extract
+     * frames above it, rounded up to 20480. camera.c keeps the 13 KB of
+     * quirc_code and quirc_data static precisely so they are not in this
+     * number too.
+     *
+     * Only where there is a camera: 12 KB of stack the reference board and the
+     * Pixie would never touch is 12 KB of internal SRAM they do not have to
+     * give up.
+     */
+#if LEEK_HAS_CAMERA
+    const uint32_t ui_stack = 20480;
+#else
+    const uint32_t ui_stack = 8192;
+#endif
     BaseType_t task_ret = xTaskCreate(
         ui_task,
         "ui_task",
-        8192,  /* Larger stack for UI processing */
+        ui_stack,
         NULL,
         5,
         NULL

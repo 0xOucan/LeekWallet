@@ -378,12 +378,44 @@ static void test_short_new_pin_refused(void)
     CHECK(pin_opens_all(OLD_PIN, 1), "the original PIN stopped working");
 }
 
+static void test_set_password_never_resalts_a_live_vault(void)
+{
+    printf("== setting the password again does not orphan an existing vault\n");
+
+    /* wallet_set_password() establishes the per-device salt on a fresh vault,
+     * and the salt it mints is random - so running that initialisation against
+     * a vault that already holds mnemonics replaces the key every one of them
+     * was encrypted under. Unrecoverable, and silent: the call returns
+     * WALLET_OK and the seeds are simply gone.
+     *
+     * The guard therefore has to ask "is this vault salted yet", not "is it at
+     * one particular version". It used to ask the latter, naming v2, which was
+     * safe only while v2 happened to be what a fresh vault got. It is not: a
+     * fresh vault is v3, so today every provisioned device takes the
+     * re-initialising branch, and any new version would put it back there. */
+    provisioned_device(SEED_COUNT);
+
+    CHECK(wallet_set_password(OLD_PIN, strlen(OLD_PIN)) == WALLET_OK,
+          "setting the same password again failed");
+
+    /* The seeds have to still be there, and still be the SAME seeds - a vault
+     * that opens onto re-derived garbage would pass a mere "it unlocked". */
+    CHECK(pin_opens_all(OLD_PIN, SEED_COUNT),
+          "the vault was re-salted and its wallets are unrecoverable");
+
+    /* And across a power cycle, since the damage would be in storage. */
+    reboot();
+    CHECK(pin_opens_all(OLD_PIN, SEED_COUNT),
+          "the vault does not survive a reboot after re-setting the password");
+}
+
 int main(void)
 {
     test_completed_change();
     test_old_pin_is_dead();
     test_wrong_current_pin_changes_nothing();
     test_short_new_pin_refused();
+    test_set_password_never_resalts_a_live_vault();
     test_unreadable_wallet_aborts();
     test_legacy_layout_survives();
     test_crash_at_every_write();

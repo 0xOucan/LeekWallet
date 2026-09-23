@@ -43,6 +43,7 @@ async function buildModules() {
         input: {
           popup: join(here, "popup.html"),
           offscreen: join(here, "offscreen.html"),
+          qr: join(here, "qr.html"),
           background: join(here, "src/background.ts"),
         },
         output: {
@@ -53,15 +54,6 @@ async function buildModules() {
           entryFileNames: "[name].js",
           chunkFileNames: "chunks/[name]-[hash].js",
           assetFileNames: "assets/[name]-[hash][extname]",
-          /* NOTE: offscreen.js imports the CommonJS interop runtime out of
-           * popup.js, because `qrcode-generator` is CJS and the runtime landed
-           * in the first entry that needed it. That makes opening the hidden
-           * offscreen document execute the whole popup module. Asking for
-           * `hoistTransitiveImports: false` did not move it, so the fix lives
-           * in popup.ts instead: it checks for its own `#root` and does
-           * nothing when it is somewhere else. Worth revisiting if the popup
-           * ever grows side effects that a guard cannot cover. */
-
         },
       },
     },
@@ -112,6 +104,7 @@ async function copyStatic() {
     ...manifest.content_scripts.flatMap((c) => c.js),
     manifest.action.default_popup,
     "offscreen.html",
+    "qr.html",
   ];
   const missing = [];
   for (const file of required) {
@@ -135,7 +128,7 @@ async function copyStatic() {
  * popup that renders an empty shell with no error anywhere.
  */
 async function checkHtml() {
-  for (const page of ["popup.html", "offscreen.html"]) {
+  for (const page of ["popup.html", "offscreen.html", "qr.html"]) {
     const html = await readFile(join(dist, page), "utf8");
     const fixed = html.replace(/(src|href)="\/(?!\/)/g, '$1="./');
     if (fixed !== html) await writeFile(join(dist, page), fixed);
@@ -145,11 +138,33 @@ async function checkHtml() {
   }
 }
 
+/**
+ * No page's entry may import another page's entry.
+ *
+ * It happened once: `qrcode-generator` 1.x was CommonJS, the interop runtime
+ * landed in popup.js, and opening the hidden offscreen document executed the
+ * whole popup module. 2.x ships ES modules and the import went away, but a
+ * CJS dependency added later would bring it back silently, so the build says
+ * so instead.
+ */
+async function checkEntryIsolation() {
+  const entries = ["popup.js", "offscreen.js", "qr.js", "background.js"];
+  for (const entry of entries) {
+    const js = await readFile(join(dist, entry), "utf8");
+    for (const other of entries) {
+      if (other !== entry && js.includes(`from "./${other}"`)) {
+        throw new Error(`${entry} imports ${other}; a shared chunk landed in an entry`);
+      }
+    }
+  }
+}
+
 const manifest = await (async () => {
   await buildModules();
   await buildContentScript("content");
   await buildContentScript("inpage");
   await checkHtml();
+  await checkEntryIsolation();
   return await copyStatic();
 })();
 

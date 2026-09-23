@@ -10,7 +10,8 @@
 
 static char    text[FAKE_OLED_ROWS][FAKE_OLED_COLS + 1];
 static uint8_t fb[OLED_PAGES][OLED_WIDTH];   /* SSD1306 order: one byte = 8 rows */
-static char    qr_data[256];
+static char    qr_data[400];   /* a version 10 frame is 395 characters */
+static uint8_t qr_version, qr_scale;
 static int     flush_count;
 static uint8_t contrast = 0;
 
@@ -34,6 +35,8 @@ void fake_oled_reset(void)
     blank_text();
     memset(fb, 0, sizeof(fb));
     qr_data[0] = '\0';
+    qr_version = 0;
+    qr_scale = 0;
     flush_count = 0;
     contrast = 0;
     cursor_page = 0;
@@ -124,6 +127,12 @@ esp_err_t oled_flush(void)
 
 esp_err_t oled_clear_panel_now(void) { return oled_clear(); }
 
+esp_err_t oled_set_fast_refresh(bool fast)
+{
+    (void)fast;
+    return ESP_OK;
+}
+
 esp_err_t oled_set_contrast(uint8_t level)
 {
     contrast = level;
@@ -212,6 +221,17 @@ esp_err_t oled_fill_page(uint8_t page, uint8_t pattern)
     return ESP_OK;
 }
 
+void oled_blit_page(uint8_t page, const uint8_t *cols, size_t len)
+{
+    if (cols == NULL || page >= OLED_PAGES) {
+        return;
+    }
+    if (len > OLED_WIDTH) {
+        len = OLED_WIDTH;
+    }
+    memcpy(&fb[page][0], cols, len);
+}
+
 esp_err_t oled_draw_raw(const uint8_t *data, size_t len)
 {
     for (size_t i = 0; i < len && cursor_col < OLED_WIDTH; i++) {
@@ -243,5 +263,41 @@ esp_err_t oled_draw_qrcode(const char *data)
     snprintf(qr_data, sizeof(qr_data), "%s", data);
     return ESP_OK;
 }
+
+/* The return path records the string and the mode it was asked for. Whether
+ * that pair fits is decided by the real rule, so a screen cannot pass here by
+ * asking for a version the panel cannot show. */
+bool oled_qr_fits(uint8_t version, uint8_t scale)
+{
+    if (version < 1 || version > OLED_QR_MAX_VERSION || scale < 1 || scale > 2) {
+        return false;
+    }
+    return (unsigned)(version * 4 + 17) * scale + 4 <= OLED_HEIGHT;
+}
+
+static bool qr_inverted;
+
+esp_err_t oled_draw_qrcode_ex(const char *data, uint8_t version, uint8_t scale,
+                              bool inverted)
+{
+    if (!data || !oled_qr_fits(version, scale)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    snprintf(qr_data, sizeof(qr_data), "%s", data);
+    qr_version = version;
+    qr_scale = scale;
+    qr_inverted = inverted;
+    return ESP_OK;
+}
+
+esp_err_t oled_draw_qrcode_at(const char *data, uint8_t version, uint8_t scale)
+{
+    return oled_draw_qrcode_ex(data, version, scale, false);
+}
+
+bool fake_oled_qr_inverted(void) { return qr_inverted; }
+
+uint8_t fake_oled_qr_version(void) { return qr_version; }
+uint8_t fake_oled_qr_scale(void)   { return qr_scale; }
 
 esp_err_t oled_refresh(void) { return oled_flush(); }

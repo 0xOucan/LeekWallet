@@ -7,12 +7,11 @@
  * than at runtime. That is deliberate: a release that compiles and then breaks
  * on a screen is worse than one that will not compile until somebody looks.
  *
- * The rules that keep removal to those two deletions are stated at the top of
- * `packages/apps/aqua/src/index.ts`, and the one worth repeating here is that
- * nothing in the shell may import an app module directly. This file is the
- * single edge. `grep -rn "app-aqua" app/src app/packages --include=*.ts` should
- * find exactly one line outside the app's own directory: the import below. The
- * same holds for every other app in the array.
+ * The array is empty: the apps written against this framework were built for a
+ * hackathon and have been deleted. The framework itself is generic and stays,
+ * so the shell keeps exactly one edge to apps rather than growing a new one
+ * the next time somebody writes one. Nothing outside this file may import an
+ * app module directly.
  *
  * Apps are excluded from the *bundle*, not hidden by a flag. A runtime toggle
  * would leave the code — and its RPC endpoints, and its CSS — shipped to
@@ -21,21 +20,11 @@
  */
 
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
-import { AQUA_APP } from "@leekwallet/app-aqua";
-import { ATS_APP, ATS_MARKET_APP } from "@leekwallet/app-ats";
-import { TILL_APP, TILL_PAYROLL_APP, TILL_WAITER_APP } from "@leekwallet/app-till";
 
 export type { AppContext, MiniApp };
 
-/** Every app in this build. Delete a line to drop one. */
-/* La Caja is three apps on purpose. The cashier issues the bill, the waiter can
- * only display one that was issued, and payroll is the only one of the three
- * that can spend; splitting them into separate mounts is what makes both "a
- * waiter cannot change the amount" and "a terminal cannot pay anyone" facts
- * about the code rather than disabled inputs. All three come out of a release
- * with the same directory. */
-export const MINI_APPS: readonly MiniApp[] =
-  [AQUA_APP, ATS_APP, ATS_MARKET_APP, TILL_APP, TILL_WAITER_APP, TILL_PAYROLL_APP];
+/** Every app in this build. Add a line to register one. */
+export const MINI_APPS: readonly MiniApp[] = [];
 
 export const findMiniApp = (id: string): MiniApp | undefined =>
   MINI_APPS.find((app) => app.id === id);
@@ -47,8 +36,8 @@ export const miniAppsForChain = (chainId: number): MiniApp[] =>
 /**
  * Put an app's stylesheet in the document once, keyed by id.
  *
- * Apps carry their CSS as a string so it is deleted with them (rule 3 in the
- * aqua header). Injecting it here rather than in the app keeps the app from
+ * Apps carry their CSS as a string so it is deleted with them (rule 3 in
+ * mini-app.ts). Injecting it here rather than in the app keeps the app from
  * touching `document` before it is mounted.
  */
 export function installMiniAppStyles(app: MiniApp, doc: Document = document): void {

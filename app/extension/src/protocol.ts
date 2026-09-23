@@ -181,6 +181,10 @@ export interface WalletState {
   grants: { origin: string; accounts: string[] }[];
   /** A dapp waiting on the human, if any. */
   pending: PendingApproval | null;
+  /** Which link `addresses` came from: a USB session, a QR pairing, or neither. */
+  link: "device" | "qr" | null;
+  /** The QR-paired account key's path, if a device has been paired by QR. */
+  qrPairing: { path: string } | null;
   /** Set while the device is drawing a confirmation screen of its own. */
   awaitingDevice: string | null;
 }
@@ -229,7 +233,46 @@ export type PopupCommand =
   /* Compose, sign on the device, broadcast. `amount` stays a decimal STRING
    * all the way down: turning it into a number here is where 0.1 + 0.2 gets
    * in, and core's parseUnits is the only thing that should scale it. */
-  | { pop: "send"; index: number; recipient: string; amount: string; token?: string };
+  | { pop: "send"; index: number; recipient: string; amount: string; token?: string }
+  /* Scan a device's `ur:crypto-hdkey` in the QR tab and keep its addresses. */
+  | { pop: "qrPair" }
+  | { pop: "qrForget" }
+  /* The QR scan tab's side of a job the worker opened it for. The tab is
+   * given a view and returns the bytes it scanned; it decides nothing. */
+  | { pop: "qrJob"; id: string }
+  | { pop: "qrDone"; id: string; cbor: string }
+  | { pop: "qrCancel"; id: string }
+  /* Sent while the tab is open. Any extension message resets the worker's
+   * idle timer, and a worker evicted mid-scan would drop the dapp's request
+   * with the camera still pointed at the device. */
+  | { pop: "qrPing"; id: string };
+
+/**
+ * What the QR scan tab is asked to do, built by the worker.
+ *
+ * Everything the tab draws comes from here, and the only thing it sends back
+ * is the CBOR body of the UR it scanned. Whether that body is used at all is
+ * decided by the worker against state the tab never held, so a tab that was
+ * somehow driven by something else still cannot answer a job it was not
+ * given.
+ */
+export interface QrJobView {
+  id: string;
+  title: string;
+  /** Lines the companion suggests about the request. The device decides. */
+  summary: string[];
+  /** A UR to show the device first, as hex CBOR, or nothing to show. */
+  show?: { type: string; cbor: string; instructions: string };
+  /** The UR type to scan back, and what to tell the user while scanning. */
+  scan: { type: string; instructions: string };
+}
+
+/**
+ * The worker's answer to `qrDone`: done, or refused. `retry` says whether
+ * scanning again can help - a signature for another request can be replaced
+ * by the right one, a job that has ended cannot be revived.
+ */
+export type QrDoneReply = { done: true } | { done: false; error: string; retry: boolean };
 
 /**
  * EIP-1193 / EIP-1474 error codes.

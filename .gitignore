@@ -34,6 +34,8 @@ secure_boot_signing_key.pem
 # produced four config faults in the secure environment.
 sdkconfig.esp32s3
 sdkconfig.esp32s3-*
+sdkconfig.esp32s3cam
+sdkconfig.esp32s3cam-*
 
 # Agent worktrees. These are full checkouts of this repo on other branches;
 # committing one would nest the repository inside itself.
@@ -75,3 +77,11 @@ keystore.properties
 # Development-only, never published
 NEXT-SESSION.md
 DEMO-SCRIPT.md
+
+# QR spike: fetched dependency and generated fixtures
+research/qr-spike/quirc/
+research/qr-spike/frames.gray
+research/qr-spike/bench
+
+# Python bytecode from scripts/board-model.py
+__pycache__/

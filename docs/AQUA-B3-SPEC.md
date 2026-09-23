@@ -1,6 +1,6 @@
 # B3 — SwapVM program decoding
 
-Milestone B3 of `docs/HACKATHON-MILESTONES.md`. The point of this milestone is
+The specification for the firmware SwapVM decoder. The point of this work is
 **refusal**, not display: "an unknown opcode starts refusing to render." A
 program this wallet does not fully understand must be refused, never summarised.
 
@@ -451,6 +451,6 @@ all green, plus:
 - Three programs shipped on Sepolia decode correctly, photographed.
 - **One photographed refusal screen for an unknown opcode, next to the program
   that caused it. This photograph is the milestone.**
-- The wrong opcode numbers in `docs/HACKATHON-MILESTONES.md` §B3 and
-  `docs/apps/AQUA-1INCH.md` step 4 are corrected or marked unconfirmed.
+- The wrong opcode numbers in an earlier draft of this spec are corrected or
+  marked unconfirmed.
 - §10.1 is answered in this file, with the evidence, before any table ships.

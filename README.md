@@ -31,7 +31,7 @@ change what the screen shows.
 ```mermaid
 flowchart LR
     subgraph HOST["Companion — NOT trusted"]
-        APP["Mini-app"] --> SCREEN["screenProposal<br/>ERC-7730"]
+        APP["Dapp or send"] --> SCREEN["screenProposal<br/>ERC-7730"]
     end
     subgraph DEV["Device — trusted"]
         DEC["eth-decode.c<br/>its own decoder"] --> PAGES["one page per field"] --> KEY["seed, never leaves"]
@@ -74,9 +74,36 @@ refuses to sign.
 | **BLE name** | User-set, 1-29 printable ASCII, refused rather than truncated — an over-long name would silently stop advertising |
 | **Session** | X25519 with a commit-then-reveal nonce exchange, passkey bound to the whole transcript and compared on the device's own screen; ChaCha20-Poly1305 frames |
 | **QR codes** | Display addresses as scannable QR codes |
+| **Air-gapped QR signing** | ESP32-S3 CAM board with an OV5640: EIP-4527 `eth-sign-request` in by camera, `eth-signature` out on the panel, animated BC-UR both ways, no cable and no radio. Works with the **Android** companion — see [Air-gapped signing](#air-gapped-signing-needs-a-phone) for why not the desktop |
 | **Companion app** | Tauri v2 on Linux/macOS/Windows and an Android APK, with WalletConnect v2 for real dapps |
 | **Browser extension** | Chromium MV3, an EIP-1193 provider announced over **EIP-6963** so it sits beside other wallets rather than fighting for `window.ethereum`. Talks to the board over Web Serial with **no relay and no QR**. It holds no key and ships no descriptors: a dapp's calldata goes straight to the device, which decodes it. Verified against a live `app.aave.com` session. Connecting resets the board — Web Serial cannot suppress the DTR toggle — so the PIN is re-entered each time |
-| **Mini apps** | Three, in `app/packages/apps/`: **La Caja** (point of sale, payroll, and a waiter terminal that needs no wallet), **Issuer console + Share market** (Hedera ATS securities), **Aqua** (1inch positions on Base mainnet) |
+
+### Air-gapped signing needs a phone
+
+The CAM board signs without a cable: it reads the companion's
+`eth-sign-request` off the phone's screen with its camera, you check every
+page on its own screen, and it shows the `eth-signature` back as an animated
+QR on its panel for the phone to read. Pairing works the same way, by the
+device showing its account key as a QR.
+
+**Use the Android companion for this, not the desktop.** The device's panel
+is 0.96 inches and 128x64: each QR module is a single 0.17 mm OLED pixel. A
+phone camera focuses close and resolves that; a laptop webcam is fixed-focus
+and wide-angle, so held close enough to fill its frame the code distorts past
+reading, and held back it is too few pixels. The desktop companion darkens
+and zooms its webcam to try, and it is still not reliable. On a desktop,
+connect by USB or BLE instead, or use WalletConnect with the phone.
+
+What worked best on the bench, and what both sides now default to: device
+at 320x240 with exposure -4, companion at medium fragments and fast frames
+(0.5 s), phone screen at about half brightness. The device shows its own QR
+codes at Dim. A fixed-focus tablet camera reads the panel with the
+companion's **Dark camera** switch on.
+
+**For a desktop air-gapped build, fit a bigger, higher-resolution screen.**
+The limit is the panel, not the protocol: a larger display with more pixels
+gives each module several camera pixels at a comfortable distance, which is
+what a webcam needs.
 
 ### Also runs on the Firefly Pixie
 
@@ -104,7 +131,7 @@ firmware, the release and the board are fine; the browser tooling is not.
 comes out of files that port untouched.
 
 Not everything will follow. Airgapped QR signing needs a camera and PSRAM; the
-Pixie has neither, and the S3 keeps that lane. The S3 also has hardware SHA-512
+Pixie has neither, and the S3 CAM board keeps that lane. The S3 also has hardware SHA-512
 where the C3 stops at SHA-256, so the two boards are close today and will not
 stay close once the KDF is accelerated.
 
@@ -532,6 +559,59 @@ while the wallet was unlocked (AUDIT S8g).
 
 ## Security
 
+### Why there is no secure element
+
+The honest version of this argument, because the dishonest one is common.
+
+A secure element is not pointless. Against invasive physical key extraction --
+decapping, glitching, probing -- a certified one wins, and this project does not
+pretend otherwise. What a secure element does **not** do is protect the identity
+of the person who bought it.
+
+That is where hardware wallets have actually failed their owners:
+
+- Ledger's 2020 breach exposed roughly **272,000 records** with names, postal
+  addresses and phone numbers. No device was compromised and no seed was
+  extracted; the customer database was ([Bitdefender](https://www.bitdefender.com/en-us/blog/hotforsecurity/hacker-publishes-stolen-email-and-mailing-addresses-of-270000-ledger-cryptocurrency-wallet-users)).
+  Tampered "replacement" devices were then mailed to people on that list
+  ([Bitcoin Magazine](https://bitcoinmagazine.com/technical/ledger-hack-victim-scam-details)).
+- Trezor's 2024 support-system incident exposed names and email addresses, and
+  an attacker contacted 40 users directly asking for their recovery seeds.
+
+The dangerous datum in both cases is not any single field. It is the
+association: *this person, at this address, owns a hardware wallet.* A generic
+ESP32-S3 bought with cash at an electronics shop carries no such association.
+Nobody sells it as a wallet, so no list exists of the people who turned one into
+one.
+
+**What ships today**, and it is the smaller claim: the seed is stored encrypted
+in flash under a PIN-derived key, so a device that is found or stolen does not
+give up its seed to `esptool read_flash`. A BIP-39 passphrase, which never
+touches the device, is supported and is the strongest thing a user can add.
+
+**Separation is what is being built to replace the chip**, on the ESP32-S3 CAM
+board, and **none of it is implemented yet**: a vault on a removable microSD
+card so a device found in a drawer holds no seed at all, and Argon2id so that a
+copied card is expensive rather than cheap to attack. The design is in
+[docs/RESEARCH-AIRGAP-VAULT.md](docs/RESEARCH-AIRGAP-VAULT.md); the code is not
+written. Do not plan around it.
+
+The ATECC608B is **not** cancelled by this argument and remains on the roadmap.
+It provides the one thing neither the ESP32 nor a slow KDF can: a monotonic
+attempt counter that reflashing the main chip cannot reset. See
+[docs/RESEARCH-SECURE-ELEMENT.md](docs/RESEARCH-SECURE-ELEMENT.md).
+
+**The costs, in the same breath:**
+
+- Buying anywhere means knowing less about the board, the flash and the passive
+  parts. Purchase privacy and supply-chain assurance come from the same
+  property, so improving one worsens the other.
+- Open source does not make the binary on *your* device honest. That is what the
+  reproducible build, the signed `SHA256SUMS` and self-flashing are for.
+- Invasive physical attack against a device **with** its card inserted is
+  explicitly out of scope. LeekWallet is a general-purpose MCU, not certified
+  silicon.
+
 ### Cryptographic Implementation
 
 | Component | Algorithm |
@@ -758,10 +838,10 @@ enumeration, no signature. See `app/ANDROID.md`, "Known state".
 
 LeekWallet is a proof of concept under active development. **Use testnets.**
 
-It has signed on mainnet. The 1inch Aqua mini-app runs a full position
-lifecycle on **Base mainnet** — approve, ship, dock — with real value, and the
-contracts it talks to are verified on Basescan. Everything else this repo has
-exercised is testnet: Arc, Hedera, Base Sepolia and the rest. That distinction
+It has signed on mainnet. A full position lifecycle ran on **Base mainnet** —
+approve, ship, dock — with real value, against contracts verified on Basescan.
+Everything else this repo has exercised is testnet: Arc, Hedera, Base Sepolia
+and the rest. That distinction
 is kept exactly because it is the one people gloss over, and a demo that says
 "mainnet" over testnet footage is the kind of claim reviewers check.
 
@@ -1102,13 +1182,6 @@ open items as the honest list of what is missing rather than a formality.
 
 Bug reports, review of the cryptographic paths, and someone finding a hole in
 this are worth more to the project than stars.
-
----
-
-Built for ETHGlobal's Continuity Track: see
-**[ETHGLOBAL.md](ETHGLOBAL.md)** for what was built during the event, which
-sponsor tracks it answers, and links to the on-chain transactions and the code
-behind each one.
 
 ---
 

@@ -205,6 +205,20 @@ bool wallet_has_temporary_mnemonic(void);
  */
 WalletError wallet_get_master_fingerprint(uint32_t *fingerprint_out);
 
+/**
+ * Account-level public key and chain code, m/44'/60'/<account>'.
+ *
+ * What the QR handshake exports as a crypto-hdkey: with it a companion can
+ * derive every receive address in the account and nothing else - no private
+ * key, and no other account. Not a secret, but it links every address in the
+ * account, so it goes out only after the screen has said so. `account` must
+ * be below 2^31; it is hardened here.
+ */
+WalletError wallet_get_account_key(uint32_t account, uint8_t public_key[33],
+                                   uint8_t chain_code[32],
+                                   uint32_t *parent_fingerprint,
+                                   uint32_t *master_fingerprint);
+
 // ========== Mnemonic Management ========== //
 
 /**

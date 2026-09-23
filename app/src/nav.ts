@@ -17,7 +17,7 @@
  */
 
 /** A section of the home accordion. "apps" names the section, not the `#apps`
- * div nested inside `waiterdest` — that div keeps deciding its own visibility
+ * div nested inside `appsdest` — that div keeps deciding its own visibility
  * from mounted content (mountApps(), src/apps/mount.ts), independent of this
  * module. */
 export type Section =
@@ -33,7 +33,7 @@ export const SECTION_PANEL_IDS: Record<Section, string> = {
   chain: "chainpanel",
   receive: "addrpanel",
   send: "signpanel",
-  apps: "waiterdest",
+  apps: "appsdest",
   connect: "wcpanel",
   activity: "activitypanel",
 };

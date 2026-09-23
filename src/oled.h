@@ -54,6 +54,18 @@ esp_err_t oled_clear_panel_now(void);
 esp_err_t oled_set_contrast(uint8_t level);
 
 /**
+ * Refresh the panel as fast as the controller allows, or back to normal.
+ *
+ * The SSD1306 lights one row at a time. At its default ~88 Hz a camera with
+ * a short exposure catches only part of each sweep, and the rows not lit in
+ * that window come out as dark bands across a QR. Fast refresh (maximum
+ * oscillator, shortest pre-charge) is about 156 Hz, so the same exposure
+ * spans whole sweeps. For QR screens; normal refresh everywhere else keeps
+ * the panel's stock drive.
+ */
+esp_err_t oled_set_fast_refresh(bool fast);
+
+/**
  * Clear a single page (8-pixel row)
  * @param page Page number (0-7)
  * @return ESP_OK on success
@@ -109,6 +121,18 @@ esp_err_t oled_set_cursor(uint8_t page, uint8_t col);
 esp_err_t oled_draw_raw(const uint8_t *data, size_t len);
 
 /**
+ * Copy one page of column bytes INTO the framebuffer, to be shown by the next
+ * flush.
+ *
+ * Unlike oled_draw_raw, which sends to the panel immediately. The viewfinder
+ * used that and flickered hard on the bench: the preview reached the glass,
+ * and then the frame's ordinary flush wrote the framebuffer - which had never
+ * seen the preview - straight over it. Every frame drew the image and then
+ * erased it.
+ */
+void oled_blit_page(uint8_t page, const uint8_t *cols, size_t len);
+
+/**
  * Fill a page with a pattern (useful for selection highlight)
  * @param page Page number (0-7)
  * @param pattern Byte pattern to fill
@@ -122,6 +146,29 @@ esp_err_t oled_fill_page(uint8_t page, uint8_t pattern);
  * @return ESP_OK on success
  */
 esp_err_t oled_draw_qrcode(const char *data);
+
+/**
+ * The largest QR version the 64-row panel can show, at scale 1.
+ * See RESEARCH-AIRGAP-VAULT.md section 32.
+ */
+#define OLED_QR_MAX_VERSION 10
+
+/** True if `version` at `scale` (1 or 2) fits 64 rows with its quiet zone. */
+bool oled_qr_fits(uint8_t version, uint8_t scale);
+
+/**
+ * Draw a QR code at exactly this version and scale, centred.
+ *
+ * For the QR return path, where the caller sized its parts for one version and
+ * must not have the renderer pick another. ESP_ERR_INVALID_ARG if the pair does
+ * not fit the panel; ESP_ERR_INVALID_SIZE if the data does not fit the version.
+ * Pass an uppercased UR so the encoder reaches alphanumeric mode.
+ */
+esp_err_t oled_draw_qrcode_at(const char *data, uint8_t version, uint8_t scale);
+
+/** As oled_draw_qrcode_at, optionally with lit modules on a dark background. */
+esp_err_t oled_draw_qrcode_ex(const char *data, uint8_t version, uint8_t scale,
+                              bool inverted);
 
 /**
  * Set a single pixel on the display

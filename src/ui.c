@@ -31,6 +31,12 @@
 #include "ble.h"
 #include "ble-name.h"
 #include "esp_timer.h"
+#include "qr-out.h"
+#include "airgap.h"
+#include "board.h"
+#include "camera.h"
+#include "viewfinder.h"
+#include "eip4527-encode.h"
 #include "esp_random.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -167,6 +173,16 @@ static void forget_passphrase_entry(screen_id_t next);
 static void screen_qr_code_enter(void);
 static void screen_qr_code_render(void);
 static void screen_qr_code_on_button(button_id_t btn);
+static void screen_show_address_render(void);
+static void screen_show_address_on_button(button_id_t btn);
+static void screen_scan_enter(void);
+static void screen_scan_render(void);
+static void screen_scan_on_button(button_id_t btn);
+static void screen_scan_exit(screen_id_t next);
+static void screen_qr_out_render(void);
+static void screen_qr_out_on_button(button_id_t btn);
+static void screen_qr_out_enter(void);
+static void screen_qr_out_exit(screen_id_t next);
 
 static const screen_t screen_sign_result = {
     .enter = screen_sign_result_enter,
@@ -349,6 +365,27 @@ static const screen_t screen_qr_code = {
     .exit = NULL
 };
 
+static const screen_t screen_show_address = {
+    .enter = NULL,
+    .render = screen_show_address_render,
+    .on_button = screen_show_address_on_button,
+    .exit = NULL
+};
+
+static const screen_t screen_scan = {
+    .enter = screen_scan_enter,
+    .render = screen_scan_render,
+    .on_button = screen_scan_on_button,
+    .exit = screen_scan_exit
+};
+
+static const screen_t screen_qr_out = {
+    .enter = screen_qr_out_enter,
+    .render = screen_qr_out_render,
+    .on_button = screen_qr_out_on_button,
+    .exit = screen_qr_out_exit
+};
+
 /* ============================================================================
  * PIN Entry State
  * ============================================================================ */
@@ -460,6 +497,11 @@ typedef enum {
      * the only way out there is, because ending temporary mode means destroying
      * the seed, and destroying the seed is what locking does. */
     MENU_END_TEMP,
+    /* The air gap (RESEARCH-AIRGAP-VAULT.md sections 35-37). Show address is
+     * on every board: it needs nothing but the panel. Scan needs a camera and
+     * is simply absent without one, rather than present and apologising. */
+    MENU_SHOW_ADDRESS,
+    MENU_SCAN,
     MENU_SETTINGS,
     MENU_ACTION_COUNT
 } MenuAction;
@@ -479,6 +521,8 @@ static const char *menu_action_label(MenuAction a)
         case MENU_IMPORT_WALLET: return "Import Wallet";
         case MENU_TEMP_SEED:     return "Temp Seed";
         case MENU_END_TEMP:      return "End Temp Seed";
+        case MENU_SHOW_ADDRESS:  return "Show Address";
+        case MENU_SCAN:          return "Scan";
         case MENU_SETTINGS:      return "Settings";
         default:                 return "?";
     }
@@ -496,6 +540,15 @@ static void menu_rebuild(void)
     }
     if (status.wallet_count > 1 || (temp && status.wallet_count > 0)) {
         menu_actions[menu_item_count++] = MENU_SELECT_WALLET;
+    }
+
+    /* Both need a seed to speak for; with none there is nothing to share and
+     * nothing that could sign. */
+    if (status.wallet_count > 0 || temp) {
+        menu_actions[menu_item_count++] = MENU_SHOW_ADDRESS;
+#if LEEK_HAS_CAMERA
+        menu_actions[menu_item_count++] = MENU_SCAN;
+#endif
     }
 
     /* Unlike New/Import below, this stays on the home screen whatever is
@@ -769,9 +822,25 @@ static int64_t  last_activity_us = 0;
 /* Four steps rather than a slider: the OLED is legible across the whole range,
  * so fine control buys nothing and costs presses. Low is genuinely useful -
  * a dim screen is harder to read over someone's shoulder. */
-static const uint8_t BRIGHTNESS_LEVELS[] = { 0x10, 0x50, 0xA0, 0xFF };
+/*
+ * Indices are what NVS stores, so they only ever grow at the end: Min and Dim
+ * were added after the first four had shipped, and putting them in front would
+ * have turned every saved "Low" into "Min". The order a user steps through is
+ * BRIGHTNESS_CYCLE, which is dimmest to brightest regardless of storage order.
+ *
+ * Min and Dim exist for two reasons. A dark room, where Low is still a lamp.
+ * And a camera reading a QR off this panel: at full brightness an OLED blooms
+ * on a webcam's sensor, the lit pixels bleed into the dark modules, and a
+ * dimmer panel can be the one that decodes.
+ */
+static const uint8_t BRIGHTNESS_LEVELS[] = { 0x10, 0x50, 0xA0, 0xFF, 0x00, 0x04 };
 #define BRIGHTNESS_COUNT (sizeof(BRIGHTNESS_LEVELS) / sizeof(BRIGHTNESS_LEVELS[0]))
-static int brightness_choice = 2;
+static const uint8_t BRIGHTNESS_CYCLE[] = { 4, 5, 0, 1, 2, 3 };
+/* Dim by default: an OLED is bright in a dark room, and it is the level a
+   phone camera reads this panel's QR codes best at. */
+static int brightness_choice = 5;
+/* The QR screen's own level, stepped with OK; see screen_qr_out_enter. */
+static int qr_brightness = 5;
 
 static const char *brightness_label(int choice)
 {
@@ -780,8 +849,21 @@ static const char *brightness_label(int choice)
         case 1:  return "Mid";
         case 2:  return "High";
         case 3:  return "Max";
+        case 4:  return "Min";
+        case 5:  return "Dim";
         default: return "?";
     }
+}
+
+/* The level after `choice` in dimmest-to-brightest order, wrapping. */
+static int brightness_next(int choice)
+{
+    for (size_t i = 0; i < BRIGHTNESS_COUNT; i++) {
+        if (BRIGHTNESS_CYCLE[i] == choice) {
+            return BRIGHTNESS_CYCLE[(i + 1) % BRIGHTNESS_COUNT];
+        }
+    }
+    return 2;
 }
 
 /* One setting, both selectors (T60).
@@ -1779,6 +1861,14 @@ static void screen_main_menu_on_button(button_id_t btn)
                      * it" are the same operation. */
                     lock_device();
                     ui_set_screen(SCREEN_PIN_UNLOCK);
+                    break;
+                case MENU_SHOW_ADDRESS:
+                    /* The account the device's own screens are on, which is
+                     * the one the user most likely means. */
+                    ui_suggest_show_address(hd_account);
+                    break;
+                case MENU_SCAN:
+                    ui_set_screen(SCREEN_SCAN);
                     break;
                 case MENU_SETTINGS:
                     ui_set_screen(SCREEN_SETTINGS);
@@ -3037,7 +3127,7 @@ static void screen_settings_on_button(button_id_t btn)
                     break;
 
                 case SET_BRIGHTNESS:
-                    brightness_choice = (brightness_choice + 1) % (int)BRIGHTNESS_COUNT;
+                    brightness_choice = brightness_next(brightness_choice);
                     brightness_apply_and_save();
                     ESP_LOGI(TAG, "Brightness set to %s",
                              brightness_label(brightness_choice));
@@ -3092,6 +3182,459 @@ static void screen_settings_on_button(button_id_t btn)
     }
 
     ui_invalidate();
+}
+
+/* ============================================================================
+ * QR Out Screen
+ *
+ * The return path (RESEARCH-AIRGAP-VAULT.md section 32). qr-out.c owns which
+ * part is up and guarantees it fits; this only draws it, steps it on a timer
+ * from service_qr_out(), and lets the user try the three module sizes, since
+ * which one a camera reads off this panel is a bench question.
+ *
+ * No stack: `qr_out_back` is where BACK goes, set by whoever called
+ * ui_show_ur().
+ * ============================================================================ */
+
+static screen_id_t qr_out_back = SCREEN_MAIN_MENU;
+
+bool ui_show_ur(const char *type, const uint8_t *cbor, size_t len,
+                screen_id_t back)
+{
+    const int64_t now = esp_timer_get_time();
+    /* Most readable first. v3 x2 cannot carry everything, so a message that
+       does not fit there falls back to the next most readable mode, and one
+       that fits nowhere is refused rather than half shown. */
+    static const uint8_t ORDER[] = { QR_OUT_MODE_DEFAULT, 0, 1 };
+    bool started = false;
+    for (size_t i = 0; i < sizeof ORDER && !started; i++) {
+        started = qr_out_start(type, cbor, len, ORDER[i], now);
+    }
+    if (!started) {
+        return false;
+    }
+    qr_out_back = back;
+    ui_set_screen(SCREEN_QR_OUT);
+    return true;
+}
+
+static void screen_qr_out_render(void)
+{
+    const char *frame = qr_out_frame();
+    const QrOutMode *m = qr_out_mode_info(qr_out_current_mode());
+    if (frame == NULL || m == NULL ||
+        oled_draw_qrcode_ex(frame, m->version, m->scale, m->inverted) != ESP_OK) {
+        /* qr-out.c measured every frame before showing one, so this is a
+           bug rather than a state; say so instead of a blank panel. */
+        oled_clear();
+        oled_draw_string_centered(3, "QR unavailable");
+        oled_draw_string(7, 0, "BACK");
+    }
+}
+
+static void screen_qr_out_on_button(button_id_t btn)
+{
+    const int64_t now = esp_timer_get_time();
+    switch (btn) {
+        case BUTTON_UP:
+        case BUTTON_DOWN: {
+            /* Step through the module sizes. A mode that cannot carry this
+               message is skipped rather than shown blank. */
+            const uint8_t step = (btn == BUTTON_UP) ? QR_OUT_MODE_COUNT - 1 : 1;
+            uint8_t mode = qr_out_current_mode();
+            for (int i = 0; i < QR_OUT_MODE_COUNT - 1; i++) {
+                mode = (uint8_t)((mode + step) % QR_OUT_MODE_COUNT);
+                if (qr_out_set_mode(mode, now)) {
+                    break;
+                }
+            }
+            break;
+        }
+        case BUTTON_ACCEPT:
+            /* Brightness for this QR only; see screen_qr_out_enter. */
+            qr_brightness = brightness_next(qr_brightness);
+            oled_set_contrast(BRIGHTNESS_LEVELS[qr_brightness]);
+            break;
+        case BUTTON_CANCEL:
+            ui_set_screen(qr_out_back);
+            break;
+        default:
+            break;
+    }
+    ui_invalidate();
+}
+
+/*
+ * The QR has its own brightness: Dim on entry, stepped with OK.
+ *
+ * An earlier version forced full brightness here, on the theory that contrast
+ * limits a blurred read. It did not help the first webcam, and it can hurt: an
+ * OLED at full drive blooms on a camera sensor and the dark modules drown.
+ * Starting from the user's own level was no better: at High a phone camera
+ * showed rolling lines across the panel - its shutter beating against the
+ * OLED's refresh - where at Dim it read cleanly. So Dim for every QR,
+ * pairing and signature alike, whatever the panel is set to elsewhere; OK
+ * still steps it for a camera that wants otherwise.
+ */
+static void screen_qr_out_enter(void)
+{
+    qr_brightness = 5;   /* Dim */
+    oled_set_contrast(BRIGHTNESS_LEVELS[qr_brightness]);
+    oled_set_fast_refresh(true);   /* no dark bands on a camera; oled.h */
+}
+
+static void screen_qr_out_exit(screen_id_t next)
+{
+    (void)next;
+    qr_out_stop();
+    oled_set_fast_refresh(false);
+    oled_set_contrast(BRIGHTNESS_LEVELS[brightness_choice]);
+}
+
+/* Advance the animation. Called once per turn of the UI task's loop, which
+ * wakes at least every 100 ms, so a frame period is honoured to within that. */
+static void service_qr_out(void)
+{
+    if (ui_get_screen() != SCREEN_QR_OUT) {
+        return;
+    }
+    if (qr_out_tick(esp_timer_get_time())) {
+        ui_invalidate();
+    }
+}
+
+/* ============================================================================
+ * Show Address Screen
+ *
+ * The handshake (RESEARCH-AIRGAP-VAULT.md sections 36-37): the account-level
+ * xpub as a ur:crypto-hdkey, because on this panel it is one frame and it lets
+ * the companion derive every receive address without another visit. The
+ * screen's job is to say that plainly before anything is shown - once the QR
+ * is up there is no room for words.
+ *
+ * Whoever opened it chose the starting account; the user chooses the answer.
+ * ============================================================================ */
+
+static uint32_t show_account;
+static bool     show_pending;          /* OK pressed; derive after the repaint */
+static char     show_error[22];
+
+void ui_suggest_show_address(uint32_t account)
+{
+    /* A suggestion outside the hardened range cannot be an account at all;
+       start from the device's own instead of refusing to open. */
+    show_account = (account < 0x80000000u) ? account : hd_account;
+    show_pending = false;
+    show_error[0] = '\0';
+    ui_set_screen(SCREEN_SHOW_ADDRESS);
+}
+
+static void screen_show_address_render(void)
+{
+    char line[22];
+    oled_clear();
+    oled_draw_string_centered(0, "Share account");
+    snprintf(line, sizeof line, "< Account %lu >", (unsigned long)show_account);
+    oled_draw_string_centered(1, line);
+    snprintf(line, sizeof line, "m/44'/60'/%lu'", (unsigned long)show_account);
+    oled_draw_string_centered(2, line);
+
+    if (show_pending) {
+        oled_draw_string_centered(5, "Deriving...");
+        return;
+    }
+    if (show_error[0]) {
+        oled_draw_string_centered(5, show_error);
+    } else {
+        /* What leaves the device, in the words that matter: a watcher can see
+           every address in this account, and nothing can be spent with it. */
+        oled_draw_string(3, 0, "Sends the xpub: the");
+        oled_draw_string(4, 0, "app sees ALL addrs");
+        oled_draw_string(5, 0, "in it. Cannot spend.");
+    }
+    oled_draw_string(7, 0, "BACK            SHOW");
+}
+
+static void screen_show_address_on_button(button_id_t btn)
+{
+    if (show_pending) {
+        ui_invalidate();
+        return;     /* the derivation is already queued */
+    }
+    switch (btn) {
+        case BUTTON_UP:
+            show_account = (show_account + HD_ACCOUNT_COUNT - 1) % HD_ACCOUNT_COUNT;
+            show_error[0] = '\0';
+            break;
+        case BUTTON_DOWN:
+            show_account = (show_account + 1) % HD_ACCOUNT_COUNT;
+            show_error[0] = '\0';
+            break;
+        case BUTTON_ACCEPT:
+            /* Not derived here: BIP32 on a cold seed cache is PBKDF2 first,
+               and the button handler must not block. ui_poll_deferred() does
+               it once "Deriving..." is on the panel. */
+            show_pending = true;
+            break;
+        case BUTTON_CANCEL:
+            ui_set_screen(SCREEN_MAIN_MENU);
+            return;
+        default:
+            break;
+    }
+    ui_invalidate();
+}
+
+/* The deferred half of OK. Derives on the UI task, as the address screen
+ * already does, into local buffers that are zeroed before returning; only the
+ * encoded public key survives, inside qr-out.c. */
+static void show_address_run(void)
+{
+    show_pending = false;
+
+    E4527AccountKey key;
+    memset(&key, 0, sizeof key);
+    key.account = show_account;
+    /* The same gate every address screen goes through before deriving. */
+    if (!ensure_wallet_unlocked() ||
+        wallet_get_account_key(show_account, key.key_data, key.chain_code,
+                               &key.parent_fingerprint,
+                               &key.master_fingerprint) != WALLET_OK) {
+        memzero(&key, sizeof key);
+        snprintf(show_error, sizeof show_error, "Derive failed");
+        ui_invalidate();
+        return;
+    }
+
+    uint8_t cbor[E4527_HDKEY_MAX];
+    const size_t n = eip4527_encode_account_hdkey(&key, cbor, sizeof cbor);
+    memzero(&key, sizeof key);
+    if (n == 0 || !ui_show_ur("crypto-hdkey", cbor, n, SCREEN_SHOW_ADDRESS)) {
+        snprintf(show_error, sizeof show_error, "Cannot show it");
+        ui_invalidate();
+    }
+    memzero(cbor, sizeof cbor);
+}
+
+/* ============================================================================
+ * Scan Screen
+ *
+ * The camera loop's host. Frames arrive from camera.c, each decoded symbol is
+ * fed to the UR assembler, and a complete eth-sign-request is
+ * handed to the airgap worker - which then asks the user on SCREEN_SIGN_CONFIRM
+ * exactly as a USB request would. Nothing on this screen reads the request's
+ * contents out loud; the confirmation draws what the device decoded.
+ * ============================================================================ */
+
+static char scan_status[22];
+
+/*
+ * The viewfinder.
+ *
+ * Aiming a camera you cannot see through is guesswork, and the failure it
+ * produces - "nothing is happening" - looks identical whether the QR is out of
+ * frame, out of focus or absent. A 128x56 one-bit preview answers that at a
+ * glance, and the status line below it answers the other half: whether the
+ * device is reading and how much is left.
+ *
+ * `scan_preview_live` stays false until the camera has actually produced a
+ * frame, so a board whose sensor did not start keeps the plain text screen
+ * rather than showing an empty rectangle.
+ *
+ * Nothing decoded is ever drawn here. The preview is raw sensor pixels and the
+ * status line is one of a fixed set of strings this file owns, so a QR code
+ * cannot put words of its choosing on the trusted display.
+ */
+static uint8_t scan_preview[VIEWFINDER_BYTES];
+static bool    scan_preview_live;
+
+/* One decoded QR string: the same function service_scan() calls per frame,
+ * named so the host can drive it without a camera. */
+static void scan_handle(const char *ur, size_t len)
+{
+    switch (airgap_scan_feed(ur, len)) {
+        case AIRGAP_SCAN_ACCEPTED:
+            snprintf(scan_status, sizeof scan_status, "%lu parts to go",
+                     (unsigned long)airgap_scan_remaining());
+            break;
+        case AIRGAP_SCAN_REDUNDANT:
+            break;
+        case AIRGAP_SCAN_UNREADABLE:
+            snprintf(scan_status, sizeof scan_status, "Not a UR part");
+            break;
+        case AIRGAP_SCAN_WRONG_TYPE:
+            snprintf(scan_status, sizeof scan_status, "Not a sign request");
+            break;
+        case AIRGAP_SCAN_BAD_REQUEST:
+            snprintf(scan_status, sizeof scan_status, "Request unreadable");
+            break;
+        case AIRGAP_SCAN_BUSY:
+            snprintf(scan_status, sizeof scan_status, "Busy; try again");
+            break;
+        case AIRGAP_SCAN_SUBMITTED:
+            snprintf(scan_status, sizeof scan_status, "Checking request...");
+            break;
+    }
+    ui_invalidate();
+}
+
+static void screen_scan_enter(void)
+{
+    airgap_scan_reset();
+    scan_preview_live = false;
+    memset(scan_preview, 0, sizeof scan_preview);
+    /* A camera that refuses to start is a screen that says so, not a hang and
+       not a reboot. The rest of this screen works either way: BACK still
+       leaves, and the host-driven test path still feeds it strings. */
+    snprintf(scan_status, sizeof scan_status,
+             camera_start() ? "Point at the QR" : "No camera");
+}
+
+static void screen_scan_render(void)
+{
+    oled_clear();
+
+    if (scan_preview_live) {
+        /* Pages 0-6 are the preview, page 7 is the status line. Into the
+           framebuffer, not straight to the panel: one flush then paints the
+           image and the text together, which is what stopped the viewfinder
+           flickering. */
+        for (uint8_t page = 0; page < VIEWFINDER_H / 8; page++) {
+            oled_blit_page(page, &scan_preview[(size_t)page * VIEWFINDER_W],
+                           VIEWFINDER_W);
+        }
+        oled_draw_string_centered(7, scan_status);
+        return;
+    }
+
+    oled_draw_string_centered(0, "Scan request");
+    oled_draw_string_centered(3, scan_status);
+    oled_draw_string(7, 0, "BACK");
+}
+
+static void screen_scan_on_button(button_id_t btn)
+{
+    if (btn == BUTTON_CANCEL) {
+        ui_set_screen(SCREEN_MAIN_MENU);
+        return;
+    }
+    /* Bench controls for comparing combinations; orientation stays f2.
+       UP brighter, DOWN darker, OK steps the capture size, and OK with UP
+       held toggles live video to the PC viewer. */
+    if (btn == BUTTON_ACCEPT) {
+        if (button_is_pressed(BUTTON_UP)) {
+            camera_set_stream(!camera_streaming());
+        } else if (!camera_next_frame_size()) {
+            /* Said on the screen, not left as a view that stopped moving;
+               OK again moves on to the next size. */
+            snprintf(scan_status, sizeof scan_status, "%u failed; OK=next",
+                     (unsigned)camera_frame_width());
+        }
+    } else if (btn == BUTTON_UP || btn == BUTTON_DOWN) {
+        camera_set_exposure_bias((int8_t)(camera_exposure_bias() +
+                                          (btn == BUTTON_UP ? 1 : -1)));
+    }
+    ui_invalidate();
+}
+
+static void screen_scan_exit(screen_id_t next)
+{
+    (void)next;
+    camera_stop();
+    airgap_scan_reset();
+    scan_preview_live = false;
+    memset(scan_preview, 0, sizeof scan_preview);
+}
+
+/* Drain whatever the camera decoded since the last turn of the loop. Bounded,
+ * so a camera producing frames faster than the loop turns cannot starve the
+ * buttons. */
+static void service_scan(void)
+{
+    if (ui_get_screen() != SCREEN_SCAN) {
+        return;
+    }
+    static char frame[1100];
+    size_t len = 0;
+    for (int i = 0; i < 4 && camera_next_qr(frame, sizeof frame, &len); i++) {
+        scan_handle(frame, len);
+    }
+
+    /* The preview costs no frame: camera.c renders it from a frame it has
+       already handed to the decoder, one in every CAMERA_PREVIEW_EVERY. What
+       arrives here is whatever the last of those produced, or nothing. */
+    const uint8_t *shot = camera_preview_take();
+    if (shot != NULL) {
+        memcpy(scan_preview, shot, sizeof scan_preview);
+        scan_preview_live = true;
+        /* Once parts are landing, the status line says how many are left
+           rather than still inviting the user to aim. */
+        /*
+         * What the camera is making of the view, on the panel, because the
+         * person aiming it cannot watch a serial log. `seen` is codes quirc
+         * located; the gap between seen and read is the diagnosis: nothing
+         * seen means too small, too dim or out of frame, while seen without
+         * read means the modules are not being resolved. None of it comes
+         * from a decoded payload, only from counters.
+         */
+        uint32_t cam_frames = 0, cam_read = 0, cam_seen = 0;
+        camera_stats(&cam_frames, &cam_read, &cam_seen);
+
+        const uint32_t left = airgap_scan_remaining();
+        if (left == 0) {
+            /* "f0 s12 r0": flip mode, codes seen, codes read. Short because
+               the row is 21 characters and the numbers matter more than the
+               words. */
+            /* "640 e-5 f123 s3 r1": capture width, exposure, frames
+               captured, codes seen, codes read. Frames still climbing on a
+               blank view means the camera is live and the picture is dark;
+               frames stopped means capture itself stopped. */
+            char line[48];
+            snprintf(line, sizeof line, "%u e%d f%u s%u r%u",
+                     (unsigned)camera_frame_width(),
+                     (int)camera_exposure_bias(),
+                     (unsigned)(cam_frames > 999 ? 999 : cam_frames),
+                     (unsigned)(cam_seen > 99 ? 99 : cam_seen),
+                     (unsigned)(cam_read > 99 ? 99 : cam_read));
+            /* 20 characters at most in practice; the row holds 21. */
+            snprintf(scan_status, sizeof scan_status, "%.21s", line);
+        }
+        if (left > 0) {
+            /* Clamped at three digits, which is both what the row fits and
+               more parts than any message this device accepts can be cut
+               into. The count is the decoder's own, never anything a scanned
+               frame chose. */
+            snprintf(scan_status, sizeof scan_status, "%u parts to go",
+                     (unsigned)(left > 999 ? 999 : left));
+        }
+        ui_invalidate();
+    }
+}
+
+/* The worker's answer, whatever screen is up. After an approval the device is
+ * on SCREEN_SIGN_RESULT; the signature QR replaces it, because showing it is
+ * the whole point of having approved. */
+static void service_airgap(void)
+{
+    const uint8_t *cbor = NULL;
+    size_t len = 0;
+    TxSignResult rc = TXSIGN_OK;
+    const AirgapState s = airgap_poll(&cbor, &len, &rc);
+    if (s == AIRGAP_DONE) {
+        if (!ui_show_ur("eth-signature", cbor, len, SCREEN_MAIN_MENU)) {
+            snprintf(scan_status, sizeof scan_status, "Cannot show it");
+            ui_set_screen(SCREEN_SCAN);
+        }
+        airgap_acknowledge();
+    } else if (s == AIRGAP_FAILED) {
+        airgap_acknowledge();
+        /* Back to the scanner with the reason on it, so the next attempt is
+           one step away and the refusal is not a screen that vanished. */
+        ui_set_screen(SCREEN_SCAN);
+        /* After the switch: entering the scanner writes its own greeting. */
+        snprintf(scan_status, sizeof scan_status, "%s", airgap_refusal_text(rc));
+        ui_invalidate();
+    }
 }
 
 /* ============================================================================
@@ -6004,6 +6547,9 @@ void ui_init(void)
     screens[SCREEN_SIGN_CONFIRM] = &screen_sign_confirm;
     screens[SCREEN_SIGN_RESULT] = &screen_sign_result;
     screens[SCREEN_HOST_PASSPHRASE_CONFIRM] = &screen_host_passphrase;
+    screens[SCREEN_QR_OUT] = &screen_qr_out;
+    screens[SCREEN_SHOW_ADDRESS] = &screen_show_address;
+    screens[SCREEN_SCAN] = &screen_scan;
 
     current_screen = SCREEN_BOOT;
     needs_render = true;
@@ -6085,6 +6631,12 @@ void ui_invalidate(void)
 
 void ui_poll_deferred(void)
 {
+    if (show_pending && current_screen == SCREEN_SHOW_ADDRESS) {
+        show_address_run();
+        return;
+    }
+    show_pending = false;
+
     if (create_generate_pending && current_screen == SCREEN_WALLET_CREATE) {
         wallet_create_run_generation();
         return;
@@ -6174,8 +6726,13 @@ void ui_task(void *pvParameters)
     lock_note_activity();
 
     while (1) {
-        /* Wait for button event with timeout for periodic refresh */
-        if (xQueueReceive(queue, &event, pdMS_TO_TICKS(100)) == pdTRUE) {
+        /* Wait for button event with timeout for periodic refresh. Not while
+         * scanning: this wait came before every frame, so up to 100 ms of
+         * each capture cycle was spent idle on top of the decode, and the
+         * camera's newest frame went stale waiting for it. */
+        const TickType_t wait = (ui_get_screen() == SCREEN_SCAN)
+                                    ? pdMS_TO_TICKS(1) : pdMS_TO_TICKS(100);
+        if (xQueueReceive(queue, &event, wait) == pdTRUE) {
             lock_note_activity();
             ui_handle_button(event.id);
         } else if (lock_check_timeout()) {
@@ -6213,6 +6770,9 @@ void ui_task(void *pvParameters)
         }
 
         service_lock_hold();
+        service_qr_out();
+        service_scan();
+        service_airgap();
 
         /* A companion that died without saying so. Tears down the channel
          * only: the wallet stays unlocked and a temporary seed survives, so
@@ -6285,6 +6845,10 @@ bool ui__check_autolock_for_test(void) { return lock_check_timeout(); }
 void ui__service_sign_expiry_for_test(void) { service_sign_expiry(); }
 void ui__service_lock_hold_for_test(void) { service_lock_hold(); }
 void ui__service_host_lock_for_test(void) { service_host_lock(); }
+void ui__service_qr_out_for_test(void) { service_qr_out(); }
+void ui__service_airgap_for_test(void) { service_airgap(); }
+void ui__scan_feed_for_test(const char *ur) { scan_handle(ur, strlen(ur)); }
+const char *ui__scan_status_for_test(void) { return scan_status; }
 
 /* The cached fingerprint, which is not on any screen while the device is
  * locked and so cannot be asserted through the framebuffer - the stale-XFP
@@ -6382,7 +6946,7 @@ void ui__reset_static_state_for_test(void)
 
     lock_timeout_choice = 1;
     lock_timeout_stored_choice = 1;
-    brightness_choice = 2;
+    brightness_choice = 5;
     memzero(master_xfp, sizeof(master_xfp));
     last_activity_us = 0;
 }

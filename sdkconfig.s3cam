@@ -1,0 +1,86 @@
+# ============================================================================
+# CAM board overlay - PSRAM
+#
+# Applied on top of sdkconfig.defaults, never instead of it, so the reference
+# board and the Pixie are untouched by anything in here. Their images are
+# byte-identical before and after this file existed; that was checked, not
+# assumed.
+#
+# sdkconfig.defaults explains why PSRAM is off everywhere else and names the
+# one case that would justify turning it on: a camera framebuffer. That case
+# is now here. Two QVGA grayscale frames are 154 KB and quirc's working image
+# and pixel buffer are another 154 KB; the S3 has 512 KB of internal SRAM with
+# the wallet, BLE and the UI already in it. There is no arrangement in which
+# this fits on-die.
+#
+# The N16R8 carries 8 MB of OCTAL PSRAM. Mode matters: a quad configuration on
+# octal silicon does not fall back, it fails to train and the chip boots
+# without the memory it was told it had.
+# ============================================================================
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# ----------------------------------------------------------------------------
+# What is allowed to live off-die.
+#
+# The standing rule from sdkconfig.defaults is that a seed, a mnemonic or a
+# derived key must not land in external memory, because PSRAM is reached over
+# a bus and the S3's external-memory encryption rides on flash encryption,
+# which is T11 and not burned yet.
+#
+# SPIRAM_USE_MALLOC with a high ALWAYSINTERNAL threshold keeps that rule: every
+# allocation under 16 KB is served from internal SRAM exactly as before, so
+# nothing the wallet allocates changes address space. Only the deliberately
+# huge buffers - the camera's two framebuffers, quirc's image and pixel planes,
+# all 77 KB and up - spill outward, and none of them ever holds key material.
+# Static and stack storage is internal by construction and is where this
+# firmware keeps its secrets anyway.
+#
+# RESERVE_INTERNAL keeps a floor of internal heap for the allocations that
+# cannot be served from PSRAM at all - DMA descriptors, interrupt-safe buffers
+# - so enabling this cannot starve the drivers that were working yesterday.
+#
+# This is a mitigation, not the fix. The fix is external memory encryption on
+# top of burned flash encryption (T11); until then the CAM board's threat model
+# is "the big image buffers are readable off the bus", which is a QR code
+# someone is already pointing a camera at.
+# ----------------------------------------------------------------------------
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+CONFIG_SPIRAM_IGNORE_NOTFOUND=n
+
+# SCCB (the camera's control bus) on the LEGACY I2C driver.
+#
+# ESP-IDF 5.5 refuses to have both I2C drivers in one image: the camera's
+# default is the new driver, src/oled.c uses the old one, and the result was
+# not a build error but a boot loop on the bench -
+#   E i2c: CONFLICT! driver_ng is not allowed to be used with this old driver
+#   abort() was called
+# twenty-one reboots a second, with nothing servicing USB, so the board also
+# looked dead to the flashing tool. The camera goes legacy because that is one
+# line here; migrating the panel to the new driver is the tidier fix and is
+# worth doing when the old driver is actually removed.
+#
+# No port conflict either way: the panel is on I2C0, SCCB defaults to I2C1.
+CONFIG_SCCB_HARDWARE_I2C_DRIVER_LEGACY=y
+CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=n
+
+# OV5640 autofocus: OFF.
+#
+# Enabling it stopped the camera starting at all on the bench module
+# (VVS-OV5640-CSP-825N-V, no visible focus motor). esp_camera_af_init uploads
+# firmware to a VCM over SCCB and waits for it; with no motor to answer, camera
+# start never returned and the Scan screen never opened. A fixed lens is worth
+# far less than a camera that starts.
+# CONFIG_CAMERA_AF_SUPPORT is not set
+
+# 160 MHz. At the default QVGA capture a frame is a quarter of VGA's work,
+# and 240 MHz got the board very hot with the OV5640 beside it. The larger
+# sizes on the scan screen were only reliable at 240.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+# Let the camera DMA write frames straight into PSRAM instead of copying
+# each line through internal RAM on the CPU the decoder needs.
+CONFIG_CAMERA_PSRAM_DMA=y

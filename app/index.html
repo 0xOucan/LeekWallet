@@ -49,15 +49,15 @@
         </div>
 
         <!--
-          The launcher (docs/UI-SPEC-V2.md §1). Three destinations and nothing
+          The launcher (docs/UI-SPEC-V2.md §1). Two destinations and nothing
           else before a device is connected — no tab bar, no empty panels, no
           greyed controls. Each tile is a <button> so it is a real 44px+ touch
           target and reachable by keyboard, not a styled <div>.
 
           Membership of the pre-connect surface for mini-apps is decided
           elsewhere, in remountApps() (main.ts), by MiniApp.worksWithoutDevice
-          — never by name. This nav only carries the three fixed destinations
-          the brief names; it does not enumerate apps.
+          — never by name. This nav only carries the fixed destinations the
+          brief names; it does not enumerate apps.
         -->
         <nav class="launcher" id="launcher" aria-label="Choose what to do">
           <button type="button" class="launcher__tile" id="gotoconnect">
@@ -67,10 +67,6 @@
           <button type="button" class="launcher__tile" id="gotoflash">
             <span class="launcher__title">Flash firmware</span>
             <span class="launcher__desc">Install or update from a release</span>
-          </button>
-          <button type="button" class="launcher__tile" id="gotowaiter">
-            <span class="launcher__title">La Caja — waiter</span>
-            <span class="launcher__desc">Take a payment. No wallet needed.</span>
           </button>
         </nav>
 
@@ -91,6 +87,12 @@
             <button class="primary" id="connect">Connect</button>
             <button id="unlock" disabled>Unlock</button>
             <button id="disconnect" disabled>Disconnect</button>
+            <!-- Not a Link option: QR is a second entrance with no session,
+                 so it is its own action rather than a transport to select. -->
+            <button id="qrpair" type="button" class="secondary">Pair by QR</button>
+            <label class="muted" title="Darker camera exposure, so the device's bright screen does not glow. On for desktop webcams; try it on a tablet.">
+              <input type="checkbox" id="darkcam"> Dark camera
+            </label>
           </div>
           <div id="pairing" hidden style="margin-top: var(--space-4)"
                role="group" aria-label="Passkey to compare with the device">
@@ -544,7 +546,7 @@
         <section class="acc" id="secapps" hidden>
           <h2 class="acc__hd">
             <button type="button" class="acc__toggle" id="hdrapps"
-                    aria-expanded="false" aria-controls="waiterdest">
+                    aria-expanded="false" aria-controls="appsdest">
               <span class="acc__text">
                 <span class="acc__title">Apps</span>
                 <span class="acc__desc">The mini-apps for this device</span>
@@ -553,16 +555,14 @@
             </button>
           </h2>
           <!--
-            Apps / La Caja — waiter, as a destination (docs/UI-SPEC-V2.md §1a,
-            docs/UI-L5-SPEC.md §3). Reachable two ways: the launcher's "La Caja"
-            tile pre-connect, and the wallet menu's "Apps" block once unlocked
-            — main.ts's enterDest()/enterBlock() both point here, and this
-            wrapper's own [hidden] is the single gate for either path (no
-            double-gating). The #apps div inside keeps deciding its own
-            [hidden] from mounted content, unrelated to which path opened it.
+            Apps, as a destination (docs/UI-SPEC-V2.md §1a, docs/UI-L5-SPEC.md
+            §3). Reachable from the wallet menu's "Apps" block once unlocked —
+            main.ts's enterBlock() points here, and this wrapper's own [hidden]
+            is the single gate (no double-gating). The #apps div inside keeps
+            deciding its own [hidden] from mounted content, unrelated to which
+            path opened it.
           -->
-          <section class="destination" id="waiterdest" hidden>
-            <button type="button" class="destination__back" id="waiterback"><span aria-hidden="true">← </span>Back</button>
+          <section class="destination" id="appsdest" hidden>
             <!-- Mini-apps mount here, one panel each. Empty and hidden unless the
                  active chain has one registered - see src/apps/registry.ts, which
                  is the single line a release build removes to exclude one. -->
@@ -838,6 +838,41 @@
 
 
 
+
+        <!-- The QR air gap: pairing (scan the device's account key) and
+             signing (show the request, scan the signature). One panel for
+             both, because both are "look at the device, then at this". -->
+        <section class="panel" id="qrpanel" hidden aria-labelledby="qrhead">
+          <h2 id="qrhead">QR</h2>
+          <p id="qrinstr"></p>
+          <p class="muted" id="qrauthority" hidden>
+            The device screen is authoritative. It decodes the request itself
+            and shows what it will sign; anything this app displays is only a
+            preview. If the two disagree, reject on the device.
+          </p>
+          <div id="qrdisplay"></div>
+          <div class="row" id="qrfragrow" hidden>
+            <label class="muted" for="qrfrag">Fragment size</label>
+            <select id="qrfrag" class="addr">
+              <option value="40">Small (more frames, easier to read)</option>
+              <option value="90" selected>Medium</option>
+              <option value="200">Large (fewer frames, denser)</option>
+            </select>
+            <label class="muted" for="qrspeed">Frame speed</label>
+            <select id="qrspeed" class="addr">
+              <option value="500" selected>Fast (0.5 s)</option>
+              <option value="1000">Normal (1 s)</option>
+              <option value="1500">Slow (1.5 s, for a slow camera)</option>
+            </select>
+          </div>
+          <video id="qrvideo" class="wc-video" hidden muted playsinline
+                 aria-label="Camera, scanning the device's QR code"></video>
+          <p class="muted" id="qrprogress" role="status" aria-live="polite"></p>
+          <div class="row">
+            <button id="qrnext" type="button" class="primary" hidden>Scan the signature</button>
+            <button id="qrcancel" type="button">Cancel</button>
+          </div>
+        </section>
 
         <!-- One camera surface for every mini-app, owned by the shell.
              An app never gets a MediaStream; it calls AppContext.scanQr and

@@ -47,7 +47,16 @@ for PORT in "${PORTS[@]}"; do
   echo "== $PORT"
   CHIP=$(esptool.py --port "$PORT" chip_id 2>/dev/null | grep -oE 'ESP32-(S3|C3)' | head -1 || true)
   case "$CHIP" in
-    ESP32-S3) ENV=esp32s3; BOARD=s3 ;;
+    ESP32-S3)
+      # Two boards share this chip and their pin maps collide: the reference
+      # image drives I2C and buttons on GPIO 5-10, the CAM board's camera data
+      # lines. A board that says it is the CAM board is skipped here and left to
+      # ./flash-board.sh s3cam, which never chooses an image from the chip.
+      if [[ "$(python3 scripts/board-model.py "$PORT" 2.5 2>/dev/null || echo none)" == LeekWallet-S3CAM ]]; then
+        echo "   $PORT is the CAM board - skipped; use ./flash-board.sh s3cam"
+        continue
+      fi
+      ENV=esp32s3; BOARD=s3 ;;
     ESP32-C3) ENV=pixie;   BOARD=pixie ;;
     *) echo "   could not identify the chip on $PORT — skipping"; continue ;;
   esac

@@ -43,6 +43,7 @@ typedef struct {
     uint32_t bitOffsetOrWidth;
     uint16_t capacityBytes;
     uint8_t *data;
+    bool     overflowed;    /* sticky: a write was refused, output is not valid */
 } BitBucket;
 
 static int max_val(int a, int b) { return (a > b) ? a : b; }
@@ -56,6 +57,7 @@ static uint16_t bb_getBufferSizeBytes(uint32_t bits) {
 }
 
 static void bb_initBuffer(BitBucket *bb, uint8_t *data, int32_t capacityBytes) {
+    bb->overflowed = false;
     bb->bitOffsetOrWidth = 0;
     bb->capacityBytes = capacityBytes;
     bb->data = data;
@@ -63,14 +65,34 @@ static void bb_initBuffer(BitBucket *bb, uint8_t *data, int32_t capacityBytes) {
 }
 
 static void bb_initGrid(BitBucket *bb, uint8_t *data, uint8_t size) {
+    bb->overflowed = false;
     bb->bitOffsetOrWidth = size;
     bb->capacityBytes = bb_getGridSizeBytes(size);
     bb->data = data;
     memset(data, 0, bb->capacityBytes);
 }
 
+/*
+ * Appending past the end used to walk off a stack array.
+ *
+ * Upstream has no bounds check here and none in encodeDataCodewords either,
+ * and the only thing standing between a long string and a smashed stack was
+ * the slack between the codeword buffer (moduleCount/8 bytes) and the data
+ * capacity (that minus the error-correction codewords). At version 4 that is
+ * 80 bytes against 60, so a hundred-character string wrote about twenty bytes
+ * past the array and qrcode_initText still returned success.
+ *
+ * Nothing shipping reaches it: the one call site draws a 42-character address
+ * into a version 3-or-4 code. It is fixed because that is one refactor away
+ * from being untrue, and because the QR output path is about to feed this
+ * function strings whose length comes off the wire.
+ */
 static void bb_appendBits(BitBucket *bb, uint32_t val, uint8_t length) {
     uint32_t offset = bb->bitOffsetOrWidth;
+    if (offset + length > (uint32_t)bb->capacityBytes * 8) {
+        bb->overflowed = true;
+        return;
+    }
     for (int8_t i = length - 1; i >= 0; i--, offset++) {
         bb->data[offset >> 3] |= ((val >> i) & 1) << (7 - (offset & 7));
     }
@@ -548,6 +570,14 @@ int8_t qrcode_initText(QRCode *qrcode, uint8_t *modules, uint8_t version,
 
     int8_t mode = encodeDataCodewords(&codewords, (const uint8_t*)data, length, version);
     if (mode < 0) return -1;
+
+    /* The data has to fit the DATA capacity, which is smaller than the buffer:
+       the difference is where the error-correction codewords go. Checked after
+       encoding rather than before because the bit cost depends on the mode the
+       encoder picked. */
+    if (codewords.overflowed || codewords.bitOffsetOrWidth > (uint32_t)dataCapacity * 8) {
+        return -1;
+    }
     qrcode->mode = mode;
 
     uint32_t padding = (dataCapacity * 8) - codewords.bitOffsetOrWidth;

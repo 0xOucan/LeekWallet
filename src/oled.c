@@ -184,6 +184,18 @@ esp_err_t oled_set_contrast(uint8_t level)
     return ESP_OK;
 }
 
+esp_err_t oled_set_fast_refresh(bool fast)
+{
+    /* The init values are the normal state: 0xD5 0x80, 0xD9 0xF1. Frame rate
+       is Fosc / (D * (phase1 + phase2 + 50) * 64): fastest oscillator (0xF0)
+       and 2+2 DCLK pre-charge (0x22) instead of 1+15. */
+    ssd1306_send_cmd(0xD5);
+    ssd1306_send_cmd(fast ? 0xF0 : 0x80);
+    ssd1306_send_cmd(0xD9);
+    ssd1306_send_cmd(fast ? 0x22 : 0xF1);
+    return ESP_OK;
+}
+
 
 esp_err_t oled_clear_panel_now(void)
 {

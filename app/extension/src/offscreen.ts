@@ -45,18 +45,18 @@
  */
 
 import {
-  createPublicClient, custom, defineChain, serializeTransaction,
+  serializeTransaction,
   type Address, type Hex,
 } from "viem";
 import type { CborValue } from "../../packages/core/src/cbor.ts";
 import { DeviceError } from "../../packages/core/src/transport.ts";
-import { getChain, type ChainInfo } from "../../packages/core/src/chains.ts";
-import { FailoverRpc, fetchRpcSend } from "../../packages/core/src/rpc.ts";
+import { getChain } from "../../packages/core/src/chains.ts";
 import { toDeviceTypedData } from "../../packages/core/src/eip712.ts";
 import {
   UNKNOWN_STATUS, derivationsInvalidated, type DeviceStatus,
 } from "../../packages/core/src/device-state.ts";
 import { DeviceClient } from "./device-client.ts";
+import { chainRpc, fillTransaction } from "./tx-fill.ts";
 import { SerialTransport, portLabel } from "./serial-transport.ts";
 import { DEVICE_FILTERS } from "./env.ts";
 import type { OwnerCommand, OwnerEnvelope, OwnerEvent, OwnerReply } from "./protocol.ts";
@@ -466,37 +466,6 @@ async function signTypedData(index: number, doc: unknown): Promise<string> {
 }
 
 /**
- * A viem client over the chain's public endpoints, with failover.
- *
- * Whoever answers learns which addresses this browser is interested in and
- * what it is about to send. That is the same disclosure any wallet makes to
- * whatever node it uses, and none of these operators can move funds. It is
- * still a disclosure, and it is why the endpoint list is curated in
- * `chains.ts` rather than taken from the dapp.
- */
-function chainRpc(info: ChainInfo) {
-  const failover = new FailoverRpc({
-    chainId: info.id,
-    rpcUrls: info.rpcUrls,
-    send: fetchRpcSend(),
-    onFailover: (a) => log(`rpc ${new URL(a.url).host} failed (${a.reason})`),
-  });
-  const viemChain = defineChain({
-    id: info.id,
-    name: info.name,
-    nativeCurrency: info.nativeCurrency,
-    rpcUrls: { default: { http: [...info.rpcUrls] } },
-  });
-  return createPublicClient({
-    chain: viemChain,
-    transport: custom(
-      { request: (args) => failover.request(args as { method: string; params?: unknown }) },
-      { retryCount: 0 },
-    ),
-  });
-}
-
-/**
  * Sign a transaction a dapp asked for, and broadcast it.
  *
  * Nonce and fees are filled from the chain's public RPC when the dapp left
@@ -517,41 +486,10 @@ async function signTransaction(cmd: Extract<OwnerCommand, { cmd: "signTransactio
 
   const info = getChain(cmd.chainId);
   if (!info) throw new Error(`chain ${cmd.chainId} is not one this extension knows how to reach`);
-  const rpc = chainRpc(info);
 
-  const to = cmd.tx.to as Address;
-  const value = cmd.tx.value === undefined ? 0n : BigInt(cmd.tx.value);
-  const data = cmd.tx.data as Hex | undefined;
-
-  /* `pending`, not `latest`. A dapp that sends two transactions in a row --
-   * approve then swap is the commonest pair in crypto -- has the second built
-   * while the first is still in the mempool, and a nonce counted from mined
-   * blocks alone gives it the nonce the first one already took. The node then
-   * refuses it with "nonce too low", which reads as a wallet fault. */
-  const nonce = cmd.tx.nonce
-    ?? (await rpc.getTransactionCount({ address: from as Address, blockTag: "pending" }));
-
-  let maxFeePerGas = cmd.tx.maxFeePerGas === undefined ? undefined : BigInt(cmd.tx.maxFeePerGas);
-  let maxPriorityFeePerGas =
-    cmd.tx.maxPriorityFeePerGas === undefined ? undefined : BigInt(cmd.tx.maxPriorityFeePerGas);
-  if (maxFeePerGas === undefined || maxPriorityFeePerGas === undefined) {
-    const fees = await rpc.estimateFeesPerGas();
-    maxFeePerGas = maxFeePerGas ?? fees.maxFeePerGas ?? 30_000_000_000n;
-    maxPriorityFeePerGas = maxPriorityFeePerGas ?? fees.maxPriorityFeePerGas ?? 1_000_000_000n;
-  }
-
-  /* Estimating tells the node what is about to be signed. That is the same
-   * disclosure the nonce lookup already made, and the alternative — guessing a
-   * gas limit for arbitrary calldata — produces transactions that revert after
-   * spending the gas. */
-  const gas = cmd.tx.gas === undefined
-    ? await rpc.estimateGas({
-        account: from as Address,
-        to,
-        value,
-        ...(data !== undefined ? { data } : {}),
-      })
-    : BigInt(cmd.tx.gas);
+  const rpc = chainRpc(info, { onFailover: (a) => log(`rpc ${new URL(a.url).host} failed (${a.reason})`) });
+  const tx = await fillTransaction(rpc, cmd.chainId, from as Address, cmd.tx);
+  const { nonce, to, value, data, gas, maxFeePerGas, maxPriorityFeePerGas } = tx;
 
   log("check every page on the device, then approve");
   const reply = await client.call("signTransaction", {
@@ -583,20 +521,7 @@ async function signTransaction(cmd: Extract<OwnerCommand, { cmd: "signTransactio
   /* Reassembled here rather than on the device: the signature covers the
    * digest the device computed from its own parse, so the serialised form
    * either matches or the network rejects it. */
-  const raw = serializeTransaction(
-    {
-      chainId: cmd.chainId,
-      nonce,
-      to,
-      value,
-      ...(data !== undefined ? { data } : {}),
-      gas,
-      maxFeePerGas,
-      maxPriorityFeePerGas,
-      type: "eip1559" as const,
-    },
-    { r: toHex(r), s: toHex(s), yParity },
-  );
+  const raw = serializeTransaction(tx, { r: toHex(r), s: toHex(s), yParity });
 
   if (!cmd.broadcast) return raw;
   log("broadcasting…");

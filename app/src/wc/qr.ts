@@ -49,6 +49,7 @@
 
 import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import { firstAccepted, QR_UNAVAILABLE, qrScanningAvailable, scanStep } from "./qr-loop.ts";
+import { invoker } from "../tauri-transport.ts";
 
 export { firstAccepted, QR_UNAVAILABLE, qrScanningAvailable, qrUnavailable, scanStep } from "./qr-loop.ts";
 /* Bundled, not fetched. zxing-wasm downloads its .wasm from a CDN by default,
@@ -58,7 +59,19 @@ export { firstAccepted, QR_UNAVAILABLE, qrScanningAvailable, qrUnavailable, scan
  * 'self' like everything else. */
 import zxingWasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";
 
-prepareZXingModule({ overrides: { locateFile: () => zxingWasmUrl } });
+/* `fireImmediately`: compile the decoder now, when this module loads, rather
+ * than inside the first frame of the first scan. Left lazy, the compile landed
+ * on the click that opened the camera and froze the desktop window for several
+ * seconds before the preview appeared -- reported from the first CAM-board
+ * pairing attempt. Loading it here moves that cost to app start, where nobody
+ * is waiting on a button. */
+void prepareZXingModule({
+  overrides: { locateFile: () => zxingWasmUrl },
+  fireImmediately: true,
+}).catch(() => {
+  /* A failure here resurfaces on the first scan, which reports it; nothing
+     useful can be done with it at import time. */
+});
 
 export interface QrScan {
   /** Stops the camera and releases the device. Safe to call twice. */
@@ -99,6 +112,39 @@ const SCAN_INTERVAL_MS = 100;
 
 /** Consecutive decoder exceptions tolerated before the scan gives up. */
 const MAX_DECODE_FAILURES = 20;
+
+/** Digital zoom for desktop webcams; see the frame capture in scanQr. */
+const ZOOM = /Android/i.test(navigator.userAgent) ? 1 : 2;
+
+const DARK_CAMERA_KEY = "leek.darkCamera";
+
+/**
+ * Whether the scanner darkens the camera for reading the device's OLED.
+ *
+ * On by default for desktop webcams, which expose for the room and bloom the
+ * panel's lit pixels over its dark modules. Off by default on Android, whose
+ * phone cameras read the panel fine untouched and got worse darkened; a
+ * switch, because a fixed-focus tablet camera may still want it. Stored per
+ * device; storage that is unavailable just means the default.
+ */
+export function darkCamera(): boolean {
+  try {
+    const v = localStorage.getItem(DARK_CAMERA_KEY);
+    if (v === "1") return true;
+    if (v === "0") return false;
+  } catch {
+    /* default below */
+  }
+  return !/Android/i.test(navigator.userAgent);
+}
+
+export function setDarkCamera(on: boolean): void {
+  try {
+    localStorage.setItem(DARK_CAMERA_KEY, on ? "1" : "0");
+  } catch {
+    /* the setting lasts this session only */
+  }
+}
 
 /**
  * Scan until `accept` recognises a code, then stop.
@@ -170,6 +216,18 @@ export async function scanQr<T>(
   };
 
   let stopped = false;
+  /* Declared before stop(), which reads them: a dismissal can land while the
+     profile below is still being applied. */
+  const invoke = invoker();
+  let native = "";
+  /* The preview zooms with the decoder, so what is aimed is what is read.
+     Clipped to the centre first, so the enlarged video lands exactly in its
+     own box rather than over the controls around it. */
+  if (ZOOM > 1) {
+    const edge = `${(50 - 50 / ZOOM).toFixed(2)}%`;
+    video.style.clipPath = `inset(${edge})`;
+    video.style.transform = `scale(${ZOOM})`;
+  }
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const stop = (): void => {
@@ -178,6 +236,10 @@ export async function scanQr<T>(
     if (timer) clearTimeout(timer);
     release();
     video.srcObject = null;
+    video.style.transform = "";
+    video.style.clipPath = "";
+    // Hand the webcam back on automatic exposure for everything else.
+    if (native) void invoke?.("camera_exposure", { dark: false })?.catch?.(() => {});
     signal?.removeEventListener("abort", stop);
   };
 
@@ -210,10 +272,87 @@ export async function scanQr<T>(
   } catch {
     /* Nothing to do: the camera keeps whatever focus it had. */
   }
+  /* A QR profile, the same one the device's own camera uses: darker than
+   * automatic, because whatever this points at is a screen, far brighter than
+   * the room, and an exposed-for-the-room screen blooms its white modules into
+   * the black ones; contrast and sharpness a step up to keep module edges hard.
+   *
+   * Each value comes from the camera's own reported range, never a constant:
+   * the units differ per driver (exposure compensation is stops on one webcam
+   * and raw steps on another). One constraint per call, because a camera that
+   * rejects one should still take the others. Unsupported means untouched. */
+  const caps = (track?.getCapabilities?.() ?? {}) as Record<string, unknown>;
+  const range = (name: string): { min: number; max: number; step: number } | null => {
+    const r = caps[name] as { min?: number; max?: number; step?: number } | undefined;
+    return r && typeof r.min === "number" && typeof r.max === "number" && r.max > r.min
+      ? { min: r.min, max: r.max, step: r.step || 0 }
+      : null;
+  };
+  // A fraction of the way along a control's range, snapped to its step.
+  const along = (r: { min: number; max: number; step: number }, f: number): number => {
+    const v = r.min + (r.max - r.min) * f;
+    return r.step > 0 ? r.min + Math.round((v - r.min) / r.step) * r.step : v;
+  };
+  const profile: [string, number][] = [];
+  /* Only when the dark-camera switch is on; see darkCamera(). */
+  const tuned = darkCamera();
+  /* A short manual exposure where the camera offers one - the counterpart of
+   * the device's e-5 - otherwise exposure compensation near its floor. */
+  const time = tuned ? range("exposureTime") : null;
+  if (time) {
+    profile.push(["exposureMode", "manual" as unknown as number]);
+    /* 100 us units, as in the spec: 12.8 ms is two refreshes of the
+       device's panel showing a QR, so no dark bands. src-tauri camera.rs. */
+    profile.push(["exposureTime", Math.min(time.max, Math.max(time.min, 128))]);
+  } else {
+    const ev = tuned ? range("exposureCompensation") : null;
+    if (ev) profile.push(["exposureCompensation", along(ev, 0.1)]);
+  }
+  const contrast = tuned ? range("contrast") : null;
+  if (contrast) profile.push(["contrast", along(contrast, 0.75)]);
+  const sharpness = tuned ? range("sharpness") : null;
+  if (sharpness) profile.push(["sharpness", along(sharpness, 0.65)]);
+  for (const [name, value] of profile) {
+    try {
+      await track?.applyConstraints?.({
+        advanced: [{ [name]: value } as unknown as MediaTrackConstraintSet],
+      });
+    } catch {
+      /* This camera keeps its own value for this control. */
+    }
+  }
+
+  /* WebKitGTK offers none of those controls, so on the Linux desktop the
+   * backend sets the webcam's exposure through V4L2 and reports what took. */
+  if (tuned && invoke) {
+    try {
+      native = String(await invoke("camera_exposure", { dark: true }));
+    } catch {
+      /* an older backend without the command */
+    }
+  }
+
   // Read back rather than assume: applyConstraints can succeed and change
   // nothing, which looks identical from here unless the value is checked.
   resolution.focusMode = String(
     (track?.getSettings?.() as { focusMode?: string } | undefined)?.focusMode ?? "",
+  );
+
+  /* Say what the camera actually delivered, not what was asked for. A laptop
+   * webcam that settles for 640x480 cannot resolve a device QR whose modules are
+   * a single 0.17 mm OLED pixel, and without this line that looks identical to
+   * the code simply not being there. */
+  onStatus?.(
+    `camera ${resolution.width}x${resolution.height}` +
+      (resolution.focusMode ? `, focus ${resolution.focusMode}` : "") +
+      profile
+        // What the camera took, read back, not what was asked for.
+        .map(([n]) => [n, (track?.getSettings?.() as Record<string, unknown>)?.[n]])
+        .filter(([, v]) => v !== undefined)
+        .map(([n, v]) => `, ${n} ${v}`)
+        .join("") +
+      (native ? `, ${native}` : "") +
+      (tuned ? "" : ", camera untouched"),
   );
 
   // The dismissal may already have happened while the prompt was up.
@@ -271,14 +410,23 @@ export async function scanQr<T>(
      * A 1080x1920 frame is about 2 megapixels and costs roughly 25 ms to
      * decode, which the self-pacing loop absorbs by scanning a little less
      * often. The cap only engages on cameras larger than this. */
-    const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(w, h));
-    const dw = Math.max(1, Math.round(w * scale));
-    const dh = Math.max(1, Math.round(h * scale));
+    /* Except on a desktop webcam: a 2x digital zoom, the centre quarter at
+     * native resolution. A landscape 1080p webcam has pixels to spare, and
+     * the device's panel is small, so the user can hold it farther from the
+     * lens - less distortion - and the decoder still gets every pixel of it,
+     * in a quarter of the work. Not on phones, for the reason above. */
+    const sw = Math.round(w / ZOOM);
+    const sh = Math.round(h / ZOOM);
+    const sx = Math.round((w - sw) / 2);
+    const sy = Math.round((h - sh) / 2);
+    const scale = Math.min(1, DECODE_MAX_EDGE / Math.max(sw, sh));
+    const dw = Math.max(1, Math.round(sw * scale));
+    const dh = Math.max(1, Math.round(sh * scale));
     if (canvas.width !== dw || canvas.height !== dh) {
       canvas.width = dw;
       canvas.height = dh;
     }
-    ctx.drawImage(video, 0, 0, dw, dh);
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, dw, dh);
     const frame = ctx.getImageData(0, 0, dw, dh);
 
     /* Both inversion attempts: a QR printed light-on-dark is still a QR, and
@@ -286,7 +434,15 @@ export async function scanQr<T>(
      * phone at a screen wondering why. */
     /* `tryHarder` is the point of this decoder: it is what reads a pairing code
      * off a screen, with a logo in the middle of it, through a camera. */
-    const found = await readBarcodes(frame, { formats: ["QRCode"], tryHarder: true });
+    /* `tryInvert` explicitly rather than by the library's default: the device
+     * can draw its QR inverted, lit modules on a dark background, because on a
+     * small OLED the normal code is mostly lit pixels and blooms on a webcam. A
+     * default that changed under us would silently stop reading those. */
+    const found = await readBarcodes(frame, {
+      formats: ["QRCode"],
+      tryHarder: true,
+      tryInvert: true,
+    });
     decodeFailures = 0;                 // this frame got through the decoder
     if (found.length === 0) return undefined;
     return firstAccepted(found.map((f) => ({ rawValue: f.text })), accept);

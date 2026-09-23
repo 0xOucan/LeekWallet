@@ -45,6 +45,7 @@ static const char *TAG = "wallet";
 #define KEY_ACTIVE_WALLET "active_idx"
 #define KEY_KDF_VERSION "kdf_ver"    // absent => legacy v1
 #define KEY_KDF_SALT "kdf_salt"      // 16 bytes, per device
+#define KEY_KDF_PARAMS "kdf_par"     // VaultKdfParams blob; absent => defaults
 #define KEY_BACKUP_OK "backup_ok"    // bitmask: wallet N verified
 #define KEY_VAULT_REC "vault_rec"    // generation + verifiers, see VaultRecord
 // Indexed keys: m<gen>_1, m<gen>_2, ..., iv<gen>_1, ... (legacy: m_1, iv_1)
@@ -365,6 +366,9 @@ static void erase_stale_slots(void) {
 
 static VaultKdfVersion vault_version = VAULT_KDF_V2;
 static uint8_t vault_salt[VAULT_SALT_SIZE] = {0};
+/* The work factor this vault was actually written with, which is not
+ * necessarily the one this build would choose. See vault-kdf.h. */
+static VaultKdfParams vault_kdf_params;
 static bool vault_params_loaded = false;
 
 // Load kdf_ver and kdf_salt, creating them on first use.
@@ -380,11 +384,16 @@ static void load_vault_params(void) {
     vault_version = VAULT_KDF_V1_LEGACY;
     memzero(vault_salt, sizeof(vault_salt));
 
+    uint8_t blob[VAULT_PARAMS_BLOB_SIZE];
+    size_t  blob_len = 0;
+
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
         uint8_t ver = 0;
+        /* A range, not a list of two: the next version must not need this
+         * line edited to be readable. */
         if (nvs_get_u8(nvs, KEY_KDF_VERSION, &ver) == ESP_OK &&
-            (ver == VAULT_KDF_V2 || ver == VAULT_KDF_V3)) {
+            ver >= VAULT_KDF_V2 && ver <= VAULT_KDF_CURRENT) {
             size_t salt_len = VAULT_SALT_SIZE;
             if (nvs_get_blob(nvs, KEY_KDF_SALT, vault_salt, &salt_len) == ESP_OK &&
                 salt_len == VAULT_SALT_SIZE) {
@@ -393,11 +402,27 @@ static void load_vault_params(void) {
                 ESP_LOGE(TAG, "kdf_ver=%d but salt is missing or malformed", (int)ver);
             }
         }
+
+        size_t len = sizeof(blob);
+        if (nvs_get_blob(nvs, KEY_KDF_PARAMS, blob, &len) == ESP_OK) {
+            blob_len = len;
+        }
         nvs_close(nvs);
     }
 
+    /* Absent is the common case and not a failure: every device shipped so far
+     * predates this key, and those vaults were all written at the default work
+     * factor. vault_params_parse() encodes exactly that. */
+    if (!vault_params_parse(blob_len ? blob : NULL, blob_len,
+                            vault_version, &vault_kdf_params)) {
+        ESP_LOGE(TAG, "kdf params blob unusable (%u bytes); using v%d defaults",
+                 (unsigned)blob_len, (int)vault_version);
+    }
+
     vault_params_loaded = true;
-    ESP_LOGI(TAG, "Vault KDF v%d", (int)vault_version);
+    ESP_LOGI(TAG, "Vault KDF v%d, family %u, %u iterations", (int)vault_version,
+             (unsigned)vault_kdf_params.family,
+             (unsigned)vault_kdf_params.iterations);
 }
 
 // Generate and persist a fresh salt, switching the vault to v2.
@@ -413,7 +438,26 @@ static WalletError init_vault_params_v3(void) {
         return WALLET_ERROR_STORAGE_FAILED;
     }
 
-    esp_err_t err = nvs_set_blob(nvs, KEY_KDF_SALT, salt, VAULT_SALT_SIZE);
+    /* Salt, version and parameters in one commit. They are three halves of a
+     * single fact - "this vault is derived like so" - and a power cut that
+     * separated them would leave blobs nobody can attribute to a derivation.
+     * It is also what lets an interrupted migration be resumed correctly: the
+     * salt on disk never appears without the version and parameters it was
+     * created for. */
+    VaultKdfParams params;
+    vault_params_default(VAULT_KDF_CURRENT, &params);
+
+    uint8_t blob[VAULT_PARAMS_BLOB_SIZE];
+    esp_err_t err = ESP_OK;
+    if (vault_params_serialize(&params, blob, sizeof(blob)) != sizeof(blob)) {
+        err = ESP_FAIL;
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_blob(nvs, KEY_KDF_SALT, salt, VAULT_SALT_SIZE);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_blob(nvs, KEY_KDF_PARAMS, blob, sizeof(blob));
+    }
     if (err == ESP_OK) {
         err = nvs_set_u8(nvs, KEY_KDF_VERSION, VAULT_KDF_CURRENT);
     }
@@ -429,21 +473,28 @@ static WalletError init_vault_params_v3(void) {
 
     memcpy(vault_salt, salt, VAULT_SALT_SIZE);
     vault_version = VAULT_KDF_CURRENT;
+    vault_kdf_params = params;
     vault_params_loaded = true;
     memzero(salt, sizeof(salt));
 
-    ESP_LOGI(TAG, "Vault initialized at v%d", (int)VAULT_KDF_CURRENT);
+    ESP_LOGI(TAG, "Vault initialized at v%d (family %u, %u iterations)",
+             (int)VAULT_KDF_CURRENT, (unsigned)params.family,
+             (unsigned)params.iterations);
     return WALLET_OK;
 }
 
+/* Both of these go through the vault's STORED parameters, never through what
+ * this build would pick today. That is the difference between a firmware
+ * update that raises the work factor for new vaults and one that bricks every
+ * old one. */
 static void derive_key_from_password(const char *password, size_t length, uint8_t key_out[32]) {
     load_vault_params();
-    vault_derive_key(vault_version, password, length, vault_salt, key_out);
+    vault_derive_key_with(&vault_kdf_params, password, length, vault_salt, key_out);
 }
 
 static void compute_password_hash(const char *password, size_t length, uint8_t hash_out[32]) {
     load_vault_params();
-    vault_derive_verifier(vault_version, password, length, vault_salt, hash_out);
+    vault_derive_verifier_with(&vault_kdf_params, password, length, vault_salt, hash_out);
 }
 
 static WalletError encrypt_data(const uint8_t *plaintext, size_t length,
@@ -882,8 +933,16 @@ static WalletError migrate_vault_to_current(const char *password, size_t length)
 
     /*
      * If a salt already exists, a previous migration was interrupted and some
-     * blobs may already be under v2. Derive that key up front so both passes
-     * can fall back to it.
+     * blobs may already be under the key that migration was targeting. Derive
+     * that key up front so both passes can fall back to it.
+     *
+     * The target version is NOT assumed to be the current one, and must not
+     * be: the partial blobs on disk were written by whatever firmware ran
+     * last, which may be older than this one. It is recorded, though -
+     * init_vault_params_v3() commits the salt, the version marker and the
+     * parameter blob together, so a salt on disk never appears without the
+     * two values that say how it was used. Read them back and derive under
+     * those, not under whatever this build would choose today.
      */
     uint8_t  resume_key[32];
     uint8_t *resume = NULL;
@@ -894,9 +953,32 @@ static WalletError migrate_vault_to_current(const char *password, size_t length)
             size_t  slen = VAULT_SALT_SIZE;
             if (nvs_get_blob(nvs, KEY_KDF_SALT, existing, &slen) == ESP_OK &&
                 slen == VAULT_SALT_SIZE) {
-                vault_derive_key(VAULT_KDF_V2, password, length, existing, resume_key);
+                uint8_t rver = VAULT_KDF_CURRENT;
+                uint8_t rv = 0;
+                if (nvs_get_u8(nvs, KEY_KDF_VERSION, &rv) == ESP_OK &&
+                    rv >= VAULT_KDF_V2 && rv <= VAULT_KDF_CURRENT) {
+                    rver = rv;
+                }
+
+                uint8_t rblob[VAULT_PARAMS_BLOB_SIZE];
+                size_t  rblob_len = sizeof(rblob);
+                if (nvs_get_blob(nvs, KEY_KDF_PARAMS, rblob, &rblob_len) != ESP_OK) {
+                    rblob_len = 0;
+                }
+
+                VaultKdfParams rparams;
+                if (!vault_params_parse(rblob_len ? rblob : NULL, rblob_len,
+                                        (VaultKdfVersion)rver, &rparams)) {
+                    ESP_LOGE(TAG, "Interrupted migration left unusable kdf params; "
+                                  "resuming on v%d defaults", (int)rver);
+                }
+
+                vault_derive_key_with(&rparams, password, length, existing, resume_key);
                 resume = resume_key;
-                ESP_LOGW(TAG, "Found an existing salt; resuming a prior migration");
+                ESP_LOGW(TAG, "Found an existing salt; resuming a prior migration "
+                              "targeting v%d (%u iterations)",
+                         (int)rver, (unsigned)rparams.iterations);
+                memzero(&rparams, sizeof(rparams));
             }
             memzero(existing, sizeof(existing));
             nvs_close(nvs);
@@ -916,14 +998,19 @@ static WalletError migrate_vault_to_current(const char *password, size_t length)
         }
     }
 
-    // Establish v2 parameters and derive the new key.
+    // Establish the parameters for the version being migrated TO, and derive
+    // the new key under exactly those. Naming a version here - any fixed
+    // version - is how a migration ends up writing blobs under one derivation
+    // while recording another, which is unrecoverable rather than merely
+    // wrong. init_vault_params_v3() has just published salt, version and
+    // parameters, so vault_kdf_params is the target by construction.
     WalletError err = init_vault_params_v3();
     if (err != WALLET_OK) {
         memzero(old_key, sizeof(old_key));
         memzero(resume_key, sizeof(resume_key));
         return err;
     }
-    vault_derive_key(VAULT_KDF_V2, password, length, vault_salt, new_key);
+    vault_derive_key_with(&vault_kdf_params, password, length, vault_salt, new_key);
 
     // Pass 2: re-encrypt one wallet at a time, swapping the active key around
     // each operation. Holding two 32-byte keys instead of every plaintext keeps
@@ -1172,10 +1259,19 @@ WalletError wallet_set_password(const char *password, size_t length) {
         return WALLET_ERROR_WRONG_PASSWORD;
     }
 
-    // A brand-new vault is always v2. Establish the salt before deriving
-    // anything, so the very first key is salted.
+    // A brand-new vault is salted before anything is derived, so the very
+    // first key is salted.
+    //
+    // The test is "has this vault been salted yet", not "is it at some
+    // particular version". Those differ: init_vault_params_v3() mints a FRESH
+    // random salt, so running it against an already-initialised vault would
+    // orphan every mnemonic already encrypted under the old one. Comparing
+    // against a named version made that a live hazard for any vault not at
+    // that exact version - today a v3 one, tomorrow a v4. Moving an
+    // already-salted vault forward is migrate_vault_to_current()'s job, and
+    // it re-encrypts before it flips.
     load_vault_params();
-    if (vault_version != VAULT_KDF_V2) {
+    if (vault_version == VAULT_KDF_V1_LEGACY) {
         WalletError verr = init_vault_params_v3();
         if (verr != WALLET_OK) {
             return verr;
@@ -1392,6 +1488,69 @@ WalletError wallet_get_master_fingerprint(uint32_t *fingerprint_out) {
 
 done:
     memzero(&master, sizeof(master));
+    derive_lock_give();
+    return err;
+}
+
+/**
+ * The account-level public key, m/44'/60'/<account>', for the QR handshake.
+ *
+ * Same discipline as wallet_get_master_fingerprint(): local nodes only, never
+ * state.node, under the derive lock, and every node zeroed on the way out -
+ * the private halves are derived along the way even though only public data
+ * leaves.
+ */
+WalletError wallet_get_account_key(uint32_t account, uint8_t public_key[33],
+                                   uint8_t chain_code[32],
+                                   uint32_t *parent_fingerprint,
+                                   uint32_t *master_fingerprint) {
+    if (!public_key || !chain_code || !parent_fingerprint || !master_fingerprint ||
+        account >= 0x80000000u) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
+    if (!state.initialized) {
+        return WALLET_ERROR_NOT_INITIALIZED;
+    }
+    if (!state.unlocked) {
+        return WALLET_ERROR_LOCKED;
+    }
+    if (!state.has_mnemonic) {
+        return WALLET_ERROR_NO_MNEMONIC;
+    }
+    if (!derive_lock_take()) {
+        return WALLET_ERROR_DERIVATION_FAILED;
+    }
+
+    cache_seed_from_mnemonic();
+
+    HDNode node;
+    WalletError err = WALLET_OK;
+
+    if (hdnode_from_seed(state.seed, SEED_SIZE, SECP256K1_NAME, &node) != 1) {
+        err = WALLET_ERROR_DERIVATION_FAILED;
+        goto done;
+    }
+    hdnode_fill_public_key(&node);
+    *master_fingerprint = hdnode_fingerprint(&node);
+
+    if (hdnode_private_ckd_prime(&node, 44) != 1 ||
+        hdnode_private_ckd_prime(&node, 60) != 1) {
+        err = WALLET_ERROR_DERIVATION_FAILED;
+        goto done;
+    }
+    hdnode_fill_public_key(&node);
+    *parent_fingerprint = hdnode_fingerprint(&node);
+
+    if (hdnode_private_ckd_prime(&node, account) != 1) {
+        err = WALLET_ERROR_DERIVATION_FAILED;
+        goto done;
+    }
+    hdnode_fill_public_key(&node);
+    memcpy(public_key, node.public_key, 33);
+    memcpy(chain_code, node.chain_code, 32);
+
+done:
+    memzero(&node, sizeof(node));
     derive_lock_give();
     return err;
 }

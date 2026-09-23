@@ -66,6 +66,11 @@ if [[ "$WHAT" == "all" || "$WHAT" == "app" ]]; then
     # src/eth-decode.c actually accepts and refuses before eth-decode.test.ts
     # replays it against the TS mirror. See docs/MIRROR-GAP.md.
     run "eth-decode conformance vectors" make -C sim eth-decode-conformance
+    # And the QR wire format (BC-UR): what src/ur.c encodes, recorded for the
+    # TypeScript mirror. Same reason as the two above - the device and three
+    # companions must agree byte for byte, and a corpus from an older ur.c
+    # would let them agree with an encoder nobody runs.
+    run "ur and eip-4527 conformance vectors" make -C sim ur-conformance
 
     if command -v pnpm >/dev/null 2>&1; then
         run "app tests" pnpm --dir app test

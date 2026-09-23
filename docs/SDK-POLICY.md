@@ -89,7 +89,7 @@ similarly encumbered, the same test-only shape applies and is equally
 submittable.
 
 **Hedera ATS** — revised at E3, with the package installed and measured rather
-than reasoned about. `docs/apps/HEDERA-ATS.md` §2 has the detail; the summary:
+than reasoned about. the summary:
 
 - **Adopted:** `@hashgraph/asset-tokenization-contracts` 8.0.0, the SDK's own
   pinned contracts dependency, as the authority for every function signature

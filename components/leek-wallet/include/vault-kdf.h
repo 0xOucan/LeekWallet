@@ -84,6 +84,81 @@ typedef enum {
 #define VAULT_KDF_V2_ITERATIONS 2250
 
 /**
+ * The work factor a vault was actually written with.
+ *
+ * VAULT_KDF_V2_ITERATIONS above is a default, not a fact. The fact lives with
+ * the vault: a device that was salted at 2250 must keep deriving at 2250 no
+ * matter what this firmware would choose today, or every mnemonic it holds
+ * becomes undecryptable the moment the constant is edited. That is the whole
+ * reason this struct exists - the number travels with the ciphertext instead
+ * of with the binary.
+ *
+ * `family` says which algorithm, `version` (stored separately) says which
+ * storage format. They are not the same axis: Argon2id will arrive as a new
+ * family, and the Argon2 fields below are already reserved for it so that
+ * adding it costs a family number rather than another format change. Nothing
+ * reads them yet.
+ */
+typedef enum {
+    VAULT_KDF_FAMILY_LEGACY_SHA256 = 0,  /* v1: unsalted SHA256 chains       */
+    VAULT_KDF_FAMILY_PBKDF2_SHA512 = 1,  /* v2/v3: PBKDF2-HMAC-SHA512        */
+    /* 2 is reserved for Argon2id. Do not reuse. */
+} VaultKdfFamily;
+
+/** Wire version of the parameter blob itself, so it can grow again. */
+#define VAULT_PARAMS_BLOB_V1   1
+/** Serialized size of a VAULT_PARAMS_BLOB_V1 blob. */
+#define VAULT_PARAMS_BLOB_SIZE 20
+
+typedef struct {
+    uint8_t  blob_version;  /* VAULT_PARAMS_BLOB_V1                          */
+    uint8_t  family;        /* VaultKdfFamily                                */
+    uint32_t iterations;    /* PBKDF2 iteration count                        */
+    uint32_t mem_kib;       /* Argon2: memory cost, KiB. Reserved, 0 today.  */
+    uint32_t time_cost;     /* Argon2: passes. Reserved, 0 today.            */
+    uint8_t  parallelism;   /* Argon2: lanes. Reserved, 0 today.             */
+} VaultKdfParams;
+
+/**
+ * The parameters this firmware would choose for `version`.
+ *
+ * Also the answer for a vault that predates the stored blob: those were all
+ * written at VAULT_KDF_V2_ITERATIONS, so defaulting to it is what keeps
+ * existing devices opening. Never change the values this returns for v2/v3.
+ */
+void vault_params_default(VaultKdfVersion version, VaultKdfParams *out);
+
+/** Encode `params` into `out` (VAULT_PARAMS_BLOB_SIZE bytes). Returns 0 on
+ *  failure, otherwise the number of bytes written. Little-endian, fixed size. */
+size_t vault_params_serialize(const VaultKdfParams *params,
+                              uint8_t *out, size_t out_size);
+
+/**
+ * Decode a stored parameter blob.
+ *
+ * `blob` absent or empty is not an error: it is a vault written before
+ * parameters were recorded, and `out` is filled with vault_params_default()
+ * for `fallback`. Returns false only when a blob is present but unusable, in
+ * which case `out` still holds the defaults so the caller can carry on and
+ * log. A malformed blob must never leave `out` uninitialized - that would be
+ * a derivation under a zero work factor.
+ */
+bool vault_params_parse(const uint8_t *blob, size_t length,
+                        VaultKdfVersion fallback, VaultKdfParams *out);
+
+/** Derive the storage key under explicit parameters. */
+void vault_derive_key_with(const VaultKdfParams *params,
+                           const char *pin, size_t pin_len,
+                           const uint8_t salt[VAULT_SALT_SIZE],
+                           uint8_t key_out[VAULT_KEY_SIZE]);
+
+/** Derive the verifier under explicit parameters. */
+void vault_derive_verifier_with(const VaultKdfParams *params,
+                                const char *pin, size_t pin_len,
+                                const uint8_t salt[VAULT_SALT_SIZE],
+                                uint8_t hash_out[VAULT_HASH_SIZE]);
+
+/**
  * Derive the storage encryption key.
  * v1 ignores `salt` and reproduces the legacy scheme exactly, so existing
  * vaults stay readable during migration.
