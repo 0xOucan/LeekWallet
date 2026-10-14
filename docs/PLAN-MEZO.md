@@ -99,7 +99,51 @@ MUSD is a plain ERC-20 with `transfer`, `transferFrom` and a `permit` nonce, so
 and `ETH_CALL_ERC20_APPROVE` are in the decodable set and are drawn field by
 field with no descriptor from the host. This is a demonstration, not a task.
 
-### 3.3 Borrowing MUSD, and why it is cheap for us
+### 3.3 Where each asset lives, and what bridges it
+
+Checked live on each chain's own RPC, 14 Oct 2026, by calling `symbol()`:
+
+| Asset | Mezo | Ethereum | Base | BNB Chain | Solana |
+|---|---|---|---|---|---|
+| **MUSD** | `0xdD468A…F9F186` ✓ | same address ✓ | same address ✓ | **absent** — that address holds no contract on BNB | — |
+| **MEZO** | `0x7B7c000000000000000000000000000000000001` ✓ | `0x8e4cbBcc…6d4848b` ✓ | same address ✓ | same address ✓ | `8niMFW4yuv3vLoqTtBaC6rchyasmUhgvpgSyPEeeCrw6` (listed, not checked) |
+| **aMUSD** | — | `0x52317a47…aAE96aBc` ✓ (Morpho vault receipt) | — | — | — |
+
+Consequence for chain choice: **BNB Chain can only mean MEZO**, not MUSD. Mezo
+testnet is our primary target, with Ethereum and Base available for MUSD if a
+second chain is wanted.
+
+### 3.4 Bridges
+
+Mezo's own bridging is **Wormhole NTT** (Native Token Transfer), burn-and-mint,
+driven from the Portal UI at `portalbridge.com` or the Mezo dApp. Addresses from
+Mezo's contracts reference:
+
+| | NTT Manager | Wormhole Transceiver |
+|---|---|---|
+| MUSD on Mezo | `0x7efb386675d75280D39Aae42964A6776DE0ee0bD` | `0x56E27f1A8425515FFD4BD76A254Ac1a5c0B66D71` |
+| MEZO on Mezo | `0x5E668D912F69db0762CD0fE00647dA9fa6b29591` | `0x528edf2dBbC6Ae6978c88E54B260AB86B682D18c` |
+| MEZO on Ethereum | `0x13916D0daB357DCBAa1600b594d62C641840686A` | `0x920871aF2D4106E76d204fEA7122fA129C9283b1` |
+| MEZO on Base | `0x0c46f496C410465975a427e34a976fc15a2edE4f` | `0x27321f84704a599aB740281E285cc4463d89A3D5` |
+| MEZO on BSC | `0x09959798B95d00a3183d20FaC298E4594E599eab` | `0xa10aD2570ea7b93d19fDae6Bd7189fF4929Bc747` |
+
+Two other paths exist and are not the same thing:
+
+- **Mezo Portal**, the deposit contract on Ethereum (`0xAB13B8ee…fD5B8A39` proxy,
+  with a tBTC BitcoinDepositor), which is how BTC and the bridged `m*` tokens
+  (mUSDC, mUSDT, mDAI, mUSDe, the wrapped BTC variants) reach Mezo.
+- **tBTC**, which is how Bitcoin itself becomes collateral.
+
+No evidence was found that **Stargate or LayerZero** support Mezo or MUSD;
+searching turned up only the 2025 Stargate acquisition story. Treat Wormhole NTT
+as the only bridge for these two assets until Mezo says otherwise.
+
+**For this wallet, none of this is code.** A bridge transfer is an ERC-20
+`approve` plus a contract call; the device decodes the approve today and would
+refuse the NTT transfer as an unknown call. Decoding NTT is a candidate, not a
+plan: it is only worth it if a judge or a user actually bridges from the device.
+
+### 3.5 Borrowing MUSD, and why it is cheap for us
 
 From `mezo-org/musd`, `solidity/contracts/interfaces/IBorrowerOperations.sol`:
 
@@ -124,6 +168,20 @@ the amount, the direction, and whether BTC is attached.
 That makes "borrow MUSD against BTC, confirmed on separate hardware, with the
 device naming the amount itself" a realistic Wave 2 deliverable rather than an
 aspiration.
+
+**Borrowing exists only on Mezo.** The trove system is deployed on the Mezo
+chain; MUSD on Ethereum and Base is the bridged NTT token with no trove system
+behind it. So:
+
+- **For the wallet, this costs no Solidity at all.** We decode calls, we do not
+  deploy markets. Borrowing is reached by signing `BorrowerOperations` calls on
+  Mezo, which is a firmware table row per function.
+- **Borrowing MUSD on another chain** would mean either a market that already
+  lists it — Mezo's docs name a Morpho MUSD vault on Ethereum, whose receipt
+  token `aMUSD` is verified above, and that is *supplying*, not borrowing
+  against BTC — or a lending market of your own. That is the separate Track 1
+  repository, not this one. Verify any Morpho market's parameters before
+  claiming a borrow path exists there.
 
 The architecture, in Mezo's words: a position is opened by
 `BorrowerOperations.openTrove` with BTC attached; the BTC sits in `ActivePool`
@@ -173,11 +231,9 @@ real. Do not build a contract whose only purpose is to exist.
 Open items, each with the method for closing it. None of these may be written
 into code from memory or from a mirror site.
 
-- **MUSD on Ethereum and Base.** Mezo's docs list the same address on both.
-  Read `symbol()` and `decimals()` on each chain before adding either row.
-- **The MEZO token address.** Mezo's public contracts reference has the heading
-  and no address under it. If MEZO is to be supported, get the address from the
-  explorer or Discord, verified by RPC. MUSD alone satisfies the requirement.
+- **MEZO testnet address.** The mainnet addresses are verified in §3.3; no
+  testnet MEZO address is published in the contracts reference. The faucet hands
+  out test MEZO, so the address can be read from a faucet transaction.
 - **The borrow contract addresses on testnet.** Not in the public docs. The
   `SCALE_TEST_ADDRESSES.md` file in `mezo-org/musd` lists a full set, but its
   MUSD (`0xf9BBcC…`) is **not** the documented testnet MUSD, so that file is a
