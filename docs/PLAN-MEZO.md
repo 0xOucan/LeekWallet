@@ -188,6 +188,42 @@ The architecture, in Mezo's words: a position is opened by
 until withdrawn, repaid, redeemed against (`TroveManager.redeemCollateral`) or
 liquidated (`TroveManager.liquidate`).
 
+### 3.6 The other testnets, and a market of our own
+
+Checked with `eth_getCode` on each testnet's own RPC, 14 Oct 2026:
+
+| | Sepolia | Base Sepolia | BSC testnet |
+|---|---|---|---|
+| MUSD (`0xdD468A…`) | **no contract** | **no contract** | **no contract** |
+| MEZO (`0x8e4cbB…`) | present, `symbol()` → `MEZO` | present (same bytecode size) | **no contract** |
+| MezoBridge (`0x3a3BaE…`) | present | — | — |
+
+So **MUSD exists on no testnet except Mezo's own.** Any MUSD-shaped demo on
+Sepolia or Base Sepolia has to be a token we deploy ourselves. Our chain table
+already carries Sepolia (11155111), Base Sepolia (84532) and BNB testnet (97),
+so those cost no companion work.
+
+That makes the idea workable: **deploy a Mezo-like lending market, with our own
+mock collateral and stablecoin, on testnets.** Three facts decide how:
+
+1. **The deploy path exists.** `mezo-org/musd` ships numbered Hardhat deploy
+   scripts for the whole system, including `07_deploy_mock_aggregator.ts` — a
+   mock price oracle. A full trove deployment on any EVM testnet is
+   configuration, not new contracts.
+2. **The licence is GPL-3.0**, and LeekWallet is Apache-2.0. A published fork
+   of their contracts is a derivative work and must be GPL-3.0, so it **cannot
+   live in this repository**. It belongs in the separate Track 1 repo, licensed
+   GPL-3.0, with the lineage credited. This is also what the Buildathon rules
+   require: reused code must be open source and cited.
+3. **The wallet needs no new work to support it.** A fork keeps the function
+   signatures, so the firmware table rows added for Mezo's `BorrowerOperations`
+   decode our own deployment unchanged. One decoder, two chains, and a borrow
+   demo that does not depend on obtaining testnet MUSD on Mezo.
+
+The honest framing for a submission: Mezo's market is the real one, ours is a
+testbed that proves the wallet's decoding against the same ABI. Do not present
+a redeployment as an original protocol.
+
 ## 4. The work, as tasks
 
 Each task names where it lands and what proves it. "Event" means it leaves with
@@ -242,6 +278,8 @@ into code from memory or from a mirror site.
   on testnet (the public RPC caps `eth_getLogs` at 10,000 blocks, so this needs
   chunking around its deployment), or take the addresses from the testnet dApp
   and confirm each with `mintList`/`burnList` on MUSD.
+- **Whether a Morpho MUSD market allows borrowing**, as opposed to supplying.
+  Read the market parameters before claiming either.
 - **How to obtain test MUSD.** Documented as "borrow against test BTC, or swap
   BTC → MUSD in the testnet dApp". The faucet gives BTC and MEZO, not MUSD.
   Needed before T-MEZO-4 can be filmed.
