@@ -15,7 +15,7 @@ that is wallet code, not event code.
 | | |
 |---|---|
 | Hard requirement | the project integrates **MUSD and/or MEZO** |
-| Chains allowed | Mezo, Ethereum, Base, BNB Chain; **Mezo testnet accepted** |
+| Chains allowed | Mezo Mainnet, Ethereum, Base, **BSC, Robinhood** (per the Terms of Participation, which differ from the overview page's "BNB Chain"); **Mezo testnet accepted** |
 | Wave 1 | build 16–26 Oct 2026, judged 27 Oct – 1 Nov, $2,000 MEZO |
 | Wave 2 | build 2–15 Nov, judged 16–22 Nov, $5,000 MEZO |
 | Announcement | 23 Nov 2026, online demo |
@@ -32,8 +32,11 @@ Scoring, and where we stand:
 | Materials | 10% | §7 |
 
 **Track 2, Access and Distribution**, which names "cross-platform wallets and
-interfaces that simplify MUSD/MEZO access". A Track 1 DeFi entry is a separate
-repository and is out of scope here.
+interfaces that simplify MUSD/MEZO access". The form takes track selection as
+multiple choice, and a **Track 1 DeFi entry is planned as a separate
+repository**: an MUSD-settled ETF market, planned in
+[PLAN-MEZO-TRACK1.md](PLAN-MEZO-TRACK1.md). The two submissions reference each
+other and each stands alone.
 
 Two of their stated priorities fit us exactly and should be said plainly in the
 submission rather than implied: *existing products adding MUSD/MEZO integration
