@@ -449,6 +449,36 @@ const CURATED: readonly CuratedEntry[] = [
    *    people are being asked to take payments on. If a second operator
    *    appears, it belongs here and in the CSP.
    */
+  /*
+   * Mezo, whose gas token is BTC.
+   *
+   * Verified live 2026-10-14: eth_chainId returned 0x7b7c on mainnet through
+   * dRPC and 0x7b7b on testnet through Mezo's own endpoint. BTC with 18
+   * decimals is the native currency on both, which is the whole reason the
+   * symbol is a per-chain field: a device or a screen that says ETH here is
+   * naming the wrong asset, not merely the wrong word.
+   *
+   * The testnet has one operator, where this table's rule is two, for the same
+   * reason as Arc above: Mezo publishes a single testnet endpoint, and the
+   * alternative is not listing the chain MUSD is actually integrated on. The
+   * mainnet has four independent providers and takes two of them.
+   */
+  {
+    id: 31612,
+    name: "Mezo",
+    nativeCurrency: { name: "Bitcoin", symbol: "BTC", decimals: 18 },
+    rpcUrls: ["https://mezo.drpc.org", "https://mezo-mainnet.boar.network"],
+    explorerUrl: "https://explorer.mezo.org",
+    testnet: false,
+  },
+  {
+    id: 31611,
+    name: "Mezo Testnet",
+    nativeCurrency: { name: "Test Bitcoin", symbol: "BTC", decimals: 18 },
+    rpcUrls: ["https://rpc.test.mezo.org"],
+    explorerUrl: "https://explorer.test.mezo.org",
+    testnet: true,
+  },
   {
     id: 5042002,
     name: "Arc Testnet",
@@ -857,6 +887,25 @@ const TOKEN_HINTS: readonly TokenHint[] = [
   { chainId: 137, address: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", symbol: "USDC", decimals: 6, verified: false },
   { chainId: 8453, address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", symbol: "USDC", decimals: 6, verified: false },
   { chainId: 42161, address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831", symbol: "USDC", decimals: 6, verified: false },
+
+  /* MUSD, Mezo's Bitcoin-backed stablecoin, on Mezo mainnet and testnet.
+   * Verified 2026-10-14 by eth_call of symbol() and decimals() against each
+   * chain's own RPC, and cross-checked against Mezo's published contracts
+   * reference. 18 decimals on both, unlike the six-decimal dollars above,
+   * which is exactly the mistake the note on this table warns about. */
+  { chainId: 31612, address: "0xdd468a1ddc392dcdbef6db6e34e89aa338f9f186", symbol: "MUSD", decimals: 18, verified: false },
+  { chainId: 31611, address: "0x118917a40faf1cd7a13db0ef56c86de7973ac503", symbol: "MUSD", decimals: 18, verified: false },
+  /* The same MUSD, carried to Ethereum and Base by Wormhole NTT at one
+   * address. Verified the same way, on each chain's own RPC. */
+  { chainId: 1, address: "0xdd468a1ddc392dcdbef6db6e34e89aa338f9f186", symbol: "MUSD", decimals: 18, verified: false },
+  { chainId: 8453, address: "0xdd468a1ddc392dcdbef6db6e34e89aa338f9f186", symbol: "MUSD", decimals: 18, verified: false },
+  /* MEZO, the native token, as an ERC-20. Mainnet Mezo uses a reserved
+   * address; Ethereum, Base and BSC share the bridged one. Verified by
+   * symbol() on each. No testnet address is published. */
+  { chainId: 31612, address: "0x7b7c000000000000000000000000000000000001", symbol: "MEZO", decimals: 18, verified: false },
+  { chainId: 1, address: "0x8e4cbbcc33db6c0a18561fde1f6ba35906d4848b", symbol: "MEZO", decimals: 18, verified: false },
+  { chainId: 8453, address: "0x8e4cbbcc33db6c0a18561fde1f6ba35906d4848b", symbol: "MEZO", decimals: 18, verified: false },
+  { chainId: 56, address: "0x8e4cbbcc33db6c0a18561fde1f6ba35906d4848b", symbol: "MEZO", decimals: 18, verified: false },
 
   /* Circle's testnet USDC and EURC, on the nine chains CCTP V2 testnet covers.
    *

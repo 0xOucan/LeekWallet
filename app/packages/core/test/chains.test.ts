@@ -41,8 +41,14 @@ const group = (n: string) => console.log(`== ${n}`);
  * alternative to the exception was either not listing a chain people are being
  * asked to take payments on, or inventing a mirror. Remove this entry the day
  * a second operator exists.
+ *
+ * 31611 (Mezo Testnet): Mezo publishes one testnet endpoint,
+ * rpc.test.mezo.org, and it is where MUSD is actually deployed for testing.
+ * Mezo mainnet (31612) is not here: it has four independent providers and the
+ * table takes two of them. Remove this entry the day a second testnet operator
+ * exists.
  */
-const SINGLE_OPERATOR = new Set([5042002]);
+const SINGLE_OPERATOR = new Set([5042002, 31611]);
 
 group("the table is internally consistent");
 {
