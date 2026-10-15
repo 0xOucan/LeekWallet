@@ -157,14 +157,108 @@ spine per wave.
 
 Same story from both ends, and each is a complete submission alone.
 
-## 8. Decisions needed before code
+## 8. Decisions taken
 
-1. **Ticker policy** — synthetic indices (recommended) or labelled mocks.
-2. **Bridge** — NTT for shares and per-chain deployment (recommended), or a
-   relayer of our own.
-3. **Repo and licence** — one repo for ETF plus lending under GPL-3.0 (simplest
-   if the lending market is a musd fork), or two repos so the ETF code can stay
-   permissive.
-4. **Whether the lending market is a fork at all.** An original, simpler
-   market avoids the GPL question and is honest about being less battle-tested;
-   a fork inherits audited mechanics. Both are defensible; pick deliberately.
+Settled 14 Oct 2026:
+
+| Question | Decision |
+|---|---|
+| Tickers | **Parody names**: Gologgle, Amezon and the like. Distinct marks, no logos, no claim of real equity exposure. Metadata says mock, unbacked, testnet |
+| Bridge | **No bridge of ours.** Wormhole NTT for anything that must move; the market deploys per chain. The server runs the oracle only |
+| Oracle | **Ours, on your server**, implementing `AggregatorV3Interface`. This needs no permission from Chainlink: the interface is four view functions, and Mezo's own `MockAggregator` is exactly this. Prices come from an open-source real-time index feed |
+| Missing MUSD on other testnets | **Deploy our own mock MUSD and mock MEZO** there, clearly labelled (§9) |
+| Wave split | Wave 1 marketplace; Wave 2 leverage, built as **looping on the lending market**, not a perps exchange (§6) |
+
+### A note on parody names
+
+Parody is the right call and it holds as long as the name is a distinct mark and
+the product never claims to be the real thing. So: no logos, no colour schemes
+lifted from the originals, no "tracks Alphabet's share price" in the copy. The
+token tracks *an index our oracle publishes*, which happens to be real data.
+`Gologgle` is a parody; `Gologgle (GOOGL)` with Alphabet's logo is a problem
+wearing a funny hat.
+
+## 9. Mock MUSD and MEZO on the other testnets
+
+MUSD exists on no testnet but Mezo's own, and MEZO answers only on Sepolia and
+Base Sepolia (PLAN-MEZO.md §3.6). So multichain testnet work needs tokens we
+deploy. Rules for them:
+
+- **Named so they cannot be mistaken for the real thing**: `mockMUSD` with
+  symbol `mMUSD`, not `MUSD`. A faucet-mintable ERC-20 with 18 decimals, open
+  `mint()` on testnets only.
+- **Never on a mainnet**, and the deploy script should refuse a mainnet chain ID
+  outright rather than rely on discipline.
+- **The real one takes precedence where it exists.** On Mezo testnet the market
+  uses the real MUSD at `0x118917a4…`. The mocks exist for Sepolia, Base
+  Sepolia and BSC testnet only.
+
+That ordering matters for scoring: *depth of MUSD integration* is judged, and a
+submission whose flagship deployment uses real testnet MUSD on Mezo, with mocks
+only where Mezo has not deployed, is a far stronger claim than one running
+entirely on tokens we minted.
+
+## 10. Architecture
+
+Contracts, in dependency order. Nothing here is a fork unless it says so.
+
+**Oracle**
+- `IndexOracle` — implements `AggregatorV3Interface` (`decimals`,
+  `description`, `latestRoundData`, `getRoundData`). One instance per index.
+  Push-only, owner-restricted, with: `maxStaleness` after which consumers must
+  refuse, `maxDeviationBps` per round, a `paused` flag, and monotonic round IDs.
+- `OracleRegistry` — index symbol to oracle address, so the factory and the
+  market resolve feeds by name rather than hardcoding.
+
+**ETF market (Wave 1)**
+- `ETFShare` — ERC-20 share token, 18 decimals, mint and burn restricted to its
+  vault. Written NTT-compatible (mint/burn controlled by a manager role) so
+  Wormhole can carry it later without a rewrite.
+- `ETFFactory` — `deployETF(string name, string symbol)` **and nothing else in
+  the signature**. Index composition, oracle, fee and settlement token come
+  from registry state frozen before deployment. This is the ATS lesson (§2) and
+  it is what keeps the call drawable on the device.
+- `IssuanceVault` — `buy(uint256 musdAmount, uint256 minShares)` and
+  `redeem(uint256 shares, uint256 minMusd)`, priced from the oracle, settled in
+  MUSD, with slippage bounds and a fee in basis points to the treasury. Refuses
+  a stale or paused feed.
+- `Treasury` — fees, withdrawable by owner. Dull on purpose.
+
+**Lending (Wave 2)**
+- Either a **fork of `mezo-org/musd`** (GPL-3.0, own repo, lineage credited —
+  inherits audited trove mechanics, mock aggregator included) or a **simple
+  original market** (no GPL question, less battle-tested). Decision still open.
+- Collateral: ETF shares and MUSD. Debt: MUSD. The price of a share comes from
+  the same `IndexOracle`, which is the whole reason the oracle is first.
+
+**Leverage (Wave 2), as looping not perps**
+- `LoopStrategy` — deposit shares, borrow MUSD against them, buy more shares,
+  repeat to a target ratio, in one transaction, with a max-loops bound and a
+  health-factor floor.
+- This is what Track 1 actually asks for: "looping strategies for MUSD/MEZO
+  positions (leveraged yield farming)". A perps exchange needs a funding rate,
+  a matching engine and a liquidation keeper, which is a quarter of work, not a
+  fortnight, and its risk sits on the oracle we just admitted is single-operator.
+  2x and 3x via looping is the same user-facing promise with a tenth of the
+  attack surface.
+
+**What the device draws, and therefore what the firmware needs**
+| Call | Firmware cost |
+|---|---|
+| `approve(MUSD, vault, amount)` | none, decoded today |
+| `deployETF(string,string)` | none if shaped like ATS; the decoder exists |
+| `buy(uint256,uint256)` / `redeem(uint256,uint256)` | one table row each, static types |
+| `loop(uint256,uint256,uint8)` | one table row, static types |
+Each row needs shared C/TypeScript vectors including refusals, and lands in the
+**wallet** repo.
+
+## 11. Decisions still open
+
+1. **Repo and licence** — one repo for ETF plus lending under GPL-3.0
+   (simplest if the lending market is a musd fork), or two repos so the ETF
+   code stays permissive.
+2. **Whether the lending market is a fork at all.** A fork inherits audited
+   mechanics and the GPL; an original simpler market avoids both. Both are
+   defensible; pick deliberately before Wave 2 starts.
+3. **Which index feed.** It must be open source or openly licensed for
+   redistribution, since the oracle republishes it on chain.
