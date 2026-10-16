@@ -49,6 +49,25 @@ vendors the ABI JSON and the deployed addresses — facts, not derivative work �
 and never imports the platform's source. That keeps MINI-APPS.md rule 1 intact
 and keeps the mini-app deletable in one commit.
 
+### What stays in the wallet after the hackathon, and what goes
+
+The Mezo work divides cleanly, and it is worth keeping it that way as it is
+written rather than sorting it out afterwards:
+
+| Addition | After the event |
+|---|---|
+| Mezo chains in the chain table, MUSD and MEZO token hints | **stays.** Generic wallet capability: one more EVM chain and four more verified token rows, the same shape as every other entry |
+| The per-chain gas symbol on the device (T-MEZO-3) | **stays.** It is a correctness fix for any chain whose gas is not ether, and Mezo only exposed it |
+| Borrow-call decoder rows (T-MEZO-6) | **stays** unless the calls go unused. Decoding is wallet capability, and a decoder that is deleted takes its vectors with it |
+| `app/packages/apps/mezo/` | **goes**, in one commit, like Aqua and ATS before it. The hackathon surface is the removable part, which is exactly why it lives there |
+| The 1.5" board profile (H-1) | **stays.** Hardware support is not event-specific |
+
+So: no board hardware is needed for any of the Mezo software work, the wallet
+keeps everything that is generally useful, and the event-shaped code is
+quarantined from the start. The expectation that there are no mini-apps after
+the hackathon costs nothing under this split — the framework survives an empty
+`MINI_APPS`, as it does today.
+
 ## 2. The two front ends, and why both exist
 
 The same contracts are reached two ways, deliberately:
