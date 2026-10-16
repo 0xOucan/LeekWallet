@@ -21,6 +21,29 @@ Three surfaces, two new repositories:
 ETF code or the wallet. If Wave 2's market turns out to be original rather than
 a fork, `leek-lend` can be Apache-2.0 too and the split costs nothing.
 
+**Three repositories, but one dapp.** The split is about licences and
+deletability, not about what a user sees: the front end in `leek-stocks/web`
+serves both the ETF market and the lending market, because a front end consumes
+ABIs and addresses, which are data. An Apache-2.0 front end talking to GPL-3.0
+contracts is fine; an Apache-2.0 *fork* of them would not be.
+
+**How the contracts are written.** Foundry, Solidity 0.8.28, `evm_version =
+london` to match Mezo's documented setting, OpenZeppelin v5 for roles and
+SafeERC20. The ethskills security and testing checklists are the standard every
+contract is held to before deployment: explicit access control on every
+privileged function, Checks-Effects-Interactions, no hardcoded `1e18`, multiply
+before divide, events on every state change, input validation including zero
+addresses and amounts, and tests that cover properties rather than restating
+the implementation — unit, fuzz at **1000 runs minimum**, invariant tests for
+anything stateful, fork tests for anything touching an external protocol, and a
+gas snapshot. `slither` is not installed on this machine yet and is a gate
+before any deployment.
+
+**Deploy keys.** Mezo is EVM, so the existing `monad-deployer` keystore account
+works on Mezo testnet; its address needs test BTC from the faucet for gas.
+Passwords are typed into a prompt (`forge script --account monad-deployer`),
+never passed on a command line, and never echoed.
+
 **What crosses a repo boundary is data, never code.** The wallet's mini-app
 vendors the ABI JSON and the deployed addresses — facts, not derivative work —
 and never imports the platform's source. That keeps MINI-APPS.md rule 1 intact
@@ -71,8 +94,8 @@ The spine, finished, with nothing half-built. Ten days.
 
 | ID | Task | Depends on |
 |---|---|---|
-| S-1 | Repo, Foundry or Hardhat, CI that runs tests, Apache-2.0, README that states the trust model plainly | — |
-| S-2 | `IndexOracle` implementing `AggregatorV3Interface`: push-only, owner-restricted, `maxStaleness`, `maxDeviationBps`, pausable, monotonic rounds | S-1 |
+| S-1 | Repo, Foundry, Apache-2.0, README that states the trust model plainly (CI still owed) | **done** |
+| S-2 | `IndexOracle` implementing `AggregatorV3Interface`: push-only, role-restricted, `maxStaleness`, immutable `maxDeviationBps`, pausable, monotonic rounds | **done**, 15 tests, fuzz 1000 |
 | S-3 | The feed service on your server: pull an openly licensed index, push rounds on a heartbeat, expose a read-only JSON endpoint for the front ends. systemd unit, TLS, CORS | S-2 |
 | S-4 | `ETFShare` (ERC-20, mint/burn by vault, NTT-compatible roles) and `ETFFactory` with **exactly** `deployETF(string name, string symbol)` — everything else frozen in registry state, because that is what keeps the call drawable on a 128x64 screen | S-2 |
 | S-5 | `IssuanceVault`: `buy(uint256 musdAmount, uint256 minShares)`, `redeem(uint256 shares, uint256 minMusd)`, priced from the oracle, **settled in real testnet MUSD on Mezo**, fee in basis points, refuses a stale or paused feed | S-4 |
