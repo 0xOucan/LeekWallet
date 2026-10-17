@@ -536,6 +536,20 @@ export function chainName(chainId: number | bigint): string | undefined {
 }
 
 /**
+ * Ticker of the chain's gas token, or undefined.
+ *
+ * Undefined rather than "ETH" for the same reason `chainName` refuses to
+ * guess, and with more at stake: a name the user does not recognise makes them
+ * look it up, while a ticker they do recognise makes them stop. Mezo pays gas
+ * in BTC at ether's 18 decimals, so a defaulted "ETH" would have relabelled an
+ * amount without changing a digit of it. The firmware's table (src/eth-tx.c)
+ * takes the same position and is what the user should be reading anyway.
+ */
+export function gasSymbol(chainId: number | bigint): string | undefined {
+  return getChain(chainId)?.nativeCurrency.symbol;
+}
+
+/**
  * How to refer to a chain in a sentence. Falls back to the number, which is
  * what the device shows for an ID it does not recognise either.
  */
