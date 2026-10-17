@@ -4877,7 +4877,7 @@ static void screen_passphrase_confirm_on_button(button_id_t btn)
 
 typedef enum {
     SIGN_PAGE_MESSAGE,      /* the full text of an EIP-191 personal_sign */
-    SIGN_PAGE_VALUE,        /* amount in ether, and the chain */
+    SIGN_PAGE_VALUE,        /* amount in the gas token, and the chain */
     SIGN_PAGE_TO,           /* recipient of a native transfer */
     SIGN_PAGE_ACTION,       /* what the token call does, and for how much */
     SIGN_PAGE_PARTY,        /* the token recipient or the approved spender */
@@ -5125,8 +5125,8 @@ void ui_request_sign(const EthTx *tx, const HDPath *path, const char *from)
             sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
             break;
         case ETH_CALL_WETH_DEPOSIT:
-            /* The amount wrapped is the transaction's own value, so the ether
-             * page is the amount page here. */
+            /* The amount wrapped is the transaction's own value, so the
+             * gas-token page is the amount page here. */
             sign_page_kind[n++] = SIGN_PAGE_ACTION;
             sign_page_kind[n++] = SIGN_PAGE_VALUE;
             sign_page_kind[n++] = SIGN_PAGE_CONTRACT;
@@ -5574,14 +5574,24 @@ static void screen_sign_confirm_render(void)
              * shorten an amount, and a shortened amount is a different
              * amount. Eighteen characters fit the line; anything longer is
              * marked rather than cut. */
-            char amount[24];
+            char amount[32];
+            const char *gas = eth_gas_symbol(sign_tx.chain_id);
             size_t vlen = strlen(value);
             if (vlen <= 18) {
-                snprintf(amount, sizeof(amount), "%.18s ETH", value);
+                snprintf(amount, sizeof(amount), "%.18s%s%s", value,
+                         gas ? " " : "", gas ? gas : "");
             } else {
-                snprintf(amount, sizeof(amount), "%.15s.. ETH", value);
+                snprintf(amount, sizeof(amount), "%.15s..%s%s", value,
+                         gas ? " " : "", gas ? gas : "");
             }
             oled_draw_string(3, 0, amount);
+            if (gas == NULL) {
+                /* The row the ticker would have occupied, spent saying why it
+                 * is missing. A bare number next to an unnamed chain reads as
+                 * a number of ether to anyone who has only ever signed on
+                 * one, and that is the reading this says out loud is wrong. */
+                oled_draw_string(4, 0, "Gas token unknown");
+            }
             oled_draw_string(5, 0, "On");
             oled_draw_string(6, 0,
                 eth_chain_name(sign_tx.chain_id, scratch, sizeof(scratch)));
@@ -5648,14 +5658,21 @@ static void screen_sign_confirm_render(void)
                     sign_draw_amount(4);
                     break;
 
-                case ETH_CALL_WETH_DEPOSIT:
-                    /* No arguments: the amount wrapped is the ether attached
-                     * to the transaction, which the next page shows. */
-                    oled_draw_string(2, 0, "Wrap ETH");
-                    oled_draw_string(4, 0, "Sends the ether");
+                case ETH_CALL_WETH_DEPOSIT: {
+                    /* No arguments: the amount wrapped is the gas token
+                     * attached to the transaction, which the next page shows.
+                     * Named from the chain and not from the selector --
+                     * deposit() is WETH's on Ethereum and the same wrapper
+                     * for whatever gas is anywhere else, so the asset comes
+                     * from the chain table or is not claimed at all. */
+                    const char *gas = eth_gas_symbol(sign_tx.chain_id);
+                    snprintf(line, sizeof(line), "Wrap %s", gas ? gas : "gas token");
+                    oled_draw_string(2, 0, line);
+                    oled_draw_string(4, 0, "Sends the amount");
                     oled_draw_string(5, 0, "below to this");
                     oled_draw_string(6, 0, "contract");
                     break;
+                }
 
                 case ETH_CALL_WETH_WITHDRAW:
                     oled_draw_string(2, 0, "Unwrap tokens");
@@ -6259,11 +6276,16 @@ static void screen_sign_confirm_render(void)
                 if (!eth_format_value(&sign_tx.value, value, sizeof(value), 8)) {
                     snprintf(value, sizeof(value), "?");
                 }
-                /* A token call that also moves ether is unusual and worth
-                 * seeing; almost always this reads "+0 ETH". */
-                char eth[24];
-                snprintf(eth, sizeof(eth), "+%.15s ETH", value);
-                oled_draw_string(6, 0, eth);
+                /* A token call that also moves the gas token is unusual
+                 * and worth seeing; almost always this reads "+0 ETH". No
+                 * ticker on a chain the table does not carry: the amount page
+                 * is where that gap is explained, and repeating a guess here
+                 * would undo it. */
+                const char *gas = eth_gas_symbol(sign_tx.chain_id);
+                char native[32];
+                snprintf(native, sizeof(native), "+%.15s%s%s", value,
+                         gas ? " " : "", gas ? gas : "");
+                oled_draw_string(6, 0, native);
             }
             break;
         }

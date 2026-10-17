@@ -145,4 +145,13 @@ bool eth_format_address(const uint8_t address[20], char *out, size_t out_size);
 /** Human-readable chain name, or the number when unknown. */
 const char *eth_chain_name(uint64_t chain_id, char *scratch, size_t scratch_size);
 
+/**
+ * Ticker of the chain's gas token — "ETH", "BTC" on Mezo — or NULL when this
+ * chain is not in the table.
+ *
+ * NULL means "say nothing", not "say ETH": see the reasoning at the fallback
+ * in eth-tx.c. Every caller draws the amount without a ticker in that case.
+ */
+const char *eth_gas_symbol(uint64_t chain_id);
+
 #endif /* ETH_TX_H */

@@ -396,21 +396,66 @@ bool eth_format_address(const uint8_t address[20], char *out, size_t out_size)
     return true;
 }
 
+/* The chains this device can name, and what their gas is called.
+ *
+ * One row per chain rather than a second table, because the name and the
+ * ticker are the same fact and two tables are two places to forget one. Mezo
+ * is what proved that: the companion carried BTC as the gas token for 31611
+ * while this file still printed the literal "ETH" over the amount, so the one
+ * screen the host cannot write to named the wrong asset (T-MEZO-3). BNB Chain
+ * and Polygon were wrong the same way and are fixed by the same row.
+ *
+ * Deliberately shorter than app/packages/core/src/chains.ts, which carries the
+ * per-chain verification note: a chain missing here renders as its number with
+ * no ticker, which is honest, where a guessed row would not be. */
+static const struct {
+    uint64_t    id;
+    const char *name;
+    const char *gas;
+} CHAIN_TABLE[] = {
+    { 1,        "Ethereum",     "ETH" },
+    { 10,       "Optimism",     "ETH" },
+    { 56,       "BNB Chain",    "BNB" },
+    { 137,      "Polygon",      "POL" },
+    { 8453,     "Base",         "ETH" },
+    { 31611,    "Mezo Testnet", "BTC" },
+    { 31612,    "Mezo",         "BTC" },
+    { 42161,    "Arbitrum",     "ETH" },
+    { 11155111, "Sepolia",      "ETH" },
+    { 84532,    "Base Sepolia", "ETH" },
+};
+
 const char *eth_chain_name(uint64_t chain_id, char *scratch, size_t scratch_size)
 {
-    switch (chain_id) {
-        case 1:        return "Ethereum";
-        case 10:       return "Optimism";
-        case 56:       return "BNB Chain";
-        case 137:      return "Polygon";
-        case 8453:     return "Base";
-        case 42161:    return "Arbitrum";
-        case 11155111: return "Sepolia";
-        case 84532:    return "Base Sepolia";
-        default:
-            /* Never guess. A wrong name is worse than a number, because a user
-             * who reads "Ethereum" stops checking. */
-            snprintf(scratch, scratch_size, "chain %llu", (unsigned long long)chain_id);
-            return scratch;
+    for (size_t i = 0; i < sizeof(CHAIN_TABLE) / sizeof(CHAIN_TABLE[0]); i++) {
+        if (CHAIN_TABLE[i].id == chain_id) {
+            return CHAIN_TABLE[i].name;
+        }
     }
+
+    /* Never guess. A wrong name is worse than a number, because a user who
+     * reads "Ethereum" stops checking. */
+    snprintf(scratch, scratch_size, "chain %llu", (unsigned long long)chain_id);
+    return scratch;
+}
+
+const char *eth_gas_symbol(uint64_t chain_id)
+{
+    for (size_t i = 0; i < sizeof(CHAIN_TABLE) / sizeof(CHAIN_TABLE[0]); i++) {
+        if (CHAIN_TABLE[i].id == chain_id) {
+            return CHAIN_TABLE[i].gas;
+        }
+    }
+
+    /* NULL, and the caller draws the bare number.
+     *
+     * The tempting fallback is "ETH", because most EVM chains pay gas in
+     * ether and the string was there already. It is the one answer that must
+     * not be given: a user signing on an unnamed chain whose gas is BTC would
+     * read ETH and approve an amount of something else entirely, and they
+     * would read it off the screen that exists precisely so the host cannot
+     * lie to them. An unlabelled number asks the reader to check which chain
+     * they are on, which is the question they should be asking; a wrong label
+     * stops them asking it. */
+    return NULL;
 }
