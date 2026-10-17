@@ -342,6 +342,47 @@ static void test_message_hash_prefix(void)
           "being written where the content should be");
 }
 
+/*
+ * The table carries every chain the companion knows, with the gas token each
+ * chain actually charges. Nine of them are not ether, and getting one wrong
+ * means a user approves an amount of an asset they never read.
+ */
+static void test_gas_symbols_for_every_listed_chain(void)
+{
+    printf("== every listed chain names its own gas token\n");
+
+    struct { uint64_t id; const char *gas; } expected[] = {
+        { 1, "ETH" },        { 10, "ETH" },        { 56, "BNB" },     { 97, "tBNB" },
+        { 100, "XDAI" },     { 130, "ETH" },       { 137, "POL" },    { 143, "MON" },
+        { 146, "S" },        { 296, "HBAR" },      { 324, "ETH" },    { 1301, "ETH" },
+        { 5000, "MNT" },     { 8453, "ETH" },      { 10143, "MON" },  { 31611, "BTC" },
+        { 31612, "BTC" },    { 42161, "ETH" },     { 42220, "CELO" }, { 43113, "AVAX" },
+        { 43114, "AVAX" },   { 59141, "ETH" },     { 59144, "ETH" },  { 80002, "POL" },
+        { 81457, "ETH" },    { 84532, "ETH" },     { 421614, "ETH" }, { 534352, "ETH" },
+        { 560048, "ETH" },   { 5042002, "USDC" },  { 11155111, "ETH" }, { 11155420, "ETH" },
+    };
+
+    for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
+        const char *gas = eth_gas_symbol(expected[i].id);
+        CHECK(gas != NULL, "chain %llu has no gas ticker",
+              (unsigned long long)expected[i].id);
+        CHECK(gas != NULL && strcmp(gas, expected[i].gas) == 0,
+              "chain %llu drew %s, not %s", (unsigned long long)expected[i].id,
+              gas ? gas : "(null)", expected[i].gas);
+    }
+
+    /* A name longer than a panel row would be truncated into something that
+       reads like a different chain, so the width is part of the contract. */
+    for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
+        char scratch[32];
+        const char *name = eth_chain_name(expected[i].id, scratch, sizeof scratch);
+        CHECK(name != NULL && strlen(name) <= 21,
+              "chain %llu is named \"%s\", which is %zu characters",
+              (unsigned long long)expected[i].id, name ? name : "(null)",
+              name ? strlen(name) : 0);
+    }
+}
+
 int main(void)
 {
     test_message_displayability();
@@ -353,6 +394,7 @@ int main(void)
     test_address_checksum();
     test_chain_names();
     test_gas_symbols();
+    test_gas_symbols_for_every_listed_chain();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");
