@@ -104,7 +104,7 @@ The spine, finished, with nothing half-built. Ten days.
 |---|---|---|
 | T-MEZO-1 | Mezo mainnet and testnet in the chain table, BTC gas, CSP hosts | **done** (`05ff984`) |
 | T-MEZO-2 | MUSD and MEZO token hints, verified per chain | **done** (`05ff984`) |
-| T-MEZO-3 | **The gas symbol on the device.** Replace the hardcoded `"ETH"` in `src/ui.c` with the chain's own ticker, so Mezo draws BTC. Firmware chain table, host vectors, a `sim/test_ui.c` case on 31611 | next |
+| T-MEZO-3 | **The gas symbol on the device.** Replace the hardcoded `"ETH"` in `src/ui.c` with the chain's own ticker, so Mezo draws BTC. Firmware chain table, host vectors, a `sim/test_ui.c` case on 31611 | **done**. An unlisted chain gets no ticker at all rather than the usual answer; the companion summary was wrong the same way and is fixed with it |
 | T-MEZO-4 | Air-gapped MUSD payment on Mezo testnet, end to end, filmed: phone builds, camera reads, device draws, QR signature back, phone broadcasts | after T-MEZO-3 |
 | T-MEZO-5 | `app/packages/apps/mezo/`: balances, MUSD send through `screenProposal`, and the ETF surface once `leek-stocks` has addresses | after the contracts |
 | T-MEZO-9 | Submission: deck, 2-minute video, AKINDO answers, README section | last two days |
@@ -167,7 +167,6 @@ limitation the README currently documents.
 
 ## 6. Today
 
-1. **T-MEZO-3**, the gas symbol on the device. Hours, not days, and it is the
-   single strongest integration item in the wallet.
+1. **T-MEZO-4**, the air-gapped MUSD payment, now that the device names BTC.
 2. **S-1 and S-2** in the new repo: scaffold, then the oracle.
 3. **Get test MUSD** on Mezo testnet, because every settlement path needs it.
