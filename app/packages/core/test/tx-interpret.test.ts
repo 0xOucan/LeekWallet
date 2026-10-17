@@ -74,6 +74,32 @@ group("native transfer");
   check(i.tokenAmountRaw === undefined, "native transfer carries a token amount");
 }
 
+group("the native amount is named with the chain's own gas token");
+/* BTC and ether share 18 decimals, so Mezo changes the ticker and not one
+ * digit of the number -- which is why an arithmetic-only suite would not have
+ * caught this. The summary is read next to the device screen, and the two
+ * disagreeing about which asset is moving is the state this must not reach. */
+{
+  const mezo = interpretTransaction({
+    chainId: 31611, to: "0x" + ADDR, value: 1500000000000000000n,
+  });
+  check(mezo.summary.includes("1.5 BTC"), `Mezo summary: ${mezo.summary}`);
+  check(!mezo.summary.includes("ETH"), `Mezo summary names ETH: ${mezo.summary}`);
+
+  const mainnet = interpretTransaction({ chainId: 1, to: "0x" + ADDR, value: 10n ** 18n });
+  check(mainnet.summary.includes("1 ETH"), `mainnet summary: ${mainnet.summary}`);
+
+  /* A chain with no row gets the number alone. "ETH" would be right most of
+   * the time, and the exception is someone approving an asset they did not
+   * read -- the same call the firmware's eth_gas_symbol() makes. */
+  const unlisted = interpretTransaction({ chainId: 424242, to: "0x" + ADDR, value: 10n ** 18n });
+  check(!unlisted.summary.includes("ETH"), `unlisted chain labelled: ${unlisted.summary}`);
+  check(
+    unlisted.summary.includes("Send 1 to"),
+    `unlisted chain summary: ${unlisted.summary}`,
+  );
+}
+
 group("addresses render exactly as the device renders them");
 /* EIP-55, matching eth_format_address() in src/eth-tx.c. The user is asked to
  * compare this against the device screen; a lowercase address here would make
