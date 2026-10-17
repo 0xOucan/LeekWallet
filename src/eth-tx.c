@@ -408,22 +408,65 @@ bool eth_format_address(const uint8_t address[20], char *out, size_t out_size)
  * Deliberately shorter than app/packages/core/src/chains.ts, which carries the
  * per-chain verification note: a chain missing here renders as its number with
  * no ticker, which is honest, where a guessed row would not be. */
+/*
+ * Chain id -> name and gas ticker.
+ *
+ * Both facts for a chain in one row, because they are the same fact: a chain
+ * named on one screen and its gas named on another must not be able to
+ * disagree, and two tables were how Mezo reached the companion while this file
+ * still said ETH.
+ *
+ * Every row was verified on 2026-10-16 by calling eth_chainId against that
+ * chain's own RPC through the companion's table and checking the answer
+ * matched the declared id; all 32 answered. The tickers are each chain's own
+ * gas token, which is not ether on nine of them - BNB, POL, XDAI, MON, S,
+ * HBAR, MNT, CELO, AVAX, BTC on Mezo, and USDC on Arc, where the gas token is
+ * a dollar.
+ *
+ * Names are at most 21 characters, which is what a panel row fits; a longer
+ * name would be truncated into something that reads like a different chain.
+ * This mirrors CHAINS in app/packages/core/src/chains.ts, and a chain absent
+ * from either side renders as its number with no ticker.
+ */
 static const struct {
     uint64_t    id;
     const char *name;
     const char *gas;
 } CHAIN_TABLE[] = {
-    { 1,        "Ethereum",     "ETH" },
-    { 10,       "Optimism",     "ETH" },
-    { 56,       "BNB Chain",    "BNB" },
-    { 137,      "Polygon",      "POL" },
-    { 8453,     "Base",         "ETH" },
-    { 31611,    "Mezo Testnet", "BTC" },
-    { 31612,    "Mezo",         "BTC" },
-    { 42161,    "Arbitrum",     "ETH" },
-    { 11155111, "Sepolia",      "ETH" },
-    { 84532,    "Base Sepolia", "ETH" },
+    { 1,        "Ethereum",          "ETH"   },
+    { 10,       "OP Mainnet",        "ETH"   },
+    { 56,       "BNB Chain",         "BNB"   },
+    { 97,       "BNB Testnet",       "tBNB"  },
+    { 100,      "Gnosis",            "XDAI"  },
+    { 130,      "Unichain",          "ETH"   },
+    { 137,      "Polygon",           "POL"   },
+    { 143,      "Monad",             "MON"   },
+    { 146,      "Sonic",             "S"     },
+    { 296,      "Hedera Testnet",    "HBAR"  },
+    { 324,      "zkSync Era",        "ETH"   },
+    { 1301,     "Unichain Sepolia",  "ETH"   },
+    { 5000,     "Mantle",            "MNT"   },
+    { 8453,     "Base",              "ETH"   },
+    { 10143,    "Monad Testnet",     "MON"   },
+    { 31611,    "Mezo Testnet",      "BTC"   },
+    { 31612,    "Mezo",              "BTC"   },
+    { 42161,    "Arbitrum One",      "ETH"   },
+    { 42220,    "Celo",              "CELO"  },
+    { 43113,    "Avalanche Fuji",    "AVAX"  },
+    { 43114,    "Avalanche",         "AVAX"  },
+    { 59141,    "Linea Sepolia",     "ETH"   },
+    { 59144,    "Linea",             "ETH"   },
+    { 80002,    "Polygon Amoy",      "POL"   },
+    { 81457,    "Blast",             "ETH"   },
+    { 84532,    "Base Sepolia",      "ETH"   },
+    { 421614,   "Arbitrum Sepolia",  "ETH"   },
+    { 534352,   "Scroll",            "ETH"   },
+    { 560048,   "Hoodi",             "ETH"   },
+    { 5042002,  "Arc Testnet",       "USDC"  },
+    { 11155111, "Sepolia",           "ETH"   },
+    { 11155420, "OP Sepolia",        "ETH"   },
 };
+
 
 const char *eth_chain_name(uint64_t chain_id, char *scratch, size_t scratch_size)
 {
