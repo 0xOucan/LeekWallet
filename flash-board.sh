@@ -175,7 +175,24 @@ fi
 if [[ "$MODE" == app ]]; then
   "$ESPTOOL" --chip "$ESPCHIP" --port "$TARGET" write_flash 0x10000 "$BUILDDIR/firmware.bin"
 else
-  "$ESPTOOL" --chip "$ESPCHIP" --port "$TARGET" --before no_reset write_flash \
+  # --before default_reset, not no_reset.
+  #
+  # This path assumed a board already sitting in download mode, held there by
+  # the chip_id probe above. That assumption fails for the case --fresh exists
+  # to serve: a board whose app partition is blank or corrupt boot-loops, and
+  # an ESP32-S3 on USB-Serial/JTAG re-enumerates its USB device on every one of
+  # those resets. esptool then meets a port that disappears underneath it:
+  #
+  #   A serial exception error occurred: Write timeout
+  #
+  # which reads as a cable or driver fault and is neither. A normal reset puts
+  # the chip into download mode over USB-Serial/JTAG without anyone touching a
+  # button, and connects first time on a looping board. Nothing is preserved by
+  # not resetting here anyway - this path rewrites the bootloader.
+  #
+  # Still no erase: NVS at 0x9000 is not in the list below, so the vault and
+  # the seeds in it survive a --fresh flash.
+  "$ESPTOOL" --chip "$ESPCHIP" --port "$TARGET" --before default_reset write_flash \
       0x0     "$BUILDDIR/bootloader.bin" \
       0x8000  "$BUILDDIR/partitions.bin" \
       0x10000 "$BUILDDIR/firmware.bin"
