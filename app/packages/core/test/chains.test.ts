@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 
 import {
   addCustomChain, allChains, CHAINS, chainLabel, chainLabelDetailed, chainName,
-  CUSTOM_CHAIN_NOTICE, CUSTOM_CHAINS_KEY, formatUnits, getChain, loadCustomChains,
+  CUSTOM_CHAIN_NOTICE, CUSTOM_CHAINS_KEY, formatUnits, gasSymbol, getChain, loadCustomChains,
   removeCustomChain, resolveChain, rpcOrigins, TOKEN_HINT_NOTICE, tokenHint, txUrl,
   validateCustomChain,
 } from "../src/chains.ts";
@@ -136,6 +136,21 @@ group("lookups do not invent anything");
   check(chainName(8453n) === "Base", "bigint chain id not accepted");
   // 0 is what an absent chainId becomes; it must not resolve to anything.
   check(getChain(0) === undefined, "chain 0 resolved");
+}
+
+group("the gas ticker is per chain, and absent rather than defaulted");
+{
+  check(gasSymbol(1) === "ETH", `mainnet gas: ${gasSymbol(1)}`);
+  check(gasSymbol(31611) === "BTC", `Mezo testnet gas: ${gasSymbol(31611)}`);
+  check(gasSymbol(31612) === "BTC", `Mezo mainnet gas: ${gasSymbol(31612)}`);
+  check(gasSymbol(5042002) === "USDC", `Arc gas: ${gasSymbol(5042002)}`);
+
+  /* The point of the function. Defaulting to the usual answer is what let the
+   * firmware print "ETH" over a BTC amount, and it is a worse failure here
+   * than an unnamed chain is: a reader who does not recognise a name looks it
+   * up, and a reader who recognises a ticker stops. */
+  check(gasSymbol(424242) === undefined, `invented a ticker: ${gasSymbol(424242)}`);
+  check(gasSymbol(8453n) === "ETH", "bigint chain id not accepted");
 }
 
 group("rpc origins are enumerable for the CSP review");

@@ -20,7 +20,7 @@
 
 import { keccak_256 } from "@noble/hashes/sha3";
 
-import { chainName as lookupChainName } from "./chains.ts";
+import { chainName as lookupChainName, gasSymbol } from "./chains.ts";
 import { CallKind, decodeCall, describeCall, isDecodable } from "./eth-decode.ts";
 import { BUNDLED_DESCRIPTORS } from "./erc7730-bundled.ts";
 import { CIRCLE_DESCRIPTORS } from "./erc7730-circle.ts";
@@ -297,6 +297,8 @@ export function interpretTransaction(
 
   const action = describeCall(call);
   const where = chainName ?? `chain ${chainId}`;
+  const ticker = gasSymbol(chainId);
+  const nativeTicker = ticker === undefined ? "" : ` ${ticker}`;
   const summary = isToken
     ? call.kind === CallKind.Erc20Approve
       ? unlimited
@@ -304,7 +306,11 @@ export function interpretTransaction(
         : `Approve ${call.amount ?? 0n} raw token units to ${recipient ?? "an unknown spender"} on ${where}`
       : `Send ${call.amount ?? 0n} raw token units to ${recipient ?? "an unknown recipient"} on ${where}`
     : call.kind === CallKind.Empty
-      ? `Send ${formatEther(valueWei)} ETH to ${recipient ?? "an unknown address"} on ${where}`
+      ? /* The ticker is the chain's, never a default: Mezo's gas is BTC at
+           ether's 18 decimals, so "ETH" here would have renamed the asset
+           without touching the number. An unlisted chain gets the amount with
+           no ticker, matching what the device draws for it. */
+        `Send ${formatEther(valueWei)}${nativeTicker} to ${recipient ?? "an unknown address"} on ${where}`
       : call.kind === CallKind.Generic
         ? /* The name and the contract, and nothing about what it does - the
            * device's own screen makes the same distinction in more words. */

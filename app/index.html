@@ -300,10 +300,16 @@
                   <input id="ccid" class="addr" inputmode="numeric" autocomplete="off" placeholder="e.g. 480" /></label>
                 <label class="field"><span>Name</span>
                   <input id="ccname" class="addr" autocomplete="off" /></label>
+                <!-- Not prefilled with Ether/ETH. A custom chain is by
+                     definition one this app knows nothing about, including
+                     whether it pays gas in ether; a default that is usually
+                     right would label the amounts of the chain where it is
+                     wrong. Both fields are required by validateCustomChain,
+                     so an empty one is an error rather than a guess. -->
                 <label class="field"><span>Currency name</span>
-                  <input id="ccurname" class="addr" autocomplete="off" value="Ether" /></label>
+                  <input id="ccurname" class="addr" autocomplete="off" placeholder="e.g. Ether" /></label>
                 <label class="field"><span>Currency symbol</span>
-                  <input id="ccursym" class="addr" autocomplete="off" value="ETH" /></label>
+                  <input id="ccursym" class="addr" autocomplete="off" placeholder="e.g. ETH" /></label>
                 <label class="field"><span>Currency decimals</span>
                   <input id="ccurdec" class="addr" inputmode="numeric" autocomplete="off" value="18" /></label>
                 <label class="field"><span>RPC URLs (https, one per line)</span>
@@ -497,7 +503,11 @@
               <select id="amountunit" class="addr"></select>
             </label>
             <label class="field">
-              <span id="amountlabel">Amount (ETH)</span>
+              <!-- No ticker in the markup: main.ts rewrites this from the
+                   selected chain, and whatever ships here is what shows for
+                   the moment before it does. "Amount (ETH)" on a Mezo account
+                   named the wrong asset for that moment. -->
+              <span id="amountlabel">Amount</span>
               <input id="amount" class="addr" spellcheck="false"
                      value="0.0001" autocomplete="off" />
             </label>

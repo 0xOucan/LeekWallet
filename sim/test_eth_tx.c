@@ -218,6 +218,44 @@ static void test_chain_names(void)
     CHECK(strstr(unknown, "999999") != NULL, "unknown chain rendered as \"%s\"", unknown);
 }
 
+/* The gas ticker, which is not "ETH" everywhere and was until T-MEZO-3.
+ *
+ * Mezo pays gas in BTC with ether's 18 decimals, so nothing about the number
+ * changes and only the label does -- which is exactly the shape of bug that
+ * survives a test suite that only checks arithmetic. */
+static void test_gas_symbols(void)
+{
+    printf("== the gas ticker comes from the chain, and is absent when unknown\n");
+
+    CHECK(strcmp(eth_gas_symbol(1), "ETH") == 0, "mainnet gas");
+    CHECK(strcmp(eth_gas_symbol(31611), "BTC") == 0, "Mezo testnet gas");
+    CHECK(strcmp(eth_gas_symbol(31612), "BTC") == 0, "Mezo mainnet gas");
+
+    /* The two chains whose gas was already being misnamed before Mezo made it
+     * obvious. */
+    CHECK(strcmp(eth_gas_symbol(56), "BNB") == 0, "BNB Chain gas");
+    CHECK(strcmp(eth_gas_symbol(137), "POL") == 0, "Polygon gas");
+
+    /* Not "ETH". A chain this device cannot name is a chain whose gas token it
+     * cannot name either, and the honest answer is to say nothing rather than
+     * to label an amount with the asset most chains happen to use. */
+    CHECK(eth_gas_symbol(999999) == NULL, "an unknown chain was given a ticker");
+
+    /* Every row has to answer both questions, or a chain the screen names is
+     * a chain whose amount it labels with nothing. */
+    static const uint64_t named[] = { 1, 10, 56, 137, 8453, 31611, 31612,
+                                      42161, 11155111, 84532 };
+    char scratch[32];
+    for (size_t i = 0; i < sizeof(named) / sizeof(named[0]); i++) {
+        CHECK(strstr(eth_chain_name(named[i], scratch, sizeof(scratch)),
+                     "chain ") == NULL,
+              "chain %llu lost its name", (unsigned long long)named[i]);
+        CHECK(eth_gas_symbol(named[i]) != NULL,
+              "chain %llu has a name but no gas ticker",
+              (unsigned long long)named[i]);
+    }
+}
+
 /* EIP-191 personal_sign: what may be signed, and what it hashes to.
  *
  * The bound and the printability rule live here rather than only in the
@@ -314,6 +352,7 @@ int main(void)
     test_value_formatting();
     test_address_checksum();
     test_chain_names();
+    test_gas_symbols();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "PASSED",
            failures, failures == 1 ? "" : "s");

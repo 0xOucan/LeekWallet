@@ -79,10 +79,13 @@ Validation Cloud `https://mainnet.mezo.public.validationcloud.io`, dRPC
 `https://mezo.drpc.org` (this one answered `eth_chainId` here).
 
 **BTC as gas is the interesting part.** Our chain table already carries a
-per-chain `nativeCurrency.symbol`, so the companion needs only a row. The
-firmware does not: it prints the literal string `"ETH"` when it draws an amount
-(`src/ui.c:5580` and `src/ui.c:6265`). On Mezo that is wrong on the one screen
-this project refuses to be wrong on. See T-MEZO-3.
+per-chain `nativeCurrency.symbol`, so the companion needed only a row. The
+firmware printed the literal string `"ETH"` when it drew an amount, which on
+Mezo was wrong on the one screen this project refuses to be wrong on. Fixed in
+T-MEZO-3: `eth_gas_symbol()` in `src/eth-tx.c` reads a chain table that carries
+the name and the ticker in one row, and returns NULL — no ticker drawn — for a
+chain it does not carry. BNB Chain and Polygon were misnamed the same way and
+are fixed by the same table.
 
 ### 3.2 MUSD
 
@@ -236,7 +239,7 @@ the mini-app; "wallet" means it stays.
 |---|---|---|---|---|
 | T-MEZO-1 | Mezo testnet and mainnet in the chain table, BTC gas, 18 decimals, the verified RPCs and explorers, CSP entries for the new hosts | wallet, `core/chains.ts` + `tauri.conf.json` | balances load on both; `eth_chainId` asserted in the app suite | small |
 | T-MEZO-2 | MUSD in `TOKEN_HINTS` for 31611/31612, and `MUSD` added to the tracked symbols with its deployment map | wallet, `core/chains.ts`, `core/all-chain-balances.ts` | an MUSD balance shows; a send is drawn by the device from its own decoder | small |
-| T-MEZO-3 | **The gas symbol on the device.** Replace the hardcoded `"ETH"` with the chain's own ticker, so Mezo draws BTC | wallet, `src/ui.c` (+ firmware chain table) | `sim/test_ui.c` renders a 31611 transaction and asserts "BTC"; a host/firmware vector pins it | medium |
+| T-MEZO-3 | **The gas symbol on the device.** Replace the hardcoded `"ETH"` with the chain's own ticker, so Mezo draws BTC | wallet, `src/ui.c` (+ firmware chain table) | **done**: `sim/test_ui.c` renders a 31611 transaction and asserts BTC with ETH on no page, plus an unlisted chain id; `sim/test_eth_tx.c` and the core suite pin the tables | medium |
 | T-MEZO-4 | Air-gapped MUSD payment end to end: phone builds the request, camera board reads it, device draws it, QR signature back, phone broadcasts | wallet (exists) + event demo | a testnet transaction hash, filmed | integration |
 | T-MEZO-5 | `app/packages/apps/mezo/`: a read-only Mezo surface — BTC and MUSD balances, trove health if an address has one, and an MUSD send that goes through `screenProposal` | event, own package + own CSS | `app/test` isolation rules; one line in `MINI_APPS` | medium |
 | T-MEZO-6 | Borrow calls in the device's decodable set: `openTrove`, `withdrawMUSD`, `repayMUSD`, `addColl`, `withdrawColl`, `closeTrove` | wallet, `src/eth-decode.c` table | shared C/TS vectors, refusal cases included | medium |
