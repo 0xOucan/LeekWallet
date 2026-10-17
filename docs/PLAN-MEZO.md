@@ -10,6 +10,16 @@ deleted in one commit when it ends. Firmware changes are the exception and are
 marked as such: a call the device *draws* has to be decoded by the device, and
 that is wallet code, not event code.
 
+**Status, 17 Oct 2026.** The chain rows, the token rows and the per-chain gas
+ticker are merged (T-MEZO-1, 2, 3): a Mezo transaction is drawn in **BTC** on
+the device and in the companion, and an unlisted chain is drawn with no ticker
+rather than a guess. The LeekStonks contracts are **live on Mezo testnet**,
+settling in the MUSD Mezo's own borrow system mints, so MUSD borrowed against
+BTC can be spent on them — addresses in `leek-stocks/ADDRESSES.md`. Owed: the
+air-gapped demo on hardware (T-MEZO-4), the mini-app (T-MEZO-5), and the
+borrow-call decoders in Wave 2 (T-MEZO-6). The full picture is in
+[PLAN-MEZO-ROADMAP.md](PLAN-MEZO-ROADMAP.md).
+
 ## 1. The event, in the terms it will judge us by
 
 | | |

@@ -78,6 +78,17 @@ refuses to sign.
 | **Companion app** | Tauri v2 on Linux/macOS/Windows and an Android APK, with WalletConnect v2 for real dapps |
 | **Browser extension** | Chromium MV3, an EIP-1193 provider announced over **EIP-6963** so it sits beside other wallets rather than fighting for `window.ethereum`. Talks to the board over Web Serial with **no relay and no QR**. It holds no key and ships no descriptors: a dapp's calldata goes straight to the device, which decodes it. Verified against a live `app.aave.com` session. Connecting resets the board — Web Serial cannot suppress the DTR toggle — so the PIN is re-entered each time |
 
+### What it has been used for
+
+**LeekStonks**, a parody index market settled in MUSD, is **live on Mezo
+testnet** and signed with this wallet: the device draws the amount in **BTC**,
+because that is what Mezo charges for gas, and decodes the ERC-20 transfer
+itself rather than trusting a description from the host. The contracts, the
+price feed and the front end are in
+[leek-stocks](https://github.com/0xOucan/leek-stocks); the lending market that
+will borrow against those shares is in `leek-lend`. Both are separate
+repositories on purpose, so this one keeps only what a wallet needs.
+
 ### Air-gapped signing needs a phone
 
 The CAM board signs without a cable: it reads the companion's

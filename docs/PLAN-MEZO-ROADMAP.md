@@ -7,6 +7,28 @@ Track 1). This document is what to do, in what order, by when.
 
 **Wave 1 build closes 26 Oct 2026. Wave 2 runs 2–15 Nov. Demo 23 Nov.**
 
+## Status, 17 Oct 2026
+
+| | |
+|---|---|
+| **LeekStonks contracts** | **live on Mezo testnet (31611)**, settling in the MUSD Mezo's own borrow system mints. Seven contracts; three verified on the explorer, all seven against the source |
+| **Keys** | split: `leek-publisher` can only publish prices, `monad-deployer` can do everything but publish. The deployer's publisher rights were revoked on both oracles |
+| **Price feed** | runs, rehearsed against the live oracles, reports its chain id. Not on the VPS yet |
+| **Dapp** | 58 kB entry, 34 tests, clicked through against a local chain: approve, buy, redeem, and a refusal that predicted its own revert. Not pointed at Mezo yet, not deployed |
+| **Leeknding** | written: 95 tests, 8 invariants, mocks, a rate-limited faucet that refuses mainnet ids, seeding and monitoring scripts. Deployed nowhere |
+| **Wallet** | chains, MUSD and MEZO token rows, and the per-chain gas ticker all merged (T-MEZO-1, 2, 3). A Mezo transaction draws **BTC**, and an unlisted chain draws no ticker at all |
+| **Owed** | the air-gapped demo on hardware (T-MEZO-4), the mini-app (T-MEZO-5), the VPS deploy, Leeknding to Sepolia and Base Sepolia, and the submission materials |
+| **Blocked on you** | test MUSD for the demo, a free Etherscan API key for Sepolia verification, and Cloudflare CNAMEs when the VPS deploy happens |
+
+What the deployment taught, all of it recorded in `leek-stocks/DEPLOYMENT.md`:
+Mezo checks Cosmos **sequences** rather than queuing nonces, so Foundry's
+pipelined broadcast is refused; a transaction sits in a block long before its
+**receipt** can be read, so a successful deploy reports failure; and the
+explorer does not index contracts **deployed by a contract**, so four of ours
+cannot be verified there and are checked against the source instead. None of
+the three is in Mezo's documentation, and each is worth a line in the
+submission's limitations.
+
 ## 1. Repositories and licences
 
 Three surfaces, two new repositories:
@@ -105,8 +127,8 @@ The spine, finished, with nothing half-built. Ten days.
 | T-MEZO-1 | Mezo mainnet and testnet in the chain table, BTC gas, CSP hosts | **done** (`05ff984`) |
 | T-MEZO-2 | MUSD and MEZO token hints, verified per chain | **done** (`05ff984`) |
 | T-MEZO-3 | **The gas symbol on the device.** Replace the hardcoded `"ETH"` in `src/ui.c` with the chain's own ticker, so Mezo draws BTC. Firmware chain table, host vectors, a `sim/test_ui.c` case on 31611 | **done**. An unlisted chain gets no ticker at all rather than the usual answer; the companion summary was wrong the same way and is fixed with it |
-| T-MEZO-4 | Air-gapped MUSD payment on Mezo testnet, end to end, filmed: phone builds, camera reads, device draws, QR signature back, phone broadcasts | after T-MEZO-3 |
-| T-MEZO-5 | `app/packages/apps/mezo/`: balances, MUSD send through `screenProposal`, and the ETF surface once `leek-stocks` has addresses | after the contracts |
+| T-MEZO-4 | Air-gapped MUSD payment on Mezo testnet, end to end, filmed | **next**, and needs test MUSD |
+| T-MEZO-5 | `app/packages/apps/mezo/`: balances, MUSD send through `screenProposal`, the ETF surface | unblocked: the contracts are live |
 | T-MEZO-9 | Submission: deck, 2-minute video, AKINDO answers, README section | last two days |
 
 ### Platform, in `leek-stocks`
@@ -115,12 +137,12 @@ The spine, finished, with nothing half-built. Ten days.
 |---|---|---|
 | S-1 | Repo, Foundry, Apache-2.0, README that states the trust model plainly (CI still owed) | **done** |
 | S-2 | `IndexOracle` implementing `AggregatorV3Interface`: push-only, role-restricted, `maxStaleness`, immutable `maxDeviationBps`, pausable, monotonic rounds | **done**, 15 tests, fuzz 1000 |
-| S-3 | The feed service on your server: pull an openly licensed index, push rounds on a heartbeat, expose a read-only JSON endpoint for the front ends. systemd unit, TLS, CORS | S-2 |
-| S-4 | `ETFShare` (ERC-20, mint/burn by vault, NTT-compatible roles) and `ETFFactory` with **exactly** `deployETF(string name, string symbol)` — everything else frozen in registry state, because that is what keeps the call drawable on a 128x64 screen | S-2 |
-| S-5 | `IssuanceVault`: `buy(uint256 musdAmount, uint256 minShares)`, `redeem(uint256 shares, uint256 minMusd)`, priced from the oracle, **settled in real testnet MUSD on Mezo**, fee in basis points, refuses a stale or paused feed | S-4 |
-| S-6 | Deploy to Mezo testnet with two parody indices (Gologgle, Amezon), addresses recorded in the repo | S-5 |
-| S-7 | `web/`: the public dapp — connect, see indices and prices, buy, redeem, WalletConnect. Hosted on your server at a real domain | S-6 |
-| S-8 | Mock `mMUSD` and `mMEZO` plus a second deployment on **Sepolia**, to show multichain. The deploy script refuses mainnet chain IDs | S-6 |
+| S-3 | The feed service: a derived index from an openly licensed source, a heartbeat, a read-only endpoint that names its chain, a hardened systemd unit | **done**, 19 tests; running locally against the live oracles |
+| S-4 | `ETFShare` and `ETFFactory` with **exactly** `deployETF(string,string)`, everything else frozen in registry state so the call stays drawable on 128x64 | **done** |
+| S-5 | **done.** `IssuanceVault`: `buy(uint256 musdAmount, uint256 minShares)`, `redeem(uint256 shares, uint256 minMusd)`, priced from the oracle, **settled in real testnet MUSD on Mezo**, fee in basis points, refuses a stale or paused feed | S-4 |
+| S-6 | Deploy to Mezo testnet with Gologgle and Amezon, addresses recorded | **done**, 17 Oct. `leek-stocks/ADDRESSES.md` |
+| S-7 | `web/`: the public dapp — connect, prices, buy, redeem, WalletConnect lazily loaded | **built**; hosting and the Mezo addresses are owed |
+| S-8 | Moved to `leek-lend` and renamed `leek*`: mock plus a second deployment on **Sepolia**, to show multichain. The deploy script refuses mainnet chain IDs | S-6 |
 
 **Critical path:** S-2 → S-4 → S-5 → S-6 → S-7, with T-MEZO-5 hanging off S-6
 and the video off both. T-MEZO-3 and T-MEZO-4 are independent of all of it and
