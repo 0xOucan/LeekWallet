@@ -1819,6 +1819,86 @@ static void test_a_decoded_call_is_not_marked_blind(void)
     ui_sign_clear();
 }
 
+/* The one screen that must never name the wrong asset.
+ *
+ * Mezo's gas is BTC at ether's 18 decimals, so the number is identical and the
+ * label is the entire difference: a device that printed "ETH" here would have
+ * a user approving an amount of bitcoin while reading a figure in ether, on
+ * the display that exists because the host cannot be trusted to say it. Both
+ * directions are asserted -- BTC present, ETH absent -- because a page that
+ * gained BTC somewhere while keeping ETH elsewhere would pass the first half.
+ */
+static void test_the_amount_is_labelled_with_the_chains_own_gas_token(void)
+{
+    printf("== a Mezo transaction is drawn in BTC, and never in ETH\n");
+    boot_unlocked_with_seed();
+
+    EthTx tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.chain_id = 31611;              /* Mezo testnet, verified 2026-10-14 */
+    tx.has_to = true;
+    memset(tx.to, 0x5A, sizeof(tx.to));
+    eth_quantity_set_u64(&tx.value, 1500000000000000000ULL);   /* 1.5 BTC */
+
+    HDPath sign_at = HDPATH_ETH_DEFAULT;
+    ui_request_sign(&tx, &sign_at, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_SIGN_CONFIRM);
+
+    bool saw_btc = false, saw_chain = false;
+    for (int page = 0; page < 8; page++) {
+        if (fake_oled_contains("1.5 BTC"))      saw_btc = true;
+        if (fake_oled_contains("Mezo Testnet")) saw_chain = true;
+        CHECK_SCREEN(!fake_oled_contains("ETH"),
+                     "a Mezo page names ETH (\"%s\" / \"%s\")",
+                     fake_oled_row(3), fake_oled_row(6));
+        press(BUTTON_DOWN);
+    }
+    CHECK_SCREEN(saw_btc, "the amount was never labelled BTC");
+    CHECK_SCREEN(saw_chain, "the chain was never named");
+    ui_sign_clear();
+}
+
+/* And a chain the firmware has no row for gets no ticker at all.
+ *
+ * "ETH" would be the convenient fallback and is the one answer that cannot be
+ * given: most EVM chains do pay gas in ether, so the guess is usually right,
+ * and the time it is wrong is the time somebody signs away a different asset
+ * than the one they read. The screen says the gap out loud instead. */
+static void test_an_unknown_chain_names_no_gas_token(void)
+{
+    printf("== an unnamed chain gets a bare number and says why\n");
+    boot_unlocked_with_seed();
+
+    EthTx tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.chain_id = 987654321;
+    tx.has_to = true;
+    memset(tx.to, 0x5A, sizeof(tx.to));
+    eth_quantity_set_u64(&tx.value, 2000000000000000000ULL);
+
+    HDPath sign_at = HDPATH_ETH_DEFAULT;
+    ui_request_sign(&tx, &sign_at, "0x0100aaaaaaaabbbbbbbbccccccccddddddddeeee");
+    go(SCREEN_SIGN_CONFIRM);
+
+    bool saw_amount = false, saw_notice = false, saw_number = false;
+    for (int page = 0; page < 8; page++) {
+        if (fake_oled_row_contains(3, "2") && !fake_oled_row_contains(3, "ETH")) {
+            saw_amount = true;
+        }
+        if (fake_oled_contains("Gas token unknown")) saw_notice = true;
+        if (fake_oled_contains("987654321"))         saw_number = true;
+        CHECK_SCREEN(!fake_oled_contains("ETH"),
+                     "an unknown chain was labelled ETH (\"%s\")", fake_oled_row(3));
+        CHECK_SCREEN(!fake_oled_contains("BTC"),
+                     "an unknown chain was labelled BTC (\"%s\")", fake_oled_row(3));
+        press(BUTTON_DOWN);
+    }
+    CHECK_SCREEN(saw_amount, "the amount row never carried the unlabelled number");
+    CHECK_SCREEN(saw_notice, "the screen never said the gas token is unknown");
+    CHECK_SCREEN(saw_number, "the chain number was never shown");
+    ui_sign_clear();
+}
+
 /* A call from the signature table (T12c): every declared argument gets a page,
  * and the screen says what a verified signature does and does not prove.
  *
@@ -3164,6 +3244,8 @@ int main(void)
     test_locking_closes_the_channel();
     test_an_expired_approval_leaves_the_screen();
     test_a_decoded_call_is_not_marked_blind();
+    test_the_amount_is_labelled_with_the_chains_own_gas_token();
+    test_an_unknown_chain_names_no_gas_token();
     test_a_generic_call_shows_every_argument();
     test_message_confirmation_shows_all_of_it();
     test_typed_data_confirmation_names_the_contract_and_the_amount();
