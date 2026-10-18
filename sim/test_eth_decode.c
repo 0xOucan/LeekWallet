@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "eth-decode.h"
 #include "sha3.h"
@@ -45,6 +46,30 @@ static void amount_u64(uint8_t out[32], uint64_t v)
     for (int i = 31; i >= 24; i--) {
         out[i] = (uint8_t)(v & 0xFF);
         v >>= 8;
+    }
+}
+
+/* A 32-byte word from a big-endian hex string, for the values a uint64 cannot
+ * hold. An 18-decimal token amount passes 2^64 at about 18.4 units, so every
+ * realistic MUSD or MEZO figure needs this rather than amount_u64. */
+static void amount_u256_hex(uint8_t out[32], const char *hex)
+{
+    memset(out, 0, 32);
+    size_t n = strlen(hex);
+    /* Odd-length input would silently shift every nibble; refuse it loudly
+     * rather than record a vector for a number nobody wrote. */
+    if (n % 2 != 0 || n > 64) {
+        fprintf(stderr, "amount_u256_hex: bad length %zu for \"%s\"\n", n, hex);
+        abort();
+    }
+    size_t bytes = n / 2;
+    for (size_t i = 0; i < bytes; i++) {
+        unsigned byte = 0;
+        if (sscanf(hex + 2 * i, "%2x", &byte) != 1) {
+            fprintf(stderr, "amount_u256_hex: bad hex \"%s\"\n", hex);
+            abort();
+        }
+        out[32 - bytes + i] = (uint8_t)byte;
     }
 }
 
@@ -1788,6 +1813,42 @@ static int emit_vectors(const char *path)
         amount_u64(w[2], 100000000);
         len = build_sig_call(data, sizeof(data), "list(address,uint256,uint256)", w, 3);
         CASE("market list(security,amount,priceTotal)", data, len);
+    }
+
+    /* ------------------------------------------------------- leekstonks */
+
+    {
+        uint8_t w[ETH_MAX_ARGS][32];
+        memset(w, 0, sizeof(w));
+
+        /* 296.955200743718592965 MUSD for at least 2.97 shares: the real
+         * numbers from the first live buy on Mezo testnet, 2026-10-18. */
+        amount_u256_hex(w[0], "101914cdbd862921c5");
+        amount_u256_hex(w[1], "29378f43a6e90000");
+        len = build_sig_call(data, sizeof(data), "buy(uint256,uint256)", w, 2);
+        CASE("leekstonks buy(musdAmount,minShares)", data, len);
+
+        /* A buy with no slippage floor at all. Accepted and drawn, because the
+         * zero is the point: it is a buy at whatever the oracle says, and the
+         * second page is where a signer can see that. */
+        memset(w, 0, sizeof(w));
+        amount_u256_hex(w[0], "101914cdbd862921c5");
+        len = build_sig_call(data, sizeof(data), "buy(uint256,uint256)", w, 2);
+        CASE("leekstonks buy with minShares of zero", data, len);
+
+        memset(w, 0, sizeof(w));
+        amount_u64(w[0], 1);
+        amount_u64(w[1], 90);
+        len = build_sig_call(data, sizeof(data), "redeem(uint256,uint256)", w, 2);
+        CASE("leekstonks redeem(shares,minMusd)", data, len);
+
+        memset(w, 0, sizeof(w));
+        amount_u256_hex(w[0], "02b5e3af16b1880000");  /* 50 MEZO, the top tier */
+        len = build_sig_call(data, sizeof(data), "stake(uint256)", w, 1);
+        CASE("leekstonks stake(amount)", data, len);
+
+        len = build_sig_call(data, sizeof(data), "unstake(uint256)", w, 1);
+        CASE("leekstonks unstake(amount)", data, len);
     }
 
     /* ---------------------------------------------------------- disperse */

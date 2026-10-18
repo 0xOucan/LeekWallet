@@ -224,6 +224,15 @@ const KNOWN: ReadonlyArray<{
   { sig: "fill(uint256)", names: "listingId", kind: CallKind.Generic, shape: Shape.FromSignature },
   { sig: "cancel(uint256)", names: "listingId", kind: CallKind.Generic, shape: Shape.FromSignature },
   { sig: "list(address,uint256,uint256)", names: "security,amount,priceTotal", kind: CallKind.Generic, shape: Shape.FromSignature },
+
+  /* LeekStonks. The mirror of the block in src/eth-decode.c: four all-uint256
+     signatures the device draws field by field. The reason they are in the
+     firmware table at all, and why a descriptor alone would not do, is written
+     out there. */
+  { sig: "buy(uint256,uint256)", names: "musdAmount,minShares", kind: CallKind.Generic, shape: Shape.FromSignature },
+  { sig: "redeem(uint256,uint256)", names: "shares,minMusd", kind: CallKind.Generic, shape: Shape.FromSignature },
+  { sig: "stake(uint256)", names: "amount", kind: CallKind.Generic, shape: Shape.FromSignature },
+  { sig: "unstake(uint256)", names: "amount", kind: CallKind.Generic, shape: Shape.FromSignature },
   /* ATS issuance. `string` is dynamic, so these take the same hand-written
    * route the Aqua rows do — and they are drawable for a reason the ATS
    * factory's own deployEquity is not: the wrapper freezes a 3,748-byte

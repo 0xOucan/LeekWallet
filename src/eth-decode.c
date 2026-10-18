@@ -134,6 +134,35 @@ static const struct EthAbiEntry KNOWN[] = {
     { "list(address,uint256,uint256)",   "security,amount,priceTotal",
       ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
 
+    /* LeekStonks: synthetic index shares, and the MEZO stake that discounts
+     * their fee. Every argument is a uint256, so the generic signature path
+     * reads them and the screen draws one page each -- no bespoke decoder.
+     *
+     * Here for the reason the ATS escrow calls above are here: without a row
+     * the DEVICE refuses a buy outright, and a host-side ERC-7730 descriptor
+     * does not help, because it satisfies the companion's gate and not the
+     * device's. The mini-app supplies that descriptor; this is the other half.
+     *
+     * What makes these honest to draw rather than a polite blind sign: both of
+     * `buy`'s arguments ARE the decision. The MUSD spent is the first and the
+     * slippage floor is the second, and the two together are everything the
+     * caller chooses -- the price comes from the oracle and the fee from the
+     * contract, neither of which this transaction can vary. Same for `redeem`,
+     * reversed. A screen showing both is showing all of it.
+     *
+     * The second argument matters most and is the one a summary would drop.
+     * `minShares` of zero is a buy at any price the oracle happens to publish,
+     * which is exactly the call an operator of a mispriced feed wants signed,
+     * so it gets its own page rather than being folded into a total. */
+    { "buy(uint256,uint256)",            "musdAmount,minShares",
+      ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+    { "redeem(uint256,uint256)",         "shares,minMusd",
+      ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+    { "stake(uint256)",                  "amount",
+      ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+    { "unstake(uint256)",                "amount",
+      ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+
     /* ATS issuance, through LeekSecurityFactory.
      *
      * `string` is a dynamic type, so the generic path refuses these on the
