@@ -24,6 +24,7 @@ import { chainName as lookupChainName, gasSymbol } from "./chains.ts";
 import { CallKind, decodeCall, describeCall, isDecodable } from "./eth-decode.ts";
 import { BUNDLED_DESCRIPTORS } from "./erc7730-bundled.ts";
 import { CIRCLE_DESCRIPTORS } from "./erc7730-circle.ts";
+import { MEZO_DESCRIPTORS } from "./erc7730-mezo.ts";
 import { matchDescriptor, type Descriptor, type DescriptorMatch } from "./erc7730.ts";
 
 /** The subset of a signing request that changes what the user is agreeing to. */
@@ -119,6 +120,7 @@ export interface TxInterpretation {
 export const DEFAULT_DESCRIPTORS: readonly Descriptor[] = [
   ...BUNDLED_DESCRIPTORS,
   ...CIRCLE_DESCRIPTORS,
+  ...MEZO_DESCRIPTORS,
 ];
 
 /** Everything that is not the transaction itself. */

@@ -22,6 +22,7 @@ import { encodeCbor } from "../src/cbor.ts";
 import { formatUnits, getChain, tokenHint } from "../src/chains.ts";
 import { BUNDLED_DESCRIPTORS } from "../src/erc7730-bundled.ts";
 import { CIRCLE_DESCRIPTORS } from "../src/erc7730-circle.ts";
+import { MEZO_DESCRIPTORS } from "../src/erc7730-mezo.ts";
 import {
   DESCRIPTOR_NOTICE, matchDescriptor, parseDescriptor, parseSignature, selectorOf,
   type Descriptor,
@@ -549,14 +550,32 @@ group("Circle stablecoins render, and Arc's two decimal scales stay separate");
 
   // Provenance is legible in both directions: nothing we wrote can pass for a
   // reviewed registry file, and the registry set did not silently grow.
-  for (const d of CIRCLE_DESCRIPTORS) {
+  for (const d of [...CIRCLE_DESCRIPTORS, ...MEZO_DESCRIPTORS]) {
     check(d.source.startsWith("local/"), `a local descriptor claims registry provenance: ${d.source}`);
   }
   for (const d of BUNDLED_DESCRIPTORS) {
     check(d.source.startsWith("registry/"), `a local descriptor reached the registry set: ${d.source}`);
   }
-  check(DEFAULT_DESCRIPTORS.length === BUNDLED_DESCRIPTORS.length + CIRCLE_DESCRIPTORS.length,
-    "the default set is not the two sets joined");
+  check(
+    DEFAULT_DESCRIPTORS.length
+      === BUNDLED_DESCRIPTORS.length + CIRCLE_DESCRIPTORS.length + MEZO_DESCRIPTORS.length,
+    "the default set is not the three sets joined",
+  );
+
+  /* The MUSD described is the borrowable one. Mezo testnet has five contracts
+     answering symbol() "MUSD"; describing the wrong one would put a confident
+     sentence under a transaction in a token nobody holds. */
+  check(
+    MEZO_DESCRIPTORS.some((d) =>
+      d.deployments.some((dep) =>
+        dep.chainId === 31611 && dep.address === "0xf9bbccc0f1b68ea07c86de6f88c76b3d8e2dd0af")),
+    "the borrowable Mezo testnet MUSD is not described",
+  );
+  check(
+    !MEZO_DESCRIPTORS.some((d) =>
+      d.deployments.some((dep) => dep.address === "0x118917a40faf1cd7a13db0ef56c86de7973ac503")),
+    "a descriptor describes the unborrowable MUSD",
+  );
   // Registry first, so a reviewed file wins over one we wrote for the same
   // contract — the trust order chains.ts uses for curated versus custom.
   check(DEFAULT_DESCRIPTORS[0]?.source.startsWith("registry/") === true,
