@@ -1,0 +1,200 @@
+/**
+ * The LeekDefi mini-app: both halves of the signing path, and the sentences.
+ *
+ * What is actually at stake here is that a mini-app may not ask for a
+ * signature on a payload nothing can describe. There are two gates in front of
+ * that, in different codebases, and an app is only usable if BOTH pass:
+ *
+ *   1. The host gate, `screenProposal`, which needs an ERC-7730 descriptor
+ *      that renders every argument with no conflicts. descriptors.ts supplies
+ *      it.
+ *   2. The device, which decodes what it signs from its own table in
+ *      src/eth-decode.c and refuses anything not in it, descriptor or no
+ *      descriptor. eth-decode.ts mirrors that table, and the shared vectors
+ *      recorded from the real C decoder are what prove the mirror is honest.
+ *
+ * It is entirely possible to satisfy one and not the other, and the failure is
+ * quiet in both directions: a descriptor with no table row gives a companion
+ * that happily screens a call the device then refuses, and a table row with no
+ * descriptor gives a device that would draw a call the companion will not
+ * send. So this file checks the same calldata through both.
+ *
+ * It runs without a browser: everything under test is pure.
+ */
+
+import { CallKind, decodeCall } from "../packages/core/src/eth-decode.ts";
+import { screenProposal } from "../packages/core/src/app-proposal.ts";
+import { DEFAULT_DESCRIPTORS } from "../packages/core/src/tx-interpret.ts";
+import { INDICES, MEZO_TESTNET, MUSD, STAKING } from "../packages/apps/leekdefi/addresses.ts";
+import { descriptorsFor } from "../packages/apps/leekdefi/descriptors.ts";
+import { encode } from "../packages/apps/leekdefi/read.ts";
+import { MINI_APPS, findMiniApp } from "../src/apps/registry.ts";
+import { readFileSync } from "node:fs";
+
+let failures = 0;
+const check = (cond: boolean, msg: string) => {
+  if (!cond) { console.log(`  FAIL: ${msg}`); failures++; }
+};
+const group = (n: string) => console.log(`== ${n}`);
+
+const SIGNER = "0x9c77c6fafc1eb0821F1De12972Ef0199C97C6e45";
+const VAULT = INDICES[0]!.vault;
+/* The real figures from the first live buy on Mezo testnet, 2026-10-18. */
+const SPEND = 296955200743718592965n;
+const FLOOR = 2970000000000000000n;
+
+/* ------------------------------------------------------------- the app is on */
+
+{
+  group("the app is registered, and only on the chain it is deployed to");
+  check(MINI_APPS.length >= 1, "no app is registered");
+  const app = findMiniApp("leekdefi");
+  check(app !== undefined, "leekdefi is not in the registry");
+  check(app?.chainIds.includes(MEZO_TESTNET) === true, "leekdefi does not list Mezo testnet");
+  /* An app offered on a chain its contracts are not on would render addresses
+     with no code behind them. The app decides this, not the shell. */
+  check(app?.chainIds.length === 1, "leekdefi claims a chain it is not deployed on");
+  check(app?.css.includes("leekdefi-") === true, "the stylesheet is not prefixed with the app id");
+  /* Unprefixed class names would style whatever else the shell has injected. */
+  check(
+    app?.css.match(/\.(?!leekdefi)[a-z]/) === null,
+    "the stylesheet carries a class that is not prefixed with the app id",
+  );
+  check(app?.worksWithoutDevice !== true, "leekdefi claims to work with no device, but it proposes calls");
+}
+
+/* ----------------------------------------------------------- the host gate */
+
+{
+  group("the host gate accepts a buy, and renders both of its arguments");
+  const data = encode.buy(SPEND, FLOOR);
+  const result = screenProposal(
+    { kind: "call", to: VAULT, data, reason: "Buy GOLOGGLE" },
+    {
+      chainId: MEZO_TESTNET,
+      from: SIGNER,
+      descriptors: [...DEFAULT_DESCRIPTORS, ...descriptorsFor(MEZO_TESTNET, VAULT)],
+    },
+  );
+  check(result.kind === "ok", `a buy was refused: ${result.kind === "refused" ? result.why : ""}`);
+  if (result.kind === "ok" && result.screened.kind === "call") {
+    const d = result.screened.descriptor;
+    check(d !== undefined, "the buy was screened with no descriptor");
+    check(d?.omittedFields === 0, `the descriptor omitted ${d?.omittedFields} field(s)`);
+    check(d?.conflicts.length === 0, `descriptor and decoder disagree: ${d?.conflicts[0]}`);
+    /* THE PROPERTY: the slippage floor is on screen. A buy with a floor of
+       zero is a buy at whatever price the oracle happens to publish, which is
+       exactly the call an operator of a mispriced feed wants signed. A summary
+       that showed only the MUSD spent would hide it. */
+    const values = (d?.fields ?? []).map((f) => f.value).join(" | ");
+    check(values.includes("296.955200743718592965"), `the amount spent is not shown: ${values}`);
+    check(values.includes("2.97"), `the slippage floor is not shown: ${values}`);
+    check(d?.hiddenFields === 0, "the descriptor hides a field of a buy");
+  }
+}
+
+{
+  group("the same calldata at another address is refused");
+  /* Descriptors are per deployment. A vault address this app does not know is
+     not describable, and must be refused rather than described by analogy. */
+  const stranger = "0x00000000000000000000000000000000deadbeef";
+  const result = screenProposal(
+    { kind: "call", to: stranger, data: encode.buy(SPEND, FLOOR), reason: "Buy somewhere else" },
+    {
+      chainId: MEZO_TESTNET,
+      from: SIGNER,
+      descriptors: [...DEFAULT_DESCRIPTORS, ...descriptorsFor(MEZO_TESTNET, stranger)],
+    },
+  );
+  check(result.kind === "refused", "a buy at an unknown address was screened as ok");
+}
+
+{
+  group("descriptors are scoped to this app's contracts and this app's chain");
+  check(descriptorsFor(MEZO_TESTNET, VAULT).length > 0, "the vault has no descriptor");
+  check(descriptorsFor(MEZO_TESTNET, STAKING).length > 0, "staking has no descriptor");
+  /* Narrowed by the shell's question rather than handing back everything: an
+     app that answers with three other contracts' descriptors is asking the
+     matcher to do its narrowing. */
+  check(
+    descriptorsFor(MEZO_TESTNET, VAULT).every((d) =>
+      d.deployments.every((dep) => dep.address === VAULT.toLowerCase())),
+    "asking about one vault returned another contract's descriptor",
+  );
+  /* The app lists one chain; a descriptor offered on another would be the app
+     relying on the shell to enforce the app's own list. */
+  check(descriptorsFor(1, VAULT).length === 0, "a descriptor was offered on Ethereum mainnet");
+  for (const d of descriptorsFor(MEZO_TESTNET, VAULT)) {
+    check(d.source.startsWith("local/"), `an app descriptor claims registry provenance: ${d.source}`);
+  }
+}
+
+/* --------------------------------------------------------------- the device */
+
+{
+  group("the device's own decoder reads every call this app proposes");
+  /* The mirror of src/eth-decode.c. A call the host screened and the device
+     cannot read is a dead end that only shows up with hardware in hand. */
+  const cases: ReadonlyArray<readonly [string, string, readonly string[]]> = [
+    ["buy", encode.buy(SPEND, FLOOR), ["musdAmount", "minShares"]],
+    ["redeem", encode.redeem(1000000000000000000n, 90000000000000000000n), ["shares", "minMusd"]],
+    ["stake", encode.stake(50000000000000000000n), ["amount"]],
+  ];
+  for (const [name, data, names] of cases) {
+    const decoded = decodeCall(data);
+    check(decoded.kind === CallKind.Generic, `${name} is not decoded by the device: ${decoded.kind}`);
+    const args = decoded.args ?? [];
+    check(args.length === names.length, `${name} decoded ${args.length} of ${names.length} arguments`);
+    for (const [i, expected] of names.entries()) {
+      check(args[i]?.name === expected, `${name} argument ${i} is "${args[i]?.name}", expected "${expected}"`);
+    }
+  }
+  /* The approval that must precede a buy. Drawn by the device from its own
+     pre-generic table, with a screen that says "Approve spending". */
+  const approval = decodeCall(encode.approve(VAULT, SPEND));
+  check(approval.kind === CallKind.Erc20Approve, `an approval is not decoded: ${approval.kind}`);
+}
+
+{
+  group("the buy's slippage floor survives the round trip to the device");
+  /* Not just "it decoded": the number the device would draw has to be the
+     number that was encoded. A decoder that read the two words in the wrong
+     order would still produce two named arguments. */
+  const decoded = decodeCall(encode.buy(SPEND, FLOOR));
+  const [spent, floor] = decoded.args ?? [];
+  /* uint arguments come back as bigint, so this compares numbers and not the
+     string shapes of numbers. */
+  check(spent?.value === SPEND, `the device reads ${spent?.value} spent, not ${SPEND}`);
+  check(floor?.value === FLOOR, `the device reads ${floor?.value} as the floor, not ${FLOOR}`);
+}
+
+/* ------------------------------------------------------------- the sentences */
+
+{
+  group("the two claims the screen must not get wrong are on it");
+  const source = readFileSync(new URL("../packages/apps/leekdefi/index.ts", import.meta.url), "utf8");
+  /* `redeem` pays shares * price - fee and never reads reserves, so reserves
+     growing does not change what a share is worth. An APY on shares would be a
+     number with no mechanism behind it. */
+  check(source.includes("Holding a share pays no income."), "the no-income sentence is gone");
+  check(source.includes("there is no yield and no APY to quote"), "the no-APY sentence is gone");
+  /* These track baskets of cryptoassets and are not named after companies. */
+  check(source.includes("invented index names"), "the invented-names disclaimer is gone");
+  check(source.includes("Testnet only"), "the testnet-only disclaimer is gone");
+  /* H-1 is real and fired on the live deployment within an hour of launch. */
+  check(source.includes("H-1"), "the H-1 disclosure is gone");
+  /* The empty-vault state, which the website got wrong first: a null coverage
+     means either an unreadable price or nothing owed, and they are opposites. */
+  check(source.includes("no shares yet"), "the empty-vault state is gone");
+  check(
+    source.includes("the price is unreadable"),
+    "the unreadable-price state is gone, so the two cases have collapsed again",
+  );
+  /* The faucet is Mezo's own, and MUSD is deliberately not faucetable. */
+  check(source.includes("faucet.test.mezo.org") || readFileSync(
+    new URL("../packages/apps/leekdefi/addresses.ts", import.meta.url), "utf8",
+  ).includes("faucet.test.mezo.org"), "the Mezo faucet link is gone");
+}
+
+console.log(failures === 0 ? "all ok" : `${failures} failure(s)`);
+process.exit(failures === 0 ? 0 : 1);

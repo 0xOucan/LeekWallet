@@ -7,11 +7,10 @@
  * than at runtime. That is deliberate: a release that compiles and then breaks
  * on a screen is worse than one that will not compile until somebody looks.
  *
- * The array is empty: the apps written against this framework were built for a
- * hackathon and have been deleted. The framework itself is generic and stays,
- * so the shell keeps exactly one edge to apps rather than growing a new one
- * the next time somebody writes one. Nothing outside this file may import an
- * app module directly.
+ * One app is registered: LeekDefi, the LeekStonks index market on Mezo
+ * testnet. The apps written for an earlier hackathon were deleted, which is
+ * what the two-line removal procedure looks like in practice. Nothing outside
+ * this file may import an app module directly.
  *
  * Apps are excluded from the *bundle*, not hidden by a flag. A runtime toggle
  * would leave the code — and its RPC endpoints, and its CSS — shipped to
@@ -21,10 +20,12 @@
 
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 
+import { leekDefiApp } from "../../packages/apps/leekdefi/index.ts";
+
 export type { AppContext, MiniApp };
 
 /** Every app in this build. Add a line to register one. */
-export const MINI_APPS: readonly MiniApp[] = [];
+export const MINI_APPS: readonly MiniApp[] = [leekDefiApp];
 
 export const findMiniApp = (id: string): MiniApp | undefined =>
   MINI_APPS.find((app) => app.id === id);
