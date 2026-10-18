@@ -549,6 +549,58 @@ group("raw units scale exactly, with no floating point");
   }
 }
 
+/*
+ * Mezo testnet's five MUSDs, and the one that counts.
+ *
+ * Mezo testnet carries five contracts answering symbol() "MUSD" with 18
+ * decimals. Exactly one is the MUSD the borrow system mints, and it is
+ * identified by mintList(BorrowerOperations) returning true - not by anything
+ * a symbol() call can see. This table pointed at 0x118917a4..., the address
+ * Mezo's own contract reference names, which answers symbol() and decimals()
+ * identically and returns false. Someone who borrowed MUSD and held it saw a
+ * zero balance beside a row that looked right in every other respect.
+ *
+ * Pinned because the wrong address is the plausible-looking one: it is what
+ * the documentation says, so "correcting" this row back is a one-line change
+ * somebody would make in good faith. Both addresses were read on chain on
+ * 2026-10-18.
+ */
+{
+  group("Mezo testnet MUSD is the borrowable one, not the documented one");
+  const borrowable = tokenHint(31611, "0xf9bbccc0f1b68ea07c86de6f88c76b3d8e2dd0af");
+  check(borrowable !== undefined, "the borrowable MUSD is not in the table");
+  check(borrowable?.symbol === "MUSD", "the borrowable MUSD is not labelled MUSD");
+  check(borrowable?.decimals === 18, "the borrowable MUSD is not 18 decimals");
+  // The impostor must not be listed at all: two MUSD rows on one chain would
+  // make which balance you see depend on lookup order.
+  check(
+    tokenHint(31611, "0x118917a40faf1cd7a13db0ef56c86de7973ac503") === undefined,
+    "the unborrowable MUSD is still listed on Mezo testnet",
+  );
+}
+
+/*
+ * MEZO on testnet, which was missing because the documentation is silent.
+ *
+ * The precompile sits at the same reserved address on mainnet and testnet, and
+ * symbol()/decimals() answer "MEZO"/18 on 31611, read 2026-10-18. The row was
+ * absent, so the wallet showed no MEZO on the only Mezo network anyone can
+ * test on - including the token LeekStonks pays fee discounts for staking.
+ */
+{
+  group("MEZO is listed on Mezo testnet, at the same precompile as mainnet");
+  const testnet = tokenHint(31611, "0x7b7c000000000000000000000000000000000001");
+  const mainnet = tokenHint(31612, "0x7b7c000000000000000000000000000000000001");
+  check(testnet !== undefined, "MEZO is not listed on Mezo testnet");
+  check(mainnet !== undefined, "MEZO is not listed on Mezo mainnet");
+  check(testnet?.symbol === "MEZO", "the testnet MEZO row is not labelled MEZO");
+  check(testnet?.decimals === 18, "the testnet MEZO row is not 18 decimals");
+  check(
+    testnet?.address === mainnet?.address,
+    "the two networks disagree about MEZO's reserved address",
+  );
+}
+
 if (failures) {
   console.log(`${failures} failure(s)`);
   process.exit(1);

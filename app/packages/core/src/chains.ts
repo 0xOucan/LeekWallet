@@ -908,15 +908,49 @@ const TOKEN_HINTS: readonly TokenHint[] = [
    * reference. 18 decimals on both, unlike the six-decimal dollars above,
    * which is exactly the mistake the note on this table warns about. */
   { chainId: 31612, address: "0xdd468a1ddc392dcdbef6db6e34e89aa338f9f186", symbol: "MUSD", decimals: 18, verified: false },
-  { chainId: 31611, address: "0x118917a40faf1cd7a13db0ef56c86de7973ac503", symbol: "MUSD", decimals: 18, verified: false },
+  /* Mezo testnet has FIVE contracts answering symbol() "MUSD" with 18
+   * decimals, and only this one is the MUSD the borrow system mints: it is the
+   * single address whose mintList(BorrowerOperations) is true, read on chain
+   * 2026-10-18. The one Mezo's own contracts reference, 0x118917a4..., answers
+   * symbol() and decimals() identically and returns FALSE, so a user who
+   * borrowed MUSD and held it saw a zero balance here while the row looked
+   * correct in every other respect.
+   *
+   * A symbol() check cannot tell the five apart, which is why the evidence
+   * recorded for this row is mintList and not symbol. */
+  { chainId: 31611, address: "0xf9bbccc0f1b68ea07c86de6f88c76b3d8e2dd0af", symbol: "MUSD", decimals: 18, verified: false },
   /* The same MUSD, carried to Ethereum and Base by Wormhole NTT at one
    * address. Verified the same way, on each chain's own RPC. */
   { chainId: 1, address: "0xdd468a1ddc392dcdbef6db6e34e89aa338f9f186", symbol: "MUSD", decimals: 18, verified: false },
   { chainId: 8453, address: "0xdd468a1ddc392dcdbef6db6e34e89aa338f9f186", symbol: "MUSD", decimals: 18, verified: false },
   /* MEZO, the native token, as an ERC-20. Mainnet Mezo uses a reserved
    * address; Ethereum, Base and BSC share the bridged one. Verified by
-   * symbol() on each. No testnet address is published. */
+   * symbol() on each.
+   *
+   * The testnet row was missing because no testnet address is published, which
+   * was true of the documentation and false of the chain: the precompile sits
+   * at the SAME reserved address on both networks, and symbol() and decimals()
+   * answer "MEZO"/18 on 31611, read 2026-10-18. Without it the wallet showed
+   * no MEZO row on the only Mezo network anyone can test on. */
   { chainId: 31612, address: "0x7b7c000000000000000000000000000000000001", symbol: "MEZO", decimals: 18, verified: false },
+  { chainId: 31611, address: "0x7b7c000000000000000000000000000000000001", symbol: "MEZO", decimals: 18, verified: false },
+
+  /* LeekStonks' own tokens on Mezo testnet: two index shares and the staking
+   * receipt. Read on chain 2026-10-18 by symbol()/name()/decimals() against
+   * rpc.test.mezo.org - "Gologgle Index"/GOLOGGLE, "Amezon Index"/AMEZON and
+   * "Staked MEZO"/sMEZO, all 18 decimals.
+   *
+   * Here because a tokenAmount field cannot scale without a hint: erc7730.ts
+   * reads decimals from this table and never from a descriptor, so without
+   * these rows a share amount renders as "N raw units (decimals unknown)"
+   * rather than a number. That refusal is correct and is what makes the rows
+   * worth adding rather than guessing 18 in the renderer.
+   *
+   * GOLOGGLE and AMEZON are invented index names, not companies, and the
+   * baskets are cryptoassets. They are not securities. */
+  { chainId: 31611, address: "0xa4220df063149aa750bd54bef578b244a3bc9be7", symbol: "GOLOGGLE", decimals: 18, verified: false },
+  { chainId: 31611, address: "0x6c4a0deca88c51a27e91841e7017f1be654769ad", symbol: "AMEZON", decimals: 18, verified: false },
+  { chainId: 31611, address: "0x6b15c487471cce6a088d292a2f3834942a60e998", symbol: "sMEZO", decimals: 18, verified: false },
   { chainId: 1, address: "0x8e4cbbcc33db6c0a18561fde1f6ba35906d4848b", symbol: "MEZO", decimals: 18, verified: false },
   { chainId: 8453, address: "0x8e4cbbcc33db6c0a18561fde1f6ba35906d4848b", symbol: "MEZO", decimals: 18, verified: false },
   { chainId: 56, address: "0x8e4cbbcc33db6c0a18561fde1f6ba35906d4848b", symbol: "MEZO", decimals: 18, verified: false },
