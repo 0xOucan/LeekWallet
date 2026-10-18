@@ -48,6 +48,44 @@ and it means supporting a new contract call extends the *device*, not the app.
 **[Full architecture →](docs/ARCHITECTURE.md)** — the three tiers of decoding,
 the shared firmware/host vectors, and a flow per integration.
 
+## Mezo: signing a real market from this device
+
+Built for the **Mezo Buildathon** (AKINDO), Wave 1, Track 2 — the wallet half.
+Track 1 is [leek-stocks](https://github.com/0xOucan/leek-stocks), the
+LeekStonks index market, **live on Mezo testnet (31611)** at
+[leekdefi.0xoucanproject.xyz](https://leekdefi.0xoucanproject.xyz).
+
+The integration is one mini-app and four decoder rows, and the split between
+those two is the point of this repository:
+
+| Half | Where | What it does |
+|---|---|---|
+| The device's reading | `src/eth-decode.c` | four rows on the generic path — `buy`, `redeem`, `stake`, `unstake` — so the device decodes the call itself and draws one page per argument |
+| The host's evidence | `app/packages/apps/leekdefi/descriptors.ts` | an ERC-7730 descriptor, which gets the proposal past the companion's gate and is never sent to the device |
+
+**Both are required, and satisfying one is not a step toward the other.** A
+descriptor with no table row gives a companion that screens a call the device
+then refuses; a table row with no descriptor gives a device that would draw a
+call the companion will not send. `app/test/leekdefi.test.ts` runs the same
+calldata through both gates for exactly that reason.
+
+What the device draws for a buy is the whole decision: the MUSD spent and the
+slippage floor. The price comes from the oracle and the fee from the contract,
+and the transaction can vary neither — so two pages are not a summary of the
+call, they are the call. A `minShares` of zero is a buy at whatever price the
+oracle happens to publish, which is precisely what an operator of a mispriced
+feed would want signed, so it is never folded into a total.
+
+Gas on Mezo is paid in **BTC**, not ether, and the device labels it that way:
+`chains.ts` carries the chain's own native symbol rather than assuming ether,
+and a transaction that drew "ETH" on a Bitcoin-backed chain would be a lie on
+the one screen that is supposed to be trustworthy.
+
+The market's own tokens — MUSD, MEZO, and the two index shares — are in the
+token table with the evidence for each recorded beside it. MUSD is the entry
+worth reading: Mezo testnet has **five** contracts answering `symbol()` as
+"MUSD" with 18 decimals, and only one is the MUSD the borrow system mints.
+
 ## What follows from it
 
 That is the entire design goal. Everything below follows from it: the device
