@@ -25,9 +25,12 @@
 import { CallKind, decodeCall } from "../packages/core/src/eth-decode.ts";
 import { screenProposal } from "../packages/core/src/app-proposal.ts";
 import { DEFAULT_DESCRIPTORS } from "../packages/core/src/tx-interpret.ts";
-import { INDICES, MEZO_TESTNET, MUSD, STAKING } from "../packages/apps/leekdefi/addresses.ts";
+import {
+  BORROWER_OPERATIONS, INDICES, MEZO_TESTNET, MUSD, STAKING,
+} from "../packages/apps/leekdefi/addresses.ts";
 import { descriptorsFor } from "../packages/apps/leekdefi/descriptors.ts";
 import { encode } from "../packages/apps/leekdefi/read.ts";
+import { collateralRatioBps, encodeBorrow } from "../packages/apps/leekdefi/borrow.ts";
 import { MINI_APPS, findMiniApp } from "../src/apps/registry.ts";
 import { readFileSync } from "node:fs";
 
@@ -168,6 +171,79 @@ const FLOOR = 2970000000000000000n;
   check(floor?.value === FLOOR, `the device reads ${floor?.value} as the floor, not ${FLOOR}`);
 }
 
+/* ------------------------------------------------------------ mezo borrow */
+
+{
+  group("the borrow calls pass both gates, and openTrove shows the BTC");
+  /* The MUSD this market settles in is minted only here, so a wallet that
+     could buy a share but not borrow was a market you could only use if you
+     had already borrowed somewhere else. */
+  const cases: ReadonlyArray<readonly [string, string, bigint, readonly string[]]> = [
+    ["openTrove", encodeBorrow.openTrove(2000n * 10n ** 18n), 10n ** 16n,
+      ["debtAmount", "upperHint", "lowerHint"]],
+    ["withdrawMUSD", encodeBorrow.withdrawMUSD(100n * 10n ** 18n), 0n,
+      ["amount", "upperHint", "lowerHint"]],
+    ["repayMUSD", encodeBorrow.repayMUSD(9209340000000000000n), 0n,
+      ["amount", "upperHint", "lowerHint"]],
+    ["closeTrove", encodeBorrow.closeTrove(), 0n, []],
+  ];
+
+  for (const [name, data, value, names] of cases) {
+    /* The device's own decoder first: a descriptor would satisfy the host and
+       leave the device refusing the call. */
+    const decoded = decodeCall(data);
+    check(decoded.kind === CallKind.Generic, `${name} is not decoded by the device: ${decoded.kind}`);
+    const args = decoded.args ?? [];
+    check(args.length === names.length, `${name} decoded ${args.length} of ${names.length} arguments`);
+    for (const [i, expected] of names.entries()) {
+      check(args[i]?.name === expected, `${name} argument ${i} is "${args[i]?.name}"`);
+    }
+
+    const screened = screenProposal(
+      { kind: "call", to: BORROWER_OPERATIONS, data, value, reason: `${name} test` },
+      { chainId: MEZO_TESTNET, from: SIGNER, descriptors: DEFAULT_DESCRIPTORS, nativeSymbol: "BTC" },
+    );
+    check(
+      screened.kind === "ok",
+      `${name} was refused: ${screened.kind === "refused" ? screened.why : ""}`,
+    );
+    if (screened.kind === "ok" && screened.screened.kind === "call") {
+      const d = screened.screened.descriptor;
+      check(d?.omittedFields === 0, `${name} omitted ${d?.omittedFields} field(s)`);
+      check(d?.conflicts.length === 0, `${name}: ${d?.conflicts[0]}`);
+
+      /* THE PROPERTY for openTrove: the BTC is the transaction's VALUE and not
+         an argument, so a descriptor reading only calldata would show somebody
+         taking on 2,000 MUSD of debt with no mention of the Bitcoin they are
+         locking behind it. @.value is how it reaches that. */
+      if (name === "openTrove") {
+        const values = (d?.fields ?? []).map((f) => `${f.label}=${f.value}`).join(" | ");
+        check(values.includes("0.01 BTC"), `the BTC collateral is not shown: ${values}`);
+        check(values.includes("2000"), `the debt is not shown: ${values}`);
+        /* BTC, not ether. Mezo is Bitcoin-backed and a screen reading "ETH"
+           here would be a lie on the one screen meant to be trustworthy. */
+        check(!values.includes("ETH"), `openTrove drew ETH on a Bitcoin chain: ${values}`);
+      }
+    }
+  }
+}
+
+{
+  group("a position owing nothing has no ratio, rather than an infinite one");
+  /* Same mistake as a vault's backing rendered 0% because nothing was owed:
+     infinity printed as a figure is not a measurement. */
+  const base = { status: 1n, collateral: 10n ** 16n, price: 100_000n * 10n ** 18n, mcr: 11n * 10n ** 17n, minNetDebt: 1800n * 10n ** 18n };
+  check(collateralRatioBps({ ...base, debt: 0n }) === null, "a debt of zero produced a ratio");
+  check(collateralRatioBps({ ...base, debt: null }) === null, "an unread debt produced a ratio");
+  check(
+    collateralRatioBps({ ...base, debt: 500n * 10n ** 18n, price: null }) === null,
+    "an unread price produced a ratio",
+  );
+  /* 0.01 BTC at 100,000 USD against 500 MUSD is 200%. */
+  const ratio = collateralRatioBps({ ...base, debt: 500n * 10n ** 18n });
+  check(ratio === 20_000, `expected 20000 bps, got ${ratio}`);
+}
+
 /* ------------------------------------------------------------- the sentences */
 
 {
@@ -186,6 +262,10 @@ const FLOOR = 2970000000000000000n;
   /* The empty-vault state, which the website got wrong first: a null coverage
      means either an unreadable price or nothing owed, and they are opposites. */
   check(source.includes("no shares yet"), "the empty-vault state is gone");
+  /* Borrowing is a loan against liquidatable collateral, and the ratio must
+     sit beside the debt rather than behind a disclosure. */
+  check(source.includes("It is a loan, not a swap"), "the loan-not-swap sentence is gone");
+  check(source.includes("liquidatable below"), "the liquidation threshold is not shown");
   check(
     source.includes("the price is unreadable"),
     "the unreadable-price state is gone, so the two cases have collapsed again",

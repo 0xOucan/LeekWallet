@@ -41,6 +41,9 @@ import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 import {
   BORROWER_OPERATIONS, INDICES, MEZO_FAUCET, MEZO_TESTNET, MUSD, STAKING,
 } from "./addresses.ts";
+import {
+  collateralRatioBps, encodeBorrow, hasPosition, readBorrow, type BorrowState,
+} from "./borrow.ts";
 import { descriptorsFor } from "./descriptors.ts";
 import { encode, readAll, type IndexState, type LeekDefiState } from "./read.ts";
 import { CSS } from "./styles.ts";
@@ -232,6 +235,246 @@ function indexCard(index: IndexState): HTMLElement {
   return node;
 }
 
+/**
+ * Mezo's borrow market: where the MUSD comes from.
+ *
+ * Mirrors the website's panel, because the step it covers is unavoidable here.
+ * On Mezo testnet the settlement token is the real MUSD and nothing mints it
+ * but this market, so a wallet that could buy a share but not borrow was a
+ * market you could only use if you had already borrowed elsewhere.
+ *
+ * The ratio sits beside the debt rather than behind a disclosure: the BTC is
+ * liquidatable, and that is the one consequence a borrower must not have to
+ * look for.
+ */
+function borrowPanel(
+  state: BorrowState,
+  propose: AppContext["propose"],
+  say: (text: string) => void,
+  nativeBalance: bigint | null,
+): HTMLElement {
+  const node = card("Get MUSD: borrow against BTC");
+  node.append(
+    el(
+      "div",
+      "leekdefi-note",
+      "This market settles in MUSD and mints none of it. MUSD comes from " +
+        "Mezo's own borrow market: you lock BTC as collateral and it mints " +
+        "MUSD against it. It is a loan, not a swap — the BTC comes back when " +
+        "the debt is repaid, and it can be liquidated if the collateral ratio " +
+        "falls too far.",
+    ),
+  );
+  node.append(row("Mezo BorrowerOperations", shortAddress(BORROWER_OPERATIONS)));
+
+  const ratio = collateralRatioBps(state);
+  const open = hasPosition(state);
+
+  if (open) {
+    node.append(
+      row(
+        "BTC locked",
+        state.collateral === null ? null : formatWad(state.collateral, 8),
+        "collateral, returned when the position closes",
+      ),
+    );
+    node.append(
+      row(
+        "MUSD owed",
+        state.debt === null ? null : formatWad(state.debt, 2),
+        "includes the 200 MUSD liquidation reserve",
+      ),
+    );
+    /* The threshold is read from the protocol, never assumed: a hardcoded
+       110% that the protocol later changed would be a screen that is quietly
+       wrong about when somebody loses their Bitcoin. */
+    const mcrPct = state.mcr === null ? null : Number((state.mcr * 100n) / 10n ** 18n);
+    const ratioRow = el("div", "leekdefi-row");
+    const left = el("div");
+    left.append(el("div", "leekdefi-label", "Collateral ratio"));
+    left.append(
+      el(
+        "div",
+        "leekdefi-note",
+        mcrPct === null ? "liquidation threshold not read" : `liquidatable below ${mcrPct}%`,
+      ),
+    );
+    ratioRow.append(left);
+    if (ratio === null) {
+      ratioRow.append(el("div", "leekdefi-value leekdefi-unread", "not read"));
+    } else {
+      /* A caret and a word as well as a hue: the colour alone is not
+         information to roughly one man in twelve. */
+      const near = mcrPct !== null && ratio < mcrPct * 100 + 2_000;
+      const v = el("div", `leekdefi-value ${near ? "leekdefi-loss" : "leekdefi-gain"}`);
+      v.textContent = `${near ? "▼ " : "▲ "}${(ratio / 100).toFixed(0)}%`;
+      ratioRow.append(v);
+    }
+    node.append(ratioRow);
+  } else {
+    node.append(
+      el(
+        "div",
+        "leekdefi-note",
+        state.status === null
+          ? "Your position could not be read."
+          : "You have no position in this market yet.",
+      ),
+    );
+    node.append(
+      row(
+        "Smallest loan",
+        state.minNetDebt === null ? null : `${formatWad(state.minNetDebt, 2)} MUSD`,
+        "the protocol refuses less, plus a 200 MUSD liquidation reserve on top",
+      ),
+    );
+    node.append(
+      row("Your BTC", nativeBalance === null ? null : formatWad(nativeBalance, 8), "gas and collateral are the same asset here"),
+    );
+  }
+
+  node.append(
+    row(
+      "BTC price",
+      state.price === null ? null : `${formatWad(state.price, 2)} USD`,
+      "from Mezo's own feed, not ours",
+    ),
+  );
+
+  if (propose === undefined) {
+    node.append(el("div", "leekdefi-note", "No device is connected, so nothing can be signed."));
+    return node;
+  }
+
+  const input = el("input", "leekdefi-input");
+  input.type = "text";
+  input.inputMode = "decimal";
+  input.placeholder = "0.00";
+  input.setAttribute("aria-label", "MUSD amount");
+  node.append(input);
+
+  const amountOrComplain = (): bigint | null => {
+    const amount = parseWad(input.value);
+    if (amount === null) say("Enter an amount of MUSD greater than zero.");
+    return amount;
+  };
+
+  const actions = el("div", "leekdefi-actions");
+
+  if (!open) {
+    /* Opening needs BTC in the same transaction, as value. The collateral is
+       not an argument, which is exactly why the device draws it from the
+       transaction rather than from the calldata. */
+    const collInput = el("input", "leekdefi-input");
+    collInput.type = "text";
+    collInput.inputMode = "decimal";
+    collInput.placeholder = "0.01";
+    collInput.setAttribute("aria-label", "BTC to lock as collateral");
+    node.append(el("div", "leekdefi-note", "BTC to lock as collateral:"));
+    node.append(collInput);
+
+    const borrow = el("button", "leekdefi-button", "Borrow MUSD");
+    borrow.type = "button";
+    borrow.addEventListener("click", () => {
+      const debt = amountOrComplain();
+      if (debt === null) return;
+      const collateral = parseWad(collInput.value);
+      if (collateral === null) {
+        say("Enter the BTC to lock as collateral.");
+        return;
+      }
+      if (state.minNetDebt !== null && debt < state.minNetDebt) {
+        say(`The protocol refuses a loan below ${formatWad(state.minNetDebt, 2)} MUSD.`);
+        return;
+      }
+      /* Checked before asking for a signature: a position that opens below
+         the minimum ratio is liquidatable the moment it exists. */
+      if (state.price !== null && state.mcr !== null && debt > 0n) {
+        const wouldBe = (collateral * state.price * 10_000n) / (debt * 10n ** 18n);
+        const floor = (state.mcr * 10_000n) / 10n ** 18n;
+        if (wouldBe < floor) {
+          say(
+            `That is a ratio of ${(Number(wouldBe) / 100).toFixed(0)}%, below the ` +
+              `${(Number(floor) / 100).toFixed(0)}% the protocol requires. Lock more BTC or borrow less.`,
+          );
+          return;
+        }
+      }
+      void (async () => {
+        const outcome = await propose({
+          kind: "call",
+          to: BORROWER_OPERATIONS,
+          data: encodeBorrow.openTrove(debt),
+          value: collateral,
+          reason: `Borrow ${formatWad(debt)} MUSD against ${formatWad(collateral, 8)} BTC`,
+        });
+        say(describeOutcome(outcome, "Borrow sent"));
+      })();
+    });
+    actions.append(borrow);
+  } else {
+    const more = el("button", "leekdefi-button", "Borrow more");
+    more.type = "button";
+    more.addEventListener("click", () => {
+      const amount = amountOrComplain();
+      if (amount === null) return;
+      void (async () => {
+        const outcome = await propose({
+          kind: "call",
+          to: BORROWER_OPERATIONS,
+          data: encodeBorrow.withdrawMUSD(amount),
+          reason: `Borrow a further ${formatWad(amount)} MUSD against the same BTC`,
+        });
+        say(describeOutcome(outcome, "Borrow sent"));
+      })();
+    });
+
+    const repay = el("button", "leekdefi-button-quiet", "Repay");
+    repay.type = "button";
+    repay.addEventListener("click", () => {
+      const amount = amountOrComplain();
+      if (amount === null) return;
+      void (async () => {
+        const outcome = await propose({
+          kind: "call",
+          to: BORROWER_OPERATIONS,
+          data: encodeBorrow.repayMUSD(amount),
+          reason: `Repay ${formatWad(amount)} MUSD of debt`,
+        });
+        say(describeOutcome(outcome, "Repayment sent"));
+      })();
+    });
+
+    const close = el("button", "leekdefi-button-quiet", "Close and take the BTC back");
+    close.type = "button";
+    close.addEventListener("click", () => {
+      void (async () => {
+        const outcome = await propose({
+          kind: "call",
+          to: BORROWER_OPERATIONS,
+          data: encodeBorrow.closeTrove(),
+          reason: "Repay all MUSD debt and withdraw the BTC collateral",
+        });
+        say(describeOutcome(outcome, "Close sent"));
+      })();
+    });
+
+    actions.append(more, repay, close);
+    node.append(
+      el(
+        "div",
+        "leekdefi-note",
+        "The protocol requires the debt, less its 200 MUSD liquidation reserve, " +
+          "to stay at or above the minimum. Closing is the only way past that, " +
+          "and it needs the whole debt in MUSD in your wallet.",
+      ),
+    );
+  }
+
+  node.append(actions);
+  return node;
+}
+
 /* ---------------------------------------------------------------- the app */
 
 export const leekDefiApp: MiniApp = {
@@ -332,8 +575,19 @@ export const leekDefiApp: MiniApp = {
     };
 
     let state: LeekDefiState;
+    let borrow: BorrowState;
+    let nativeBalance: bigint | null;
     try {
-      state = await readAll(context.request, context.address);
+      [state, borrow, nativeBalance] = await Promise.all([
+        readAll(context.request, context.address),
+        readBorrow(context.request, context.address),
+        /* BTC is gas AND collateral on this chain, so the borrow panel needs
+           it. Null on failure, like every other figure here. */
+        context
+          .request({ method: "eth_getBalance", params: [context.address, "latest"] })
+          .then((raw) => (typeof raw === "string" ? BigInt(raw) : null))
+          .catch(() => null),
+      ]);
     } catch (e) {
       /* Rejecting is the honest outcome when the app cannot say anything true,
          and the shell renders the failure. */
@@ -344,9 +598,21 @@ export const leekDefiApp: MiniApp = {
       body.replaceChildren();
       for (const index of state.indices) body.append(indexCard(index));
 
+      /* The order the website uses, and it is the order of the steps: see the
+         price, get the MUSD, then spend it. A borrow panel below the buy
+         button would be below the thing it is a prerequisite for. */
+      body.append(borrowPanel(borrow, context.propose, say, nativeBalance));
+
       /* ---------------------------------------------------------- wallet */
       const position = card("Your position");
       position.append(row("MUSD", state.musd === null ? null : formatWad(state.musd), "dollar-denominated, at $1.00 parity"));
+      position.append(
+        row(
+          "BTC (gas)",
+          nativeBalance === null ? null : formatWad(nativeBalance, 8),
+          "gas on Mezo is BTC, not ether",
+        ),
+      );
       const host = context.endpointHost?.();
       position.append(row("Read from", host ?? null, "whoever answered most recently"));
       body.append(position);
@@ -476,7 +742,13 @@ export const leekDefiApp: MiniApp = {
             ? `0% until the holding period ends in ${Math.ceil(Number(cooling) / 60)} min — ` +
               "the discount requires the position to have been held, which is what " +
               "stops it being rented for one transaction"
-            : "applies now",
+            /* An address that never staked has a coolingUntil of zero, which
+               is not the same as a cooldown that has elapsed. Saying "applies
+               now" beside 0.00% reads as a bug rather than as "you have not
+               staked", which is what it actually means. */
+            : (s.yourStake ?? 0n) === 0n
+              ? "stake MEZO to earn a discount; 1 MEZO is the first tier"
+              : "applies now",
         ),
       );
       staking.append(row("Staking contract", shortAddress(STAKING)));
