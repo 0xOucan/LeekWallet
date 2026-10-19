@@ -47,6 +47,12 @@ import { parseDescriptor, type Descriptor } from "./erc7730.ts";
 /** The settlement MUSD on Mezo testnet: the mintable one, not the documented one. */
 export const MEZO_TESTNET_MUSD = "0xf9bbccc0f1b68ea07c86de6f88c76b3d8e2dd0af";
 
+/**
+ * 2^256-1, the conventional infinite allowance. Written out rather than
+ * computed, so the constant a reviewer checks is the one that ships.
+ */
+const UNLIMITED = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
 /** MEZO as an ERC-20. A precompile over the Cosmos bank module, same address on both networks. */
 export const MEZO_TOKEN = "0x7b7c000000000000000000000000000000000001";
 
@@ -66,9 +72,7 @@ function formats(token: string): Record<string, unknown> {
     // token is the contract being called.
     params: {
       token,
-      // 2^256-1. Written out rather than computed, so the constant a reviewer
-      // checks is the one that ships.
-      threshold: "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      threshold: UNLIMITED,
       message: "UNLIMITED",
     },
   };
@@ -83,6 +87,79 @@ function formats(token: string): Record<string, unknown> {
     },
   };
 }
+
+/** Mezo's BorrowerOperations on testnet, where MUSD is minted against BTC. */
+export const MEZO_TESTNET_BORROWER_OPERATIONS = "0xa14cba6dd12d537a8decc7dd3c4ac413b8711eba";
+
+/**
+ * The borrow market's four calls.
+ *
+ * `openTrove` is the one worth reading carefully, because the number that
+ * matters is not in the calldata: the BTC collateral is the transaction's
+ * VALUE, and `@.value` is how a descriptor reaches it. A screen that showed
+ * only the debt would show somebody taking on 2,000 MUSD with no mention of
+ * the Bitcoin they are locking behind it.
+ *
+ * The two hint arguments are a list-insertion optimisation and carry no
+ * authority - `openTrove` has no borrower parameter, so a trove belongs to
+ * msg.sender and cannot be opened for anybody else. They are drawn rather
+ * than hidden so that is checkable instead of asserted.
+ *
+ * `closeTrove()` takes nothing at all, which is why it has an empty field
+ * list: there is nothing to render, and the call is the whole decision.
+ */
+const BORROW_FORMATS: Record<string, unknown> = {
+  "openTrove(uint256 debtAmount, address upperHint, address lowerHint)": {
+    intent: "Borrow MUSD against BTC",
+    fields: [
+      {
+        label: "BTC locked as collateral",
+        format: "amount",
+        // The transaction's own value. Gas on Mezo is BTC as well, so this is
+        // BTC and not ether; chains.ts carries the chain's native symbol.
+        path: "@.value",
+      },
+      {
+        label: "MUSD borrowed",
+        format: "tokenAmount",
+        path: "#.debtAmount",
+        params: { token: MEZO_TESTNET_MUSD, threshold: UNLIMITED, message: "UNLIMITED" },
+      },
+      { label: "Upper hint", format: "addressName", path: "#.upperHint" },
+      { label: "Lower hint", format: "addressName", path: "#.lowerHint" },
+    ],
+  },
+  "withdrawMUSD(uint256 amount, address upperHint, address lowerHint)": {
+    intent: "Borrow more MUSD against the same BTC",
+    fields: [
+      {
+        label: "MUSD borrowed",
+        format: "tokenAmount",
+        path: "#.amount",
+        params: { token: MEZO_TESTNET_MUSD, threshold: UNLIMITED, message: "UNLIMITED" },
+      },
+      { label: "Upper hint", format: "addressName", path: "#.upperHint" },
+      { label: "Lower hint", format: "addressName", path: "#.lowerHint" },
+    ],
+  },
+  "repayMUSD(uint256 amount, address upperHint, address lowerHint)": {
+    intent: "Repay MUSD debt",
+    fields: [
+      {
+        label: "MUSD repaid",
+        format: "tokenAmount",
+        path: "#.amount",
+        params: { token: MEZO_TESTNET_MUSD, threshold: UNLIMITED, message: "UNLIMITED" },
+      },
+      { label: "Upper hint", format: "addressName", path: "#.upperHint" },
+      { label: "Lower hint", format: "addressName", path: "#.lowerHint" },
+    ],
+  },
+  "closeTrove()": {
+    intent: "Repay all MUSD debt and take the BTC back",
+    fields: [],
+  },
+};
 
 function descriptorFor(symbol: string, address: string, chainId: number): Descriptor | null {
   return parseDescriptor(
@@ -107,4 +184,16 @@ function descriptorFor(symbol: string, address: string, chainId: number): Descri
 export const MEZO_DESCRIPTORS: readonly Descriptor[] = [
   descriptorFor("MUSD", MEZO_TESTNET_MUSD, 31611),
   descriptorFor("MEZO", MEZO_TOKEN, 31611),
+  parseDescriptor(
+    {
+      context: {
+        contract: {
+          deployments: [{ chainId: 31611, address: MEZO_TESTNET_BORROWER_OPERATIONS }],
+        },
+      },
+      metadata: { owner: "Mezo", contractName: "BorrowerOperations" },
+      display: { formats: BORROW_FORMATS },
+    },
+    "local/mezo-borrower-operations-31611",
+  ),
 ].filter((d): d is Descriptor => d !== null);
