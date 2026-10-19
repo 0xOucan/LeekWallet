@@ -363,5 +363,31 @@ const FLOOR = 2970000000000000000n;
   ).includes("faucet.test.mezo.org"), "the Mezo faucet link is gone");
 }
 
+/* ------------------------------------------- state is re-read after a write */
+
+{
+  group("every write re-reads the chain, and no panel holds the raw propose");
+  const source = readFileSync(new URL("../packages/apps/leekdefi/index.ts", import.meta.url), "utf8");
+  /* The failure this guards against actually happened on the device: a borrow
+     landed, the panel kept the pre-borrow state, offered to OPEN the trove
+     again, and the chain answered "BorrowerOps: Trove is active". The app
+     cannot tell a revert from a reject by design, so it reported a refusal.
+     The cure is that a successful write re-reads before redrawing. */
+  check(source.includes("if (outcome.ok) await refresh();"), "a successful write no longer refreshes");
+  check(source.includes("const refresh = async (): Promise<void> =>"), "refresh() is gone");
+  /* One wrapper, not eleven call sites that might forget. Every panel must
+     receive the wrapped propose; a panel given context.propose directly would
+     silently stop refreshing. */
+  const panelArgs = source.match(/propose(?:Stake)?\s*=\s*context\.propose\b/g) ?? [];
+  check(panelArgs.length === 0, `a panel still takes context.propose directly (${panelArgs.length})`);
+  check(
+    !source.includes("borrowPanel(borrow, context.propose"),
+    "the borrow panel bypasses the refreshing propose",
+  );
+  /* Mezo returns a null receipt for minutes after inclusion, so the user needs
+     a way to ask again without re-signing anything. */
+  check(source.includes("Re-read the chain"), "the manual re-read button is gone");
+}
+
 console.log(failures === 0 ? "all ok" : `${failures} failure(s)`);
 process.exit(failures === 0 ? 0 : 1);

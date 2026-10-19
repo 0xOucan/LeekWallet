@@ -35,7 +35,7 @@
  * likely to be dropped by someone tidying up copy.
  */
 
-import type { ProposalOutcome } from "@leekwallet/core/app-proposal.ts";
+import type { AppProposal, ProposalOutcome } from "@leekwallet/core/app-proposal.ts";
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 
 import {
@@ -620,11 +620,16 @@ export const leekDefiApp: MiniApp = {
       message.hidden = false;
     };
 
-    let state: LeekDefiState;
-    let borrow: BorrowState;
-    let nativeBalance: bigint | null;
-    try {
-      [state, borrow, nativeBalance] = await Promise.all([
+    /* Mezo can take minutes to admit a transaction exists. A manual re-read is
+       the difference between "it failed" and "the node has not said yet". */
+    const reread = el("button", "leekdefi-button-quiet", "Re-read the chain");
+    reread.type = "button";
+    wrap.append(reread);
+
+    const readEverything = async (): Promise<
+      [LeekDefiState, BorrowState, bigint | null]
+    > =>
+      await Promise.all([
         readAll(context.request, context.address),
         readBorrow(context.request, context.address),
         /* BTC is gas AND collateral on this chain, so the borrow panel needs
@@ -634,11 +639,51 @@ export const leekDefiApp: MiniApp = {
           .then((raw) => (typeof raw === "string" ? BigInt(raw) : null))
           .catch(() => null),
       ]);
+
+    let state: LeekDefiState;
+    let borrow: BorrowState;
+    let nativeBalance: bigint | null;
+    try {
+      [state, borrow, nativeBalance] = await readEverything();
     } catch (e) {
       /* Rejecting is the honest outcome when the app cannot say anything true,
          and the shell renders the failure. */
       throw new Error(`LeekDefi could not read Mezo testnet: ${(e as Error).message}`);
     }
+
+    /* Re-read, then redraw. Without this the panel showed the chain as it was
+       when the app opened: after a borrow landed it still offered to OPEN a
+       trove, the chain answered "BorrowerOps: Trove is active", and the app —
+       which by design cannot tell a revert from a reject — reported it as a
+       refusal. The state was stale, not the logic. */
+    const refresh = async (): Promise<void> => {
+      try {
+        [state, borrow, nativeBalance] = await readEverything();
+      } catch (e) {
+        say(`Could not re-read the contracts: ${(e as Error).message}`);
+        return;
+      }
+      render();
+    };
+
+    reread.addEventListener("click", () => {
+      say("Re-reading…");
+      void refresh().then(() => say("Re-read the chain."));
+    });
+
+    /* Every write goes through this, so there is one place that refreshes
+       rather than eleven that might forget. Mezo answers
+       eth_getTransactionReceipt with null for minutes after inclusion, so a
+       send that looks unconfirmed usually landed; re-reading the contracts is
+       the only honest way to find out, and it is why this waits. */
+    const proposeAndRefresh =
+      context.propose === undefined
+        ? undefined
+        : async (proposal: AppProposal): Promise<ProposalOutcome> => {
+            const outcome = await context.propose!(proposal);
+            if (outcome.ok) await refresh();
+            return outcome;
+          };
 
     const render = (): void => {
       body.replaceChildren();
@@ -647,7 +692,7 @@ export const leekDefiApp: MiniApp = {
       /* The order the website uses, and it is the order of the steps: see the
          price, get the MUSD, then spend it. A borrow panel below the buy
          button would be below the thing it is a prerequisite for. */
-      body.append(borrowPanel(borrow, context.propose, say, nativeBalance));
+      body.append(borrowPanel(borrow, proposeAndRefresh, say, nativeBalance));
 
       /* ---------------------------------------------------------- wallet */
       const position = card("Your position");
@@ -707,7 +752,7 @@ export const leekDefiApp: MiniApp = {
           ),
         );
 
-        if (context.propose === undefined) {
+        if (proposeAndRefresh === undefined) {
           /* Absence of propose is a real state, not a legacy allowance: no
              device is connected, or this is a harness. Said rather than
              pretended. */
@@ -723,7 +768,7 @@ export const leekDefiApp: MiniApp = {
             ),
           );
         } else {
-          const propose = context.propose;
+          const propose = proposeAndRefresh;
           const amountOrComplain = (): bigint | null => {
             const amount = parseWad(input.value);
             if (amount === null) say("Enter an amount of MUSD greater than zero.");
@@ -882,10 +927,10 @@ export const leekDefiApp: MiniApp = {
         ),
       );
 
-      if (context.propose === undefined) {
+      if (proposeAndRefresh === undefined) {
         staking.append(el("div", "leekdefi-note", "No device is connected, so nothing can be signed."));
       } else {
-        const proposeStake = context.propose;
+        const proposeStake = proposeAndRefresh;
         const stakeField = labelledInput(
           "MEZO to stake or unstake",
           "1.0",
