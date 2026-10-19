@@ -13,9 +13,9 @@ vaults.
 
 | | |
 |---|---|
-| Firmware table | `buy`, `redeem`, `stake`, `unstake` on the generic path (`src/eth-decode.c`) |
-| Host mirror | the same four in `app/packages/core/src/eth-decode.ts` |
-| Shared vectors | **65**, recorded from the real C decoder, replayed against the mirror |
+| Firmware table | `buy`, `redeem`, `stake`, `unstake`, plus `openTrove`, `withdrawMUSD`, `repayMUSD`, `closeTrove` on the generic path (`src/eth-decode.c`) |
+| Host mirror | the same eight in `app/packages/core/src/eth-decode.ts` |
+| Shared vectors | **71**, recorded from the real C decoder, replayed against the mirror |
 | Descriptors | `app/packages/apps/leekdefi/descriptors.ts` for the vaults and staking; MUSD/MEZO `approve` in `app/packages/core/src/erc7730-mezo.ts` |
 | Both gates | `app/test/leekdefi.test.ts`, 7 groups, same calldata through each |
 | Blind signing | **off**, confirmed by `getFeatures` — and it must stay off, because the point is that the device *reads* these calls |
@@ -91,14 +91,25 @@ Then, in the app:
 5. Check the reads land: a price near 98-99 MUSD, `Backing` over 100%, your
    MUSD balance. A figure that says *not read* is a failed call, not a zero —
    that distinction is deliberate.
-6. Type an amount, press **Approve MUSD**. The device draws
+6. **Borrow, if the address has no MUSD.** The panel sits above the buy
+   button because it is a prerequisite for it. Enter the MUSD to borrow and
+   the BTC to lock, press **Borrow MUSD**, and watch what the device draws:
+   four pages, and the first is **BTC locked as collateral** — which is the
+   transaction's *value*, not an argument, so a decoder reading only calldata
+   would have shown the debt with no mention of the Bitcoin behind it.
+
+   The panel refuses before asking for a signature if the ratio would open
+   below the protocol's own minimum, and if the debt is under `minNetDebt`.
+   Both numbers are read from the chain, not assumed.
+
+7. Type an amount, press **Approve MUSD**. The device draws
    *Approve spending*, the spender and the amount, with `UNLIMITED` if it ever
    were. Confirm on the board.
-7. Press **Buy shares**. **This is the beat worth watching.** The device draws
+8. Press **Buy shares**. **This is the beat worth watching.** The device draws
    two pages from its own decoder: the MUSD being spent, and `minShares`, the
    floor below which the buy reverts. No descriptor reaches the device; what is
    on glass is its own reading of the calldata.
-8. Confirm. Mezo answers `eth_getTransactionReceipt` with null for minutes
+9. Confirm. Mezo answers `eth_getTransactionReceipt` with null for minutes
    after a transaction is already in a block, so **a reported failure here is
    usually not one**. Check the explorer or re-read your share balance.
 
@@ -111,6 +122,8 @@ Then, in the app:
 | "cannot display this request" on the board | The device's table does not have that selector. Did the firmware get flashed, or only the companion? |
 | `not read` on every figure | The RPC endpoint is not answering. The app cannot build its own client, so this is the shell's endpoint. |
 | No usable price | The oracle's last answer is older than the vault accepts. Buys revert until the feed publishes; `MAX_STALENESS` is 1 hour. |
+| Borrow reverts with the ratio looking fine | The debt must stay at or above `minNetDebt` **after** its 200 MUSD liquidation reserve. Closing is the only way past that, and closing needs the whole debt in MUSD in the wallet. |
+| The borrow panel says your position could not be read | `troveManager` is asked of BorrowerOperations; if that call failed, every figure below it is unread rather than zero. |
 
 ## 5 — Chrome, which is a different path
 
