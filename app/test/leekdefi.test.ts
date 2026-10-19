@@ -389,5 +389,58 @@ const FLOOR = 2970000000000000000n;
   check(source.includes("Re-read the chain"), "the manual re-read button is gone");
 }
 
+/* ----------------------------------- no write reaches the device unguarded */
+
+{
+  group("every write checks the chain before it asks the device to sign");
+  const source = readFileSync(new URL("../packages/apps/leekdefi/index.ts", import.meta.url), "utf8");
+
+  /* An approval already given is the one the device should never be asked to
+     draw twice: a spurious signature teaches approving without reading, which
+     is the only defence this design has. All three approvals must consult the
+     allowance that read.ts has always fetched. */
+  check(source.includes("function armApproval("), "armApproval is gone");
+  const armed = source.match(/armApproval\(/g) ?? [];
+  check(armed.length === 4, `expected 3 wired approvals plus the definition, found ${armed.length - 1} wired`);
+  check(source.includes('armApproval(approve, input, first.allowance, "MUSD")'), "the MUSD approval is unguarded");
+  check(source.includes("armApproval(approveShares, input, first.shareAllowance"), "the share approval is unguarded");
+  check(source.includes('armApproval(approveMezo, stakeField.input, s.mezoAllowance, "MEZO")'), "the MEZO approval is unguarded");
+  /* Unreadable is not zero: a null allowance must still offer the approval. */
+  check(source.includes("could not be read, so the approval is offered anyway"), "a null allowance now blocks the approval");
+
+  /* Closing repays debt MINUS the liquidation reserve out of your own
+     balance. Getting this wrong by exactly the reserve is the easy mistake,
+     and it costs a signature to discover. */
+  check(source.includes("Closing repays"), "closeTrove no longer checks the balance it spends");
+  check(source.includes("const needed = state.debt - state.reserve;"), "close measures the gross debt, not the repayable part");
+  /* Repaying past the repayable part, or down to a stub below the minimum. */
+  check(source.includes("is the liquidation reserve"), "repay does not explain the reserve");
+  check(source.includes("below the"), "repay does not check the minimum net debt");
+  /* Borrowing more was the one borrow path with no ratio preview. */
+  check(source.includes("Borrowing that much would put the ratio at"), "withdrawMUSD has no ratio preview");
+  /* An allowance is permission, not money. */
+  check(source.includes("An allowance is permission, not money"), "buy no longer checks the MUSD balance");
+  check(source.includes("You have nothing staked."), "unstake no longer checks the staked balance");
+
+  /* The structural claim: every click handler that proposes refuses something
+     locally first. A new button with no guard fails here rather than in the
+     user's hand. */
+  const unguarded: string[] = [];
+  for (const m of source.matchAll(/(\w+)\.addEventListener\("click", \(\) => \{/g)) {
+    const name = m[1]!;
+    let depth = 1, i = m.index! + m[0].length;
+    while (depth > 0 && i < source.length) {
+      const c = source[i++];
+      if (c === "{") depth++;
+      else if (c === "}") depth--;
+    }
+    const body = source.slice(m.index! + m[0].length, i);
+    if (!body.includes("await propose")) continue;
+    /* A guard is a local refusal: a say() that returns without proposing. */
+    if (!/say\([^]*?\n\s*return;/.test(body)) unguarded.push(name);
+  }
+  check(unguarded.length === 0, `writes with no local refusal: ${unguarded.join(", ") || "none"}`);
+}
+
 console.log(failures === 0 ? "all ok" : `${failures} failure(s)`);
 process.exit(failures === 0 ? 0 : 1);

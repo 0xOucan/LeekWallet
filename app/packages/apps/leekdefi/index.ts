@@ -143,6 +143,58 @@ function row(label: string, value: string | null, note?: string): HTMLElement {
  * nobody meant to ask. An aria-label is for a screen reader, not a substitute
  * for telling everybody else which field is which.
  */
+/**
+ * Stops the panel offering an approval that has already been given.
+ *
+ * The allowance was always read -- `allowance`, `shareAllowance` and
+ * `mezoAllowance` have been in `read.ts` since the start -- but the three
+ * Approve buttons never consulted it, so they stayed armed after the approval
+ * landed. Pressing one sent the device a second, identical approval to draw
+ * and sign for no change in state. The device is the one thing in this system
+ * that cannot be asked twice cheaply: every spurious signature trains the
+ * habit of approving without reading, which is the whole defence.
+ *
+ * So: one helper, wired at every approval site, rather than three guards that
+ * can drift apart. It re-evaluates as the amount is typed, because "already
+ * approved" is a claim about a specific number and raising the amount makes it
+ * false again.
+ *
+ * A null allowance disarms nothing. Unreadable is not the same as zero, and
+ * the honest move is to let the user approve rather than block on a figure
+ * this app could not fetch.
+ */
+function armApproval(
+  button: HTMLButtonElement,
+  input: HTMLInputElement,
+  allowance: bigint | null,
+  unit: string,
+): HTMLElement {
+  const note = el("div", "leekdefi-note");
+  const sync = (): void => {
+    const wanted = parseWad(input.value);
+    if (allowance === null) {
+      button.disabled = false;
+      note.textContent = `The current allowance could not be read, so the approval is offered anyway.`;
+      return;
+    }
+    if (wanted !== null && allowance >= wanted) {
+      button.disabled = true;
+      note.textContent =
+        `Already approved: ${formatWad(allowance)} ${unit} is allowed, which covers ` +
+        `${formatWad(wanted)}. No second signature is needed.`;
+      return;
+    }
+    button.disabled = false;
+    note.textContent =
+      allowance === 0n
+        ? `Nothing is approved yet.`
+        : `${formatWad(allowance)} ${unit} is approved, less than that. Approving replaces the figure rather than adding to it.`;
+  };
+  input.addEventListener("input", sync);
+  sync();
+  return note;
+}
+
 function labelledInput(label: string, placeholder: string, hint?: string): {
   wrap: HTMLElement;
   input: HTMLInputElement;
@@ -282,6 +334,10 @@ function borrowPanel(
   propose: AppContext["propose"],
   say: (text: string) => void,
   nativeBalance: bigint | null,
+  /* Repaying and closing SPEND MUSD, so the panel cannot judge either without
+     knowing what is held. Closing needs debt minus the liquidation reserve,
+     which is less than the debt and easy to get wrong by exactly 200. */
+  musd: bigint | null,
 ): HTMLElement {
   const node = card("Get MUSD: borrow against BTC");
   node.append(
@@ -464,6 +520,24 @@ function borrowPanel(
     more.addEventListener("click", () => {
       const amount = amountOrComplain();
       if (amount === null) return;
+      /* The same check `Borrow MUSD` makes, against the debt already owed.
+         Without it this was the one borrow path that could hand the device a
+         transaction the protocol would reject. */
+      if (
+        state.price !== null && state.mcr !== null &&
+        state.collateral !== null && state.debt !== null
+      ) {
+        const owed = state.debt + amount;
+        const wouldBe = (state.collateral * state.price * 10_000n) / (owed * 10n ** 18n);
+        const floor = (state.mcr * 10_000n) / 10n ** 18n;
+        if (wouldBe < floor) {
+          say(
+            `Borrowing that much would put the ratio at ${(Number(wouldBe) / 100).toFixed(0)}%, ` +
+              `below the ${(Number(floor) / 100).toFixed(0)}% the protocol requires. Borrow less.`,
+          );
+          return;
+        }
+      }
       void (async () => {
         const outcome = await propose({
           kind: "call",
@@ -480,6 +554,32 @@ function borrowPanel(
     repay.addEventListener("click", () => {
       const amount = amountOrComplain();
       if (amount === null) return;
+      if (musd !== null && musd < amount) {
+        say(`You hold ${formatWad(musd, 2)} MUSD, less than that.`);
+        return;
+      }
+      /* The liquidation reserve is not repayable debt: it is returned when the
+         trove closes. Repaying against the gross figure overshoots by exactly
+         the reserve, and the protocol reverts. */
+      if (state.debt !== null && state.reserve !== null) {
+        const repayable = state.debt - state.reserve;
+        if (amount > repayable) {
+          say(
+            `Only ${formatWad(repayable, 2)} MUSD of that debt is repayable; the ` +
+              `remaining ${formatWad(state.reserve, 2)} is the liquidation reserve, ` +
+              `returned when the position closes. Use Close instead.`,
+          );
+          return;
+        }
+        const left = repayable - amount;
+        if (left > 0n && state.minNetDebt !== null && left < state.minNetDebt) {
+          say(
+            `That would leave ${formatWad(left, 2)} MUSD owed, below the ` +
+              `${formatWad(state.minNetDebt, 2)} minimum. Repay less, or close the position.`,
+          );
+          return;
+        }
+      }
       void (async () => {
         const outcome = await propose({
           kind: "call",
@@ -494,6 +594,21 @@ function borrowPanel(
     const close = el("button", "leekdefi-button-quiet", "Close and take the BTC back");
     close.type = "button";
     close.addEventListener("click", () => {
+      /* Closing repays the debt MINUS the reserve out of your own balance. A
+         position opened with borrowed MUSD and then spent is short of this by
+         the borrowing fee, which is the common case rather than the odd one. */
+      if (state.debt !== null && state.reserve !== null && musd !== null) {
+        const needed = state.debt - state.reserve;
+        if (musd < needed) {
+          say(
+            `Closing repays ${formatWad(needed, 2)} MUSD and you hold ` +
+              `${formatWad(musd, 2)}. Short by ${formatWad(needed - musd, 2)}. ` +
+              `The ${formatWad(state.reserve, 2)} liquidation reserve covers the rest ` +
+              `and comes back with the BTC.`,
+          );
+          return;
+        }
+      }
       void (async () => {
         const outcome = await propose({
           kind: "call",
@@ -692,7 +807,7 @@ export const leekDefiApp: MiniApp = {
       /* The order the website uses, and it is the order of the steps: see the
          price, get the MUSD, then spend it. A borrow panel below the buy
          button would be below the thing it is a prerequisite for. */
-      body.append(borrowPanel(borrow, proposeAndRefresh, say, nativeBalance));
+      body.append(borrowPanel(borrow, proposeAndRefresh, say, nativeBalance, state.musd));
 
       /* ---------------------------------------------------------- wallet */
       const position = card("Your position");
@@ -775,9 +890,22 @@ export const leekDefiApp: MiniApp = {
             return amount;
           };
 
+          /* Both approvals read the same field, because the field means MUSD
+             for a buy and shares for a redeem. Each is judged against its own
+             allowance. */
+          trade.append(armApproval(approve, input, first.allowance, "MUSD"));
+          trade.append(armApproval(approveShares, input, first.shareAllowance, first.symbol));
+
           approve.addEventListener("click", () => {
             const amount = amountOrComplain();
             if (amount === null) return;
+            /* armApproval disables the button, but a disabled button is a UI
+               state and this is the guard. Both exist on purpose: the device
+               must not be asked to draw an approval that changes nothing. */
+            if (first.allowance !== null && first.allowance >= amount) {
+              say(`${formatWad(first.allowance)} MUSD is already approved, which covers that.`);
+              return;
+            }
             void (async () => {
               const outcome = await propose({
                 kind: "call",
@@ -794,6 +922,12 @@ export const leekDefiApp: MiniApp = {
             if (amount === null) return;
             if (first.price === null) {
               say("The vault cannot price a share right now, so a buy would revert.");
+              return;
+            }
+            /* An allowance is permission, not money. Checking only the
+               allowance let a buy past with an empty balance. */
+            if (state.musd !== null && state.musd < amount) {
+              say(`You hold ${formatWad(state.musd, 2)} MUSD, less than that.`);
               return;
             }
             if (first.allowance !== null && first.allowance < amount) {
@@ -956,9 +1090,15 @@ export const leekDefiApp: MiniApp = {
           return amount;
         };
 
+        staking.append(armApproval(approveMezo, stakeField.input, s.mezoAllowance, "MEZO"));
+
         approveMezo.addEventListener("click", () => {
           const amount = mezoAmount();
           if (amount === null) return;
+          if (s.mezoAllowance !== null && s.mezoAllowance >= amount) {
+            say(`${formatWad(s.mezoAllowance)} MEZO is already approved, which covers that. Press Stake.`);
+            return;
+          }
           void (async () => {
             const outcome = await proposeStake({
               kind: "call",
@@ -995,6 +1135,14 @@ export const leekDefiApp: MiniApp = {
         unstakeBtn.addEventListener("click", () => {
           const amount = mezoAmount();
           if (amount === null) return;
+          if (s.yourStake !== null && s.yourStake < amount) {
+            say(
+              s.yourStake === 0n
+                ? "You have nothing staked."
+                : `You have ${formatWad(s.yourStake)} MEZO staked, less than that.`,
+            );
+            return;
+          }
           /* Unstaking is refused during the cooldown by the contract. Said
              here first, with the time remaining, rather than spending a
              signature to be told. */
