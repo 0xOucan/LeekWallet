@@ -163,6 +163,34 @@ static const struct EthAbiEntry KNOWN[] = {
     { "unstake(uint256)",                "amount",
       ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
 
+    /* Mezo's own borrow market, which is where the MUSD the vaults settle in
+     * comes from: lock BTC, mint MUSD against it, repay to get the BTC back.
+     *
+     * Static arguments throughout, so the generic path reads them. The two
+     * hint addresses are a list-insertion optimisation and carry no authority
+     * - `openTrove` has NO borrower parameter, so a trove belongs to
+     * msg.sender and nothing else, which is also why these cannot be used to
+     * open a position for somebody else.
+     *
+     * The number that matters on `openTrove` is not in the calldata at all:
+     * the BTC collateral is the transaction's VALUE, and the amount page for
+     * it comes from the transaction itself. Gas on Mezo is BTC too, so the
+     * device must label both correctly or the one screen a user can trust is
+     * reading "ETH" on a Bitcoin-backed chain. See chains.ts.
+     *
+     * `closeTrove()` takes nothing. It is here rather than left unknown
+     * because refusing it means a position that can be opened from the wallet
+     * and not closed from it, which is the worse half to leave out: closing
+     * repays the debt and returns the collateral. */
+    { "openTrove(uint256,address,address)",   "debtAmount,upperHint,lowerHint",
+      ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+    { "withdrawMUSD(uint256,address,address)", "amount,upperHint,lowerHint",
+      ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+    { "repayMUSD(uint256,address,address)",   "amount,upperHint,lowerHint",
+      ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+    { "closeTrove()",                         "",
+      ETH_CALL_GENERIC, ARGS_FROM_SIGNATURE },
+
     /* ATS issuance, through LeekSecurityFactory.
      *
      * `string` is a dynamic type, so the generic path refuses these on the

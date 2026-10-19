@@ -233,6 +233,14 @@ const KNOWN: ReadonlyArray<{
   { sig: "redeem(uint256,uint256)", names: "shares,minMusd", kind: CallKind.Generic, shape: Shape.FromSignature },
   { sig: "stake(uint256)", names: "amount", kind: CallKind.Generic, shape: Shape.FromSignature },
   { sig: "unstake(uint256)", names: "amount", kind: CallKind.Generic, shape: Shape.FromSignature },
+
+  /* Mezo's borrow market. The mirror of the block in src/eth-decode.c, which
+     says why the hint addresses carry no authority and why the BTC collateral
+     on openTrove is the transaction's value rather than an argument. */
+  { sig: "openTrove(uint256,address,address)", names: "debtAmount,upperHint,lowerHint", kind: CallKind.Generic, shape: Shape.FromSignature },
+  { sig: "withdrawMUSD(uint256,address,address)", names: "amount,upperHint,lowerHint", kind: CallKind.Generic, shape: Shape.FromSignature },
+  { sig: "repayMUSD(uint256,address,address)", names: "amount,upperHint,lowerHint", kind: CallKind.Generic, shape: Shape.FromSignature },
+  { sig: "closeTrove()", names: "", kind: CallKind.Generic, shape: Shape.FromSignature },
   /* ATS issuance. `string` is dynamic, so these take the same hand-written
    * route the Aqua rows do — and they are drawable for a reason the ATS
    * factory's own deployEquity is not: the wrapper freezes a 3,748-byte

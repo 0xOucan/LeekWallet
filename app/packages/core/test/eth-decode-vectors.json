@@ -360,6 +360,11 @@
     "accepted": false
   },
   {
+    "name": "closeTrove() with a trailing argument word",
+    "dataHex": "0e704d500000000000000000000000000000000000000000000000000000000000000000",
+    "accepted": false
+  },
+  {
     "name": "safeTransferFrom(...,bytes), a dynamic argument",
     "dataHex": "b88d4fde000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000112233445566778899aabbccddeeff010203040500000000000000000000000000000000000000000000000000000000000000070000000000000000000000000000000000000000000000000000000000000080",
     "accepted": false
@@ -505,6 +510,81 @@
     "unlimited": false,
     "flag": null,
     "generic": { "signature": "unstake(uint256)", "functionName": "unstake", "args": [{ "name": "amount", "type": "uint256", "value": "50000000000000000000", "unlimited": false }] },
+    "aqua": null,
+    "disperse": null,
+    "ats": null
+  },
+  {
+    "name": "mezo openTrove(debtAmount,hints)",
+    "dataHex": "2f3a6d9800000000000000000000000000000000000000000000006c6b935b8bbd40000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "accepted": true,
+    "kind": "generic",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": { "signature": "openTrove(uint256,address,address)", "functionName": "openTrove", "args": [{ "name": "debtAmount", "type": "uint256", "value": "2000000000000000000000", "unlimited": false }, { "name": "upperHint", "type": "address", "value": "0x0000000000000000000000000000000000000000", "unlimited": false }, { "name": "lowerHint", "type": "address", "value": "0x0000000000000000000000000000000000000000", "unlimited": false }] },
+    "aqua": null,
+    "disperse": null,
+    "ats": null
+  },
+  {
+    "name": "mezo openTrove with non-zero hints",
+    "dataHex": "2f3a6d9800000000000000000000000000000000000000000000006c6b935b8bbd400000000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000112233445566778899aabbccddeeff0102030405",
+    "accepted": true,
+    "kind": "generic",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": { "signature": "openTrove(uint256,address,address)", "functionName": "openTrove", "args": [{ "name": "debtAmount", "type": "uint256", "value": "2000000000000000000000", "unlimited": false }, { "name": "upperHint", "type": "address", "value": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "unlimited": false }, { "name": "lowerHint", "type": "address", "value": "0x112233445566778899aabbccddeeff0102030405", "unlimited": false }] },
+    "aqua": null,
+    "disperse": null,
+    "ats": null
+  },
+  {
+    "name": "mezo repayMUSD(amount,hints)",
+    "dataHex": "dc283bb30000000000000000000000000000000000000000000000007fce25efd3cbc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "accepted": true,
+    "kind": "generic",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": { "signature": "repayMUSD(uint256,address,address)", "functionName": "repayMUSD", "args": [{ "name": "amount", "type": "uint256", "value": "9209340000000000000", "unlimited": false }, { "name": "upperHint", "type": "address", "value": "0x0000000000000000000000000000000000000000", "unlimited": false }, { "name": "lowerHint", "type": "address", "value": "0x0000000000000000000000000000000000000000", "unlimited": false }] },
+    "aqua": null,
+    "disperse": null,
+    "ats": null
+  },
+  {
+    "name": "mezo withdrawMUSD(amount,hints)",
+    "dataHex": "af8b4fd00000000000000000000000000000000000000000000000056bc75e2d6310000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "accepted": true,
+    "kind": "generic",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": { "signature": "withdrawMUSD(uint256,address,address)", "functionName": "withdrawMUSD", "args": [{ "name": "amount", "type": "uint256", "value": "100000000000000000000", "unlimited": false }, { "name": "upperHint", "type": "address", "value": "0x0000000000000000000000000000000000000000", "unlimited": false }, { "name": "lowerHint", "type": "address", "value": "0x0000000000000000000000000000000000000000", "unlimited": false }] },
+    "aqua": null,
+    "disperse": null,
+    "ats": null
+  },
+  {
+    "name": "mezo closeTrove()",
+    "dataHex": "0e704d50",
+    "accepted": true,
+    "kind": "generic",
+    "address": null,
+    "second": null,
+    "amount": null,
+    "unlimited": false,
+    "flag": null,
+    "generic": { "signature": "closeTrove()", "functionName": "closeTrove", "args": [] },
     "aqua": null,
     "disperse": null,
     "ats": null

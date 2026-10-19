@@ -1751,6 +1751,15 @@ static int emit_vectors(const char *path)
     CASE("deposit() with an argument word it does not take", data, 36);
 
     {
+        uint8_t w[ETH_MAX_ARGS][32];
+        memset(w, 0, sizeof(w));
+        len = build_sig_call(data, sizeof(data), "closeTrove()", w, 0);
+        /* 4 + one word. The length check is exact, so this is refused rather
+         * than drawn as a close that ignores a word somebody put there. */
+        CASE("closeTrove() with a trailing argument word", data, len + 32);
+    }
+
+    {
         uint8_t words[4][32];
         memset(words, 0, sizeof(words));
         word_address(words[0], SPENDER);
@@ -1849,6 +1858,46 @@ static int emit_vectors(const char *path)
 
         len = build_sig_call(data, sizeof(data), "unstake(uint256)", w, 1);
         CASE("leekstonks unstake(amount)", data, len);
+    }
+
+    /* ------------------------------------------------------ mezo borrow */
+
+    {
+        uint8_t w[ETH_MAX_ARGS][32];
+        memset(w, 0, sizeof(w));
+
+        /* 2000 MUSD of debt, both hints zero, which is what the dapp sends
+         * when the list is short enough not to need them. The BTC collateral
+         * is the transaction's value and so appears nowhere in this calldata. */
+        amount_u256_hex(w[0], "6c6b935b8bbd400000");
+        len = build_sig_call(data, sizeof(data),
+                             "openTrove(uint256,address,address)", w, 3);
+        CASE("mezo openTrove(debtAmount,hints)", data, len);
+
+        /* Hints that are real addresses rather than zero: they are a list
+         * insertion optimisation and carry no authority, and the screen draws
+         * them so that is checkable rather than asserted. */
+        memcpy(w[1] + 12, SPENDER, 20);
+        memcpy(w[2] + 12, OTHER, 20);
+        len = build_sig_call(data, sizeof(data),
+                             "openTrove(uint256,address,address)", w, 3);
+        CASE("mezo openTrove with non-zero hints", data, len);
+
+        memset(w, 0, sizeof(w));
+        amount_u64(w[0], 9209340000000000000);  /* a single-digit repay */
+        len = build_sig_call(data, sizeof(data),
+                             "repayMUSD(uint256,address,address)", w, 3);
+        CASE("mezo repayMUSD(amount,hints)", data, len);
+
+        amount_u256_hex(w[0], "056bc75e2d63100000");  /* 100 MUSD more debt */
+        len = build_sig_call(data, sizeof(data),
+                             "withdrawMUSD(uint256,address,address)", w, 3);
+        CASE("mezo withdrawMUSD(amount,hints)", data, len);
+
+        /* Takes nothing, so the calldata is the selector and exactly that.
+         * A trailing word is refused below. */
+        len = build_sig_call(data, sizeof(data), "closeTrove()", w, 0);
+        CASE("mezo closeTrove()", data, len);
     }
 
     /* ---------------------------------------------------------- disperse */
