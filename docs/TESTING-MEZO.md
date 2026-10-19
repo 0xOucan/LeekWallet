@@ -1,8 +1,26 @@
 # Testing the Mezo integration on hardware
 
 Everything below has been run except where it says otherwise. The board at
-`/dev/ttyACM0` was flashed on 2026-10-18 with the working tree's own build and
-answers as `LeekWallet-S3CAM`, firmware `0.1.0`, **1 wallet intact**.
+`/dev/ttyACM0` (MAC `28:84:85:9f:c4:04`) was flashed on 2026-10-18 with the
+working tree's own build, including the borrow rows, and `verify_flash` reports
+a matching digest at `0x10000`. It answers as `LeekWallet-S3CAM`, firmware
+`0.1.0`, `blindSigning 0`, **1 wallet intact**.
+
+**Two boards here answer `getFeatures` as `LeekWallet-S3CAM`** and differ only
+by MAC — `…c4:04` and `…d2:0c`. The model guard in `flash-board.sh` cannot tell
+them apart, so `--dry-run` printing the MAC is the only check that does. Run it
+before every flash, or pass `--port` explicitly.
+
+**A build that exits 0 can still be the stale image.** `scripts/check.sh`
+builds `esp32s3` and `pixie`, not `esp32s3cam`, so the CAM image sat two
+sessions behind while every test passed. Grep the image for the signatures
+before writing it:
+
+```sh
+for sig in openTrove closeTrove repayMUSD withdrawMUSD; do
+  grep -qa "$sig" .pio/build/esp32s3cam/firmware.bin && echo "ok $sig" || echo "MISSING $sig"
+done
+```
 
 The contracts are live on Mezo testnet (31611). Nothing here is a simulation:
 a buy spends real testnet MUSD against
