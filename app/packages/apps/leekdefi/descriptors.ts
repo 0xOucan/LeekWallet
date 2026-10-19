@@ -58,6 +58,37 @@ const tokenAmount = (label: string, path: string, token: string) => ({
   params: { token, threshold: UNLIMITED, message: "UNLIMITED" },
 });
 
+/**
+ * `approve` on an index share.
+ *
+ * Needed because `redeem` ends in `share.burnFrom(msg.sender, shares)`, and
+ * ERC20Burnable's `burnFrom` spends an allowance: without approving the share
+ * to its own vault, a redeem reverts. So the approval is part of redeeming,
+ * and an app that could redeem but not approve could not redeem at all.
+ *
+ * In the app rather than in core, unlike MUSD and MEZO: these two tokens are
+ * this app's contracts, and a descriptor for them left in core after the app
+ * is deleted is dead weight nobody can attribute to anything.
+ */
+function shareFormats(share: string): Record<string, unknown> {
+  return {
+    "approve(address spender, uint256 amount)": {
+      intent: "Approve a share burn",
+      fields: [
+        { label: "Spender", format: "addressName", path: "#.spender" },
+        tokenAmount("Shares", "#.amount", share),
+      ],
+    },
+    "transfer(address to, uint256 amount)": {
+      intent: "Send shares",
+      fields: [
+        { label: "To", format: "addressName", path: "#.to" },
+        tokenAmount("Shares", "#.amount", share),
+      ],
+    },
+  };
+}
+
 function vaultFormats(share: string): Record<string, unknown> {
   return {
     "buy(uint256 musdAmount, uint256 minShares)": {
@@ -111,6 +142,9 @@ function build(
 const ALL: readonly Descriptor[] = [
   ...INDICES.map((index) =>
     build(`${index.symbol} vault`, index.vault, vaultFormats(index.share), `vault-${index.symbol.toLowerCase()}`),
+  ),
+  ...INDICES.map((index) =>
+    build(index.symbol, index.share, shareFormats(index.share), `share-${index.symbol.toLowerCase()}`),
   ),
   build("MEZO staking", STAKING, STAKING_FORMATS, "staking"),
 ].filter((d): d is Descriptor => d !== null);

@@ -39,7 +39,7 @@ import type { ProposalOutcome } from "@leekwallet/core/app-proposal.ts";
 import type { AppContext, MiniApp } from "@leekwallet/core/mini-app.ts";
 
 import {
-  BORROWER_OPERATIONS, INDICES, MEZO_FAUCET, MEZO_TESTNET, MUSD, STAKING,
+  BORROWER_OPERATIONS, INDICES, MEZO, MEZO_FAUCET, MEZO_TESTNET, MUSD, STAKING,
 } from "./addresses.ts";
 import {
   collateralRatioBps, encodeBorrow, hasPosition, readBorrow, type BorrowState,
@@ -687,8 +687,25 @@ export const leekDefiApp: MiniApp = {
         approve.type = "button";
         const buy = el("button", "leekdefi-button", "Buy shares");
         buy.type = "button";
-        actions.append(approve, buy);
+        /* Redeeming takes two signatures, and the first is not optional:
+           `redeem` ends in `share.burnFrom(msg.sender, shares)`, and burnFrom
+           spends an allowance. A panel that offered only the redeem would
+           send the device a transaction that reverts. */
+        const approveShares = el("button", "leekdefi-button-quiet", "Approve shares");
+        approveShares.type = "button";
+        const redeem = el("button", "leekdefi-button-quiet", "Redeem shares");
+        redeem.type = "button";
+        actions.append(approve, buy, approveShares, redeem);
         trade.append(actions);
+        trade.append(
+          el(
+            "div",
+            "leekdefi-note",
+            "Redeeming reads the same field as the number of SHARES to burn, " +
+              "not MUSD. Approve the shares first — the vault burns them from " +
+              "you, which spends an allowance.",
+          ),
+        );
 
         if (context.propose === undefined) {
           /* Absence of propose is a real state, not a legacy allowance: no
@@ -696,6 +713,8 @@ export const leekDefiApp: MiniApp = {
              pretended. */
           approve.disabled = true;
           buy.disabled = true;
+          approveShares.disabled = true;
+          redeem.disabled = true;
           trade.append(
             el(
               "div",
@@ -754,6 +773,64 @@ export const leekDefiApp: MiniApp = {
               say(describeOutcome(outcome, "Buy sent"));
             })();
           });
+
+          approveShares.addEventListener("click", () => {
+            const amount = amountOrComplain();
+            if (amount === null) return;
+            if (first.share === null) {
+              say("The vault did not name its share token, so nothing can be approved.");
+              return;
+            }
+            void (async () => {
+              const outcome = await propose({
+                kind: "call",
+                to: first.share as string,
+                data: encode.approve(first.vault, amount),
+                reason: `Allow the ${first.symbol} vault to burn ${formatWad(amount)} shares`,
+              });
+              say(describeOutcome(outcome, "Share approval sent"));
+            })();
+          });
+
+          redeem.addEventListener("click", () => {
+            const amount = amountOrComplain();
+            if (amount === null) return;
+            if (first.price === null) {
+              say("The vault cannot price a share right now, so a redeem would revert.");
+              return;
+            }
+            if (first.shares !== null && first.shares < amount) {
+              say(`You hold ${formatWad(first.shares)} shares, fewer than that.`);
+              return;
+            }
+            if (first.shareAllowance !== null && first.shareAllowance < amount) {
+              say("Approve the shares first — the vault burns them from you.");
+              return;
+            }
+            /* Redemption reverts when reserves are short rather than paying
+               part of it, so the panel says so before a signature is spent
+               on a transaction that cannot succeed. See H-1. */
+            const gross = (amount * first.price) / WAD;
+            if (first.reserves !== null && gross > first.reserves) {
+              say(
+                `The vault holds ${formatWad(first.reserves, 2)} MUSD and that redeem ` +
+                  `needs ${formatWad(gross, 2)}. It reverts rather than paying part. See H-1.`,
+              );
+              return;
+            }
+            const feeBps = BigInt(first.effectiveFeeBps ?? first.baseFeeBps ?? 50);
+            const net = (gross * (10_000n - feeBps)) / 10_000n;
+            const minMusd = (net * 99n) / 100n;
+            void (async () => {
+              const outcome = await propose({
+                kind: "call",
+                to: first.vault,
+                data: encode.redeem(amount, minMusd),
+                reason: `Redeem ${formatWad(amount)} ${first.symbol} for at least ${formatWad(minMusd)} MUSD`,
+              });
+              say(describeOutcome(outcome, "Redeem sent"));
+            })();
+          });
         }
         body.append(trade);
       }
@@ -797,6 +874,103 @@ export const leekDefiApp: MiniApp = {
         ),
       );
       staking.append(row("Staking contract", shortAddress(STAKING)));
+      staking.append(
+        row(
+          "Your MEZO",
+          s.yourMezo === null ? null : formatWad(s.yourMezo),
+          "available to stake",
+        ),
+      );
+
+      if (context.propose === undefined) {
+        staking.append(el("div", "leekdefi-note", "No device is connected, so nothing can be signed."));
+      } else {
+        const proposeStake = context.propose;
+        const stakeField = labelledInput(
+          "MEZO to stake or unstake",
+          "1.0",
+          "Tiers are 1, 10 and 50 MEZO for 10%, 25% and 50% off the fee. The " +
+            "discount needs the position HELD for the cooldown, which is what " +
+            "stops it being rented for a single transaction.",
+        );
+        staking.append(stakeField.wrap);
+
+        const stakeActions = el("div", "leekdefi-actions");
+        const approveMezo = el("button", "leekdefi-button", "Approve MEZO");
+        approveMezo.type = "button";
+        const stakeBtn = el("button", "leekdefi-button", "Stake");
+        stakeBtn.type = "button";
+        const unstakeBtn = el("button", "leekdefi-button-quiet", "Unstake");
+        unstakeBtn.type = "button";
+        stakeActions.append(approveMezo, stakeBtn, unstakeBtn);
+        staking.append(stakeActions);
+
+        const mezoAmount = (): bigint | null => {
+          const amount = parseWad(stakeField.input.value);
+          if (amount === null) say("Enter an amount of MEZO greater than zero.");
+          return amount;
+        };
+
+        approveMezo.addEventListener("click", () => {
+          const amount = mezoAmount();
+          if (amount === null) return;
+          void (async () => {
+            const outcome = await proposeStake({
+              kind: "call",
+              to: MEZO,
+              data: encode.approve(STAKING, amount),
+              reason: `Allow staking to take ${formatWad(amount)} MEZO`,
+            });
+            say(describeOutcome(outcome, "MEZO approval sent"));
+          })();
+        });
+
+        stakeBtn.addEventListener("click", () => {
+          const amount = mezoAmount();
+          if (amount === null) return;
+          if (s.yourMezo !== null && s.yourMezo < amount) {
+            say(`You hold ${formatWad(s.yourMezo)} MEZO, fewer than that.`);
+            return;
+          }
+          if (s.mezoAllowance !== null && s.mezoAllowance < amount) {
+            say("Approve the MEZO first — staking cannot take it otherwise.");
+            return;
+          }
+          void (async () => {
+            const outcome = await proposeStake({
+              kind: "call",
+              to: STAKING,
+              data: encode.stake(amount),
+              reason: `Stake ${formatWad(amount)} MEZO for a fee discount`,
+            });
+            say(describeOutcome(outcome, "Stake sent"));
+          })();
+        });
+
+        unstakeBtn.addEventListener("click", () => {
+          const amount = mezoAmount();
+          if (amount === null) return;
+          /* Unstaking is refused during the cooldown by the contract. Said
+             here first, with the time remaining, rather than spending a
+             signature to be told. */
+          if (cooling > 0n) {
+            say(
+              `Staking is still cooling for ${Math.ceil(Number(cooling) / 60)} min. ` +
+                "Unstaking reverts until then.",
+            );
+            return;
+          }
+          void (async () => {
+            const outcome = await proposeStake({
+              kind: "call",
+              to: STAKING,
+              data: encode.unstake(amount),
+              reason: `Unstake ${formatWad(amount)} MEZO`,
+            });
+            say(describeOutcome(outcome, "Unstake sent"));
+          })();
+        });
+      }
       body.append(staking);
 
       /* ---------------------------------------------------------- honesty */

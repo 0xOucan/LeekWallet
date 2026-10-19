@@ -31,6 +31,7 @@ import {
 import { descriptorsFor } from "../packages/apps/leekdefi/descriptors.ts";
 import { encode } from "../packages/apps/leekdefi/read.ts";
 import { collateralRatioBps, encodeBorrow } from "../packages/apps/leekdefi/borrow.ts";
+import { MEZO } from "../packages/apps/leekdefi/addresses.ts";
 import { MINI_APPS, findMiniApp } from "../src/apps/registry.ts";
 import { readFileSync } from "node:fs";
 
@@ -169,6 +170,48 @@ const FLOOR = 2970000000000000000n;
      string shapes of numbers. */
   check(spent?.value === SPEND, `the device reads ${spent?.value} spent, not ${SPEND}`);
   check(floor?.value === FLOOR, `the device reads ${floor?.value} as the floor, not ${FLOOR}`);
+}
+
+{
+  group("every write the panel offers passes both gates");
+  /* Each pair is (what the button does, the calldata it proposes, the
+     contract it goes to). A button whose call the host refuses or the device
+     cannot read is a dead end that only shows up with hardware in hand. */
+  const SHARE = INDICES[0]!.share;
+  const writes: ReadonlyArray<readonly [string, string, string]> = [
+    ["approve MUSD", encode.approve(VAULT, SPEND), MUSD],
+    ["buy", encode.buy(SPEND, FLOOR), VAULT],
+    ["approve shares", encode.approve(VAULT, FLOOR), SHARE],
+    ["redeem", encode.redeem(10n ** 18n, 90n * 10n ** 18n), VAULT],
+    ["approve MEZO", encode.approve(STAKING, 50n * 10n ** 18n), MEZO],
+    ["stake", encode.stake(50n * 10n ** 18n), STAKING],
+    ["unstake", encode.unstake(50n * 10n ** 18n), STAKING],
+  ];
+  for (const [what, data, to] of writes) {
+    const decoded = decodeCall(data);
+    check(
+      decoded.kind !== CallKind.Unknown,
+      `${what}: the device cannot read it (${decoded.kind})`,
+    );
+    const screened = screenProposal(
+      { kind: "call", to, data, reason: `${what} test` },
+      {
+        chainId: MEZO_TESTNET,
+        from: SIGNER,
+        descriptors: [...DEFAULT_DESCRIPTORS, ...descriptorsFor(MEZO_TESTNET, to)],
+        nativeSymbol: "BTC",
+      },
+    );
+    check(
+      screened.kind === "ok",
+      `${what} was refused: ${screened.kind === "refused" ? screened.why : ""}`,
+    );
+    if (screened.kind === "ok" && screened.screened.kind === "call") {
+      const d = screened.screened.descriptor;
+      check(d?.omittedFields === 0, `${what}: ${d?.omittedFields} field(s) omitted`);
+      check(d?.conflicts.length === 0, `${what}: ${d?.conflicts[0]}`);
+    }
+  }
 }
 
 /* ------------------------------------------------------------ mezo borrow */

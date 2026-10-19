@@ -108,6 +108,15 @@ export interface IndexState {
   readonly shares: bigint | null;
   /** MUSD this address has approved to the vault. */
   readonly allowance: bigint | null;
+  /**
+   * Shares this address has approved to the vault.
+   *
+   * `redeem` ends in `share.burnFrom(msg.sender, shares)`, and burnFrom spends
+   * an allowance, so a redeem without this reverts. Read rather than assumed
+   * so the panel can offer the approval instead of letting the device sign a
+   * transaction that fails.
+   */
+  readonly shareAllowance: bigint | null;
   /** Total shares in existence, so "no shares yet" can be told from "unreadable". */
   readonly shareSupply: bigint | null;
 }
@@ -143,7 +152,7 @@ async function readIndex(
 
   const [
     price, reserves, liabilities, feesAccrued, effectiveFeeBps, baseFeeBps,
-    shares, allowance, shareSupply,
+    shares, allowance, shareSupply, shareAllowance,
   ] = await Promise.all([
     readOne<bigint>(request, index.vault, VAULT_ABI, "price"),
     readOne<bigint>(request, index.vault, VAULT_ABI, "reserves"),
@@ -154,6 +163,7 @@ async function readIndex(
     readOne<bigint>(request, shareToRead, ERC20_ABI, "balanceOf", [address]),
     readOne<bigint>(request, MUSD, ERC20_ABI, "allowance", [address, index.vault]),
     readOne<bigint>(request, shareToRead, ERC20_ABI, "totalSupply"),
+    readOne<bigint>(request, shareToRead, ERC20_ABI, "allowance", [address, index.vault]),
   ]);
 
   return {
@@ -163,7 +173,7 @@ async function readIndex(
     shareMatchesExpectation:
       share === null ? null : share.toLowerCase() === index.share.toLowerCase(),
     price, reserves, liabilities, feesAccrued,
-    effectiveFeeBps, baseFeeBps, shares, allowance, shareSupply,
+    effectiveFeeBps, baseFeeBps, shares, allowance, shareSupply, shareAllowance,
   };
 }
 
@@ -236,6 +246,15 @@ export const encode = {
         inputs: [{ type: "uint256" }], outputs: [],
       }],
       functionName: "stake",
+      args: [amount],
+    }),
+  unstake: (amount: bigint) =>
+    encodeFunctionData({
+      abi: [{
+        name: "unstake", type: "function", stateMutability: "nonpayable",
+        inputs: [{ type: "uint256" }], outputs: [],
+      }],
+      functionName: "unstake",
       args: [amount],
     }),
 };
