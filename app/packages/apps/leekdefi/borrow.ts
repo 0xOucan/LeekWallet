@@ -29,6 +29,10 @@ const BORROWER_OPERATIONS_ABI = [
   { name: "MCR", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { name: "troveManager", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { name: "priceFeed", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  /* The liquidation reserve, held back from every loan and returned when the
+     position closes. Read, not written down as 200: it is a protocol constant
+     today and a number on a screen that is wrong tomorrow if it changes. */
+  { name: "MUSD_GAS_COMPENSATION", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
 ] as const satisfies Abi;
 
 const TROVE_MANAGER_ABI = [
@@ -81,15 +85,26 @@ export interface BorrowState {
   readonly mcr: bigint | null;
   /** The smallest debt the protocol will open a position with. */
   readonly minNetDebt: bigint | null;
+  /**
+   * The liquidation reserve, added on top of what you borrow.
+   *
+   * It is part of the DEBT but not part of what reaches your wallet, which is
+   * why the ratio has to be computed against debt plus this and not against
+   * the figure typed into the form. Getting that wrong makes the preview more
+   * optimistic than the protocol and sends the device a transaction that
+   * reverts.
+   */
+  readonly reserve: bigint | null;
 }
 
 /** Read the signer's position in Mezo's borrow market. */
 export async function readBorrow(request: EthRequest, address: string): Promise<BorrowState> {
-  const [minNetDebt, mcr, troveManager, priceFeed] = await Promise.all([
+  const [minNetDebt, mcr, troveManager, priceFeed, reserve] = await Promise.all([
     readOne<bigint>(request, BORROWER_OPERATIONS, BORROWER_OPERATIONS_ABI, "minNetDebt"),
     readOne<bigint>(request, BORROWER_OPERATIONS, BORROWER_OPERATIONS_ABI, "MCR"),
     readOne<string>(request, BORROWER_OPERATIONS, BORROWER_OPERATIONS_ABI, "troveManager"),
     readOne<string>(request, BORROWER_OPERATIONS, BORROWER_OPERATIONS_ABI, "priceFeed"),
+    readOne<bigint>(request, BORROWER_OPERATIONS, BORROWER_OPERATIONS_ABI, "MUSD_GAS_COMPENSATION"),
   ]);
 
   const [status, debt, collateral, price] = await Promise.all([
@@ -99,7 +114,7 @@ export async function readBorrow(request: EthRequest, address: string): Promise<
     readOne<bigint>(request, priceFeed ?? "", PRICE_FEED_ABI, "fetchPrice"),
   ]);
 
-  return { status, collateral, debt, price, mcr, minNetDebt };
+  return { status, collateral, debt, price, mcr, minNetDebt, reserve };
 }
 
 /**

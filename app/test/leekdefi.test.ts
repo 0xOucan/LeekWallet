@@ -229,10 +229,54 @@ const FLOOR = 2970000000000000000n;
 }
 
 {
+  group("every input the borrow panel shows has a label a sighted user can read");
+  const source = readFileSync(new URL("../packages/apps/leekdefi/index.ts", import.meta.url), "utf8");
+  /* The panel shipped with two boxes, one carrying only an aria-label. A
+     sighted user saw an unlabelled box above a labelled one, typed the BTC
+     collateral into the MUSD field, and was refused for being under the
+     minimum loan - a correct answer to a question nobody meant to ask. */
+  check(
+    source.includes("function labelledInput("),
+    "the labelled-input helper is gone",
+  );
+  check(
+    !/setAttribute\("aria-label"/.test(source),
+    "an input is labelled only for screen readers; sighted users see nothing",
+  );
+  /* The minimum is stated beside the field rather than only in a refusal
+     after the fact. */
+  check(source.includes("the protocol refuses less"), "the minimum loan is not stated by the field");
+  /* The reserve is read from the chain, not written into the copy: it is a
+     protocol constant today and a wrong number on a screen if it changes. */
+  check(
+    !/\b200 MUSD liquidation reserve\b/.test(source),
+    "the liquidation reserve is hardcoded in the copy instead of read",
+  );
+  check(source.includes("MUSD_GAS_COMPENSATION")
+    || readFileSync(new URL("../packages/apps/leekdefi/borrow.ts", import.meta.url), "utf8")
+      .includes("MUSD_GAS_COMPENSATION"), "the reserve is not read from the chain");
+}
+
+{
+  group("the ratio preview measures what the protocol measures");
+  /* Debt PLUS the liquidation reserve. Using the typed figure alone made the
+     preview more optimistic than the chain and sent the device a transaction
+     that reverts. */
+  const source = readFileSync(new URL("../packages/apps/leekdefi/index.ts", import.meta.url), "utf8");
+  check(
+    source.includes("const owed = debt + (state.reserve ?? 0n);"),
+    "the ratio preview ignores the liquidation reserve",
+  );
+}
+
+{
   group("a position owing nothing has no ratio, rather than an infinite one");
   /* Same mistake as a vault's backing rendered 0% because nothing was owed:
      infinity printed as a figure is not a measurement. */
-  const base = { status: 1n, collateral: 10n ** 16n, price: 100_000n * 10n ** 18n, mcr: 11n * 10n ** 17n, minNetDebt: 1800n * 10n ** 18n };
+  const base = {
+    status: 1n, collateral: 10n ** 16n, price: 100_000n * 10n ** 18n,
+    mcr: 11n * 10n ** 17n, minNetDebt: 1800n * 10n ** 18n, reserve: 200n * 10n ** 18n,
+  };
   check(collateralRatioBps({ ...base, debt: 0n }) === null, "a debt of zero produced a ratio");
   check(collateralRatioBps({ ...base, debt: null }) === null, "an unread debt produced a ratio");
   check(

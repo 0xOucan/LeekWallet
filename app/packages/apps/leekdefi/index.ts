@@ -133,6 +133,36 @@ function row(label: string, value: string | null, note?: string): HTMLElement {
   return wrap;
 }
 
+/**
+ * An input with a label above it that is actually visible.
+ *
+ * The borrow panel shipped with two boxes, one of which carried only an
+ * `aria-label`. A sighted user saw an unlabelled box above a labelled one and
+ * typed the BTC collateral into the MUSD field, which was then refused for
+ * being under the protocol's minimum loan - a correct refusal to a question
+ * nobody meant to ask. An aria-label is for a screen reader, not a substitute
+ * for telling everybody else which field is which.
+ */
+function labelledInput(label: string, placeholder: string, hint?: string): {
+  wrap: HTMLElement;
+  input: HTMLInputElement;
+} {
+  const wrap = el("div");
+  const id = `leekdefi-field-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  const l = el("label", "leekdefi-label", label);
+  l.htmlFor = id;
+  l.style.display = "block";
+  l.style.marginBottom = "4px";
+  const input = el("input", "leekdefi-input");
+  input.type = "text";
+  input.inputMode = "decimal";
+  input.id = id;
+  input.placeholder = placeholder;
+  wrap.append(l, input);
+  if (hint !== undefined) wrap.append(el("div", "leekdefi-note", hint));
+  return { wrap, input };
+}
+
 function card(title: string): HTMLElement {
   const node = el("section", "leekdefi-card");
   node.append(el("div", "leekdefi-card-title", title));
@@ -282,7 +312,9 @@ function borrowPanel(
       row(
         "MUSD owed",
         state.debt === null ? null : formatWad(state.debt, 2),
-        "includes the 200 MUSD liquidation reserve",
+        state.reserve === null
+          ? "includes the liquidation reserve"
+          : `includes the ${formatWad(state.reserve, 0)} MUSD liquidation reserve`,
       ),
     );
     /* The threshold is read from the protocol, never assumed: a hardcoded
@@ -325,7 +357,9 @@ function borrowPanel(
       row(
         "Smallest loan",
         state.minNetDebt === null ? null : `${formatWad(state.minNetDebt, 2)} MUSD`,
-        "the protocol refuses less, plus a 200 MUSD liquidation reserve on top",
+        state.reserve === null
+          ? "the protocol refuses less"
+          : `the protocol refuses less, plus a ${formatWad(state.reserve, 0)} MUSD liquidation reserve on top`,
       ),
     );
     node.append(
@@ -346,12 +380,18 @@ function borrowPanel(
     return node;
   }
 
-  const input = el("input", "leekdefi-input");
-  input.type = "text";
-  input.inputMode = "decimal";
-  input.placeholder = "0.00";
-  input.setAttribute("aria-label", "MUSD amount");
-  node.append(input);
+  const smallest = state.minNetDebt === null ? null : formatWad(state.minNetDebt, 2);
+  const debtField = labelledInput(
+    open ? "MUSD to borrow or repay" : "MUSD to borrow",
+    smallest ?? "0.00",
+    open
+      ? undefined
+      : smallest === null
+        ? undefined
+        : `At least ${smallest} MUSD — the protocol refuses less.`,
+  );
+  const input = debtField.input;
+  node.append(debtField.wrap);
 
   const amountOrComplain = (): bigint | null => {
     const amount = parseWad(input.value);
@@ -365,13 +405,14 @@ function borrowPanel(
     /* Opening needs BTC in the same transaction, as value. The collateral is
        not an argument, which is exactly why the device draws it from the
        transaction rather than from the calldata. */
-    const collInput = el("input", "leekdefi-input");
-    collInput.type = "text";
-    collInput.inputMode = "decimal";
-    collInput.placeholder = "0.01";
-    collInput.setAttribute("aria-label", "BTC to lock as collateral");
-    node.append(el("div", "leekdefi-note", "BTC to lock as collateral:"));
-    node.append(collInput);
+    const collField = labelledInput(
+      "BTC to lock as collateral",
+      "0.01",
+      "Returned when the position closes. It is also the gas token here, so " +
+        "leave some unlocked.",
+    );
+    const collInput = collField.input;
+    node.append(collField.wrap);
 
     const borrow = el("button", "leekdefi-button", "Borrow MUSD");
     borrow.type = "button";
@@ -388,9 +429,14 @@ function borrowPanel(
         return;
       }
       /* Checked before asking for a signature: a position that opens below
-         the minimum ratio is liquidatable the moment it exists. */
+         the minimum ratio is liquidatable the moment it exists.
+         Against debt PLUS the liquidation reserve, because that is what the
+         protocol measures. Using the typed figure alone made this preview
+         more optimistic than the chain and sent the device a transaction
+         that reverts. */
       if (state.price !== null && state.mcr !== null && debt > 0n) {
-        const wouldBe = (collateral * state.price * 10_000n) / (debt * 10n ** 18n);
+        const owed = debt + (state.reserve ?? 0n);
+        const wouldBe = (collateral * state.price * 10_000n) / (owed * 10n ** 18n);
         const floor = (state.mcr * 10_000n) / 10n ** 18n;
         if (wouldBe < floor) {
           say(
@@ -464,9 +510,9 @@ function borrowPanel(
       el(
         "div",
         "leekdefi-note",
-        "The protocol requires the debt, less its 200 MUSD liquidation reserve, " +
-          "to stay at or above the minimum. Closing is the only way past that, " +
-          "and it needs the whole debt in MUSD in your wallet.",
+        "The protocol requires the debt, less its liquidation reserve, to stay " +
+          "at or above the minimum. Closing is the only way past that, and it " +
+          "needs the whole debt in MUSD in your wallet.",
       ),
     );
   }
@@ -621,19 +667,18 @@ export const leekDefiApp: MiniApp = {
       const first = state.indices[0];
       if (first !== undefined) {
         const trade = card(`Buy ${first.symbol}`);
-        const input = el("input", "leekdefi-input");
-        input.type = "text";
-        input.inputMode = "decimal";
-        input.placeholder = "0.00";
-        input.setAttribute("aria-label", "MUSD to spend");
-        trade.append(input);
+        /* Labelled for everybody, not only for a screen reader - the same
+           defect the borrow panel had. */
+        const tradeField = labelledInput("MUSD to spend", "0.00");
+        const input = tradeField.input;
+        trade.append(tradeField.wrap);
         trade.append(
           el(
             "div",
             "leekdefi-note",
-            "The amount of MUSD to spend. The shares you receive depend on the " +
-              "oracle's price at the moment the transaction lands, so the device " +
-              "will show you a floor as well as the amount.",
+            "The shares you receive depend on the oracle's price at the moment " +
+              "the transaction lands, so the device will show you a floor as " +
+              "well as the amount.",
           ),
         );
 
