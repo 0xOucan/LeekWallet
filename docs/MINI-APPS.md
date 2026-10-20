@@ -4,6 +4,10 @@ Aqua, ATS and La Caja were removed in `5a2b8bd`. **The framework was not.** This
 records what the three of them taught, so a fourth does not relearn it, and
 where to find them when one is wanted for another chain or another event.
 
+There is now a fourth, **LeekDefi**, for the Mezo Buildathon. See
+[Removing LeekDefi](#removing-leekdefi) below — it is written to go the same
+way, and the procedure is two steps.
+
 ## Getting them back
 
 Nothing was thrown away; git has all of it.
@@ -65,3 +69,45 @@ in a transfer amount, so it refuses rather than coerces.
    https://ethskills.com/security/SKILL.md and https://ethskills.com/audit/SKILL.md.
 5. Expect to delete it. All three of these were written to be removable and all
    three were removed without touching the wallet.
+
+## Removing LeekDefi
+
+`app/packages/apps/leekdefi/` is the Mezo Buildathon surface. When the event
+ends it goes the same way Aqua, ATS and La Caja did:
+
+```sh
+git rm -r app/packages/apps/leekdefi
+# then delete the single leekDefiApp line from app/src/apps/registry.ts
+```
+
+`app/test/leekdefi.test.ts` goes with it. Nothing else references the package —
+the isolation rules in `app/test/` are what make that true rather than hopeful,
+and `tsc --noEmit` plus the remaining suites will say so immediately.
+
+**What must NOT go with it**, and this is the whole reason the line is drawn
+here:
+
+| Stays | Why |
+|---|---|
+| the eight rows in `src/eth-decode.c` and their mirror in `core/src/eth-decode.ts` | Rule 2. A call the device *draws* is decoded by the device, so these are wallet capability, not event code. Deleting them changes firmware behaviour and needs a reflash — its own decision, on its own evidence. |
+| the 71 vectors in `sim/test_eth_decode.c` | A decoder whose vectors are deleted is a decoder nobody can show still works. |
+| `core/src/erc7730-mezo.ts` and its `DEFAULT_DESCRIPTORS` entry | It describes Mezo's own MUSD and borrow market, which exist whether or not this app does. A dapp in Chrome reads the same descriptors. |
+| the Mezo rows in `core/src/chains.ts` and `TOKEN_HINTS` | Chain and token knowledge is wallet knowledge. The impostor-MUSD test in `core/test/chains.test.ts` guards a real footgun on that chain. |
+
+What LeekDefi itself proved, beyond the five rules above:
+
+**6. Reading the chain once is not reading the chain.** The panel rendered at
+mount and never again, so a borrow that landed left the screen offering to open
+the trove a second time. The chain refused it correctly and the app — which
+cannot tell a revert from a reject, by design — reported a refusal. Every write
+now re-reads before redrawing, in one wrapped `propose` rather than at eleven
+call sites.
+
+**7. A button that ignores state asks the device to sign for nothing.** All
+three allowances were fetched from the start and none of the three Approve
+buttons consulted them, so an approval that had already landed was offered
+again. A signature that changes nothing is worse than useless: it teaches
+approving without reading, which is the only defence the two-gate design has.
+The test now makes the structural claim — every write must refuse something
+locally before it proposes.
+

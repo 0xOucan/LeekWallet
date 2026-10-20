@@ -17,7 +17,7 @@ Track 1). This document is what to do, in what order, by when.
 | **Dapp** | 58 kB entry, 34 tests, clicked through against a local chain: approve, buy, redeem, and a refusal that predicted its own revert. Not pointed at Mezo yet, not deployed |
 | **Leeknding** | written: 95 tests, 8 invariants, mocks, a rate-limited faucet that refuses mainnet ids, seeding and monitoring scripts. Deployed nowhere |
 | **Wallet** | chains, MUSD and MEZO token rows, and the per-chain gas ticker all merged (T-MEZO-1, 2, 3). A Mezo transaction draws **BTC**, and an unlisted chain draws no ticker at all |
-| **Owed** | the air-gapped demo on hardware (T-MEZO-4), the mini-app (T-MEZO-5), the VPS deploy, Leeknding to Sepolia and Base Sepolia, and the submission materials |
+| **Owed** | the air-gapped demo on hardware (T-MEZO-4), Leeknding to Sepolia and Base Sepolia, and the submission materials. **No buy or redeem has been signed on the device yet.** The mini-app (T-MEZO-5), the borrow decoders (T-MEZO-6, pulled forward from Wave 2) and the VPS deploy are done |
 | **Blocked on you** | test MUSD for the demo, a free Etherscan API key for Sepolia verification, and Cloudflare CNAMEs when the VPS deploy happens |
 
 What the deployment taught, all of it recorded in `leek-stocks/DEPLOYMENT.md`:
@@ -81,7 +81,7 @@ written rather than sorting it out afterwards:
 | Mezo chains in the chain table, MUSD and MEZO token hints | **stays.** Generic wallet capability: one more EVM chain and four more verified token rows, the same shape as every other entry |
 | The per-chain gas symbol on the device (T-MEZO-3) | **stays.** It is a correctness fix for any chain whose gas is not ether, and Mezo only exposed it |
 | Borrow-call decoder rows (T-MEZO-6) | **stays** unless the calls go unused. Decoding is wallet capability, and a decoder that is deleted takes its vectors with it |
-| `app/packages/apps/mezo/` | **goes**, in one commit, like Aqua and ATS before it. The hackathon surface is the removable part, which is exactly why it lives there |
+| `app/packages/apps/leekdefi/` | **goes**, in one commit, like Aqua and ATS before it. The hackathon surface is the removable part, which is exactly why it lives there |
 | The 1.5" board profile (H-1) | **stays.** Hardware support is not event-specific |
 
 So: no board hardware is needed for any of the Mezo software work, the wallet
@@ -100,7 +100,7 @@ link" points at, and what a judge clicks. It reaches LeekWallet, if the user
 has one, through **WalletConnect**, exactly as any other dapp does — no special
 casing.
 
-**B. The in-wallet mini-app** (`app/packages/apps/mezo/` in this repo).
+**B. The in-wallet mini-app** (`app/packages/apps/leekdefi/` in this repo).
 Opens inside the companion next to the device, builds calldata and hands it to
 `screenProposal`. It cannot touch a key, a transport or the device; that is the
 framework's rule and the reason an app is safe to ship at all.
@@ -128,7 +128,7 @@ The spine, finished, with nothing half-built. Ten days.
 | T-MEZO-2 | MUSD and MEZO token hints, verified per chain | **done** (`05ff984`) |
 | T-MEZO-3 | **The gas symbol on the device.** Replace the hardcoded `"ETH"` in `src/ui.c` with the chain's own ticker, so Mezo draws BTC. Firmware chain table, host vectors, a `sim/test_ui.c` case on 31611 | **done**. An unlisted chain gets no ticker at all rather than the usual answer; the companion summary was wrong the same way and is fixed with it |
 | T-MEZO-4 | Air-gapped MUSD payment on Mezo testnet, end to end, filmed | **next**, and needs test MUSD |
-| T-MEZO-5 | `app/packages/apps/mezo/`: balances, MUSD send through `screenProposal`, the ETF surface | unblocked: the contracts are live |
+| T-MEZO-5 | `app/packages/apps/leekdefi/`: balances, MUSD send through `screenProposal`, the ETF surface | unblocked: the contracts are live |
 | T-MEZO-9 | Submission: deck, 2-minute video, AKINDO answers, README section | last two days |
 
 ### Platform, in `leek-stocks`

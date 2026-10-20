@@ -4,7 +4,7 @@ LeekWallet's entry for the **Mezo Buildathon** (AKINDO, two waves). This is the
 planning document: what is verified, what it costs, what ships in which wave,
 and what must not be guessed at.
 
-The hackathon surface lives in its own package, `app/packages/apps/mezo/`, under
+The hackathon surface lives in its own package, `app/packages/apps/leekdefi/`, under
 the five rules in [MINI-APPS.md](MINI-APPS.md), so the event's code can be
 deleted in one commit when it ends. Firmware changes are the exception and are
 marked as such: a call the device *draws* has to be decoded by the device, and
@@ -15,10 +15,21 @@ ticker are merged (T-MEZO-1, 2, 3): a Mezo transaction is drawn in **BTC** on
 the device and in the companion, and an unlisted chain is drawn with no ticker
 rather than a guess. The LeekStonks contracts are **live on Mezo testnet**,
 settling in the MUSD Mezo's own borrow system mints, so MUSD borrowed against
-BTC can be spent on them — addresses in `leek-stocks/ADDRESSES.md`. Owed: the
-air-gapped demo on hardware (T-MEZO-4), the mini-app (T-MEZO-5), and the
-borrow-call decoders in Wave 2 (T-MEZO-6). The full picture is in
-[PLAN-MEZO-ROADMAP.md](PLAN-MEZO-ROADMAP.md).
+BTC can be spent on them — addresses in `leek-stocks/ADDRESSES.md`.
+
+**Status, 19 Oct 2026.** The mini-app (T-MEZO-5) ships as
+`app/packages/apps/leekdefi/`, and it is not the read-only surface this document
+planned: it buys, redeems, stakes, unstakes and borrows, all through
+`screenProposal`. The borrow-call decoders (T-MEZO-6) were pulled forward from
+Wave 2 and are **on a board** — eight generic rows in `src/eth-decode.c`, their
+host mirror, and 71 shared vectors. The dapp, the feed and the two index vaults
+are deployed and answering; both pools are listed; both vaults are above 100%
+coverage.
+
+Owed: the air-gapped demo on hardware (T-MEZO-4) and the submission materials.
+**No buy or redeem has yet been signed on the device** — that walk is the one
+thing the whole entry rests on and it is still untested on hardware. The full
+picture is in [PLAN-MEZO-ROADMAP.md](PLAN-MEZO-ROADMAP.md).
 
 ## 1. The event, in the terms it will judge us by
 
@@ -251,7 +262,7 @@ the mini-app; "wallet" means it stays.
 | T-MEZO-2 | MUSD in `TOKEN_HINTS` for 31611/31612, and `MUSD` added to the tracked symbols with its deployment map | wallet, `core/chains.ts`, `core/all-chain-balances.ts` | an MUSD balance shows; a send is drawn by the device from its own decoder | small |
 | T-MEZO-3 | **The gas symbol on the device.** Replace the hardcoded `"ETH"` with the chain's own ticker, so Mezo draws BTC | wallet, `src/ui.c` (+ firmware chain table) | **done**: `sim/test_ui.c` renders a 31611 transaction and asserts BTC with ETH on no page, plus an unlisted chain id; `sim/test_eth_tx.c` and the core suite pin the tables | medium |
 | T-MEZO-4 | Air-gapped MUSD payment end to end: phone builds the request, camera board reads it, device draws it, QR signature back, phone broadcasts | wallet (exists) + event demo | a testnet transaction hash, filmed | integration |
-| T-MEZO-5 | `app/packages/apps/mezo/`: a read-only Mezo surface — BTC and MUSD balances, trove health if an address has one, and an MUSD send that goes through `screenProposal` | event, own package + own CSS | `app/test` isolation rules; one line in `MINI_APPS` | medium |
+| T-MEZO-5 | `app/packages/apps/leekdefi/`: a read-only Mezo surface — BTC and MUSD balances, trove health if an address has one, and an MUSD send that goes through `screenProposal` | event, own package + own CSS | `app/test` isolation rules; one line in `MINI_APPS` | medium |
 | T-MEZO-6 | Borrow calls in the device's decodable set: `openTrove`, `withdrawMUSD`, `repayMUSD`, `addColl`, `withdrawColl`, `closeTrove` | wallet, `src/eth-decode.c` table | shared C/TS vectors, refusal cases included | medium |
 | T-MEZO-7 | Trove health page in the mini-app, read from `TroveManager` | event | testnet position | small |
 | T-MEZO-8 | The deployment requirement (§5) | event, contracts inside the app folder | a verified contract on Mezo testnet | open |
@@ -267,7 +278,7 @@ be the kind of claim this project does not make. Three options, cheapest first:
    MUSD payment signed air-gapped *is* a working deployment of the integration,
    and the explorer link is the evidence. Risk: a screener looking for a
    contract address may score it as "demo only".
-2. **A small contract that earns its place**, inside `app/packages/apps/mezo/contracts/`,
+2. **A small contract that earns its place**, inside `app/packages/apps/leekdefi/contracts/`,
    as Aqua's did. The candidate worth building is a **device attestation
    registry**: a wallet publishes the account xpub fingerprint it pairs with, so
    a second device or a companion can check it later. It is small, it is real,
