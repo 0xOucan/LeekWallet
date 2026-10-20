@@ -206,6 +206,22 @@ function armApproval(
   return note;
 }
 
+/**
+ * What is currently typed in each field, by field id.
+ *
+ * `render()` calls `body.replaceChildren()`, which destroys every input along
+ * with its value. So choosing a different index -- which redraws, because
+ * every allowance and refusal below belongs to the selected index -- silently
+ * emptied the amount field, and the next press was refused for having no
+ * amount. Worse, it happened after a write too: the figure vanished at the
+ * moment the panel redrew with the new state.
+ *
+ * Keyed by the id `labelledInput` already derives from the label, so a field
+ * keeps its value across any number of redraws without the call sites
+ * knowing. Cleared on mount so a fresh open is a fresh form.
+ */
+const DRAFTS = new Map<string, string>();
+
 function labelledInput(label: string, placeholder: string, hint?: string): {
   wrap: HTMLElement;
   input: HTMLInputElement;
@@ -221,6 +237,8 @@ function labelledInput(label: string, placeholder: string, hint?: string): {
   input.inputMode = "decimal";
   input.id = id;
   input.placeholder = placeholder;
+  input.value = DRAFTS.get(id) ?? "";
+  input.addEventListener("input", () => { DRAFTS.set(id, input.value); });
   wrap.append(l, input);
   if (hint !== undefined) wrap.append(el("div", "leekdefi-note", hint));
   return { wrap, input };
@@ -770,6 +788,8 @@ export const leekDefiApp: MiniApp = {
           .catch(() => null),
       ]);
 
+    DRAFTS.clear();
+
     /* Which index the trade panel is pointed at. Outside render(), because a
        redraw must not silently move the user back to the first index. */
     let selected = 0;
@@ -960,14 +980,29 @@ export const leekDefiApp: MiniApp = {
         approveShares.type = "button";
         const redeem = el("button", "leekdefi-button-quiet", "Redeem shares");
         redeem.type = "button";
-        actions.append(approve, buy, approveShares, redeem);
+        actions.append(approve, buy);
         trade.append(actions);
+
+        /* Its own field, in the unit it is actually denominated in.
+           Redeeming used to read the amount field the buy uses, which means
+           MUSD, and the only thing separating the two meanings was a sentence
+           asking the reader to remember. It refused an empty field with
+           "Enter an amount of MUSD greater than zero" while wanting shares. */
+        const redeemField = labelledInput(
+          `${first.symbol} shares to redeem`,
+          "0.00",
+          `You hold ${first.shares === null ? "an unreadable number of" : formatWad(first.shares)} ${first.symbol}.`,
+        );
+        const redeemInput = redeemField.input;
+        trade.append(redeemField.wrap);
+        const redeemActions = el("div", "leekdefi-actions");
+        redeemActions.append(approveShares, redeem);
+        trade.append(redeemActions);
         trade.append(
           el(
             "div",
             "leekdefi-note",
-            "Redeeming reads the same field as the number of SHARES to burn, " +
-              "not MUSD. Approve the shares first — the vault burns them from " +
+            "Approve the shares before redeeming — the vault burns them from " +
               "you, which spends an allowance.",
           ),
         );
@@ -994,12 +1029,18 @@ export const leekDefiApp: MiniApp = {
             if (amount === null) say("Enter an amount of MUSD greater than zero.");
             return amount;
           };
+          /* Shares, not MUSD, and it says so when it refuses. */
+          const sharesOrComplain = (): bigint | null => {
+            const shares = parseWad(redeemInput.value);
+            if (shares === null) say(`Enter a number of ${first.symbol} shares greater than zero.`);
+            return shares;
+          };
 
           /* Both approvals read the same field, because the field means MUSD
              for a buy and shares for a redeem. Each is judged against its own
              allowance. */
           trade.append(armApproval(approve, input, first.allowance, "MUSD"));
-          trade.append(armApproval(approveShares, input, first.shareAllowance, first.symbol));
+          trade.append(armApproval(approveShares, redeemInput, first.shareAllowance, first.symbol));
 
           approve.addEventListener("click", () => {
             const amount = amountOrComplain();
@@ -1059,7 +1100,7 @@ export const leekDefiApp: MiniApp = {
           });
 
           approveShares.addEventListener("click", () => {
-            const amount = amountOrComplain();
+            const amount = sharesOrComplain();
             if (amount === null) return;
             if (first.share === null) {
               say("The vault did not name its share token, so nothing can be approved.");
@@ -1077,7 +1118,7 @@ export const leekDefiApp: MiniApp = {
           });
 
           redeem.addEventListener("click", () => {
-            const amount = amountOrComplain();
+            const amount = sharesOrComplain();
             if (amount === null) return;
             if (first.price === null) {
               say("The vault cannot price a share right now, so a redeem would revert.");

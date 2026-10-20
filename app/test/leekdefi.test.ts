@@ -447,6 +447,42 @@ const FLOOR = 2970000000000000000n;
   );
 }
 
+/* -------------------------------- a redraw must not destroy what was typed */
+
+{
+  group("typed amounts survive a redraw, and each field states its own unit");
+  const source = readFileSync(new URL("../packages/apps/leekdefi/index.ts", import.meta.url), "utf8");
+
+  /* render() calls body.replaceChildren(), which destroys every input and its
+     value with it. Choosing a different index redraws -- every allowance and
+     refusal below belongs to the selected index -- so it silently emptied the
+     amount field, and the next press was refused for having no amount. */
+  check(source.includes("const DRAFTS = new Map<string, string>();"), "typed values are no longer preserved");
+  check(source.includes('input.value = DRAFTS.get(id) ?? "";'), "a redrawn field does not restore its value");
+  check(source.includes("DRAFTS.set(id, input.value);"), "typing is not recorded");
+  check(source.includes("DRAFTS.clear();"), "a fresh open is not a fresh form");
+
+  /* Redeeming read the field the BUY uses, which means MUSD, with only a
+     sentence to separate the two meanings. It then refused an empty field
+     with "Enter an amount of MUSD greater than zero" while wanting shares. */
+  check(source.includes("shares to redeem"), "redeem has no field of its own");
+  check(source.includes("const sharesOrComplain = (): bigint | null =>"), "redeem does not read shares separately");
+  check(
+    source.includes("Enter a number of ${first.symbol} shares greater than zero."),
+    "a redeem with an empty field is still refused in MUSD",
+  );
+  check(
+    source.includes("armApproval(approveShares, redeemInput, first.shareAllowance"),
+    "the share allowance is judged against the wrong field",
+  );
+  /* The note that asked the reader to remember a shared field should be gone,
+     because the field is no longer shared. */
+  check(
+    !source.includes("Redeeming reads the same field"),
+    "the shared-field warning survives a change that made it untrue",
+  );
+}
+
 /* ----------------------------------- no write reaches the device unguarded */
 
 {
@@ -461,7 +497,7 @@ const FLOOR = 2970000000000000000n;
   const armed = source.match(/armApproval\(/g) ?? [];
   check(armed.length === 4, `expected 3 wired approvals plus the definition, found ${armed.length - 1} wired`);
   check(source.includes('armApproval(approve, input, first.allowance, "MUSD")'), "the MUSD approval is unguarded");
-  check(source.includes("armApproval(approveShares, input, first.shareAllowance"), "the share approval is unguarded");
+  check(source.includes("armApproval(approveShares, redeemInput, first.shareAllowance"), "the share approval is unguarded");
   check(source.includes('armApproval(approveMezo, stakeField.input, s.mezoAllowance, "MEZO")'), "the MEZO approval is unguarded");
   /* Unreadable is not zero: a null allowance must still offer the approval. */
   check(source.includes("could not be read, so the approval is offered anyway"), "a null allowance now blocks the approval");
