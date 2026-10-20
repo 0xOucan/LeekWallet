@@ -184,11 +184,22 @@ function armApproval(
         `${formatWad(wanted)}. No second signature is needed.`;
       return;
     }
+    /* With the field empty there is no "that" to be less than, and saying
+       "Nothing is approved yet" over a standing allowance is simply false --
+       which is exactly what it said after an approval had landed. State the
+       allowance, and ask for the amount. */
     button.disabled = false;
+    if (wanted === null) {
+      note.textContent =
+        allowance === 0n
+          ? `Nothing is approved yet. Enter an amount.`
+          : `${formatWad(allowance)} ${unit} is approved. Enter an amount to see whether it covers it.`;
+      return;
+    }
     note.textContent =
       allowance === 0n
         ? `Nothing is approved yet.`
-        : `${formatWad(allowance)} ${unit} is approved, less than that. Approving replaces the figure rather than adding to it.`;
+        : `${formatWad(allowance)} ${unit} is approved, less than ${formatWad(wanted)}. Approving replaces the figure rather than adding to it.`;
   };
   input.addEventListener("input", sync);
   sync();
@@ -778,43 +789,63 @@ export const leekDefiApp: MiniApp = {
        trove, the chain answered "BorrowerOps: Trove is active", and the app —
        which by design cannot tell a revert from a reject — reported it as a
        refusal. The state was stale, not the logic. */
-    /* What the chain looked like, as one comparable string. Used to tell "the
-       transaction has not landed yet" from "it landed and changed nothing". */
-    const signature = (): string =>
-      JSON.stringify([
-        state.musd, state.staking?.yourStake, state.staking?.mezoAllowance,
-        state.indices.map((i) => [i.shares, i.allowance, i.shareAllowance, i.reserves]),
-        borrow.status, borrow.debt, borrow.collateral, nativeBalance,
-      ], (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+    /* Has THIS account's next transaction number moved on?
+       The nonce advances exactly when one of this address's transactions is
+       included, which is the question being asked. Comparing a snapshot of
+       the whole contract state was the wrong question: it also changed when
+       somebody else's fee moved reserves, so the wait ended early and left
+       the panel a step behind the chain. `scripts/lib/send.sh` in the
+       contracts repo waits on the nonce for exactly this reason. */
+    const nonce = async (): Promise<bigint | null> => {
+      try {
+        const raw = await context.request({
+          method: "eth_getTransactionCount",
+          params: [context.address, "latest"],
+        });
+        return typeof raw === "string" ? BigInt(raw) : null;
+      } catch {
+        return null;
+      }
+    };
 
-    const refresh = async (awaitChange = false): Promise<void> => {
-      const before = awaitChange ? signature() : null;
-      /* Broadcasting is not landing.
-         The first version of this read the chain the instant `propose`
-         returned, which is when the transaction has been SENT. On Mezo
-         inclusion is seconds to minutes behind that, so the re-read returned
-         the pre-transaction state, the panel redrew with it, and an approval
-         worth 150 MUSD showed as "Nothing is approved yet" -- after which this
-         app's own guard refused the buy it was supposed to enable.
-         So when a write is expected to change something, poll until it does. */
+    const readNow = async (): Promise<boolean> => {
+      try {
+        [state, borrow, nativeBalance] = await readEverything();
+      } catch (e) {
+        say(`Could not re-read the contracts: ${(e as Error).message}`);
+        return false;
+      }
+      render();
+      return true;
+    };
+
+    /**
+     * Re-read now, or wait for a sent transaction to be included first.
+     *
+     * Broadcasting is not landing. Reading the instant `propose` returns gets
+     * the state from BEFORE the transaction, because on Mezo inclusion is
+     * seconds to minutes behind the send. That is how a 150 MUSD approval
+     * that had landed showed as "Nothing is approved yet", after which this
+     * app's own guard refused the buy it existed to enable.
+     *
+     * `since` is the nonce read before the write was proposed. Waiting for it
+     * to advance waits for this account's own transaction and nothing else.
+     */
+    const refresh = async (since: bigint | null = null): Promise<void> => {
+      if (since === null) { await readNow(); return; }
       for (let attempt = 0; attempt < 20; attempt++) {
-        try {
-          [state, borrow, nativeBalance] = await readEverything();
-        } catch (e) {
-          say(`Could not re-read the contracts: ${(e as Error).message}`);
-          return;
-        }
-        render();
-        if (before === null || signature() !== before) return;
+        const now = await nonce();
+        if (now === null || now > since) { await readNow(); return; }
         say("Sent. Waiting for Mezo to include it…");
         await new Promise((r) => setTimeout(r, 3000));
       }
-      /* A minute is long enough that something is wrong, and short enough
-         that saying so is still useful. It is not a claim the write failed:
-         this chain is slow and the manual re-read is right there. */
+      await readNow();
+      /* A minute is long enough that something is wrong and short enough that
+         saying so is still useful. It is not a claim the write failed: this
+         chain is slow, and the manual re-read is right there. */
       say(
-        "Sent, but the chain still reads unchanged after a minute. On Mezo that " +
-          "is usually late rather than failed — press Re-read the chain.",
+        "Sent, but Mezo has not reported it included after a minute. On this " +
+          "chain that is usually late rather than failed — press Re-read the chain.",
       );
     };
 
@@ -832,8 +863,11 @@ export const leekDefiApp: MiniApp = {
       context.propose === undefined
         ? undefined
         : async (proposal: AppProposal): Promise<ProposalOutcome> => {
+            /* Read before proposing: afterwards it is already ambiguous
+               whether an advance was this transaction or a previous one. */
+            const before = await nonce();
             const outcome = await context.propose!(proposal);
-            if (outcome.ok) await refresh(true);
+            if (outcome.ok) await refresh(before);
             return outcome;
           };
 

@@ -373,19 +373,33 @@ const FLOOR = 2970000000000000000n;
      again, and the chain answered "BorrowerOps: Trove is active". The app
      cannot tell a revert from a reject by design, so it reported a refusal.
      The cure is that a successful write re-reads before redrawing. */
-  check(source.includes("if (outcome.ok) await refresh(true);"), "a successful write no longer refreshes");
-  check(source.includes("const refresh = async (awaitChange = false)"), "refresh() is gone");
+  check(source.includes("if (outcome.ok) await refresh(before);"), "a successful write no longer refreshes");
+  check(source.includes("const refresh = async (since: bigint | null = null)"), "refresh() is gone");
   /* Re-reading immediately is not enough and was its own bug: `propose`
      returns when the transaction is SENT, and Mezo includes it seconds to
      minutes later. The first version read the pre-transaction state, redrew
      with it, and showed a 150 MUSD allowance as "Nothing is approved yet" --
      after which this app's own guard refused the buy it existed to enable.
      So a write polls until the chain actually differs. */
-  check(source.includes("const signature = (): string =>"), "there is no state signature to compare against");
   check(source.includes('say("Sent. Waiting for Mezo to include it…");'), "a pending write says nothing while it waits");
+  /* Wait on THIS account's nonce, not on a snapshot of the contracts.
+     Comparing whole-state snapshots answered the wrong question: reserves
+     move when anybody's fee routes, so an unrelated trade ended the wait
+     early and left the panel a step behind its own transaction. The nonce
+     advances exactly when one of this address's transactions is included. */
+  check(source.includes('method: "eth_getTransactionCount"'), "the wait no longer watches this account's nonce");
+  check(source.includes("if (now === null || now > since)"), "refresh does not wait for the nonce to advance");
   check(
-    source.includes("if (before === null || signature() !== before) return;"),
-    "refresh no longer waits for the state to actually change",
+    source.includes("const before = await nonce();"),
+    "the nonce is not snapshotted before the write is proposed",
+  );
+  check(!source.includes("const signature = (): string =>"), "the whole-state snapshot is back");
+  /* An empty amount field has no "that" to be less than, and claiming
+     "Nothing is approved yet" over a standing allowance is false -- it said
+     exactly that after an approval had landed. */
+  check(
+    source.includes("Enter an amount to see whether it covers it."),
+    "an empty amount field still gets a verdict it cannot support",
   );
   /* Giving up must not claim the write failed. */
   check(source.includes("usually late rather than failed"), "a slow write is reported as a failure");
