@@ -716,7 +716,9 @@ export const leekDefiApp: MiniApp = {
       document.createTextNode("."),
     );
     faucet.append(faucetLine);
-    wrap.append(faucet);
+    /* Appended AFTER the panels, further down: the website puts it last and
+       this read it second, which pushed the prices below a block of
+       instructions on every visit. */
 
     /* ------------------------------------------------------ loading state */
     const body = el("div");
@@ -725,6 +727,8 @@ export const leekDefiApp: MiniApp = {
     body.style.gap = "16px";
     body.append(el("div", "leekdefi-note", "Reading the contracts…"));
     wrap.append(body);
+
+    wrap.append(faucet);
 
     const message = el("div", "leekdefi-message");
     message.hidden = true;
@@ -755,6 +759,9 @@ export const leekDefiApp: MiniApp = {
           .catch(() => null),
       ]);
 
+    /* Which index the trade panel is pointed at. Outside render(), because a
+       redraw must not silently move the user back to the first index. */
+    let selected = 0;
     let state: LeekDefiState;
     let borrow: BorrowState;
     let nativeBalance: bigint | null;
@@ -771,14 +778,44 @@ export const leekDefiApp: MiniApp = {
        trove, the chain answered "BorrowerOps: Trove is active", and the app —
        which by design cannot tell a revert from a reject — reported it as a
        refusal. The state was stale, not the logic. */
-    const refresh = async (): Promise<void> => {
-      try {
-        [state, borrow, nativeBalance] = await readEverything();
-      } catch (e) {
-        say(`Could not re-read the contracts: ${(e as Error).message}`);
-        return;
+    /* What the chain looked like, as one comparable string. Used to tell "the
+       transaction has not landed yet" from "it landed and changed nothing". */
+    const signature = (): string =>
+      JSON.stringify([
+        state.musd, state.staking?.yourStake, state.staking?.mezoAllowance,
+        state.indices.map((i) => [i.shares, i.allowance, i.shareAllowance, i.reserves]),
+        borrow.status, borrow.debt, borrow.collateral, nativeBalance,
+      ], (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+
+    const refresh = async (awaitChange = false): Promise<void> => {
+      const before = awaitChange ? signature() : null;
+      /* Broadcasting is not landing.
+         The first version of this read the chain the instant `propose`
+         returned, which is when the transaction has been SENT. On Mezo
+         inclusion is seconds to minutes behind that, so the re-read returned
+         the pre-transaction state, the panel redrew with it, and an approval
+         worth 150 MUSD showed as "Nothing is approved yet" -- after which this
+         app's own guard refused the buy it was supposed to enable.
+         So when a write is expected to change something, poll until it does. */
+      for (let attempt = 0; attempt < 20; attempt++) {
+        try {
+          [state, borrow, nativeBalance] = await readEverything();
+        } catch (e) {
+          say(`Could not re-read the contracts: ${(e as Error).message}`);
+          return;
+        }
+        render();
+        if (before === null || signature() !== before) return;
+        say("Sent. Waiting for Mezo to include it…");
+        await new Promise((r) => setTimeout(r, 3000));
       }
-      render();
+      /* A minute is long enough that something is wrong, and short enough
+         that saying so is still useful. It is not a claim the write failed:
+         this chain is slow and the manual re-read is right there. */
+      say(
+        "Sent, but the chain still reads unchanged after a minute. On Mezo that " +
+          "is usually late rather than failed — press Re-read the chain.",
+      );
     };
 
     reread.addEventListener("click", () => {
@@ -796,7 +833,7 @@ export const leekDefiApp: MiniApp = {
         ? undefined
         : async (proposal: AppProposal): Promise<ProposalOutcome> => {
             const outcome = await context.propose!(proposal);
-            if (outcome.ok) await refresh();
+            if (outcome.ok) await refresh(true);
             return outcome;
           };
 
@@ -821,12 +858,46 @@ export const leekDefiApp: MiniApp = {
       );
       const host = context.endpointHost?.();
       position.append(row("Read from", host ?? null, "whoever answered most recently"));
-      body.append(position);
+      /* Appended after the trade panel below, not here. */
 
       /* ----------------------------------------------------------- trade */
-      const first = state.indices[0];
+      /* One panel with a market selector, which is what the website does.
+         This used to read `state.indices[0]` and nothing else, so the second
+         index was priced on screen and could not be bought: every index got a
+         card and only the first got a trade panel. A selector rather than a
+         panel per index, so there is one amount field and one pair of
+         buttons and no question about which index a press applies to. */
+      const first = state.indices[selected] ?? state.indices[0];
       if (first !== undefined) {
-        const trade = card(`Buy ${first.symbol}`);
+        const trade = card(`Buy and redeem ${first.symbol}`);
+
+        if (state.indices.length > 1) {
+          const pickWrap = el("div");
+          const pickId = "leekdefi-market";
+          const pickLabel = el("label", "leekdefi-label", "Index");
+          pickLabel.htmlFor = pickId;
+          pickLabel.style.display = "block";
+          pickLabel.style.marginBottom = "4px";
+          const pick = document.createElement("select");
+          pick.id = pickId;
+          pick.className = "leekdefi-input";
+          state.indices.forEach((index, i) => {
+            const opt = document.createElement("option");
+            opt.value = String(i);
+            opt.textContent = index.symbol;
+            opt.selected = i === selected;
+            pick.append(opt);
+          });
+          pick.addEventListener("change", () => {
+            selected = Number(pick.value);
+            /* Redraw rather than patch: the allowances, the share balance and
+               every refusal below belong to the index that is selected. */
+            render();
+          });
+          pickWrap.append(pickLabel, pick);
+          trade.append(pickWrap);
+        }
+
         /* Labelled for everybody, not only for a screen reader - the same
            defect the borrow panel had. */
         const tradeField = labelledInput("MUSD to spend", "0.00");
@@ -1013,6 +1084,7 @@ export const leekDefiApp: MiniApp = {
         }
         body.append(trade);
       }
+      body.append(position);
 
       /* --------------------------------------------------------- staking */
       const staking = card("Stake MEZO");

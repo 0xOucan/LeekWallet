@@ -373,8 +373,22 @@ const FLOOR = 2970000000000000000n;
      again, and the chain answered "BorrowerOps: Trove is active". The app
      cannot tell a revert from a reject by design, so it reported a refusal.
      The cure is that a successful write re-reads before redrawing. */
-  check(source.includes("if (outcome.ok) await refresh();"), "a successful write no longer refreshes");
-  check(source.includes("const refresh = async (): Promise<void> =>"), "refresh() is gone");
+  check(source.includes("if (outcome.ok) await refresh(true);"), "a successful write no longer refreshes");
+  check(source.includes("const refresh = async (awaitChange = false)"), "refresh() is gone");
+  /* Re-reading immediately is not enough and was its own bug: `propose`
+     returns when the transaction is SENT, and Mezo includes it seconds to
+     minutes later. The first version read the pre-transaction state, redrew
+     with it, and showed a 150 MUSD allowance as "Nothing is approved yet" --
+     after which this app's own guard refused the buy it existed to enable.
+     So a write polls until the chain actually differs. */
+  check(source.includes("const signature = (): string =>"), "there is no state signature to compare against");
+  check(source.includes('say("Sent. Waiting for Mezo to include it…");'), "a pending write says nothing while it waits");
+  check(
+    source.includes("if (before === null || signature() !== before) return;"),
+    "refresh no longer waits for the state to actually change",
+  );
+  /* Giving up must not claim the write failed. */
+  check(source.includes("usually late rather than failed"), "a slow write is reported as a failure");
   /* One wrapper, not eleven call sites that might forget. Every panel must
      receive the wrapped propose; a panel given context.propose directly would
      silently stop refreshing. */
@@ -387,6 +401,36 @@ const FLOOR = 2970000000000000000n;
   /* Mezo returns a null receipt for minutes after inclusion, so the user needs
      a way to ask again without re-signing anything. */
   check(source.includes("Re-read the chain"), "the manual re-read button is gone");
+}
+
+/* ------------------------------------------ every index can be traded, not one */
+
+{
+  group("the trade panel reaches every index, and the order matches the website");
+  const source = readFileSync(new URL("../packages/apps/leekdefi/index.ts", import.meta.url), "utf8");
+  /* Every index got a price card and only the first got a trade panel, so
+     AMEZON was priced on screen and could not be bought. */
+  check(source.includes("state.indices[selected] ?? state.indices[0]"), "the trade panel is pinned to one index again");
+  check(source.includes("let selected = 0;"), "the selected index does not survive a redraw");
+  check(!/const first = state\.indices\[0\];/.test(source), "indices[0] is still hardcoded in the trade panel");
+  /* A redraw must not silently move the user to a different market than the
+     one whose buttons they are about to press. */
+  check(source.includes("selected = Number(pick.value);"), "changing the index does not update the selection");
+
+  /* The website's order is indices -> borrow -> trade -> position -> staking
+     -> faucet. Two screens for one product should not read in two orders. */
+  const order = ["body.append(indexCard", "borrowPanel(borrow", "body.append(trade);", "body.append(position);", "body.append(staking)"];
+  let at = -1;
+  for (const marker of order) {
+    const found = source.indexOf(marker);
+    check(found > at, `panel order: ${marker} is out of sequence`);
+    at = found;
+  }
+  /* The faucet is a prerequisite, not the headline; it read second. */
+  check(
+    source.indexOf("wrap.append(faucet);") > source.indexOf("wrap.append(body);"),
+    "the faucet is back above the panels",
+  );
 }
 
 /* ----------------------------------- no write reaches the device unguarded */
