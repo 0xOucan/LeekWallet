@@ -26,10 +26,24 @@ host mirror, and 71 shared vectors. The dapp, the feed and the two index vaults
 are deployed and answering; both pools are listed; both vaults are above 100%
 coverage.
 
-Owed: the air-gapped demo on hardware (T-MEZO-4) and the submission materials.
-**No buy or redeem has yet been signed on the device** — that walk is the one
-thing the whole entry rests on and it is still untested on hardware. The full
-picture is in [PLAN-MEZO-ROADMAP.md](PLAN-MEZO-ROADMAP.md).
+**The full cycle has now been signed on the device**, 19 Oct 2026, against the
+live deployment: borrow 1,850 MUSD against 0.01 BTC, stake 50 MEZO, buy
+GOLOGGLE with 150 MUSD (1.499977 shares), buy AMEZON with 150 MUSD (1.479953
+shares), redeem AMEZON for 0.100848397833225 MUSD. Every one drawn and approved
+on the board; the redeem's receipt is `status 1` in block 16253541.
+
+Owed: the submission materials, and the recording. The full picture is in
+[PLAN-MEZO-ROADMAP.md](PLAN-MEZO-ROADMAP.md).
+
+**What the walk cost, recorded because it is the useful part.** Six defects
+surfaced, none in the contracts and all in the panel between the user and them:
+a re-read that raced the chain, a wait that watched a global state snapshot
+instead of this account's nonce, a trade panel pinned to `indices[0]` so the
+second index could not be bought, three approve buttons that ignored allowances
+already fetched, a redraw that destroyed typed input, and a redeem that read
+the buy's MUSD-denominated field. The encoders and both signing gates — 71
+shared vectors, 15 test groups — produced none of them. Coverage was aimed at
+the half that was already correct.
 
 ## 1. The event, in the terms it will judge us by
 

@@ -17,7 +17,7 @@ Track 1). This document is what to do, in what order, by when.
 | **Dapp** | 58 kB entry, 34 tests, clicked through against a local chain: approve, buy, redeem, and a refusal that predicted its own revert. Not pointed at Mezo yet, not deployed |
 | **Leeknding** | written: 95 tests, 8 invariants, mocks, a rate-limited faucet that refuses mainnet ids, seeding and monitoring scripts. Deployed nowhere |
 | **Wallet** | chains, MUSD and MEZO token rows, and the per-chain gas ticker all merged (T-MEZO-1, 2, 3). A Mezo transaction draws **BTC**, and an unlisted chain draws no ticker at all |
-| **Owed** | the air-gapped demo on hardware (T-MEZO-4), Leeknding to Sepolia and Base Sepolia, and the submission materials. **No buy or redeem has been signed on the device yet.** The mini-app (T-MEZO-5), the borrow decoders (T-MEZO-6, pulled forward from Wave 2) and the VPS deploy are done |
+| **Owed** | Leeknding to Sepolia and Base Sepolia, the recording, and the submission materials. The mini-app (T-MEZO-5), the borrow decoders (T-MEZO-6, pulled forward from Wave 2) and the VPS deploy are done, and **borrow, stake, buy on both indices and redeem have all been signed on the board** against the live deployment on 19 Oct |
 | **Blocked on you** | test MUSD for the demo, a free Etherscan API key for Sepolia verification, and Cloudflare CNAMEs when the VPS deploy happens |
 
 What the deployment taught, all of it recorded in `leek-stocks/DEPLOYMENT.md`:
